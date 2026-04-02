@@ -1,0 +1,400 @@
+[
+  {
+    "qid": "q1",
+    "question": "DevHub 的最低操作系统要求是什么？",
+    "category": "in_doc",
+    "gold_answer": "最低操作系统要求是 macOS 14.0。",
+    "gold_doc_ids": [
+      "README.zh.md"
+    ],
+    "pred_answer": "macOS 14.0",
+    "retrieved_doc_ids": [
+      "README.zh.md"
+    ],
+    "reference_snippets": [
+      "</a>\n</p>\n</div>  \n<div align=\"center\">  \n最低操作系统要求：`macOS 14.0`  \n</div>  \n一个功能丰富的离线应用程序，经过精心打造，旨在支持开发人员的日常任务，并确保其数据的最高安全性。  \n我正在积极开发中，并树立了一个大胆的目标：每周发布更新。我努力保持紧凑的足迹，旨在策划一个包含100多个小工具的广泛集合，为开发人员提供多样化的工具。这一举措体现了我对持续提升的承诺，提供丰富的工具，以赋能开发人员。DevHub不仅仅是一个编码伴侣；  \n![DevHub screenshots-1](./assets/screenshots-1.png)  \n已完成的工具如下：  \n- [x] 时间戳\n- [x] HTML转换为Markdown\n- [x] 文本转换为北约字母表\n- [x] CodeMirror 文本编辑器\n- [x] Prettier 代码格式\n- [x] HTML 格式化与压缩工具\n- [x] MIME 类型\n- [x] Base64/文件转换器\n- [x] SVG 转 CSS\n- [x] JWT 解析\n- [x] 人民币大写\n- [x] 世界时间\n- [x] 文件信息\n- [x] 图片文本识别\n- [x] 文件名提取助手\n- [x] SSL 管理\n- [x] 图片水印\n- [x] NPM 统计"
+    ],
+    "error": false,
+    "error_message": "",
+    "latency_ms": 2446,
+    "run_name": "baseline_topk5"
+  },
+  {
+    "qid": "q2",
+    "question": "DevHub 是否支持通过 URL Scheme 集成？请给出一个示例。",
+    "category": "in_doc",
+    "gold_answer": "支持。README 给出的示例是 devhub://qrCodeEventGenerator，例如可以通过 open \"devhub://qrCodeEventGenerator\" 调用。",
+    "gold_doc_ids": [
+      "README.zh.md"
+    ],
+    "pred_answer": "是的，DevHub 支持通过 URL Scheme 集成。示例：在 HTML 中使用 <a href=\"devhub://qrCodeEventGenerator\">点击这里</a>；在终端中使用 open \"devhub://qrCodeEventGenerator\"；或在浏览器地址栏输入 devhub://qrCodeEventGenerator 并回车。",
+    "retrieved_doc_ids": [
+      "README.zh.md"
+    ],
+    "reference_snippets": [
+      "[标题路径] 常见问题解答 > DevHub 集成\n\n与 DevHub 的集成是通过 URL Scheme 完成的。您可以使用此功能与大多数应用程序和工作流集成。例如与 Raycast 集成：  \n![DevHub + Raycast](./assets/raycast.png)  \n**URL Scheme**  \n**DevHub** 支持各种命令和参数，允许您通过 URL 激活该工具。例如，您也可以像这样在链接中使用它（例如在 HTML 页面中）：  \n```html\n<a href=\"devhub://qrCodeEventGenerator\">点击这里</a>\n```  \n或者从 **Terminal.app / CLI** 中：  \n```bash\n# 在 Terminal.app 或 bash 中输入：\nopen \"devhub://qrCodeEventGenerator\"\n```  \n或者将此复制到您的浏览器地址栏中，然后按 Enter 键： `devhub://qrCodeEventGenerator`"
+    ],
+    "error": false,
+    "error_message": "",
+    "latency_ms": 3740,
+    "run_name": "baseline_topk5"
+  },
+  {
+    "qid": "q3",
+    "question": "在 v2.2.0 版本中，新增了什么工具？同时修复了哪些问题？",
+    "category": "in_doc",
+    "gold_answer": "v2.2.0 新增了时间戳工具；同时修复了国际化显示错误，并解决了付费解锁验证错误。",
+    "gold_doc_ids": [
+      "CHANGELOG.zh.md"
+    ],
+    "pred_answer": "在 v2.2.0 版本中，新增了时间戳工具。修复了国际化显示错误和付费解锁验证错误。",
+    "retrieved_doc_ids": [
+      "CHANGELOG.zh.md"
+    ],
+    "reference_snippets": [
+      "[标题路径] [v2.2.0](https://github.com/jaywcjlove/DevHub/releases/tag/v2.2.0)\n\n1. feat: 添加时间戳工具\n2. fix: 修复国际化显示错误\n3. fix: 解决付费解锁验证错误"
+    ],
+    "error": false,
+    "error_message": "",
+    "latency_ms": 3003,
+    "run_name": "baseline_topk5"
+  },
+  {
+    "qid": "q4",
+    "question": "隐私政策如何描述“本地数据缓存”？这些数据会不会传到服务器？",
+    "category": "in_doc",
+    "gold_answer": "隐私政策说明可能会在设备上本地缓存一些数据以增强用户体验；这些数据仅存储在您的设备上，不会传输到服务器。",
+    "gold_doc_ids": [
+      "privacy-policy.zh.md"
+    ],
+    "pred_answer": "隐私政策描述“本地数据缓存”为：应用可能会在设备上本地缓存一些数据以增强用户体验。这些数据仅存储在设备上，不会传输到服务器。",
+    "retrieved_doc_ids": [
+      "privacy-policy.zh.md"
+    ],
+    "reference_snippets": [
+      "<p align=\"right\">\n<a href=\"./privacy-policy.md\">English</a>\n</p>\n<!--rehype:style=float: right; bottom: -36px; position: relative;-->  \n隐私政策\n===  \nKenny Wang 开发的 DevHub 应用是一个免费应用。此服务由 Kenny Wang 免费提供，仅供使用。  \n欢迎使用我们的应用！我们尊重并保护您的隐私。本隐私政策旨在解释我们如何收集、使用和保护您的个人信息。请仔细阅读以下内容，以了解我们的隐私做法。  \n**信息收集**  \n我们的应用是一个离线本地应用程序，不会主动收集、存储或传输任何个人身份识别信息或敏感信息。  \n**本地数据缓存**  \n我们可能会在您的设备上本地缓存一些数据，以增强用户体验。这些数据仅存储在您的设备上，不会传输到我们的服务器。  \n**使用权限**  \n我们的应用可能会请求某些设备权限，如相机、相册或位置信息。这些权限仅用于提供特定的应用功能，我们不会滥用它们来收集额外的信息。  \n**第三方服务**  \n我们的应用可能会利用第三方服务，但这些服务仅限于提供应用所需的功能，并不用于收集个人身份信息。  \n**儿童隐私**  \n我们的应用不适用于13岁以下的儿童，我们也不会有意收集与儿童有关的信息。"
+    ],
+    "error": false,
+    "error_message": "",
+    "latency_ms": 3052,
+    "run_name": "baseline_topk5"
+  },
+  {
+    "qid": "q5",
+    "question": "如果用户想申请退款，文档建议通过什么方式处理？",
+    "category": "in_doc",
+    "gold_answer": "文档建议先通过底部邮件联系开发者获得帮助；如果仍然无法满足要求，可以申请退款，并联系苹果支持团队处理，退款不由开发者直接操作。",
+    "gold_doc_ids": [
+      "terms-of-service.zh.md"
+    ],
+    "pred_answer": "文档建议用户联系苹果的支持团队来处理退款事宜，并提供了申请退款的链接。",
+    "retrieved_doc_ids": [
+      "terms-of-service.zh.md"
+    ],
+    "reference_snippets": [
+      "[标题路径] 4. 退款服务\n\n如果您在订阅赞助过程中遇到任何问题，都可以通过底部的邮件联系我们获得帮助。如果您仍然感到无法满足您的要求，可以选择申请退款。请注意，退款不由开发者操作，您需联系苹果的支持团队来处理退款事宜。  \n[申请退款](https://support.apple.com/118223)"
+    ],
+    "error": false,
+    "error_message": "",
+    "latency_ms": 2426,
+    "run_name": "baseline_topk5"
+  },
+  {
+    "qid": "q6",
+    "question": "DevHub 的订阅价格是多少？",
+    "category": "not_in_doc",
+    "gold_answer": "现有文档未提供具体订阅价格，因此无法确认。",
+    "gold_doc_ids": [
+      "terms-of-service.zh.md"
+    ],
+    "pred_answer": "我无法根据提供的文档确定答案",
+    "retrieved_doc_ids": [],
+    "reference_snippets": [],
+    "error": false,
+    "error_message": "",
+    "latency_ms": 2572,
+    "run_name": "baseline_topk5"
+  },
+  {
+    "qid": "q7",
+    "question": "DevHub 具体使用了哪些第三方服务？请列出服务名称。",
+    "category": "not_in_doc",
+    "gold_answer": "隐私政策只说明应用可能会利用第三方服务，但未列出具体服务名称，因此无法确认。",
+    "gold_doc_ids": [
+      "privacy-policy.zh.md"
+    ],
+    "pred_answer": "我无法根据提供的文档确定答案",
+    "retrieved_doc_ids": [
+      "privacy-policy.zh.md",
+      "privacy-policy.zh.md"
+    ],
+    "reference_snippets": [
+      "<p align=\"right\">\n<a href=\"./privacy-policy.md\">English</a>\n</p>\n<!--rehype:style=float: right; bottom: -36px; position: relative;-->  \n隐私政策\n===  \nKenny Wang 开发的 DevHub 应用是一个免费应用。此服务由 Kenny Wang 免费提供，仅供使用。  \n欢迎使用我们的应用！我们尊重并保护您的隐私。本隐私政策旨在解释我们如何收集、使用和保护您的个人信息。请仔细阅读以下内容，以了解我们的隐私做法。  \n**信息收集**  \n我们的应用是一个离线本地应用程序，不会主动收集、存储或传输任何个人身份识别信息或敏感信息。  \n**本地数据缓存**  \n我们可能会在您的设备上本地缓存一些数据，以增强用户体验。这些数据仅存储在您的设备上，不会传输到我们的服务器。  \n**使用权限**  \n我们的应用可能会请求某些设备权限，如相机、相册或位置信息。这些权限仅用于提供特定的应用功能，我们不会滥用它们来收集额外的信息。  \n**第三方服务**  \n我们的应用可能会利用第三方服务，但这些服务仅限于提供应用所需的功能，并不用于收集个人身份信息。  \n**儿童隐私**  \n我们的应用不适用于13岁以下的儿童，我们也不会有意收集与儿童有关的信息。",
+      "我们的应用可能会利用第三方服务，但这些服务仅限于提供应用所需的功能，并不用于收集个人身份信息。  \n**儿童隐私**  \n我们的应用不适用于13岁以下的儿童，我们也不会有意收集与儿童有关的信息。  \n**隐私政策更新**  \n我可能会不时更新我们的隐私政策。因此，建议您定期查看本页面以获取任何更改。我会通过在本页面发布新的隐私政策来通知您任何更改。  \n本政策自 2024 年 04 月 11 日生效  \n**联系我们**  \n如果您对我们的隐私政策有任何疑问或建议，请随时通过 kennyiseeyou@gmail.com 与我联系。"
+    ],
+    "error": false,
+    "error_message": "",
+    "latency_ms": 2112,
+    "run_name": "baseline_topk5"
+  },
+  {
+    "qid": "q8",
+    "question": "v2.2.0 是在哪一天发布的？",
+    "category": "not_in_doc",
+    "gold_answer": "CHANGELOG 记录了 v2.2.0 的更新内容，但没有提供发布日期，因此无法确认具体日期。",
+    "gold_doc_ids": [
+      "CHANGELOG.zh.md"
+    ],
+    "pred_answer": "我无法根据提供的文档确定答案",
+    "retrieved_doc_ids": [],
+    "reference_snippets": [],
+    "error": false,
+    "error_message": "",
+    "latency_ms": 2003,
+    "run_name": "baseline_topk5"
+  },
+  {
+    "qid": "q9",
+    "question": "DevHub 在 App Store 上的平均评分和评论数是多少？",
+    "category": "not_in_doc",
+    "gold_answer": "这些 md 文档没有提供 App Store 的平均评分和评论数，因此无法确认。",
+    "gold_doc_ids": [],
+    "pred_answer": "我无法根据提供的文档确定答案",
+    "retrieved_doc_ids": [],
+    "reference_snippets": [],
+    "error": false,
+    "error_message": "",
+    "latency_ms": 2059,
+    "run_name": "baseline_topk5"
+  },
+  {
+    "qid": "q10",
+    "question": "README 中提到“每周发布更新”，那过去一年实际更新达成率是多少？",
+    "category": "not_in_doc",
+    "gold_answer": "README 只说明目标是每周发布更新，但文档没有给出完整年度统计口径或达成率，因此无法确认。",
+    "gold_doc_ids": [
+      "README.zh.md",
+      "CHANGELOG.zh.md"
+    ],
+    "pred_answer": "我无法根据提供的文档确定答案",
+    "retrieved_doc_ids": [],
+    "reference_snippets": [],
+    "error": false,
+    "error_message": "",
+    "latency_ms": 1999,
+    "run_name": "baseline_topk5"
+  },
+  {
+    "qid": "q11",
+    "question": "DevHub 到底算“免费应用”还是“有限免费 + 赞助解锁”应用？",
+    "category": "cross_doc",
+    "gold_answer": "两种表述都涉及部分事实：隐私政策称它是免费应用；服务条款则说明它提供免费小工具使用，超过一定次数会弹出赞助提示并锁定部分功能，赞助后可解锁部分功能。",
+    "gold_doc_ids": [
+      "privacy-policy.zh.md",
+      "terms-of-service.zh.md"
+    ],
+    "pred_answer": "DevHub 是免费应用，但使用次数超过一定限制后会弹出赞助提示并锁定部分功能，赞助后可解锁这些功能。",
+    "retrieved_doc_ids": [
+      "terms-of-service.zh.md",
+      "privacy-policy.zh.md",
+      "terms-of-service.zh.md"
+    ],
+    "reference_snippets": [
+      "[标题路径] 2. 免费版本\n\nDevHub 提供免费的小工具使用，当使用次数超过一定次数时，会弹出赞助提示，并锁定部分实用功能。",
+      "<p align=\"right\">\n<a href=\"./privacy-policy.md\">English</a>\n</p>\n<!--rehype:style=float: right; bottom: -36px; position: relative;-->  \n隐私政策\n===  \nKenny Wang 开发的 DevHub 应用是一个免费应用。此服务由 Kenny Wang 免费提供，仅供使用。  \n欢迎使用我们的应用！我们尊重并保护您的隐私。本隐私政策旨在解释我们如何收集、使用和保护您的个人信息。请仔细阅读以下内容，以了解我们的隐私做法。  \n**信息收集**  \n我们的应用是一个离线本地应用程序，不会主动收集、存储或传输任何个人身份识别信息或敏感信息。  \n**本地数据缓存**  \n我们可能会在您的设备上本地缓存一些数据，以增强用户体验。这些数据仅存储在您的设备上，不会传输到我们的服务器。  \n**使用权限**  \n我们的应用可能会请求某些设备权限，如相机、相册或位置信息。这些权限仅用于提供特定的应用功能，我们不会滥用它们来收集额外的信息。  \n**第三方服务**  \n我们的应用可能会利用第三方服务，但这些服务仅限于提供应用所需的功能，并不用于收集个人身份信息。  \n**儿童隐私**  \n我们的应用不适用于13岁以下的儿童，我们也不会有意收集与儿童有关的信息。",
+      "[标题路径] 3. 订阅赞助\n\n如果您决定订阅赞助，那么您对我的付出表示感谢，就像偶尔给我买杯咖啡一样。捐赠后将不再弹出赞助提示，并解锁部分实用功能。感谢您的慷慨支持，我将信心十足地继续维护 DevHub 并确保其健康运行。"
+    ],
+    "error": false,
+    "error_message": "",
+    "latency_ms": 2692,
+    "run_name": "baseline_topk5"
+  },
+  {
+    "qid": "q12",
+    "question": "DevHub 会不会收集我的个人数据？",
+    "category": "in_doc",
+    "gold_answer": "隐私政策说明应用不会主动收集、存储或传输个人身份识别信息或敏感信息；但可能会在设备本地缓存一些数据，并请求相机、相册或位置信息等权限来提供特定功能。",
+    "gold_doc_ids": [
+      "privacy-policy.zh.md"
+    ],
+    "pred_answer": "DevHub 是一个离线本地应用程序，不会主动收集、存储或传输任何个人身份识别信息或敏感信息。",
+    "retrieved_doc_ids": [
+      "privacy-policy.zh.md"
+    ],
+    "reference_snippets": [
+      "<p align=\"right\">\n<a href=\"./privacy-policy.md\">English</a>\n</p>\n<!--rehype:style=float: right; bottom: -36px; position: relative;-->  \n隐私政策\n===  \nKenny Wang 开发的 DevHub 应用是一个免费应用。此服务由 Kenny Wang 免费提供，仅供使用。  \n欢迎使用我们的应用！我们尊重并保护您的隐私。本隐私政策旨在解释我们如何收集、使用和保护您的个人信息。请仔细阅读以下内容，以了解我们的隐私做法。  \n**信息收集**  \n我们的应用是一个离线本地应用程序，不会主动收集、存储或传输任何个人身份识别信息或敏感信息。  \n**本地数据缓存**  \n我们可能会在您的设备上本地缓存一些数据，以增强用户体验。这些数据仅存储在您的设备上，不会传输到我们的服务器。  \n**使用权限**  \n我们的应用可能会请求某些设备权限，如相机、相册或位置信息。这些权限仅用于提供特定的应用功能，我们不会滥用它们来收集额外的信息。  \n**第三方服务**  \n我们的应用可能会利用第三方服务，但这些服务仅限于提供应用所需的功能，并不用于收集个人身份信息。  \n**儿童隐私**  \n我们的应用不适用于13岁以下的儿童，我们也不会有意收集与儿童有关的信息。"
+    ],
+    "error": false,
+    "error_message": "",
+    "latency_ms": 2983,
+    "run_name": "baseline_topk5"
+  },
+  {
+    "qid": "q13",
+    "question": "如果我订阅后不满意，应该联系开发者，还是直接找 Apple 退款？",
+    "category": "cross_doc",
+    "gold_answer": "建议先通过邮件联系开发者获得帮助；如果仍然无法满足要求，再联系 Apple 支持团队申请退款，退款不由开发者直接操作。",
+    "gold_doc_ids": [
+      "terms-of-service.zh.md",
+      "feedback.zh.md"
+    ],
+    "pred_answer": "如果您订阅后不满意，可以先通过邮件联系开发者获得帮助。如果仍然无法满足要求，需要申请退款，则必须联系苹果的支持团队，因为退款不由开发者操作。",
+    "retrieved_doc_ids": [
+      "terms-of-service.zh.md"
+    ],
+    "reference_snippets": [
+      "[标题路径] 4. 退款服务\n\n如果您在订阅赞助过程中遇到任何问题，都可以通过底部的邮件联系我们获得帮助。如果您仍然感到无法满足您的要求，可以选择申请退款。请注意，退款不由开发者操作，您需联系苹果的支持团队来处理退款事宜。  \n[申请退款](https://support.apple.com/118223)"
+    ],
+    "error": false,
+    "error_message": "",
+    "latency_ms": 2842,
+    "run_name": "baseline_topk5"
+  },
+  {
+    "qid": "q14",
+    "question": "DevHub 支持哪些 macOS 版本？",
+    "category": "cross_doc",
+    "gold_answer": "README 明确写了最低操作系统要求是 macOS 14.0；另外 CHANGELOG 的 v2.0.0 提到新增了对 macOS 26 的支持，因此需要区分最低要求与后续新增兼容支持。",
+    "gold_doc_ids": [
+      "README.zh.md",
+      "CHANGELOG.zh.md"
+    ],
+    "pred_answer": "DevHub 最低要求 macOS 14.0，并且 v2.0.0 版本添加了对 macOS 26 的支持。",
+    "retrieved_doc_ids": [
+      "CHANGELOG.zh.md",
+      "README.zh.md"
+    ],
+    "reference_snippets": [
+      "[标题路径] [v2.0.0](https://github.com/jaywcjlove/DevHub/releases/tag/v2.0.0)\n\n1. feat: 添加对 macOS 26 的支持\n2. fix: 修复一些已知问题",
+      "</a>\n</p>\n</div>  \n<div align=\"center\">  \n最低操作系统要求：`macOS 14.0`  \n</div>  \n一个功能丰富的离线应用程序，经过精心打造，旨在支持开发人员的日常任务，并确保其数据的最高安全性。  \n我正在积极开发中，并树立了一个大胆的目标：每周发布更新。我努力保持紧凑的足迹，旨在策划一个包含100多个小工具的广泛集合，为开发人员提供多样化的工具。这一举措体现了我对持续提升的承诺，提供丰富的工具，以赋能开发人员。DevHub不仅仅是一个编码伴侣；  \n![DevHub screenshots-1](./assets/screenshots-1.png)  \n已完成的工具如下：  \n- [x] 时间戳\n- [x] HTML转换为Markdown\n- [x] 文本转换为北约字母表\n- [x] CodeMirror 文本编辑器\n- [x] Prettier 代码格式\n- [x] HTML 格式化与压缩工具\n- [x] MIME 类型\n- [x] Base64/文件转换器\n- [x] SVG 转 CSS\n- [x] JWT 解析\n- [x] 人民币大写\n- [x] 世界时间\n- [x] 文件信息\n- [x] 图片文本识别\n- [x] 文件名提取助手\n- [x] SSL 管理\n- [x] 图片水印\n- [x] NPM 统计"
+    ],
+    "error": false,
+    "error_message": "",
+    "latency_ms": 2619,
+    "run_name": "baseline_topk5"
+  },
+  {
+    "qid": "q15",
+    "question": "“世界时间”功能是什么时候加入的？",
+    "category": "in_doc",
+    "gold_answer": "世界时间功能在 v1.36.0 加入；v1.37.0 又为世界时钟添加了范围选择功能，v1.38.0 进一步增强了世界时钟搜索功能。",
+    "gold_doc_ids": [
+      "CHANGELOG.zh.md"
+    ],
+    "pred_answer": "在 v1.36.0 版本中添加的。",
+    "retrieved_doc_ids": [
+      "CHANGELOG.zh.md"
+    ],
+    "reference_snippets": [
+      "[标题路径] [v1.36.0](https://github.com/jaywcjlove/DevHub/releases/tag/v1.36.0)\n\n1. feat: 添加了 `World Time` 功能。\n2. feat: 添加了 `scalars` 选项到 TextToUnicode。\n3. chore: 修复了 Swift 6 中的警告。\n4. typo: 将 \"文件名提取助手\" 修改为 \"文件名提取\"。\n5. fix: 修复了侧边栏菜单图标对齐问题。\n6. fix: 修复了 HTMLEntityDecode 问题。"
+    ],
+    "error": false,
+    "error_message": "",
+    "latency_ms": 2619,
+    "run_name": "baseline_topk5"
+  },
+  {
+    "qid": "q16",
+    "question": "如果用户需要支持或想反馈问题，文档提供了哪些联系方式？",
+    "category": "in_doc",
+    "gold_answer": "文档提供了三种联系方式：邮件 kennyiseeyou@gmail.com、Twitter/X @jaywcjlove，以及 GitHub 问题反馈页面。",
+    "gold_doc_ids": [
+      "feedback.zh.md"
+    ],
+    "pred_answer": "可以通过邮件支持（kennyiseeyou@gmail.com）、社交媒体（Twitter/x @jaywcjlove）和GitHub问题反馈（https://github.com/jaywcjlove/DevHub/issues/new/choose）联系我们。",
+    "retrieved_doc_ids": [
+      "feedback.zh.md"
+    ],
+    "reference_snippets": [
+      "[标题路径] 联系方式\n\n如果你在使用过程中需要支持或遇到问题，可以通过以下渠道联系我们：  \n- [**邮件支持**: kennyiseeyou@gmail.com](mailto:kennyiseeyou@gmail.com)\n- [**社交媒体**: Twitter/x @jaywcjlove](https://twitter.com/jaywcjlove)\n- [**GitHub 问题反馈**](https://github.com/jaywcjlove/DevHub/issues/new/choose)  \n我会尽快回复你的消息。感谢你对本工具的支持！"
+    ],
+    "error": false,
+    "error_message": "",
+    "latency_ms": 2917,
+    "run_name": "baseline_topk5"
+  },
+  {
+    "qid": "q17",
+    "question": "这份隐私政策从什么时候开始生效？",
+    "category": "in_doc",
+    "gold_answer": "本隐私政策自 2024 年 04 月 11 日生效。",
+    "gold_doc_ids": [
+      "privacy-policy.zh.md"
+    ],
+    "pred_answer": "本政策自 2024 年 04 月 11 日生效",
+    "retrieved_doc_ids": [
+      "privacy-policy.zh.md"
+    ],
+    "reference_snippets": [
+      "我们的应用可能会利用第三方服务，但这些服务仅限于提供应用所需的功能，并不用于收集个人身份信息。  \n**儿童隐私**  \n我们的应用不适用于13岁以下的儿童，我们也不会有意收集与儿童有关的信息。  \n**隐私政策更新**  \n我可能会不时更新我们的隐私政策。因此，建议您定期查看本页面以获取任何更改。我会通过在本页面发布新的隐私政策来通知您任何更改。  \n本政策自 2024 年 04 月 11 日生效  \n**联系我们**  \n如果您对我们的隐私政策有任何疑问或建议，请随时通过 kennyiseeyou@gmail.com 与我联系。"
+    ],
+    "error": false,
+    "error_message": "",
+    "latency_ms": 2528,
+    "run_name": "baseline_topk5"
+  },
+  {
+    "qid": "q18",
+    "question": "v1.44.0 一次新增了哪些与编辑或格式化相关的工具？",
+    "category": "in_doc",
+    "gold_answer": "v1.44.0 新增了 CodeMirror 文本编辑器、Prettier 代码格式化工具，以及 HTML 格式化与压缩工具。",
+    "gold_doc_ids": [
+      "CHANGELOG.zh.md"
+    ],
+    "pred_answer": "v1.44.0 新增了 CodeMirror 文本编辑器、Prettier 代码格式化工具、HTML 格式化与压缩工具，并更新了文件信息工具以显示更多细节。",
+    "retrieved_doc_ids": [
+      "CHANGELOG.zh.md"
+    ],
+    "reference_snippets": [
+      "[标题路径] [v1.44.0](https://github.com/jaywcjlove/DevHub/releases/tag/v1.44.0)\n\n1. feat: 添加 CodeMirror 文本编辑器。\n2. feat: 添加 Prettier 代码格式化工具。\n3. feat: 添加 HTML 格式化与压缩工具。\n4. feat: 更新文件信息工具以显示更多细节。\n5. perf: 优化首页性能。\n6. fix: 修复文件/Base64 转换器中的文件选择问题。\n7. perf: 优化 MimeTypes 工具。"
+    ],
+    "error": false,
+    "error_message": "",
+    "latency_ms": 2676,
+    "run_name": "baseline_topk5"
+  },
+  {
+    "qid": "q19",
+    "question": "FileInfo 工具在 v1.34.x 版本段经历了哪些变化？",
+    "category": "in_doc",
+    "gold_answer": "v1.34.0 添加了 FileInfo；v1.34.1 修复了 File Info 类型错误，并扩展了更多详细信息；v1.34.2 又修复了文件信息读取工具中缺失图标的问题。",
+    "gold_doc_ids": [
+      "CHANGELOG.zh.md"
+    ],
+    "pred_answer": "在 v1.34.x 版本段，FileInfo 工具的变化如下：\n- v1.34.0：新增了 FileInfo 功能。\n- v1.34.1：修复了 File Info 类型错误，并扩展了 FileInfo 以检索更多详细信息。\n- v1.34.2：修复了文件信息读取工具中缺失图标的问题。",
+    "retrieved_doc_ids": [
+      "CHANGELOG.zh.md",
+      "CHANGELOG.zh.md",
+      "CHANGELOG.zh.md"
+    ],
+    "reference_snippets": [
+      "[标题路径] [v1.34.0](https://github.com/jaywcjlove/DevHub/releases/tag/v1.34.0)\n\n1. 新增功能: 添加 `FileInfo`\n2. 性能优化: 改善内存使用效率。",
+      "[标题路径] [v1.34.1](https://github.com/jaywcjlove/DevHub/releases/tag/v1.34.1)\n\n1. 修复: 修复了 File Info 类型错误。\n2. 新增: 扩展了 FileInfo，以检索更多详细信息。",
+      "[标题路径] [v1.34.2](https://github.com/jaywcjlove/DevHub/releases/tag/v1.34.2)\n\n1. 修复：修复文件信息读取工具中缺失图标的问题。\n2. 新增：为 SSLManager 添加刷新按钮。"
+    ],
+    "error": false,
+    "error_message": "",
+    "latency_ms": 4526,
+    "run_name": "baseline_topk5"
+  },
+  {
+    "qid": "q20",
+    "question": "DevHub 只能在哪个平台下载？",
+    "category": "in_doc",
+    "gold_answer": "服务条款说明该应用只能在 Mac 上下载。",
+    "gold_doc_ids": [
+      "terms-of-service.zh.md"
+    ],
+    "pred_answer": "DevHub 只能在 Mac 上下载。",
+    "retrieved_doc_ids": [
+      "terms-of-service.zh.md"
+    ],
+    "reference_snippets": [
+      "[标题路径] 1. 应用功能\n\nDevHub 是一款丰富的开发者集成工具，支持开发人员完成日常任务，并确保其数据的最高安全性。应用只能在 Mac 上下载。"
+    ],
+    "error": false,
+    "error_message": "",
+    "latency_ms": 2169,
+    "run_name": "baseline_topk5"
+  }
+]
