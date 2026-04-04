@@ -5,3 +5,4 @@ __pycache__/
 *.pyc
 .idea/
 outputs/
+paraphrase-multilingual-MiniLM-L12-v2/
