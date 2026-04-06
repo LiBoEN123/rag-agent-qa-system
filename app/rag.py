@@ -8,7 +8,7 @@ from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 import requests
 from app.config import Settings
-from app.prompts import SYSTEM_PROMPT, USER_PROMPT
+from app.prompts import SYSTEM_PROMPT, USER_PROMPT, NO_ANSWER_FALLBACK
 from typing import Dict, List, Any
 
 
@@ -19,7 +19,6 @@ docs_registry = []
 bm25 = None
 model = None
 doc_embeddings = None
-SAFE_FALLBACK_ANSWER = "我无法根据提供的文档确定答案"
 SUPPORTED_SUFFIXES = {".txt",".md"}
 RAG_READY = False
 RAG_INIT_MESSAGE = "RAG 尚未初始化"
@@ -309,7 +308,7 @@ def parse_llm_output(llm_output:str):
         llm_output = llm_output.replace("```json", "").replace("```", "").strip()
     try:
         data = json.loads(llm_output)
-        answer = data.get("answer", "我无法根据提供的文档确定答案")
+        answer = data.get("answer", NO_ANSWER_FALLBACK)
         references = data.get("references", [])
         if not isinstance(references, list):
             references = []
@@ -321,7 +320,7 @@ def parse_llm_output(llm_output:str):
     except Exception:
         return {
             "ok":False,
-            "answer":SAFE_FALLBACK_ANSWER,
+            "answer":NO_ANSWER_FALLBACK,
             "references":[]
         }
 
@@ -348,7 +347,7 @@ def ask(question:str, top_k:int=3, retrieved_chunks:List[Dict[str, Any]] | None=
     if should_refuse(retrieved_chunks):
         return {
             'status':"NO_RELEVANT_INFO",
-            'answer':SAFE_FALLBACK_ANSWER,
+            'answer':NO_ANSWER_FALLBACK,
             'references':[]
         }
 
@@ -359,7 +358,7 @@ def ask(question:str, top_k:int=3, retrieved_chunks:List[Dict[str, Any]] | None=
     if not parase["ok"]:
         return {
             "status": "MODEL_BAD_OUTPUT",
-            "answer": SAFE_FALLBACK_ANSWER,
+            "answer": NO_ANSWER_FALLBACK,
             "references": []
         }
 
