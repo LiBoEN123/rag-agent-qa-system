@@ -171,7 +171,7 @@ def ask_api(req:ChatRequest):
     try:
         question = (req.question or "").strip()
         logger.info(f"[chat] 收到请求 question_len={len(question)}，preview={question[:50]}")
-        key = os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY")
+        key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("API_KEY")
         print("runtime key suffix:", key[-4:] if key else None)
 
         if not question:

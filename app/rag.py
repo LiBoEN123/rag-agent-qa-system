@@ -8,6 +8,7 @@ from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 import requests
 from app.config import Settings
+from app.prompts import SYSTEM_PROMPT, USER_PROMPT
 from typing import Dict, List, Any
 
 
@@ -277,33 +278,16 @@ def call_llm(question:str, context: str):
     if not api_key:
         raise ValueError("请先设置环境变量 DEEPSEEK_API_KEY")
 
-    system_prompt = """你是一个基于检索文档回答问题的助手。
-
-请严格遵守：
-1. 只能根据提供的参考资料回答问题。
-2. 如果参考资料不足以回答问题，就回答：我无法根据提供的文档确定答案
-3. 不要使用参考资料之外的知识，不要编造。
-4. answer 要简洁、直接。
-5. references 只能填写你实际使用到的 Reference 编号，例如 ["Reference 1", "Reference 2"]。
-6. 只输出 JSON，不要输出额外说明。
-7. JSON 格式如下：
-{
-  "answer": "...",
-  "references": ["Reference 1", "Reference 2"]
-}
-"""
-    user_prompt = f"""用户问题：
-{question}
-
-参考资料：
-{context}
-"""
     pay_load = {
         'model':model_name,
         'temperature':Settings.TEMPERATURE,
         'messages':[
-            {"role": "system", "content": system_prompt},
-            {"role": 'user', "content": user_prompt}
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": 'user', "content": USER_PROMPT.format(
+                context=context,
+                question=question
+                )
+             }
         ]
     }
     headers = {
