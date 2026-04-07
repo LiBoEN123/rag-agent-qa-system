@@ -30,6 +30,8 @@ class ChatReferences(BaseModel):
 class ChatData(BaseModel):
     answer:str
     references:list[ChatReferences]=[]
+    confidence:float = Field(..., ge=0.0, le=1.0, description="回答置信度，0~1")
+    need_clarification:bool = Field(..., description="是否建议用户补充问题")
 
 class ChatResponse(BaseModel):
     code:int
@@ -50,7 +52,9 @@ class ChatResponse(BaseModel):
                     "chunk_id": "terms-of-service.zh_chunk_5",
                     "text": "[标题路径] 4. 退款服务\n\n如果您在订阅赞助过程中遇到任何问题，都可以通过底部的邮件联系我们获得帮助。如果您仍然感到无法满足您的要求，可以选择申请退款。请注意，退款不由开发者操作，您需联系苹果的支持团队来处理退款事宜。  \n[申请退款](https://support.apple.com/118223)"
                   }
-                ]
+                ],
+                "confidence":0.82,
+                "need_clarification":False
               }
             }
         }
@@ -270,7 +274,9 @@ def ask_api(req:ChatRequest):
             message='success',
             data=ChatData(
                 answer=result['answer'],
-                references=result.get('references', [])
+                references=result.get('references', []),
+                confidence=result.get("confidence", 0.0),
+                need_clarification=result.get("need_clarification", False)
             )
         )
     except HTTPException:

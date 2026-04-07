@@ -23,6 +23,10 @@ SUPPORTED_SUFFIXES = {".txt",".md"}
 RAG_READY = False
 RAG_INIT_MESSAGE = "RAG 尚未初始化"
 NO_DOCUMENTS_MESSAGE = "当前知识库为空，请先在 data 目录中放入文档后再提问"
+AMBIGUOUS_WORDS = [
+    "这个", "那个", "它", "这条", "这项", "这份",
+    "上面", "前面", "后面", "这里", "那里"
+]
 
 def read_txt_auto(file_path:str) -> str:
     raw = Path(file_path).read_bytes()
@@ -257,6 +261,48 @@ def should_refuse(retrieved_chunks, hybrid_threshold:float=None, vector_threshol
         return True
     return False
 
+def clamp01(value:float) -> float:
+    value = float(value)
+    if value < 0:
+        return 0.0
+    if value > 1:
+        return 1.0
+    return value
+
+def is_ambiguous_question(question:str) -> bool:
+    q = (question or "").strip()
+    if not q:
+        return True
+    if len(q) < 3:
+        return True
+    if any(word in q for word in AMBIGUOUS_WORDS) and len(q) < 18:
+        return True
+    return False
+
+def estimate_confidence(retrieved_chunks:List[dict], final_references:List[dict], status:str) -> float:
+    if status != "OK" or not retrieved_chunks:
+        return 0.0
+
+    top1_vector = clamp01(retrieved_chunks[0].get("vector_score", 0.0))
+
+    scope_gap = 0.0
+    if len(retrieved_chunks) > 1:
+        scope_gap = clamp01(retrieved_chunks[0].get("vector_score", 0.0) -
+                            retrieved_chunks[1].get("vector_score", 0.0))
+
+    ref_ratio = clamp01(len(final_references) / max(1, min(len(retrieved_chunks), 5)))
+
+    confidene = 0.65 * top1_vector + 0.20 * scope_gap + 0.15 * ref_ratio
+
+    return round(clamp01(confidene), 3) # 最终限制置信度0到1，且保留三位小数
+
+def estmate_need_clarification(question:str, final_references:List[dict], status:str) -> bool:
+    if is_ambiguous_question(question):
+        return True
+    if status == "OK" and not final_references:
+        return True
+    return False
+
 def build_context(retrieved_chunks):
     context_parts = []
 
@@ -344,30 +390,43 @@ def ask(question:str, top_k:int=3, retrieved_chunks:List[Dict[str, Any]] | None=
     if retrieved_chunks is None:
         retrieved_chunks = retrieve(question, top_k)
 
+    ambiguous = is_ambiguous_question(question)
+
     if should_refuse(retrieved_chunks):
         return {
             'status':"NO_RELEVANT_INFO",
             'answer':NO_ANSWER_FALLBACK,
-            'references':[]
+            'references':[],
+            'confidence':0.0,
+            'need_clarfication':ambiguous
         }
 
     context = build_context(retrieved_chunks)
     llm_out = call_llm(question, context)
     parase = parse_llm_output(llm_out)
 
+
+
     if not parase["ok"]:
         return {
             "status": "MODEL_BAD_OUTPUT",
             "answer": NO_ANSWER_FALLBACK,
-            "references": []
+            "references": [],
+            'confidence': 0.0,
+            'need_clarfication': ambiguous
         }
 
     final_references = format_reference(retrieved_chunks, parase['references'])
 
+    confidence = estimate_confidence(retrieved_chunks, final_references, status="OK")
+    need_clarification = estmate_need_clarification(question, final_references, status="OK")
+
     return {
         'status':"OK",
         'answer':parase['answer'],
-        'references':final_references
+        'references':final_references,
+        'confidence': confidence,
+        'need_clarfication': need_clarification,
     }
 
 def preview_docs():
