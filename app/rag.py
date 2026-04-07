@@ -273,7 +273,7 @@ def is_ambiguous_question(question:str) -> bool:
     q = (question or "").strip()
     if not q:
         return True
-    if len(q) < 3:
+    if len(q) <= 3:
         return True
     if any(word in q for word in AMBIGUOUS_WORDS) and len(q) < 18:
         return True
@@ -296,7 +296,7 @@ def estimate_confidence(retrieved_chunks:List[dict], final_references:List[dict]
 
     return round(clamp01(confidene), 3) # 最终限制置信度0到1，且保留三位小数
 
-def estmate_need_clarification(question:str, final_references:List[dict], status:str) -> bool:
+def estimate_need_clarification(question:str, final_references:List[dict], status:str) -> bool:
     if is_ambiguous_question(question):
         return True
     if status == "OK" and not final_references:
@@ -398,7 +398,7 @@ def ask(question:str, top_k:int=3, retrieved_chunks:List[Dict[str, Any]] | None=
             'answer':NO_ANSWER_FALLBACK,
             'references':[],
             'confidence':0.0,
-            'need_clarfication':ambiguous
+            'need_clarification':ambiguous
         }
 
     context = build_context(retrieved_chunks)
@@ -413,20 +413,20 @@ def ask(question:str, top_k:int=3, retrieved_chunks:List[Dict[str, Any]] | None=
             "answer": NO_ANSWER_FALLBACK,
             "references": [],
             'confidence': 0.0,
-            'need_clarfication': ambiguous
+            'need_clarification': ambiguous
         }
 
     final_references = format_reference(retrieved_chunks, parase['references'])
 
     confidence = estimate_confidence(retrieved_chunks, final_references, status="OK")
-    need_clarification = estmate_need_clarification(question, final_references, status="OK")
+    need_clarification = estimate_need_clarification(question, final_references, status="OK")
 
     return {
         'status':"OK",
         'answer':parase['answer'],
         'references':final_references,
         'confidence': confidence,
-        'need_clarfication': need_clarification,
+        'need_clarification': need_clarification,
     }
 
 def preview_docs():

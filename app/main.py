@@ -1,8 +1,7 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel, Field, ConfigDict
 from app.rag import init_rag, ask, preview_docs, preview_chunks, search_relevant_chunks, get_rag_status
 from app.config import Settings
-from fastapi.responses import JSONResponse
 from app.untils import get_logger
 import os
 app = FastAPI(title='Mini Rag API', version='1.0.0')
@@ -29,12 +28,12 @@ class ChatReferences(BaseModel):
 
 class ChatData(BaseModel):
     answer:str
-    references:list[ChatReferences]=[]
+    references:list[ChatReferences]=Field(default_factory=list)
     confidence:float = Field(..., ge=0.0, le=1.0, description="回答置信度，0~1")
     need_clarification:bool = Field(..., description="是否建议用户补充问题")
 
 class ChatResponse(BaseModel):
-    code:int
+    code:int|str
     message:str
     data:ChatData
 
@@ -71,7 +70,7 @@ class SearchResult(BaseModel):
 
 class SearchData(BaseModel):
     question:str
-    references:list[SearchResult]=[]
+    references:list[SearchResult]=Field(default_factory=list)
 
 class SearchResponse(BaseModel):
     code:int
@@ -160,6 +159,23 @@ def is_out_of_scope(question:str) -> bool:
         return False
     return any(keyword in q for keyword in OUT_OF_SCOPE_KEYWORDS)
 
+def build_chat_response(code:int|str,
+                        message:str,
+                        answer:str="",
+                        references:list | None = None,
+                        confidence: float = 0.0,
+                        need_clarification: bool = False
+                        ) -> ChatResponse:
+    return ChatResponse(code=code,
+                        message=message,
+                        data=ChatData(
+                            answer=answer,
+                            references=references or [],
+                            confidence=confidence,
+                            need_clarification=need_clarification
+                            )
+                        )
+
 @app.get("/health")
 def health():
     return {
@@ -171,7 +187,7 @@ def health():
 }
 
 @app.post("/chat", response_model=ChatResponse)
-def ask_api(req:ChatRequest):
+def ask_api(req: ChatRequest, response: Response):
     try:
         question = (req.question or "").strip()
         logger.info(f"[chat] 收到请求 question_len={len(question)}，preview={question[:50]}")
@@ -179,55 +195,51 @@ def ask_api(req:ChatRequest):
         print("runtime key suffix:", key[-4:] if key else None)
 
         if not question:
-            logger.warning(f"[chat] 空问题请求")
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "success": False,
-                    "code": "EMPTY_QUESTION",
-                    "message": "问题不能为空，请输入你想查询的内容"
-                }
+            logger.warning("[chat] 空问题请求")
+            response.status_code = 400
+            return build_chat_response(
+                code="EMPTY_QUESTION",
+                message="问题不能为空，请输入你想查询的内容",
+                confidence=0.0,
+                need_clarification=True
             )
 
         if is_out_of_scope(question):
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "success": False,
-                    "code": "OUT_OF_SCOPE",
-                    "message": "这个问题不在当前知识库回答范围内"
-                }
+            response.status_code = 503
+            return build_chat_response(
+                code="OUT_OF_SCOPE",
+                message="这个问题不在当前知识库回答范围内",
+                confidence=0.0,
+                need_clarification=False
             )
 
         rag_status = get_rag_status()
         if not rag_status["ready"]:
-            logger.warning(f"[chat] 数据目录为空")
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "success": False,
-                    "code": "NO_DOCUMENTS",
-                    "message": rag_status["message"]
-                }
+            logger.warning("[chat] 数据目录为空")
+            response.status_code = 503
+            return build_chat_response(
+                code="NO_DOCUMENTS",
+                message=rag_status["message"],
+                confidence=0.0,
+                need_clarification=False
             )
 
         final_top_k = req.top_k if req.top_k is not None else Settings.TOP_K
 
         try:
-            logger.info(f"[reteieve] 开始检索 top_k={final_top_k}")
+            logger.info(f"[retrieve] 开始检索 top_k={final_top_k}")
             retrieved_chunks = search_relevant_chunks(question, final_top_k)
-            hit_ids = [chunk['chunk_id'] for chunk in retrieved_chunks]
+            hit_ids = [chunk["chunk_id"] for chunk in retrieved_chunks]
             logger.info(f"[retrieve] 检索完成 chunks_len={len(hit_ids)}，hit_ids={hit_ids}")
 
         except Exception as e:
             logger.exception(f"[retrieve] 检索失败 error={e}")
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "success": False,
-                    "code": "RETRIEVE_ERROR",
-                    "message": "检索失败，请稍后重试"
-                }
+            response.status_code = 500
+            return build_chat_response(
+                code="RETRIEVE_ERROR",
+                message="检索失败，请稍后重试",
+                confidence=0.0,
+                need_clarification=False
             )
 
         try:
@@ -236,61 +248,60 @@ def ask_api(req:ChatRequest):
 
         except Exception as e:
             logger.exception(f"[answer] 模型调用失败 error={e}")
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "success": False,
-                    "code": "MODEL_ERROR",
-                    "message": "模型调用失败，请稍后重试"
-                }
+            response.status_code = 500
+            return build_chat_response(
+                code="MODEL_ERROR",
+                message="模型调用失败，请稍后重试",
+                confidence=0.0,
+                need_clarification=False
             )
 
         if result["status"] == "NO_RELEVANT_INFO":
             logger.warning("[chat] 检索证据不足，返回 honest fallback")
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "success": False,
-                    "code": "NO_RELEVANT_INFO",
-                    "message": "我没有在文档中找到相关信息"
-                }
+            response.status_code = 200
+            return build_chat_response(
+                code="NO_RELEVANT_INFO",
+                message="我没有在文档中找到相关信息",
+                answer=result.get("answer", ""),
+                references=[],
+                confidence=result.get("confidence", 0.0),
+                need_clarification=result.get("need_clarification", False)
             )
 
         if result["status"] == "MODEL_BAD_OUTPUT":
             logger.warning("[chat] 模型输出格式异常")
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "success": False,
-                    "code": "MODEL_BAD_OUTPUT",
-                    "message": "模型输出格式异常，请稍候重试"
-                }
-            )
-
-        logger.info("[chat] 请求处理完成")
-
-        return ChatResponse(
-            code=0,
-            message='success',
-            data=ChatData(
-                answer=result['answer'],
-                references=result.get('references', []),
+            response.status_code = 200
+            return build_chat_response(
+                code="MODEL_BAD_OUTPUT",
+                message="模型输出格式异常，请稍候重试",
+                answer=result.get("answer", ""),
+                references=[],
                 confidence=result.get("confidence", 0.0),
                 need_clarification=result.get("need_clarification", False)
             )
+
+        logger.info("[chat] 请求处理完成")
+        response.status_code = 200
+        return build_chat_response(
+            code=0,
+            message="success",
+            answer=result["answer"],
+            references=result.get("references", []),
+            confidence=result.get("confidence", 0.0),
+            need_clarification=result.get("need_clarification", False)
         )
+
     except HTTPException:
         raise
     except Exception as e:
         logger.exception(f"[chat] 未知异常 error={e}")
-        return JSONResponse(
-                status_code=500,
-                content={
-                    "success": False,
-                    "code": "INTERNAL_ERROR",
-                    "message": "服务器内部错误"
-                }
-            )
+        response.status_code = 500
+        return build_chat_response(
+            code="INTERNAL_ERROR",
+            message="服务器内部错误",
+            confidence=0.0,
+            need_clarification=False
+        )
 
 @app.get("/docs-preview")
 def docs_preview():
