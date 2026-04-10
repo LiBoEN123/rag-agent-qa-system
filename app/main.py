@@ -3,8 +3,8 @@ from pydantic import BaseModel, Field, ConfigDict
 from app.rag import init_rag, ask, preview_docs, preview_chunks, search_relevant_chunks, get_rag_status
 from app.config import Settings
 from app.untils import get_logger
-import os
 from app.extract_refund_policy import extract_refund_policy
+from typing import Literal
 app = FastAPI(title='Mini Rag API', version='1.0.0')
 logger = get_logger('chat_service')
 
@@ -32,6 +32,9 @@ class ChatData(BaseModel):
     references:list[ChatReferences]=Field(default_factory=list)
     confidence:float = Field(..., ge=0.0, le=1.0, description="回答置信度，0~1")
     need_clarification:bool = Field(..., description="是否建议用户补充问题")
+    answer_status:Literal["answered", "insufficient", "clarify", "out_of_scope", "error"]
+    clarification_question:str = Field(..., description="补充提示")
+    reason:str = Field(..., description="理由")
 
 class ChatResponse(BaseModel):
     code:int|str
@@ -54,7 +57,10 @@ class ChatResponse(BaseModel):
                   }
                 ],
                 "confidence":0.82,
-                "need_clarification":False
+                "need_clarification":False,
+                "answer_status":"answered",
+                "clarification_question":"",
+                "reason":""
               }
             }
         }
@@ -179,7 +185,10 @@ def build_chat_response(code:int|str,
                         answer:str="",
                         references:list | None = None,
                         confidence: float = 0.0,
-                        need_clarification: bool = False
+                        need_clarification: bool = False,
+                        answer_status:str = "",
+                        clarification_question:str = "",
+                        reason:str = ""
                         ) -> ChatResponse:
     return ChatResponse(code=code,
                         message=message,
@@ -187,7 +196,10 @@ def build_chat_response(code:int|str,
                             answer=answer,
                             references=references or [],
                             confidence=confidence,
-                            need_clarification=need_clarification
+                            need_clarification=need_clarification,
+                            answer_status=answer_status,
+                            clarification_question=clarification_question,
+                            reason=reason
                             )
                         )
 
@@ -206,8 +218,6 @@ def ask_api(req: ChatRequest, response: Response):
     try:
         question = (req.question or "").strip()
         logger.info(f"[chat] 收到请求 question_len={len(question)}，preview={question[:50]}")
-        key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("API_KEY")
-        print("runtime key suffix:", key[-4:] if key else None)
 
         if not question:
             logger.warning("[chat] 空问题请求")
@@ -216,16 +226,24 @@ def ask_api(req: ChatRequest, response: Response):
                 code="EMPTY_QUESTION",
                 message="问题不能为空，请输入你想查询的内容",
                 confidence=0.0,
-                need_clarification=True
+                need_clarification=True,
+                answer_status="clarify",
+                clarification_question="请直接输入你想查询的具体问题，例如：年假申请流程是什么？",
+                reason="用户未输入问题"
             )
 
         if is_out_of_scope(question):
-            response.status_code = 503
+            response.status_code = 200
             return build_chat_response(
                 code="OUT_OF_SCOPE",
                 message="这个问题不在当前知识库回答范围内",
+                answer="这个问题不属于当前知识库覆盖范围，我目前只能根据已收录资料回答相关问题。",
+                references=[],
                 confidence=0.0,
-                need_clarification=False
+                need_clarification=False,
+                answer_status="out_of_scope",
+                clarification_question="",
+                reason="问题主题与知识库无关"
             )
 
         rag_status = get_rag_status()
@@ -236,7 +254,10 @@ def ask_api(req: ChatRequest, response: Response):
                 code="NO_DOCUMENTS",
                 message=rag_status["message"],
                 confidence=0.0,
-                need_clarification=False
+                need_clarification=False,
+                answer_status="insufficient",
+                clarification_question="",
+                reason="知识库未准备完成"
             )
 
         final_top_k = req.top_k if req.top_k is not None else Settings.TOP_K
@@ -254,7 +275,10 @@ def ask_api(req: ChatRequest, response: Response):
                 code="RETRIEVE_ERROR",
                 message="检索失败，请稍后重试",
                 confidence=0.0,
-                need_clarification=False
+                need_clarification=False,
+                answer_status="insufficient",
+                clarification_question="",
+                reason="检索阶段异常"
             )
 
         try:
@@ -268,7 +292,24 @@ def ask_api(req: ChatRequest, response: Response):
                 code="MODEL_ERROR",
                 message="模型调用失败，请稍后重试",
                 confidence=0.0,
-                need_clarification=False
+                need_clarification=False,
+                answer_status="insufficient",
+                clarification_question="",
+                reason="模型调用异常"
+            )
+
+        if result["status"] == "NEED_CLARIFICATION":
+            response.status_code = 200
+            return build_chat_response(
+                code="NEED_CLARIFICATION",
+                message="问题信息不足，需要补充后再回答",
+                answer="",
+                references=[],
+                confidence=result.get("confidence", 0.0),
+                need_clarification=True,
+                answer_status="clarify",
+                clarification_question=result.get("clarification_question", ""),
+                reason=result.get("reason", "问题缺少关键限定信息")
             )
 
         if result["status"] == "NO_RELEVANT_INFO":
@@ -278,9 +319,12 @@ def ask_api(req: ChatRequest, response: Response):
                 code="NO_RELEVANT_INFO",
                 message="我没有在文档中找到相关信息",
                 answer=result.get("answer", ""),
-                references=[],
+                references=result.get("references", []),
                 confidence=result.get("confidence", 0.0),
-                need_clarification=result.get("need_clarification", False)
+                need_clarification=result.get("need_clarification", False),
+                answer_status="insufficient",
+                clarification_question="",
+                reason=result.get("reason", "模型判断当前上下文不足以支撑回答")
             )
 
         if result["status"] == "MODEL_BAD_OUTPUT":
@@ -292,7 +336,10 @@ def ask_api(req: ChatRequest, response: Response):
                 answer=result.get("answer", ""),
                 references=[],
                 confidence=result.get("confidence", 0.0),
-                need_clarification=result.get("need_clarification", False)
+                need_clarification=result.get("need_clarification", False),
+                answer_status="error",
+                clarification_question="",
+                reason=result.get("reason", "模型返回结构不符合预期")
             )
 
         logger.info("[chat] 请求处理完成")
@@ -303,7 +350,10 @@ def ask_api(req: ChatRequest, response: Response):
             answer=result["answer"],
             references=result.get("references", []),
             confidence=result.get("confidence", 0.0),
-            need_clarification=result.get("need_clarification", False)
+            need_clarification=result.get("need_clarification", False),
+            answer_status="answered" if result["status"] == "OK" else "error",
+            clarification_question=result.get("clarification_question", ""),
+            reason=result.get("reason", "正常回答")
         )
 
     except HTTPException:

@@ -27,6 +27,7 @@ AMBIGUOUS_WORDS = [
     "这个", "那个", "它", "这条", "这项", "这份",
     "上面", "前面", "后面", "这里", "那里"
 ]
+STOPWORD = "我无法根据提供的文档确定答案"
 
 def read_txt_auto(file_path:str) -> str:
     raw = Path(file_path).read_bytes()
@@ -279,6 +280,18 @@ def is_ambiguous_question(question:str) -> bool:
         return True
     return False
 
+def build_clarification_question(question: str) -> str:
+    q = (question or "").strip()
+
+    if "退款" in q:
+        return "你想问的是退款条件、退款时间窗口，还是退款申请方式？"
+    if "报销" in q:
+        return "你指的是哪一类费用？比如交通费、住宿费、餐费，还是办公用品？"
+    if "流程" in q:
+        return "你想查询哪一类流程？比如退款流程、报销流程、请假流程，还是采购流程？"
+
+    return "你的问题还不够具体，请补充对象、场景或范围后再问。"
+
 def estimate_confidence(retrieved_chunks:List[dict], final_references:List[dict], status:str) -> float:
     if status != "OK" or not retrieved_chunks:
         return 0.0
@@ -392,13 +405,27 @@ def ask(question:str, top_k:int=3, retrieved_chunks:List[Dict[str, Any]] | None=
 
     ambiguous = is_ambiguous_question(question)
 
+    # 1. 问题模糊：直接走澄清，不进入正常回答
+    if ambiguous:
+        return {
+            "status": "NEED_CLARIFICATION",
+            "answer": "",
+            "references": [],
+            "confidence": 0.0,
+            "need_clarification": True,
+            "clarification_question": build_clarification_question(question),
+            "reason": "问题存在指代不明或缺少关键限定信息"
+        }
+
     if should_refuse(retrieved_chunks):
         return {
             'status':"NO_RELEVANT_INFO",
             'answer':NO_ANSWER_FALLBACK,
             'references':[],
             'confidence':0.0,
-            'need_clarification':ambiguous
+            'need_clarification':False,
+            "clarification_question": "",
+            "reason": "检索结果为空或 top1 分数低于阈值"
         }
 
     context = build_context(retrieved_chunks)
@@ -413,20 +440,34 @@ def ask(question:str, top_k:int=3, retrieved_chunks:List[Dict[str, Any]] | None=
             "answer": NO_ANSWER_FALLBACK,
             "references": [],
             'confidence': 0.0,
-            'need_clarification': ambiguous
+            'need_clarification': False,
+            "clarification_question": "",
+            "reason": "模型未按约定 JSON 格式返回"
         }
 
     final_references = format_reference(retrieved_chunks, parase['references'])
 
+    if not final_references or STOPWORD in parase['answer']:
+        return {
+            "status": "NO_RELEVANT_INFO",
+            "answer": parase['answer'],
+            "references": final_references,
+            "confidence": 0.0,
+            "need_clarification": False,
+            "clarification_question": "",
+            "reason": "模型给出的答案没有足够的引用支撑"
+        }
+
     confidence = estimate_confidence(retrieved_chunks, final_references, status="OK")
-    need_clarification = estimate_need_clarification(question, final_references, status="OK")
 
     return {
         'status':"OK",
         'answer':parase['answer'],
         'references':final_references,
         'confidence': confidence,
-        'need_clarification': need_clarification,
+        'need_clarification': False,
+        "clarification_question": "",
+        "reason": "检索命中有效证据，且答案成功绑定引用"
     }
 
 def preview_docs():

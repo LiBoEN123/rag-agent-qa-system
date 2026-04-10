@@ -116,11 +116,6 @@ def extract_refund_policy(text:str):
 
     norm_data = normalize_extract_result(parase)
 
-    is_refundable = norm_data.get("is_refundable", None)
-    refund_window_days = norm_data.get("refund_window_days", None)
-    exceptions = norm_data.get("exceptions", [])
-    evidence = norm_data.get("evidence", [])
-
     return {
         "status": "OK",
         "is_refundable": norm_data.get("is_refundable", None),
