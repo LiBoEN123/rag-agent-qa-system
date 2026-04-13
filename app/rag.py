@@ -57,8 +57,7 @@ def chunk_txt(file_path:str, chunk_size:int=600, chunk_overlap:int=100):
         metadata = dict(doc.metadata)
         metadata.update({
             "source_file":source_file,
-            "chunk_id":f"{Path(file_path).stem}_chunk_{idx}",
-            "chunk_index":idx
+            "chunk_id":None,
         })
         result.append({
             'text':doc.page_content,
@@ -104,8 +103,7 @@ def chunk_md(file_path:str, chunk_size:int=600, chunk_overlap:int=100):
                 'source':file_path,
                 'file_type':"md",
                 "source_file": source_file,
-                "chunk_id": f"{Path(file_path).stem}_chunk_{idx}",
-                "chunk_index": idx,
+                "chunk_id":None,
                 "title_path":title_path,
                 **doc.metadata
             }
@@ -154,6 +152,10 @@ def load_documents(data_dir:str, chunk_size:int=800, chunk_overlap:int=120):
             "file_type":file_path.suffix.lower().lstrip("."),
             "chunk_count":len(file_chunks)
         })
+
+    for global_idx, chunk in enumerate(all_chunks, start=1):
+        chunk["metadata"]["chunk_id"] = global_idx
+
     return all_chunks, docs_registry
 
 def init_rag(file_path:str, chunk_size:int=800, chunk_overlap:int=120):

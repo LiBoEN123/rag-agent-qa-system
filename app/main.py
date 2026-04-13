@@ -4,7 +4,15 @@ from app.rag import init_rag, ask, preview_docs, preview_chunks, search_relevant
 from app.config import Settings
 from app.untils import get_logger
 from app.extract_refund_policy import extract_refund_policy
-from typing import Literal
+from typing import Literal, TypeAlias
+
+AnswerStatus: TypeAlias = Literal[
+    "answered",
+    "insufficient",
+    "clarify",
+    "out_of_scope",
+    "error",
+]
 app = FastAPI(title='Mini Rag API', version='1.0.0')
 logger = get_logger('chat_service')
 
@@ -24,7 +32,7 @@ class ChatRequest(BaseModel):
 class ChatReferences(BaseModel):
     reference_id:str
     source_file:str
-    chunk_id:str
+    chunk_id:str | int
     text:str
 
 class ChatData(BaseModel):
@@ -69,7 +77,7 @@ class ChatResponse(BaseModel):
 class SearchResult(BaseModel):
     reference_id:str
     source_file:str
-    chunk_id:str
+    chunk_id:str | int
     text:str
     score:float
     bm25_score:float
@@ -186,7 +194,7 @@ def build_chat_response(code:int|str,
                         references:list | None = None,
                         confidence: float = 0.0,
                         need_clarification: bool = False,
-                        answer_status:str = "",
+                        answer_status:AnswerStatus = "answered",
                         clarification_question:str = "",
                         reason:str = ""
                         ) -> ChatResponse:
