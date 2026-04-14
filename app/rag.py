@@ -8,7 +8,7 @@ from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 import requests
 from app.config import Settings
-from app.prompts import SYSTEM_PROMPT, USER_PROMPT, NO_ANSWER_FALLBACK
+from app.prompts import SYSTEM_PROMPT_A, SYSTEM_PROMPT_B, USER_PROMPT, NO_ANSWER_FALLBACK
 from typing import Dict, List, Any
 
 
@@ -342,7 +342,7 @@ def call_llm(question:str, context: str):
         'model':model_name,
         'temperature':Settings.TEMPERATURE,
         'messages':[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": SYSTEM_PROMPT_A},
             {"role": 'user', "content": USER_PROMPT.format(
                 context=context,
                 question=question

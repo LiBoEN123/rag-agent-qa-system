@@ -109,7 +109,7 @@ def build_summarys(result):
     }
 
 def main():
-    run_name = "baseline_topk5"
+    run_name = "baseline_10q_topk5_A"
     Settings.RAG_FILE_PATH = PROJECT_ROOT / "data" / "kb"
 
     Settings.validate()
@@ -117,7 +117,7 @@ def main():
             chunk_size=Settings.CHUNK_SIZE,
             chunk_overlap=Settings.CHUNK_OVERLAP)
 
-    questions = load_question(PROJECT_ROOT / "data" / "eval" / "eval_questions_utf8_updated.json")
+    questions = load_question(PROJECT_ROOT / "data" / "eval" / "eval_questions_subset_3_direct_4_refusal_3_ambiguous.json")
     results = [run_one_question(p, run_name) for p in questions]
 
     out_dir = PROJECT_ROOT / "outputs" / run_name
