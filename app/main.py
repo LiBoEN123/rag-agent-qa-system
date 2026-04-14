@@ -532,6 +532,20 @@ def extract_api(req:ExtractRequest, response:Response):
 
         data = extract_refund_policy(text)
 
+        if data["status"] == "MODEL_BAD_OUTPUT":
+            logger.warning("[extract] 模型输出格式异常")
+            response.status_code = 200
+            return ExtractResponse(
+                code="MODEL_BAD_OUTPUT",
+                message="模型输出格式异常，请稍后重试",
+                data=ExtractData(
+                    is_refundable=None,
+                    refund_window_days=None,
+                    exceptions=[],
+                    evidence=[]
+                )
+            )
+
         logger.info("[extract] 请求处理完成")
         response.status_code = 200
         return ExtractResponse(
