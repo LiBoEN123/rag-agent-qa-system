@@ -11,7 +11,6 @@ from app.config import Settings
 from app.prompts import SYSTEM_PROMPT_A, SYSTEM_PROMPT_B, USER_PROMPT, NO_ANSWER_FALLBACK
 from typing import Dict, List, Any
 
-
 # 全局变量
 chunks = []
 texts = []
