@@ -475,7 +475,7 @@ def ask(question:str, top_k:int=3, retrieved_chunks:List[Dict[str, Any]] | None=
 def preview_docs():
     return docs_registry
 
-def preview_chunks(limit:int=20, source_file:str | None=None):
+def preview_chunks(limit:int=70, source_file:str | None=None):
     result = []
     for item in chunks:
         metadata = item["metadata"]
@@ -494,6 +494,24 @@ def preview_chunks(limit:int=20, source_file:str | None=None):
         if len(result) >= limit:
             break
     return result
+
+def get_chunk_full_text(chunk_id: int | str):
+    for item in chunks:
+        metadata = item["metadata"]
+        if str(metadata.get("chunk_id")) == str(chunk_id):
+            return {
+                "found": True,
+                "chunk_id": metadata.get("chunk_id"),
+                "source_file": metadata.get("source_file"),
+                "text": item["text"]
+            }
+
+    return {
+        "found": False,
+        "chunk_id": chunk_id,
+        "source_file": "",
+        "text": ""
+    }
 
 
 

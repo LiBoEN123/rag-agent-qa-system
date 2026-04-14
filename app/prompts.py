@@ -63,3 +63,35 @@ EXTRACT_SYSTEM_PROMPT = """
 - “售后处理”“联系客服”“进一步说明”“特殊情况处理” 这类表述，不等于“支持退款”。
 - 只有明确出现“退款”“退货退款”“可退”“不退”“不支持退款”等含义时，才能判断 is_refundable。
 """
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_documents",
+            "description": "查看当前系统中已加载的文档列表和文档数量。当用户问有几个文档、有哪些文档时使用。",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_chunk_text",
+            "description": "根据 chunk 编号获取 chunk 原文。当用户要求查看某个 chunk 的原文时使用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "chunk_id": {
+                        "type": "integer",
+                        "description": "要查看的 chunk 编号"
+                    }
+                },
+                "required": ["chunk_id"]
+            }
+        }
+    }
+]

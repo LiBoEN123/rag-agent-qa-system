@@ -5,6 +5,8 @@ from app.config import Settings
 from app.untils import get_logger
 from app.extract_refund_policy import extract_refund_policy
 from typing import Literal, TypeAlias
+from app.tools import dispatch_tool
+import re
 
 AnswerStatus: TypeAlias = Literal[
     "answered",
@@ -165,6 +167,117 @@ class ExtractResponse(BaseModel):
     message: str
     data: ExtractData
 
+def route_tool_request(question: str):
+    q = (question or "").strip()
+
+    if "文档" in q and any(x in q for x in ["几个", "多少", "数量", "列表", "有哪些"]):
+        return {
+            "tool_name": "list_documents",
+            "tool_args": {}
+        }
+
+    m = re.search(r'chunk[_\s\-:：]*([0-9]+)', q, re.IGNORECASE)
+    if m and any(x in q for x in ["原文", "内容", "查看", "给我看", "显示"]):
+        return {
+            "tool_name": "get_chunk_text",
+            "tool_args": {
+                "chunk_id": int(m.group(1))
+            }
+        }
+
+    return None
+
+def answer_with_tools_or_rag(question: str, top_k: int) -> dict:
+    intent = route_tool_request(question)
+
+    # 1) 命中工具：直接走工具
+    if intent is not None:
+        tool_name = intent["tool_name"]
+        tool_args = intent["tool_args"]
+
+        logger.info(
+            f"[route] mode=tool tool_name={tool_name} "
+            f"question={question[:50]} tool_args={tool_args}"
+        )
+
+        tool_result = dispatch_tool(tool_name, tool_args)
+
+        if tool_name == "list_documents":
+            docs = tool_result.get("documents", [])
+            count = tool_result.get("count", 0)
+
+            doc_names = []
+            for d in docs[:10]:
+                doc_names.append(
+                    d.get("source_file")
+                    or d.get("file_name")
+                    or d.get("title")
+                    or d.get("doc_name")
+                    or d.get("doc_id")
+                    or "未命名文档"
+                )
+
+            answer = f"当前系统中共有 {count} 个文档。"
+            if doc_names:
+                answer += " 文档包括：" + "、".join(doc_names)
+
+            return {
+                "status": "OK",
+                "answer": answer,
+                "references": [],
+                "confidence": 1.0,
+                "need_clarification": False,
+                "clarification_question": "",
+                "reason": "命中文档列表工具"
+            }
+
+        if tool_name == "get_chunk_text":
+            if not tool_result.get("found"):
+                return {
+                    "status": "NO_RELEVANT_INFO",
+                    "answer": f"没有找到 chunk_id 为 {tool_args.get('chunk_id')} 的内容。",
+                    "references": [],
+                    "confidence": 0.0,
+                    "need_clarification": False,
+                    "clarification_question": "",
+                    "reason": "chunk_id 不存在"
+                }
+
+            return {
+                "status": "OK",
+                "answer": f"这是 {tool_args.get('chunk_id')} 的原文：\n\n{tool_result.get('text', '')}",
+                "references": [],
+                "confidence": 1.0,
+                "need_clarification": False,
+                "clarification_question": "",
+                "reason": "命中 chunk 原文工具"
+            }
+
+        return {
+            "status": "MODEL_BAD_OUTPUT",
+            "answer": "",
+            "references": [],
+            "confidence": 0.0,
+            "need_clarification": False,
+            "clarification_question": "",
+            "reason": "工具执行后未命中预期分支"
+        }
+
+    # 2) 没命中工具：继续走 RAG
+    logger.info(
+        f"[route] mode=rag top_k={top_k} question={question[:50]}"
+    )
+
+    logger.info(f"[retrieve] 开始检索 top_k={top_k}")
+    retrieved_chunks = search_relevant_chunks(question, top_k)
+    hit_ids = [chunk["chunk_id"] for chunk in retrieved_chunks]
+    logger.info(f"[retrieve] 检索完成 chunks_len={len(hit_ids)}，hit_ids={hit_ids}")
+
+    logger.info("[answer] 开始调用模型")
+    result = ask(question, top_k=top_k, retrieved_chunks=retrieved_chunks)
+
+    return result
+
 @app.on_event("startup")
 def start_on_event():
     Settings.validate()
@@ -271,39 +384,20 @@ def ask_api(req: ChatRequest, response: Response):
         final_top_k = req.top_k if req.top_k is not None else Settings.TOP_K
 
         try:
-            logger.info(f"[retrieve] 开始检索 top_k={final_top_k}")
-            retrieved_chunks = search_relevant_chunks(question, final_top_k)
-            hit_ids = [chunk["chunk_id"] for chunk in retrieved_chunks]
-            logger.info(f"[retrieve] 检索完成 chunks_len={len(hit_ids)}，hit_ids={hit_ids}")
+            logger.info("[answer] 开始处理：工具优先，否则走 RAG")
+            result = answer_with_tools_or_rag(question, final_top_k)
 
         except Exception as e:
-            logger.exception(f"[retrieve] 检索失败 error={e}")
-            response.status_code = 500
-            return build_chat_response(
-                code="RETRIEVE_ERROR",
-                message="检索失败，请稍后重试",
-                confidence=0.0,
-                need_clarification=False,
-                answer_status="insufficient",
-                clarification_question="",
-                reason="检索阶段异常"
-            )
-
-        try:
-            logger.info("[answer] 开始调用模型")
-            result = ask(question, top_k=final_top_k, retrieved_chunks=retrieved_chunks)
-
-        except Exception as e:
-            logger.exception(f"[answer] 模型调用失败 error={e}")
+            logger.exception(f"[answer] 处理失败 error={e}")
             response.status_code = 500
             return build_chat_response(
                 code="MODEL_ERROR",
-                message="模型调用失败，请稍后重试",
+                message="处理失败，请稍后重试",
                 confidence=0.0,
                 need_clarification=False,
                 answer_status="insufficient",
                 clarification_question="",
-                reason="模型调用异常"
+                reason="工具调用或模型调用异常"
             )
 
         if result["status"] == "NEED_CLARIFICATION":
@@ -383,7 +477,7 @@ def docs_preview():
 
 @app.get("/chunks-preview")
 def chunks_preview(
-        limit:int = Query(20, ge=1, le=100),
+        limit:int = Query(70, ge=1, le=100),
         source_file:str | None=Query(None)):
     data = preview_chunks(limit, source_file)
     return {"count":len(data), "data":data}
