@@ -80,8 +80,10 @@ class ChatResponse(BaseModel):
 
 class SearchResult(BaseModel):
     reference_id:str
+    source_path:str
     file_name:str
     chunk_id:str | int
+    position:int | None=None
     text:str
     score:float
     bm25_score:float
@@ -493,8 +495,10 @@ def search_api(req:ChatRequest):
         results = [
             SearchResult(
                 reference_id=item["reference_id"],
+                source_path=item["source_path"],
                 file_name=item["file_name"],
                 chunk_id=item["chunk_id"],
+                position=item["position"],
                 text=item["text"],
                 score=item["hybrid_score"],
                 bm25_score=item["bm25_score"],
@@ -576,6 +580,24 @@ def extract_api(req:ExtractRequest, response:Response):
                 evidence=[]
             )
         )
+
+@app.post("/kb_summary")
+def kb_summary():
+    status = get_rag_status()
+    docs = preview_docs()
+
+    return {
+        "code":0,
+        "message":"success",
+        "data":{
+            "ready":status.get("ready"),
+            "message":status.get("message"),
+            "doc_count":status.get("doc_count"),
+            "chunk_count":status.get("chunk_count"),
+            "file_names":[doc["file_name"] for doc in docs],
+            "documents":docs
+        }
+    }
 
 
 

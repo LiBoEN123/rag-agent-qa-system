@@ -129,7 +129,7 @@ def chunk_file(file_path:str, chunk_size:int=800, chunk_overlap:int=120):
 def tokenize(text:str):
     return list(jieba.cut(text)) # 把一段中文文本切分成词，并返回一个列表
 
-def collecte_supported_files(data_dir:str):
+def collect_supported_files(data_dir:str):
     root = Path(data_dir)
     if not root.exists():
         return []
@@ -141,7 +141,7 @@ def collecte_supported_files(data_dir:str):
     return files
 
 def load_documents(data_dir:str, chunk_size:int=800, chunk_overlap:int=120):
-    files = collecte_supported_files(data_dir)
+    files = collect_supported_files(data_dir)
     if not files:
         return [], []
 
@@ -164,7 +164,7 @@ def load_documents(data_dir:str, chunk_size:int=800, chunk_overlap:int=120):
 
     return all_chunks, docs_registry
 
-def init_rag(file_path:str, chunk_size:int=800, chunk_overlap:int=120):
+def init_rag(data_dir:str, chunk_size:int=800, chunk_overlap:int=120):
     global chunks, texts, docs_registry, bm25, model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE
 
     # 每次初始化先清空状态
@@ -176,7 +176,7 @@ def init_rag(file_path:str, chunk_size:int=800, chunk_overlap:int=120):
     RAG_READY = False
     RAG_INIT_MESSAGE = "RAG 尚未初始化"
 
-    chunks, docs_registry = load_documents(file_path, chunk_size, chunk_overlap)
+    chunks, docs_registry = load_documents(data_dir, chunk_size, chunk_overlap)
 
     texts = [chunk['text'] for chunk in chunks]
 
@@ -246,6 +246,7 @@ def retrieve(question:str, top_k:int = 3):
             'file_name':metadata.get("file_name", "unknown"),
             'source_path':metadata.get("source_path", "unknown"),
             'chunk_id':metadata.get("chunk_id", f"chunk_{idx}"),
+            'position':metadata.get("position", ""),
             'text':chunks[idx]['text'],
             'bm25_score':float(bm25_score[idx]),
             'vector_score':float(vector_score[idx]),
