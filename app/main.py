@@ -33,7 +33,8 @@ class ChatRequest(BaseModel):
 
 class ChatReferences(BaseModel):
     reference_id:str
-    source_file:str
+    file_name:str
+    source_path:str
     chunk_id:str | int
     text:str
 
@@ -54,31 +55,32 @@ class ChatResponse(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example":{
-              "code": 0,
-              "message": "success",
-              "data": {
-                "answer": "可以申请退款，但退款不由开发者操作，需联系苹果的支持团队处理。",
-                "references": [
-                  {
-                    "reference_id": "Reference 1",
-                    "source_file": "terms-of-service.zh.md",
-                    "chunk_id": "terms-of-service.zh_chunk_5",
-                    "text": "[标题路径] 4. 退款服务\n\n如果您在订阅赞助过程中遇到任何问题，都可以通过底部的邮件联系我们获得帮助。如果您仍然感到无法满足您的要求，可以选择申请退款。请注意，退款不由开发者操作，您需联系苹果的支持团队来处理退款事宜。  \n[申请退款](https://support.apple.com/118223)"
+                  "code": "NO_RELEVANT_INFO",
+                  "message": "我没有在文档中找到相关信息",
+                  "data": {
+                    "answer": "我无法根据提供的文档确定答案。参考资料中提到了可以申请退款，但未提及具体的退款时间限制（例如购买七天后是否还能退款）。",
+                    "references": [
+                      {
+                        "reference_id": "Reference 1",
+                        "file_name": "terms-of-service.zh.md",
+                        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\terms-of-service.zh.md",
+                        "chunk_id": 59,
+                        "text": "[标题路径] 4. 退款服务\n\n如果您在订阅赞助过程中遇到任何问题，都可以通过底部的邮件联系我们获得帮助。如果您仍然感到无法满足您的要求，可以选择申请退款。请注意，退款不由开发者操作，您需联系苹果的支持团队来处理退款事宜。  \n[申请退款](https://support.apple.com/118223)"
+                      }
+                    ],
+                    "confidence": 0,
+                    "need_clarification": False,
+                    "answer_status": "insufficient",
+                    "clarification_question": "",
+                    "reason": "模型给出的答案没有足够的引用支撑"
                   }
-                ],
-                "confidence":0.82,
-                "need_clarification":False,
-                "answer_status":"answered",
-                "clarification_question":"",
-                "reason":""
-              }
-            }
+                }
         }
     )
 
 class SearchResult(BaseModel):
     reference_id:str
-    source_file:str
+    file_name:str
     chunk_id:str | int
     text:str
     score:float
@@ -104,8 +106,8 @@ class SearchResponse(BaseModel):
                 "references": [
                   {
                     "reference_id": "Reference 1",
-                    "source_file": "terms-of-service.zh.md",
-                    "chunk_id": "terms-of-service.zh_chunk_5",
+                    "file_name": "terms-of-service.zh.md",
+                    "chunk_id": 59,
                     "text": "[标题路径] 4. 退款服务\n\n如果您在订阅赞助过程中遇到任何问题，都可以通过底部的邮件联系我们获得帮助。如果您仍然感到无法满足您的要求，可以选择申请退款。请注意，退款不由开发者操作，您需联系苹果的支持团队来处理退款事宜。  \n[申请退款](https://support.apple.com/118223)",
                     "score": 1,
                     "bm25_score": 7.186296820637358,
@@ -113,8 +115,8 @@ class SearchResponse(BaseModel):
                   },
                   {
                     "reference_id": "Reference 2",
-                    "source_file": "terms-of-service.zh.md",
-                    "chunk_id": "terms-of-service.zh_chunk_4",
+                    "file_name": "terms-of-service.zh.md",
+                    "chunk_id": 58,
                     "text": "[标题路径] 3. 订阅赞助\n\n如果您决定订阅赞助，那么您对我的付出表示感谢，就像偶尔给我买杯咖啡一样。捐赠后将不再弹出赞助提示，并解锁部分实用功能。感谢您的慷慨支持，我将信心十足地继续维护 DevHub 并确保其健康运行。",
                     "score": 0.7092396020889282,
                     "bm25_score": 4.213482890118754,
@@ -122,8 +124,8 @@ class SearchResponse(BaseModel):
                   },
                   {
                     "reference_id": "Reference 3",
-                    "source_file": "terms-of-service.zh.md",
-                    "chunk_id": "terms-of-service.zh_chunk_6",
+                    "file_name": "terms-of-service.zh.md",
+                    "chunk_id": 60,
                     "text": "[标题路径] 5. 使用条款的更改\n\n当有新的使用条款更新时，我将在此页面上进行更新，并立即生效。",
                     "score": 0.3499600887298584,
                     "bm25_score": 0,
@@ -131,8 +133,8 @@ class SearchResponse(BaseModel):
                   },
                   {
                     "reference_id": "Reference 4",
-                    "source_file": "CHANGELOG.zh.md",
-                    "chunk_id": "CHANGELOG.zh_chunk_11",
+                    "file_name": "CHANGELOG.zh.md",
+                    "chunk_id": 11,
                     "text": "[标题路径] [v1.42.1](https://github.com/jaywcjlove/DevHub/releases/tag/v1.42.1)\n\n1. pref: 优化首页侧边栏展示性能\n2. ui: 更新首页\n3. ui: 更新关于页面\n4. ui: 优化生命倒计时布局",
                     "score": 0.3488190770149231,
                     "bm25_score": 0,
@@ -140,8 +142,8 @@ class SearchResponse(BaseModel):
                   },
                   {
                     "reference_id": "Reference 5",
-                    "source_file": "terms-of-service.zh.md",
-                    "chunk_id": "terms-of-service.zh_chunk_1",
+                    "file_name": "terms-of-service.zh.md",
+                    "chunk_id": 55,
                     "text": "<p align=\"right\">\n<a href=\"./terms-of-service.md\">English</a>\n</p>\n<!--rehype:style=float: right; bottom: -36px; position: relative;-->  \n服务条款\n===  \n在订阅捐赠之前，您可以阅读应用的使用协议，以获取更多信息。",
                     "score": 0.32936036586761475,
                     "bm25_score": 0,
@@ -491,7 +493,7 @@ def search_api(req:ChatRequest):
         results = [
             SearchResult(
                 reference_id=item["reference_id"],
-                source_file=item["source_file"],
+                file_name=item["file_name"],
                 chunk_id=item["chunk_id"],
                 text=item["text"],
                 score=item["hybrid_score"],

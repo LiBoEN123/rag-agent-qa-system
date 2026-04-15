@@ -46,17 +46,21 @@ def chunk_txt(file_path:str, chunk_size:int=600, chunk_overlap:int=100):
 
     docs = splitter.create_documents(
         [text],
-        metadatas=[{'source':file_path, 'file_type':'txt'}]
+        metadatas=[{'file_type':'txt'}]
     )
 
-    source_file = Path(file_path).name
+    file_name = Path(file_path).name
+    source_path = str(Path(file_path).resolve())
+
     result = []
 
     for idx, doc in enumerate(docs, start=1):
         metadata = dict(doc.metadata)
         metadata.update({
-            "source_file":source_file,
+            "file_name":file_name,
+            "source_path":source_path,
             "chunk_id":None,
+            "position":idx
         })
         result.append({
             'text':doc.page_content,
@@ -84,7 +88,9 @@ def chunk_md(file_path:str, chunk_size:int=600, chunk_overlap:int=100):
     )
     docs = splitter.split_documents(docs)
 
-    source_file = Path(file_path).name
+    file_name = Path(file_path).name
+    source_path = str(Path(file_path).resolve())
+
     result = []
     for idx, doc in enumerate(docs, start=1):
         title_path = " > ".join(
@@ -99,10 +105,11 @@ def chunk_md(file_path:str, chunk_size:int=600, chunk_overlap:int=100):
         result.append({
             "text":text_with_title,
             "metadata":{
-                'source':file_path,
+                'source_path':source_path,
                 'file_type':"md",
-                "source_file": source_file,
+                "file_name": file_name,
                 "chunk_id":None,
+                "position":idx,
                 "title_path":title_path,
                 **doc.metadata
             }
@@ -146,8 +153,8 @@ def load_documents(data_dir:str, chunk_size:int=800, chunk_overlap:int=120):
         all_chunks.extend(file_chunks)
         docs_registry.append({
             "doc_id":f"doc_{idx}",
-            "source_file":file_path.name,
-            "source_path":str(file_path),
+            "file_name":file_path.name,
+            "source_path":str(Path(file_path).resolve()),
             "file_type":file_path.suffix.lower().lstrip("."),
             "chunk_count":len(file_chunks)
         })
@@ -236,7 +243,8 @@ def retrieve(question:str, top_k:int = 3):
         metadata = chunks[idx]['metadata']
         result.append({
             'reference_id':f'Reference {rank}',
-            'source_file':metadata.get("source_file", "unknown"),
+            'file_name':metadata.get("file_name", "unknown"),
+            'source_path':metadata.get("source_path", "unknown"),
             'chunk_id':metadata.get("chunk_id", f"chunk_{idx}"),
             'text':chunks[idx]['text'],
             'bm25_score':float(bm25_score[idx]),
@@ -323,7 +331,8 @@ def build_context(retrieved_chunks):
     for item in retrieved_chunks:
         context_parts.append(
             f"[{item['reference_id']}]\n"
-            f"source_file:{item['source_file']}\n"
+            f"file_name:{item['file_name']}\n"
+            f"source_path:{item['source_path']}\n"
             f"chunk_id:{item['chunk_id']}\n"
             f"context:{item['text']}\n"
         )
@@ -393,7 +402,8 @@ def format_reference(retrieved_chunks, selected_reference:list):
             item = ref_map[ref_id]
             final_refs.append({
                 'reference_id':item['reference_id'],
-                'source_file':item['source_file'],
+                'file_name':item['file_name'],
+                'source_path':item['source_path'],
                 'chunk_id':item['chunk_id'],
                 'text':item['text']
             })
@@ -474,20 +484,19 @@ def ask(question:str, top_k:int=3, retrieved_chunks:List[Dict[str, Any]] | None=
 def preview_docs():
     return docs_registry
 
-def preview_chunks(limit:int=70, source_file:str | None=None):
+def preview_chunks(limit: int = 70, file_name: str | None = None):
     result = []
     for item in chunks:
-        metadata = item["metadata"]
-        if source_file and metadata.get("source_file") != source_file:
+        if file_name and item["metadata"].get("file_name") != file_name:
             continue
 
         result.append({
-            "chunk_id":metadata.get("chunk_id"),
-            "source_file":metadata.get("source_file"),
-            "file_type":metadata.get("file_type"),
-            "title_path":metadata.get("title_path"),
-            "text_preview":item["text"][:200],
-            "text_length":len(item["text"])
+            "file_name": item["metadata"].get("file_name"),
+            "chunk_id": item["metadata"].get("chunk_id"),
+            "source_path": item["metadata"].get("source_path"),
+            "position": item["metadata"].get("position"),
+            "text_preview": item.get("text", "")[:200],
+            "text_length": len(item.get("text", ""))
         })
 
         if len(result) >= limit:
@@ -496,22 +505,24 @@ def preview_chunks(limit:int=70, source_file:str | None=None):
 
 def get_chunk_full_text(chunk_id: int | str):
     for item in chunks:
-        metadata = item["metadata"]
-        if str(metadata.get("chunk_id")) == str(chunk_id):
+        if str(item["metadata"].get("chunk_id")) == str(chunk_id):
             return {
                 "found": True,
-                "chunk_id": metadata.get("chunk_id"),
-                "source_file": metadata.get("source_file"),
-                "text": item["text"]
+                "file_name": item["metadata"].get("file_name"),
+                "chunk_id": item["metadata"].get("chunk_id"),
+                "source_path": item["metadata"].get("source_path"),
+                "position": item["metadata"].get("position"),
+                "text": item.get("text")
             }
 
     return {
         "found": False,
+        "file_name": "",
         "chunk_id": chunk_id,
-        "source_file": "",
+        "source_path": "",
+        "position": None,
         "text": ""
     }
-
 
 
 
