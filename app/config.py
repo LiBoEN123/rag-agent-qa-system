@@ -20,7 +20,7 @@ class Settings:
     MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-chat")
     LLM_API_URL = os.getenv("LLM_API_URL", "https://api.deepseek.com/v1/chat/completions")
 
-    HYBRID_THRESHOLD = float(os.getenv("HYBRID_THRESHOLD", "0.40"))
+    MARGIN_THRESHOLD = float(os.getenv("MARGIN_THRESHOLD", "0.03"))
     VECTOR_THRESHOLD = float(os.getenv("VECTOR_THRESHOLD", "0.35"))
 
     @classmethod

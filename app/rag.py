@@ -28,6 +28,7 @@ AMBIGUOUS_WORDS = [
 ]
 STOPWORD = "我无法根据提供的文档确定答案"
 
+
 def read_txt_auto(file_path:str) -> str:
     raw = Path(file_path).read_bytes()
     result = from_bytes(raw).best()  # 得到：1.检测到的编码 2.解码后的文本 3.置信度或质量信息
@@ -117,7 +118,7 @@ def chunk_md(file_path:str, chunk_size:int=600, chunk_overlap:int=100):
 
     return result
 
-def chunk_file(file_path:str, chunk_size:int=800, chunk_overlap:int=120):
+def chunk_file(file_path:str, chunk_size:int=600, chunk_overlap:int=100):
     ex = Path(file_path).suffix.lower()
     if ex == '.txt':
         return chunk_txt(file_path, chunk_size, chunk_overlap)
@@ -140,7 +141,7 @@ def collect_supported_files(data_dir:str):
     files = sorted(p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in SUPPORTED_SUFFIXES)
     return files
 
-def load_documents(data_dir:str, chunk_size:int=800, chunk_overlap:int=120):
+def load_documents(data_dir:str, chunk_size:int=600, chunk_overlap:int=100):
     files = collect_supported_files(data_dir)
     if not files:
         return [], []
@@ -164,7 +165,7 @@ def load_documents(data_dir:str, chunk_size:int=800, chunk_overlap:int=120):
 
     return all_chunks, docs_registry
 
-def init_rag(data_dir:str, chunk_size:int=800, chunk_overlap:int=120):
+def init_rag(data_dir:str, chunk_size:int=600, chunk_overlap:int=100):
     global chunks, texts, docs_registry, bm25, model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE
 
     # 每次初始化先清空状态
@@ -258,18 +259,24 @@ def retrieve(question:str, top_k:int = 3):
 def search_relevant_chunks(question:str, top_k:int=3) -> List[Dict[str, Any]]:
     return retrieve(question, top_k)
 
-def should_refuse(retrieved_chunks, hybrid_threshold:float=None, vector_threshold=None):
-    hybrid_threshold = hybrid_threshold if hybrid_threshold is not None else Settings.HYBRID_THRESHOLD
+def should_refuse(retrieved_chunks, vector_threshold=None, margin_threshold=None):
     vector_threshold = vector_threshold if vector_threshold is not None else Settings.VECTOR_THRESHOLD
+    margin_threshold = margin_threshold if margin_threshold is not None else Settings.MARGIN_THRESHOLD
+
     if not retrieved_chunks:
         return True
-    top1_score = retrieved_chunks[0]
-    top1_hybrid_score = top1_score['hybrid_score']
-    top1_vector_score = top1_score['vector_score']
-    if top1_hybrid_score< hybrid_threshold:
+
+    top1_vector = retrieved_chunks[0].get("vector_score", 0.0)
+    top1_hybrid = retrieved_chunks[0].get("hybrid_score", 0.0)
+    top2_hybrid = retrieved_chunks[1].get("hybrid_score", 0.0) if len(retrieved_chunks) > 1 else 0.0
+    margin = top1_hybrid - top2_hybrid
+
+    if top1_vector < vector_threshold:
         return True
-    if top1_vector_score < vector_threshold:
+
+    if margin < margin_threshold:
         return True
+
     return False
 
 def clamp01(value:float) -> float:
@@ -315,9 +322,9 @@ def estimate_confidence(retrieved_chunks:List[dict], final_references:List[dict]
 
     ref_ratio = clamp01(len(final_references) / max(1, min(len(retrieved_chunks), 5)))
 
-    confidene = 0.65 * top1_vector + 0.20 * scope_gap + 0.15 * ref_ratio
+    confidence = 0.65 * top1_vector + 0.20 * scope_gap + 0.15 * ref_ratio
 
-    return round(clamp01(confidene), 3) # 最终限制置信度0到1，且保留三位小数
+    return round(clamp01(confidence), 3) # 最终限制置信度0到1，且保留三位小数
 
 def estimate_need_clarification(question:str, final_references:List[dict], status:str) -> bool:
     if is_ambiguous_question(question):

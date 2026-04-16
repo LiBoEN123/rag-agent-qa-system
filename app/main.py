@@ -85,7 +85,7 @@ class SearchResult(BaseModel):
     chunk_id:str | int
     position:int | None=None
     text:str
-    score:float
+    hybrid_score:float
     bm25_score:float
     vector_score:float
 
@@ -500,7 +500,7 @@ def search_api(req:ChatRequest):
                 chunk_id=item["chunk_id"],
                 position=item["position"],
                 text=item["text"],
-                score=item["hybrid_score"],
+                hybrid_score=item["hybrid_score"],
                 bm25_score=item["bm25_score"],
                 vector_score=item["vector_score"]
             )
