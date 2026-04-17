@@ -141,7 +141,7 @@ def collect_supported_files(data_dir:str):
     files = sorted(p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in SUPPORTED_SUFFIXES)
     return files
 
-def load_documents(data_dir:str, chunk_size:int=600, chunk_overlap:int=100):
+def load_documents(data_dir:str, chunk_size:int=Settings.CHUNK_SIZE, chunk_overlap:int=Settings.CHUNK_OVERLAP):
     files = collect_supported_files(data_dir)
     if not files:
         return [], []
@@ -165,7 +165,7 @@ def load_documents(data_dir:str, chunk_size:int=600, chunk_overlap:int=100):
 
     return all_chunks, docs_registry
 
-def init_rag(data_dir:str, chunk_size:int=600, chunk_overlap:int=100):
+def init_rag(data_dir:str, chunk_size:int=Settings.CHUNK_SIZE, chunk_overlap:int=Settings.CHUNK_OVERLAP):
     global chunks, texts, docs_registry, bm25, model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE
 
     # 每次初始化先清空状态
@@ -236,7 +236,7 @@ def retrieve(question:str, top_k:int = 3):
     vector_score = doc_embeddings @ question_embeddings
     bm25_norm = minmax_score(bm25_score)
     vector_norm = minmax_score(vector_score)
-    hybrid_score = 0.4 * bm25_norm + 0.6 * vector_norm
+    hybrid_score = 0.3 * bm25_norm + 0.7 * vector_norm
 
     top_indices = np.argsort(hybrid_score)[::-1][:top_k]
     result = []
@@ -259,7 +259,7 @@ def retrieve(question:str, top_k:int = 3):
 def search_relevant_chunks(question:str, top_k:int=3) -> List[Dict[str, Any]]:
     return retrieve(question, top_k)
 
-def should_refuse(retrieved_chunks, vector_threshold=None, margin_threshold=None):
+def should_refuse(retrieved_chunks, vector_threshold=0.35, margin_threshold=0.02):
     vector_threshold = vector_threshold if vector_threshold is not None else Settings.VECTOR_THRESHOLD
     margin_threshold = margin_threshold if margin_threshold is not None else Settings.MARGIN_THRESHOLD
 
