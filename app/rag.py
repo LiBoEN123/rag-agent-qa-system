@@ -217,6 +217,21 @@ def minmax_score(x:np.ndarray):
         return np.zeros_like(x)
     return (x - x.min()) / (x.max() - x.min())
 
+def normalize_text(text:str):
+    return "".join((text or "").split()).lower()
+
+def dedupe_results(items:list[dict], prefix_len:int=80) -> list[dict]:
+    seen = set()
+    result = []
+    for item in items:
+        key = normalize_text(item.get('text', "")[:prefix_len])
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+
+    return result
+
 def retrieve(question:str, top_k:int = 3):
     if bm25 is None or doc_embeddings is None:
         return []
@@ -238,23 +253,33 @@ def retrieve(question:str, top_k:int = 3):
     vector_norm = minmax_score(vector_score)
     hybrid_score = 0.3 * bm25_norm + 0.7 * vector_norm
 
-    top_indices = np.argsort(hybrid_score)[::-1][:top_k]
-    result = []
+    candidate_k = max(top_k * 3, top_k)
+    top_indices = np.argsort(hybrid_score)[::-1][:candidate_k]
+
+    raw_results = []
     for rank, idx in enumerate(top_indices, 1):
         metadata = chunks[idx]['metadata']
-        result.append({
+        raw_results.append({
             'reference_id':f'Reference {rank}',
             'file_name':metadata.get("file_name", "unknown"),
             'source_path':metadata.get("source_path", "unknown"),
             'chunk_id':metadata.get("chunk_id", f"chunk_{idx}"),
             'position':metadata.get("position", ""),
             'text':chunks[idx]['text'],
+            'snippet':make_snippet(chunks[idx]['text']),
             'bm25_score':float(bm25_score[idx]),
             'vector_score':float(vector_score[idx]),
             'hybrid_score':float(hybrid_score[idx]),
             'metadata':metadata
         })
-    return result
+
+    deduped_results = dedupe_results(raw_results, prefix_len=80)
+    final_results = deduped_results[:top_k]
+
+    for rank, item in enumerate(final_results, 1):
+        item["reference_id"] = f"Reference {rank}"
+
+    return final_results
 
 def search_relevant_chunks(question:str, top_k:int=3) -> List[Dict[str, Any]]:
     return retrieve(question, top_k)
@@ -333,18 +358,31 @@ def estimate_need_clarification(question:str, final_references:List[dict], statu
         return True
     return False
 
-def build_context(retrieved_chunks):
-    context_parts = []
+def make_snippet(text:str, max_len:int=100) -> str:
+    text = "".join(text.split())
+    snippet = text[:max_len]
+    return snippet
+
+def build_context(retrieved_chunks, max_chars:int=2500):
+    parts = []
+    total = 0
 
     for item in retrieved_chunks:
-        context_parts.append(
+        snippet = item['text'][:300]
+        block = (
             f"[{item['reference_id']}]\n"
             f"file_name:{item['file_name']}\n"
-            f"source_path:{item['source_path']}\n"
+            f"score:{item['hybrid_score']}\n"
             f"chunk_id:{item['chunk_id']}\n"
-            f"context:{item['text']}\n"
+            f"snippet:{snippet}\n"
         )
-    return '\n'.join(context_parts)
+        if total + len(block) > max_chars:
+            break
+
+        parts.append(block)
+        total += len(block)
+
+    return '\n'.join(parts)
 
 def call_llm(question:str, context: str):
     api_key = Settings.LLM_API_KEY
@@ -413,7 +451,9 @@ def format_reference(retrieved_chunks, selected_reference:list):
                 'file_name':item['file_name'],
                 'source_path':item['source_path'],
                 'chunk_id':item['chunk_id'],
-                'text':item['text']
+                'position':item.get('position'),
+                'snippet':make_snippet(item['text']),
+                'score':round(float(item.get('hybrid_score')), 4)
             })
     return final_refs
 
