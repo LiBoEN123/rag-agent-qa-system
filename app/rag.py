@@ -543,7 +543,7 @@ def preview_chunks(limit: int = 70, file_name: str | None = None):
             "chunk_id": item["metadata"].get("chunk_id"),
             "source_path": item["metadata"].get("source_path"),
             "position": item["metadata"].get("position"),
-            "text_preview": item.get("text", "")[:200],
+            "text_preview": item.get("text", ""),
             "text_length": len(item.get("text", ""))
         })
 

@@ -32,8 +32,11 @@ def call_rag_system(question, top_k=None):
         "need_clarification": result.get("need_clarification", False),
         "clarification_question": result.get("clarification_question", ""),
         "answer": result.get("answer", ""),
-        "retrieved_doc_ids": [p["source_path"] for p in refs],   # 或改成 file_name
-        "reference_snippets": [p["text"] for p in refs],
+        "retrieved_count": len(retrieved_chunks),
+        "retrieved_doc_ids": [p.get("file_name", "") for p in retrieved_chunks],
+        "retrieved_file_names": [p.get("file_name", "") for p in retrieved_chunks],
+        "reference_chunk_ids": [p.get("chunk_id", "") for p in refs],
+        "reference_snippets": [p.get("snippet") or p.get("text", "") for p in refs],
     }
 def run_one_question(item, run_name):
     start = time.time()
@@ -53,10 +56,6 @@ def run_one_question(item, run_name):
             # 评测预测结果
             "pred_answer": resp.get("answer", ""),
             "pred_status": resp.get("status", ""),
-            "pred_reason": resp.get("reason", ""),
-            "pred_confidence": resp.get("confidence", 0.0),
-            "need_clarification": resp.get("need_clarification", False),
-            "clarification_question": resp.get("clarification_question", ""),
 
             # 引用信息
             "retrieved_doc_ids": resp.get("retrieved_doc_ids", []),
@@ -64,12 +63,6 @@ def run_one_question(item, run_name):
             "reference_chunk_ids": resp.get("reference_chunk_ids", []),
             "reference_snippets": resp.get("reference_snippets", []),
             "retrieved_count": resp.get("retrieved_count", 0),
-
-            # 运行信息
-            "error": False,
-            "error_message": "",
-            "latency_ms": int((time.time() - start) * 1000),
-            "run_name": run_name
         }
 
     except Exception as e:
@@ -82,21 +75,12 @@ def run_one_question(item, run_name):
 
             "pred_answer": "",
             "pred_status": "EXCEPTION",
-            "pred_reason": "",
-            "pred_confidence": 0.0,
-            "need_clarification": False,
-            "clarification_question": "",
 
             "retrieved_doc_ids": [],
             "retrieved_file_names": [],
             "reference_chunk_ids": [],
             "reference_snippets": [],
             "retrieved_count": 0,
-
-            "error": True,
-            "error_message": str(e),
-            "latency_ms": int((time.time() - start) * 1000),
-            "run_name": run_name
         }
 
     return result
@@ -117,21 +101,11 @@ def save_csv(results, path):
 
             "pred_answer": p.get("pred_answer", ""),
             "pred_status": p.get("pred_status", ""),
-            "pred_reason": p.get("pred_reason", ""),
-            "pred_confidence": p.get("pred_confidence", 0.0),
-            "need_clarification": p.get("need_clarification", False),
-            "clarification_question": p.get("clarification_question", ""),
 
             "retrieved_count": p.get("retrieved_count", 0),
             "retrieved_doc_ids": "|".join(map(str, p.get("retrieved_doc_ids", []))),
             "retrieved_file_names": "|".join(map(str, p.get("retrieved_file_names", []))),
             "reference_chunk_ids": "|".join(map(str, p.get("reference_chunk_ids", []))),
-            "reference_snippets": " || ".join(map(str, p.get("reference_snippets", []))),
-
-            "error": p.get("error", False),
-            "error_message": p.get("error_message", ""),
-            "latency_ms": p.get("latency_ms", 0),
-            "run_name": p.get("run_name", "")
         })
 
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
@@ -141,7 +115,6 @@ def save_csv(results, path):
 
 def build_summarys(results):
     total = len(results)
-    errors = sum(1 for r in results if r["error"])
 
     status_count = {}
     for r in results:
@@ -150,12 +123,10 @@ def build_summarys(results):
 
     return {
         "total_questions": total,
-        "error_count": errors,
-        "success_count": total - errors,
         "status_count": status_count
     }
 def main():
-    run_name = "baseline_10q_topk5_cs300_ol60_B"
+    run_name = "baseline_20q_topk5_cs300_ol60_A"
     Settings.RAG_FILE_PATH = PROJECT_ROOT / "data" / "kb"
 
     Settings.validate()
@@ -163,8 +134,8 @@ def main():
             chunk_size=Settings.CHUNK_SIZE,
             chunk_overlap=Settings.CHUNK_OVERLAP)
 
-    questions = load_question(PROJECT_ROOT / "data" / "eval" / "eval_questions_subset_3_direct_4_refusal_3_ambiguous.json")
-    results = [run_one_question({**p, "top_k": 5}, run_name) for p in questions]
+    questions = load_question(PROJECT_ROOT / "data" / "eval" / "eval_questions_utf8_updated.json")
+    results = [run_one_question({**p, "top_k": 3}, run_name) for p in questions]
 
     out_dir = PROJECT_ROOT / "outputs" / run_name
     out_dir.mkdir(parents=True, exist_ok=True)
