@@ -483,7 +483,7 @@ def docs_preview():
 
 @app.get("/chunks-preview")
 def chunks_preview(
-        limit:int = Query(70, ge=1, le=100),
+        limit:int = Query(70, ge=1, le=1000),
         source_file:str | None=Query(None)):
     data = preview_chunks(limit, source_file)
     return {"count":len(data), "data":data}

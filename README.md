@@ -29,8 +29,8 @@
 - 使用`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` 生成向量
 - 使用`jieba`为问题分词+`BM25`进行关键词检索
 - 最终采用混合检索：
-  - `0.4 * bm25_score`
-  - `0.6 * vector_score`
+  - `0.3 * bm25_score`
+  - `0.7 * vector_score`
 
 ### 2.4 问答生成
 - 把用户问题和召回的上下文一起放入大模型

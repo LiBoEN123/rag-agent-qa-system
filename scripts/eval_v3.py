@@ -8,7 +8,7 @@ from app.config import Settings
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
-QUESTIONS_PATH = PROJECT_ROOT / "data" / "eval" / "eval_questions_utf8_with_expected_behavior_and_chunk_ids.json"
+QUESTIONS_PATH = PROJECT_ROOT / "data" / "eval" / "generated_20_questions_new_chunks.json"
 
 
 def load_questions(path):
@@ -24,6 +24,7 @@ def call_rag_system(question, top_k=None):
         raise RuntimeError(rag_status["message"])
 
     retrieved_chunks = search_relevant_chunks(question, final_top_k)
+    origin_refs = [retrieved_chunks[i].get("chunk_id", []) for i in range(len(retrieved_chunks))]
     result = ask(question, top_k=final_top_k, retrieved_chunks=retrieved_chunks)
     refs = result.get("references", [])
 
@@ -36,6 +37,7 @@ def call_rag_system(question, top_k=None):
         "retrieved_doc_ids": retrieved_doc_ids,
         "top3_doc_ids": retrieved_doc_ids[:3],
         "reference_chunk_ids": [r.get("chunk_id", "") for r in refs],
+        "retrieved_chunk_ids": origin_refs
     }
 
 
@@ -130,6 +132,7 @@ def run_one_question(item, top_k=5):
             "retrieved_count": resp.get("retrieved_count", 0),
             "retrieved_doc_ids": resp.get("retrieved_doc_ids", []),
             "top3_doc_ids": resp.get("top3_doc_ids", []),
+            "retrieved_chunk_ids": resp.get("retrieved_chunk_ids", []),
             "reference_chunk_ids": resp.get("reference_chunk_ids", []),
 
             "gold_rank": gold_rank,
@@ -163,6 +166,7 @@ def run_one_question(item, top_k=5):
             "retrieved_count": 0,
             "retrieved_doc_ids": [],
             "top3_doc_ids": [],
+            "retrieved_chunk_ids": [],
             "reference_chunk_ids": [],
 
             "gold_rank": None,
@@ -206,6 +210,7 @@ def save_csv(results, path):
             "retrieved_count": r["retrieved_count"],
             "retrieved_doc_ids": "|".join(map(str, r.get("retrieved_doc_ids", []))),
             "top3_doc_ids": "|".join(map(str, r.get("top3_doc_ids", []))),
+            "retrieved_chunk_ids": "|".join(map(str, r.get("retrieved_chunk_ids", []))),
             "reference_chunk_ids": "|".join(map(str, r.get("reference_chunk_ids", []))),
 
             "error_type": r["error_type"],
@@ -309,7 +314,7 @@ def build_bad_cases_md(results, path, top_n=3):
 
 
 def main():
-    run_name = "baseline_20q_topk5_min_eval"
+    run_name = "baseline_20q_topk5_cs300_ol60_0.4b0.6v_min_eval"
     top_k = 5
 
     Settings.RAG_FILE_PATH = PROJECT_ROOT / "data" / "kb"

@@ -251,7 +251,7 @@ def retrieve(question:str, top_k:int = 3):
     vector_score = doc_embeddings @ question_embeddings
     bm25_norm = minmax_score(bm25_score)
     vector_norm = minmax_score(vector_score)
-    hybrid_score = 0.3 * bm25_norm + 0.7 * vector_norm
+    hybrid_score = 0.4 * bm25_norm + 0.6 * vector_norm
 
     candidate_k = max(top_k * 3, top_k)
     top_indices = np.argsort(hybrid_score)[::-1][:candidate_k]
@@ -284,7 +284,7 @@ def retrieve(question:str, top_k:int = 3):
 def search_relevant_chunks(question:str, top_k:int=3) -> List[Dict[str, Any]]:
     return retrieve(question, top_k)
 
-def should_refuse(retrieved_chunks, vector_threshold=0.35, margin_threshold=0.02):
+def should_refuse(retrieved_chunks, vector_threshold:float=None, margin_threshold:float=None):
     vector_threshold = vector_threshold if vector_threshold is not None else Settings.VECTOR_THRESHOLD
     margin_threshold = margin_threshold if margin_threshold is not None else Settings.MARGIN_THRESHOLD
 
