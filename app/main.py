@@ -1,6 +1,16 @@
 from fastapi import FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel, Field, ConfigDict
-from app.rag import rebuild_index, ask, preview_docs, preview_chunks, search_relevant_chunks, get_rag_status
+from app.rag import (
+    rebuild_index,
+    ask,
+    preview_docs,
+    preview_chunks,
+    search_relevant_chunks,
+    get_rag_status,
+    needs_rebuild,
+    save_manifest,
+    build_current_manifest,
+)
 from app.config import Settings
 from app.untils import get_logger
 from app.extract_refund_policy import extract_refund_policy
@@ -25,7 +35,7 @@ class ChatRequest(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example":{
-              "question": "购买七天后还能退款吗",
+              "question": "每个 Vue 应用都是通过什么函数创建应用实例的？",
               "top_k": 5
             }
         }
@@ -57,26 +67,28 @@ class ChatResponse(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example":{
-                  "code": "NO_RELEVANT_INFO",
-                  "message": "我没有在文档中找到相关信息",
-                  "data": {
-                    "answer": "我无法根据提供的文档确定答案。参考资料中提到了可以申请退款，但未提及具体的退款时间限制（例如购买七天后是否还能退款）。",
-                    "references": [
-                      {
-                        "reference_id": "Reference 1",
-                        "file_name": "terms-of-service.zh.md",
-                        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\terms-of-service.zh.md",
-                        "chunk_id": 59,
-                        "text": "[标题路径] 4. 退款服务\n\n如果您在订阅赞助过程中遇到任何问题，都可以通过底部的邮件联系我们获得帮助。如果您仍然感到无法满足您的要求，可以选择申请退款。请注意，退款不由开发者操作，您需联系苹果的支持团队来处理退款事宜。  \n[申请退款](https://support.apple.com/118223)"
-                      }
-                    ],
-                    "confidence": 0,
-                    "need_clarification": False,
-                    "answer_status": "insufficient",
-                    "clarification_question": "",
-                    "reason": "模型给出的答案没有足够的引用支撑"
+              "code": 0,
+              "message": "success",
+              "data": {
+                "answer": "每个 Vue 应用都是通过 `createApp` 函数创建一个新的应用实例。",
+                "references": [
+                  {
+                    "reference_id": "Reference 1",
+                    "file_name": "application.md",
+                    "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
+                    "chunk_id": 1,
+                    "position": 1,
+                    "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>应用实例{#the-application-instance}每个Vue应用都是通过[`createApp`]",
+                    "score": 1
                   }
-                }
+                ],
+                "confidence": 0.519,
+                "need_clarification": False,
+                "answer_status": "answered",
+                "clarification_question": "",
+                "reason": "检索命中有效证据，且答案成功绑定引用"
+              }
+            }
         }
     )
 
@@ -103,59 +115,69 @@ class SearchResponse(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example":{
-              "code": 0,
-              "message": "success",
-              "data": {
-                "question": "购买七天后还能退款吗",
-                "references": [
-                  {
-                    "reference_id": "Reference 1",
-                    "file_name": "terms-of-service.zh.md",
-                    "chunk_id": 59,
-                    "text": "[标题路径] 4. 退款服务\n\n如果您在订阅赞助过程中遇到任何问题，都可以通过底部的邮件联系我们获得帮助。如果您仍然感到无法满足您的要求，可以选择申请退款。请注意，退款不由开发者操作，您需联系苹果的支持团队来处理退款事宜。  \n[申请退款](https://support.apple.com/118223)",
-                    "score": 1,
-                    "bm25_score": 7.186296820637358,
-                    "vector_score": 0.3061803877353668
-                  },
-                  {
-                    "reference_id": "Reference 2",
-                    "file_name": "terms-of-service.zh.md",
-                    "chunk_id": 58,
-                    "text": "[标题路径] 3. 订阅赞助\n\n如果您决定订阅赞助，那么您对我的付出表示感谢，就像偶尔给我买杯咖啡一样。捐赠后将不再弹出赞助提示，并解锁部分实用功能。感谢您的慷慨支持，我将信心十足地继续维护 DevHub 并确保其健康运行。",
-                    "score": 0.7092396020889282,
-                    "bm25_score": 4.213482890118754,
-                    "vector_score": 0.21269017457962036
-                  },
-                  {
-                    "reference_id": "Reference 3",
-                    "file_name": "terms-of-service.zh.md",
-                    "chunk_id": 60,
-                    "text": "[标题路径] 5. 使用条款的更改\n\n当有新的使用条款更新时，我将在此页面上进行更新，并立即生效。",
-                    "score": 0.3499600887298584,
-                    "bm25_score": 0,
-                    "vector_score": 0.119601771235466
-                  },
-                  {
-                    "reference_id": "Reference 4",
-                    "file_name": "CHANGELOG.zh.md",
-                    "chunk_id": 11,
-                    "text": "[标题路径] [v1.42.1](https://github.com/jaywcjlove/DevHub/releases/tag/v1.42.1)\n\n1. pref: 优化首页侧边栏展示性能\n2. ui: 更新首页\n3. ui: 更新关于页面\n4. ui: 优化生命倒计时布局",
-                    "score": 0.3488190770149231,
-                    "bm25_score": 0,
-                    "vector_score": 0.11875034123659134
-                  },
-                  {
-                    "reference_id": "Reference 5",
-                    "file_name": "terms-of-service.zh.md",
-                    "chunk_id": 55,
-                    "text": "<p align=\"right\">\n<a href=\"./terms-of-service.md\">English</a>\n</p>\n<!--rehype:style=float: right; bottom: -36px; position: relative;-->  \n服务条款\n===  \n在订阅捐赠之前，您可以阅读应用的使用协议，以获取更多信息。",
-                    "score": 0.32936036586761475,
-                    "bm25_score": 0,
-                    "vector_score": 0.1042303591966629
+                  "code": 0,
+                  "message": "success",
+                  "data": {
+                    "question": "每个 Vue 应用都是通过什么函数创建应用实例的？",
+                    "references": [
+                      {
+                        "reference_id": "Reference 1",
+                        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
+                        "file_name": "application.md",
+                        "chunk_id": 1,
+                        "position": 1,
+                        "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>应用实例{#the-application-instance}每个Vue应用都是通过[`createApp`]",
+                        "score": 1,
+                        "bm25_score": 34.055355137731354,
+                        "vector_score": 0.741374135017395
+                      },
+                      {
+                        "reference_id": "Reference 2",
+                        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
+                        "file_name": "application.md",
+                        "chunk_id": 10,
+                        "position": 10,
+                        "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>多个应用实例{#multiple-application-instances}应用实例并不只限于一个。`cre",
+                        "score": 0.9164628982543945,
+                        "bm25_score": 30.0893694535201,
+                        "vector_score": 0.7052635550498962
+                      },
+                      {
+                        "reference_id": "Reference 3",
+                        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
+                        "file_name": "application.md",
+                        "chunk_id": 9,
+                        "position": 9,
+                        "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>应用配置{#app-configurations}app.component('TodoDeleteButto",
+                        "score": 0.7920963764190674,
+                        "bm25_score": 26.642277059679156,
+                        "vector_score": 0.6124808192253113
+                      },
+                      {
+                        "reference_id": "Reference 4",
+                        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
+                        "file_name": "application.md",
+                        "chunk_id": 8,
+                        "position": 8,
+                        "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>应用配置{#app-configurations}应用实例会暴露一个`.config`对象允许我们配置一些应用",
+                        "score": 0.7547773122787476,
+                        "bm25_score": 22.68307872610552,
+                        "vector_score": 0.6310862302780151
+                      },
+                      {
+                        "reference_id": "Reference 5",
+                        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\introduction.md",
+                        "file_name": "introduction.md",
+                        "chunk_id": 198,
+                        "position": 6,
+                        "snippet": "[标题路径]简介{#introduction}>什么是Vue？{#what-is-vue}Vue(发音为/vjuː/，类似**view**)是一款用于构建用户界面的JavaScript框架。它基于标准",
+                        "score": 0.7235828638076782,
+                        "bm25_score": 18.788527818590843,
+                        "vector_score": 0.6559301614761353
+                      }
+                    ]
                   }
-                ]
-              }
-            }
+                }
         }
     )
 
@@ -287,11 +309,22 @@ def answer_with_tools_or_rag(question: str, top_k: int) -> dict:
 @app.on_event("startup")
 def start_on_event():
     Settings.validate()
-    rebuild_index(
-        str(Settings.RAG_FILE_PATH),
-        chunk_size=Settings.CHUNK_SIZE,
-        chunk_overlap=Settings.CHUNK_OVERLAP
-    )
+
+    data_dir = str(Settings.RAG_FILE_PATH)
+
+    need, reason = needs_rebuild(data_dir)
+    logger.info(f"[startup] needs_rebuild={need}, reason={reason}")
+
+    if need:
+        rebuild_index(
+            data_dir,
+            chunk_size=Settings.CHUNK_SIZE,
+            chunk_overlap=Settings.CHUNK_OVERLAP
+        )
+        save_manifest(build_current_manifest(data_dir))
+        logger.info("[startup] 索引重建完成，manifest 已保存")
+    else:
+        logger.info(f"[startup] 跳过重建：{reason}")
 
 OUT_OF_SCOPE_KEYWORDS = [
     "天气", "气温", "下雨",
@@ -485,8 +518,8 @@ def docs_preview():
 @app.get("/chunks-preview")
 def chunks_preview(
         limit:int = Query(70, ge=1, le=1000),
-        source_file:str | None=Query(None)):
-    data = preview_chunks(limit, source_file)
+        file_name:str | None=Query(None)):
+    data = preview_chunks(limit, file_name)
     return {"count":len(data), "data":data}
 
 @app.post("/search", response_model=SearchResponse)

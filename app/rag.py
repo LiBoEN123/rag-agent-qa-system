@@ -31,6 +31,8 @@ doc_embeddings = None
 
 SUPPORTED_SUFFIXES = {".txt", ".md"}
 
+MANIFEST_PATH = Path("data/manifest/index_manifest.json")
+
 RAG_READY = False
 RAG_INIT_MESSAGE = "RAG 尚未初始化"
 NO_DOCUMENTS_MESSAGE = "当前知识库为空，请先在 data 目录中放入文档后再提问"
@@ -757,6 +759,72 @@ def get_chunk_full_text(chunk_id: int | str):
         "text": ""
     }
 
+# =========================
+# 调试 / manifest
+# =========================
+
+def build_file_snapshot(data_dir:str):
+    files = collect_supported_files(data_dir)
+    snapshot = []
+
+    for file_path in files:
+        stat = file_path.stat()
+        snapshot.append({
+            "path":str(file_path.resolve()),
+            "size":stat.st_size,
+            "time":stat.st_mtime
+        })
+
+    snapshot.sort(key=lambda x: x["path"])
+    return snapshot
+
+def build_current_manifest(data_dir:str):
+    return {
+        "pipeline_version":1,
+        "embedding_model":Settings.EMBEDDING_MODEL_NAME,
+        "build_config":{
+            "chunk_size":Settings.CHUNK_SIZE,
+            "chunk_overlap":Settings.CHUNK_OVERLAP,
+        },
+        "files":build_file_snapshot(data_dir),
+    }
+
+def load_manifest():
+    if not MANIFEST_PATH.exists():
+        return None
+
+    try:
+        return json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+def save_manifest(manifest:dict):
+    MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    MANIFEST_PATH.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
+
+def needs_rebuild(data_dir: str) -> tuple[bool, str]:
+    old_manifest = load_manifest()
+    current_manifest = build_current_manifest(data_dir)
+
+    if old_manifest is None:
+        return True, "没有找到历史 manifest，需要首次构建"
+
+    if old_manifest.get("pipeline_version") != current_manifest.get("pipeline_version"):
+        return True, "pipeline_version 变化，需要重建"
+
+    if old_manifest.get("embedding_model") != current_manifest.get("embedding_model"):
+        return True, "embedding 模型变化，需要重建"
+
+    if old_manifest.get("build_config") != current_manifest.get("build_config"):
+        return True, "chunk 参数变化，需要重建"
+
+    if old_manifest.get("files") != current_manifest.get("files"):
+        return True, "data 目录文件变化，需要重建"
+
+    return False, "目录和参数都没有变化，无需重建"
 
 
 
