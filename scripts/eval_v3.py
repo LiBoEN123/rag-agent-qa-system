@@ -8,7 +8,7 @@ from app.config import Settings
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
-QUESTIONS_PATH = PROJECT_ROOT / "data" / "eval" / "generated_20_questions_new_chunks.json"
+QUESTIONS_PATH = PROJECT_ROOT / "data" / "eval" / "generated_20_questions_latest_chunks_v2.json"
 
 
 def load_questions(path):

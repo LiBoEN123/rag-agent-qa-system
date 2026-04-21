@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel, Field, ConfigDict
-from app.rag import init_rag, ask, preview_docs, preview_chunks, search_relevant_chunks, get_rag_status
+from app.rag import rebuild_index, ask, preview_docs, preview_chunks, search_relevant_chunks, get_rag_status
 from app.config import Settings
 from app.untils import get_logger
 from app.extract_refund_policy import extract_refund_policy
@@ -287,10 +287,11 @@ def answer_with_tools_or_rag(question: str, top_k: int) -> dict:
 @app.on_event("startup")
 def start_on_event():
     Settings.validate()
-    init_rag(
+    rebuild_index(
         str(Settings.RAG_FILE_PATH),
         chunk_size=Settings.CHUNK_SIZE,
-        chunk_overlap=Settings.CHUNK_OVERLAP)
+        chunk_overlap=Settings.CHUNK_OVERLAP
+    )
 
 OUT_OF_SCOPE_KEYWORDS = [
     "天气", "气温", "下雨",
