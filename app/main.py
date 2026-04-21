@@ -312,19 +312,18 @@ def start_on_event():
 
     data_dir = str(Settings.RAG_FILE_PATH)
 
+    # 这里只做记录，不阻止重建
     need, reason = needs_rebuild(data_dir)
     logger.info(f"[startup] needs_rebuild={need}, reason={reason}")
 
-    if need:
-        rebuild_index(
-            data_dir,
-            chunk_size=Settings.CHUNK_SIZE,
-            chunk_overlap=Settings.CHUNK_OVERLAP
-        )
-        save_manifest(build_current_manifest(data_dir))
-        logger.info("[startup] 索引重建完成，manifest 已保存")
-    else:
-        logger.info(f"[startup] 跳过重建：{reason}")
+    rebuild_index(
+        data_dir,
+        chunk_size=Settings.CHUNK_SIZE,
+        chunk_overlap=Settings.CHUNK_OVERLAP
+    )
+
+    save_manifest(build_current_manifest(data_dir))
+    logger.info("[startup] 索引已加载到内存，并已保存 manifest")
 
 OUT_OF_SCOPE_KEYWORDS = [
     "天气", "气温", "下雨",
