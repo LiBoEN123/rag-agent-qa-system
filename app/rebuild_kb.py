@@ -1,0 +1,18 @@
+from app.config import Settings
+from app.rag import rebuild_and_persist_index
+
+
+def main():
+    Settings.validate()
+    ok, msg = rebuild_and_persist_index(
+        data_dir=str(Settings.RAG_FILE_PATH),
+        chunk_size=Settings.CHUNK_SIZE,
+        chunk_overlap=Settings.CHUNK_OVERLAP,
+    )
+    print(msg)
+    if not ok:
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

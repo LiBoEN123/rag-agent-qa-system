@@ -158,6 +158,26 @@ copy .env.example .env
 - HYBRID_THRESHOLD：选填，默认0.40，表示混合分数拒答阈值，如果结果分数低于该值，则触发拒答。
 - VECTOR_THRESHOLD：选填，默认0.35，表示向量分数拒答阈值，如果结果分数低于该值，则触发拒答。
 
+### 6.3 何时需要重建索引
+
+以下情况需要重建索引：
+
+- 新增、删除、修改知识库文档
+- 修改 `CHUNK_SIZE`
+- 修改 `CHUNK_OVERLAP`
+- 修改 `EMBEDDING_MODEL_NAME`
+
+以下情况通常不需要重建索引：
+
+- 修改 `TOP_K`
+- 修改 `MAX_CONTEXT_CHARS`
+- 修改 `MODEL_NAME`
+- 修改 `TEMPERATURE`
+- 修改回答提示词
+
+### 6.4 手动重建索引
+运行程序`python app\\rebuild_kb.py`
+
 ## 7.启动方式
 ```text
 1.创建并激活虚拟环境

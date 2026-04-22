@@ -1,15 +1,15 @@
 from fastapi import FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel, Field, ConfigDict
 from app.rag import (
-    rebuild_index,
     ask,
     preview_docs,
     preview_chunks,
     search_relevant_chunks,
     get_rag_status,
     needs_rebuild,
-    save_manifest,
-    build_current_manifest,
+    load_index_cache,
+    index_cache_exists,
+    rebuild_and_persist_index,
 )
 from app.config import Settings
 from app.untils import get_logger
@@ -312,19 +312,40 @@ def start_on_event():
     Settings.validate()
 
     data_dir = str(Settings.RAG_FILE_PATH)
-
-    # 这里只做记录，不阻止重建
     need, reason = needs_rebuild(data_dir)
     logger.info(f"[startup] needs_rebuild={need}, reason={reason}")
 
-    rebuild_index(
-        data_dir,
-        chunk_size=Settings.CHUNK_SIZE,
-        chunk_overlap=Settings.CHUNK_OVERLAP
+    should_force_rebuild = (
+        need
+        or not index_cache_exists()
+        or Settings.AUTO_REBUILD_ON_STARTUP
     )
 
-    save_manifest(build_current_manifest(data_dir))
-    logger.info("[startup] 索引已加载到内存，并已保存 manifest")
+    if should_force_rebuild:
+        ok, msg = rebuild_and_persist_index(
+            data_dir=data_dir,
+            chunk_size=Settings.CHUNK_SIZE,
+            chunk_overlap=Settings.CHUNK_OVERLAP
+        )
+        logger.info(f"[startup] {msg}")
+
+        if not ok:
+            logger.warning("[startup] 重建失败，RAG 可能不可用")
+
+    else:
+        loaded, msg = load_index_cache()
+        logger.info(f"[startup] {msg}")
+
+        if not loaded:
+            logger.warning("[startup] 缓存加载失败，降级为重建")
+            ok, msg = rebuild_and_persist_index(
+                data_dir=data_dir,
+                chunk_size=Settings.CHUNK_SIZE,
+                chunk_overlap=Settings.CHUNK_OVERLAP
+            )
+            logger.info(f"[startup] {msg}")
+
+
 
 OUT_OF_SCOPE_KEYWORDS = [
     "天气", "气温", "下雨",

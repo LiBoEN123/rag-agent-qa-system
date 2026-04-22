@@ -31,7 +31,13 @@ doc_embeddings = None
 
 SUPPORTED_SUFFIXES = {".txt", ".md"}
 
-MANIFEST_PATH = Path("data/manifest/index_manifest.json")
+INDEX_STORE_DIR = Settings.INDEX_STORE_DIR
+
+MANIFEST_PATH = INDEX_STORE_DIR / "index_manifest.json"
+CHUNKS_CACHE_PATH = INDEX_STORE_DIR / "chunks.json"
+TEXTS_CACHE_PATH = INDEX_STORE_DIR / "texts.json"
+DOCS_REGISTRY_CACHE_PATH = INDEX_STORE_DIR / "docs_registry.json"
+EMBEDDINGS_CACHE_PATH = INDEX_STORE_DIR / "doc_embeddings.npy"
 
 RAG_READY = False
 RAG_INIT_MESSAGE = "RAG 尚未初始化"
@@ -534,7 +540,7 @@ def estimate_confidence(retrieved_chunks: List[dict], final_references: List[dic
 # =========================
 # 查询阶段：上下文 + 模型
 # =========================
-def build_context(retrieved_chunks, max_chars: int = 2500):
+def build_context(retrieved_chunks, max_chars: int = Settings.MAX_CONTEXT_CHARS):
     parts = []
     total = 0
 
@@ -668,7 +674,7 @@ def ask(question: str, top_k: int = 3, retrieved_chunks: List[Dict[str, Any]] | 
             "reason": "检索结果为空或 top1 分数低于阈值"
         }
 
-    context = build_context(retrieved_chunks)
+    context = build_context(retrieved_chunks, Settings.MAX_CONTEXT_CHARS)
     llm_out = call_llm(question, context)
     parsed = parse_llm_output(llm_out)
 
@@ -825,6 +831,83 @@ def needs_rebuild(data_dir: str) -> tuple[bool, str]:
         return True, "data 目录文件变化，需要重建"
 
     return False, "目录和参数都没有变化，无需重建"
+
+def index_cache_exists() -> bool:
+    return all([
+        CHUNKS_CACHE_PATH.exists(),
+        TEXTS_CACHE_PATH.exists(),
+        DOCS_REGISTRY_CACHE_PATH.exists(),
+        EMBEDDINGS_CACHE_PATH.exists(),
+    ])
+
+def save_index_cache():
+    INDEX_STORE_DIR.mkdir(parents=True, exist_ok=True)
+
+    CHUNKS_CACHE_PATH.write_text(
+        json.dumps(chunks, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
+
+    TEXTS_CACHE_PATH.write_text(
+        json.dumps(texts, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
+
+    DOCS_REGISTRY_CACHE_PATH.write_text(
+        json.dumps(docs_registry, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
+
+    np.save(EMBEDDINGS_CACHE_PATH, doc_embeddings)
+
+def load_index_cache() -> tuple[bool, str]:
+    global chunks, texts, docs_registry, doc_embeddings, bm25, RAG_READY, RAG_INIT_MESSAGE, model
+
+    if not index_cache_exists():
+        return False, "未找到本地索引缓存"
+
+    try:
+        chunks = json.loads(CHUNKS_CACHE_PATH.read_text(encoding="utf-8"))
+        texts = json.loads(TEXTS_CACHE_PATH.read_text(encoding="utf-8"))
+        docs_registry = json.loads(DOCS_REGISTRY_CACHE_PATH.read_text(encoding="utf-8"))
+        doc_embeddings = np.load(EMBEDDINGS_CACHE_PATH, allow_pickle=False)
+
+        tokenized_chunks = [tokenize(text) for text in texts]
+        bm25 = BM25Okapi(tokenized_chunks) if tokenized_chunks else None
+
+        if not model:
+            model = SentenceTransformer(Settings.EMBEDDING_MODEL_NAME)
+
+        if not chunks:
+            RAG_READY = False
+            RAG_INIT_MESSAGE = "索引缓存为空"
+            return False, RAG_INIT_MESSAGE
+
+        RAG_READY = True
+        RAG_INIT_MESSAGE = "OK"
+        return True, "已从本地加载索引"
+
+    except Exception as e:
+        RAG_READY = False
+        RAG_INIT_MESSAGE = f"加载索引缓存失败：{e}"
+        return False, RAG_INIT_MESSAGE
+
+def rebuild_and_persist_index(
+        data_dir:str,
+        chunk_size:int=Settings.CHUNK_SIZE,
+        chunk_overlap:int=Settings.CHUNK_OVERLAP
+) -> tuple[bool, str]:
+    rebuild_index(data_dir,
+                  chunk_size=chunk_size,
+                  chunk_overlap=chunk_overlap)
+
+    if not RAG_READY:
+        return False, RAG_INIT_MESSAGE
+
+    save_index_cache()
+    save_manifest(build_current_manifest(data_dir))
+
+    return True, "索引已重建，并已保存到磁盘"
 
 
 
