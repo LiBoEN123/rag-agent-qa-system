@@ -51,6 +51,7 @@ class ChatReferences(BaseModel):
     score: float
 
 class ChatData(BaseModel):
+    question:str
     answer:str
     references:list[ChatReferences]=Field(default_factory=list)
     confidence:float = Field(..., ge=0.0, le=1.0, description="回答置信度，0~1")
@@ -105,7 +106,7 @@ class SearchResult(BaseModel):
 
 class SearchData(BaseModel):
     question:str
-    references:list[SearchResult]=Field(default_factory=list)
+    results:list[SearchResult]=Field(default_factory=list)
 
 class SearchResponse(BaseModel):
     code:int
@@ -342,6 +343,7 @@ def is_out_of_scope(question:str) -> bool:
 
 def build_chat_response(code:int|str,
                         message:str,
+                        question:str,
                         answer:str="",
                         references:list | None = None,
                         confidence: float = 0.0,
@@ -353,6 +355,7 @@ def build_chat_response(code:int|str,
     return ChatResponse(code=code,
                         message=message,
                         data=ChatData(
+                            question=question,
                             answer=answer,
                             references=references or [],
                             confidence=confidence,
@@ -375,16 +378,16 @@ def health():
 
 @app.post("/chat", response_model=ChatResponse)
 def ask_api(req: ChatRequest, response: Response):
+    question = (req.question or "").strip()
+    logger.info(f"[chat] 收到请求 question_len={len(question)}，preview={question[:50]}")
     try:
-        question = (req.question or "").strip()
-        logger.info(f"[chat] 收到请求 question_len={len(question)}，preview={question[:50]}")
-
         if not question:
             logger.warning("[chat] 空问题请求")
             response.status_code = 400
             return build_chat_response(
                 code="EMPTY_QUESTION",
                 message="问题不能为空，请输入你想查询的内容",
+                question=question,
                 confidence=0.0,
                 need_clarification=True,
                 answer_status="clarify",
@@ -397,6 +400,7 @@ def ask_api(req: ChatRequest, response: Response):
             return build_chat_response(
                 code="OUT_OF_SCOPE",
                 message="这个问题不在当前知识库回答范围内",
+                question=question,
                 answer="这个问题不属于当前知识库覆盖范围，我目前只能根据已收录资料回答相关问题。",
                 references=[],
                 confidence=0.0,
@@ -413,6 +417,7 @@ def ask_api(req: ChatRequest, response: Response):
             return build_chat_response(
                 code="NO_DOCUMENTS",
                 message=rag_status["message"],
+                question=question,
                 confidence=0.0,
                 need_clarification=False,
                 answer_status="insufficient",
@@ -432,6 +437,7 @@ def ask_api(req: ChatRequest, response: Response):
             return build_chat_response(
                 code="MODEL_ERROR",
                 message="处理失败，请稍后重试",
+                question=question,
                 confidence=0.0,
                 need_clarification=False,
                 answer_status="insufficient",
@@ -444,6 +450,7 @@ def ask_api(req: ChatRequest, response: Response):
             return build_chat_response(
                 code="NEED_CLARIFICATION",
                 message="问题信息不足，需要补充后再回答",
+                question=question,
                 answer="",
                 references=[],
                 confidence=result.get("confidence", 0.0),
@@ -459,6 +466,7 @@ def ask_api(req: ChatRequest, response: Response):
             return build_chat_response(
                 code="NO_RELEVANT_INFO",
                 message="我没有在文档中找到相关信息",
+                question=question,
                 answer=result.get("answer", ""),
                 references=result.get("references", []),
                 confidence=result.get("confidence", 0.0),
@@ -474,6 +482,7 @@ def ask_api(req: ChatRequest, response: Response):
             return build_chat_response(
                 code="MODEL_BAD_OUTPUT",
                 message="模型输出格式异常，请稍候重试",
+                question=question,
                 answer=result.get("answer", ""),
                 references=[],
                 confidence=result.get("confidence", 0.0),
@@ -488,6 +497,7 @@ def ask_api(req: ChatRequest, response: Response):
         return build_chat_response(
             code=0,
             message="success",
+            question=question,
             answer=result["answer"],
             references=result.get("references", []),
             confidence=result.get("confidence", 0.0),
@@ -505,6 +515,7 @@ def ask_api(req: ChatRequest, response: Response):
         return build_chat_response(
             code="INTERNAL_ERROR",
             message="服务器内部错误",
+            question=question,
             confidence=0.0,
             need_clarification=False
         )
@@ -547,7 +558,7 @@ def search_api(req:ChatRequest):
             message="success",
             data=SearchData(
                 question=req.question,
-                references=results
+                results=results
             )
         )
     except Exception as e:
