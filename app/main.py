@@ -18,12 +18,13 @@ from typing import Literal, TypeAlias
 from app.tools import dispatch_tool
 import re
 
-AnswerStatus: TypeAlias = Literal[
-    "answered",
-    "insufficient",
+PublicStatus: TypeAlias = Literal[
+    "ok",
+    "no_evidence",
+    "empty_index",
+    "error",
     "clarify",
     "out_of_scope",
-    "error",
 ]
 app = FastAPI(title='Mini Rag API', version='1.0.0')
 logger = get_logger('chat_service')
@@ -56,7 +57,7 @@ class ChatData(BaseModel):
     references:list[ChatReferences]=Field(default_factory=list)
     confidence:float = Field(..., ge=0.0, le=1.0, description="回答置信度，0~1")
     need_clarification:bool = Field(..., description="是否建议用户补充问题")
-    answer_status:Literal["answered", "insufficient", "clarify", "out_of_scope", "error"]
+    status: PublicStatus
     clarification_question:str = Field(..., description="补充提示")
     reason:str = Field(..., description="理由")
 
@@ -106,10 +107,12 @@ class SearchResult(BaseModel):
 
 class SearchData(BaseModel):
     question:str
+    status:PublicStatus
+    reason:str=""
     results:list[SearchResult]=Field(default_factory=list)
 
 class SearchResponse(BaseModel):
-    code:int
+    code:int | str
     message:str
     data:SearchData
 
@@ -299,8 +302,21 @@ def answer_with_tools_or_rag(question: str, top_k: int) -> dict:
 
     logger.info(f"[retrieve] 开始检索 top_k={top_k}")
     retrieved_chunks = search_relevant_chunks(question, top_k)
-    hit_ids = [chunk["chunk_id"] for chunk in retrieved_chunks]
-    logger.info(f"[retrieve] 检索完成 chunks_len={len(hit_ids)}，hit_ids={hit_ids}")
+
+    hit_brief = [
+        {
+            "chunk_id": chunk["chunk_id"],
+            "score": round(chunk["hybrid_score"], 4),
+            "bm25": round(chunk["bm25_score"], 4),
+            "vector": round(chunk["vector_score"], 4),
+            "file_name": chunk["file_name"],
+        }
+        for chunk in retrieved_chunks
+    ]
+
+    logger.info(
+        f"[retrieve] 检索完成 chunks_len={len(retrieved_chunks)} hits={hit_brief}"
+    )
 
     logger.info("[answer] 开始调用模型")
     result = ask(question, top_k=top_k, retrieved_chunks=retrieved_chunks)
@@ -369,7 +385,7 @@ def build_chat_response(code:int|str,
                         references:list | None = None,
                         confidence: float = 0.0,
                         need_clarification: bool = False,
-                        answer_status:AnswerStatus = "answered",
+                        status: PublicStatus = "ok",
                         clarification_question:str = "",
                         reason:str = ""
                         ) -> ChatResponse:
@@ -381,7 +397,7 @@ def build_chat_response(code:int|str,
                             references=references or [],
                             confidence=confidence,
                             need_clarification=need_clarification,
-                            answer_status=answer_status,
+                            status=status,
                             clarification_question=clarification_question,
                             reason=reason
                             )
@@ -403,7 +419,7 @@ def ask_api(req: ChatRequest, response: Response):
     logger.info(f"[chat] 收到请求 question_len={len(question)}，preview={question[:50]}")
     try:
         if not question:
-            logger.warning("[chat] 空问题请求")
+            logger.warning("[chat] final_status=clarify reason=用户未输入问题")
             response.status_code = 400
             return build_chat_response(
                 code="EMPTY_QUESTION",
@@ -411,12 +427,13 @@ def ask_api(req: ChatRequest, response: Response):
                 question=question,
                 confidence=0.0,
                 need_clarification=True,
-                answer_status="clarify",
+                status="clarify",
                 clarification_question="请直接输入你想查询的具体问题，例如：年假申请流程是什么？",
                 reason="用户未输入问题"
             )
 
         if is_out_of_scope(question):
+            logger.warning("[chat] final_status=out_of_scope reason=问题不属于知识库范围")
             response.status_code = 200
             return build_chat_response(
                 code="OUT_OF_SCOPE",
@@ -426,14 +443,14 @@ def ask_api(req: ChatRequest, response: Response):
                 references=[],
                 confidence=0.0,
                 need_clarification=False,
-                answer_status="out_of_scope",
+                status="out_of_scope",
                 clarification_question="",
                 reason="问题主题与知识库无关"
             )
 
         rag_status = get_rag_status()
         if not rag_status["ready"]:
-            logger.warning("[chat] 数据目录为空")
+            logger.warning("[chat] final_status=empty_index reason=知识库未准备完成")
             response.status_code = 503
             return build_chat_response(
                 code="NO_DOCUMENTS",
@@ -441,7 +458,7 @@ def ask_api(req: ChatRequest, response: Response):
                 question=question,
                 confidence=0.0,
                 need_clarification=False,
-                answer_status="insufficient",
+                status="empty_index",
                 clarification_question="",
                 reason="知识库未准备完成"
             )
@@ -461,12 +478,15 @@ def ask_api(req: ChatRequest, response: Response):
                 question=question,
                 confidence=0.0,
                 need_clarification=False,
-                answer_status="insufficient",
+                status="error",
                 clarification_question="",
                 reason="工具调用或模型调用异常"
             )
 
         if result["status"] == "NEED_CLARIFICATION":
+            logger.warning(
+                f"[chat] final_status=need_clarification reason=问题信息不足"
+            )
             response.status_code = 200
             return build_chat_response(
                 code="NEED_CLARIFICATION",
@@ -476,13 +496,15 @@ def ask_api(req: ChatRequest, response: Response):
                 references=[],
                 confidence=result.get("confidence", 0.0),
                 need_clarification=True,
-                answer_status="clarify",
+                status="clarify",
                 clarification_question=result.get("clarification_question", ""),
                 reason=result.get("reason", "问题缺少关键限定信息")
             )
 
         if result["status"] == "NO_RELEVANT_INFO":
-            logger.warning("[chat] 检索证据不足，返回 honest fallback")
+            logger.warning(
+                f"[chat] final_status=no_evidence reason={result.get('reason', '检索证据不足')}"
+            )
             response.status_code = 200
             return build_chat_response(
                 code="NO_RELEVANT_INFO",
@@ -492,13 +514,15 @@ def ask_api(req: ChatRequest, response: Response):
                 references=result.get("references", []),
                 confidence=result.get("confidence", 0.0),
                 need_clarification=result.get("need_clarification", False),
-                answer_status="insufficient",
+                status="no_evidence",
                 clarification_question="",
                 reason=result.get("reason", "模型判断当前上下文不足以支撑回答")
             )
 
         if result["status"] == "MODEL_BAD_OUTPUT":
-            logger.warning("[chat] 模型输出格式异常")
+            logger.warning(
+                f"[chat] final_status=error reason={result.get('reason', '模型输出格式异常')}"
+            )
             response.status_code = 200
             return build_chat_response(
                 code="MODEL_BAD_OUTPUT",
@@ -508,12 +532,14 @@ def ask_api(req: ChatRequest, response: Response):
                 references=[],
                 confidence=result.get("confidence", 0.0),
                 need_clarification=result.get("need_clarification", False),
-                answer_status="error",
+                status="error",
                 clarification_question="",
                 reason=result.get("reason", "模型返回结构不符合预期")
             )
 
-        logger.info("[chat] 请求处理完成")
+        logger.info(
+            f"[chat] final_status=ok reason={result.get('reason', '正常回答')}"
+        )
         response.status_code = 200
         return build_chat_response(
             code=0,
@@ -523,7 +549,7 @@ def ask_api(req: ChatRequest, response: Response):
             references=result.get("references", []),
             confidence=result.get("confidence", 0.0),
             need_clarification=result.get("need_clarification", False),
-            answer_status="answered" if result["status"] == "OK" else "error",
+            status="ok",
             clarification_question=result.get("clarification_question", ""),
             reason=result.get("reason", "正常回答")
         )
@@ -554,11 +580,71 @@ def chunks_preview(
     return {"count":len(data), "data":data}
 
 @app.post("/search", response_model=SearchResponse)
-def search_api(req:ChatRequest):
-    try:
-        final_top_k = req.top_k if req.top_k is not None else Settings.TOP_K
-        retrieved_chunks = search_relevant_chunks(req.question, final_top_k)
+def search_api(req:ChatRequest, response=Response):
+    question = (req.question or "").strip()
+    logger.info(f"[search] 收到请求，question_len={len(question)}，question_preview={question[:50]}")
 
+    try:
+        if not question:
+            logger.warning(f"[search] 空问题请求")
+            response.status_code = 400
+            return SearchResponse(
+                code="EMPTY_QUESTION",
+                message="问题不能为空",
+                data=SearchData(
+                    question=question,
+                    status="error",
+                    reason="用户未输入问题",
+                    results=[]
+                )
+            )
+
+        rag_status = get_rag_status()
+        if not rag_status["ready"]:
+            logger.info("[search] final_status=empty_index reason=知识库未准备完成")
+            response.status_code = 503
+            return SearchResponse(
+                code="EMPTY_INDEX",
+                message=rag_status["message"],
+                data=SearchData(
+                    question=question,
+                    status="empty_index",
+                    reason="知识库未准备完成",
+                    results=[]
+                )
+            )
+
+        final_top_k = req.top_k if req.top_k is not None else Settings.TOP_K
+        retrieved_chunks = search_relevant_chunks(question, final_top_k)
+
+        if not retrieved_chunks:
+            logger.info("[search] final_status=no_evidence reason=没有检索到结果")
+            response.status_code = 200
+            return SearchResponse(
+                code=0,
+                message="success",
+                data=SearchData(
+                    question=question,
+                    status="no_evidence",
+                    reason="未检索到结果",
+                    results=[]
+                )
+            )
+
+        top1_vector_score = retrieved_chunks[0].get("vector_score", 0)
+        if top1_vector_score < Settings.VECTOR_THRESHOLD:
+            logger.warning(f"[search] top1_vector 分数过低 top1_vector_score={top1_vector_score}")
+            response.status_code = 200
+            return SearchResponse(
+                code=0,
+                message="success",
+                data=SearchData(
+                    question=question,
+                    status="no_evidence",
+                    reason="top1_vector 分数过低：{top1_score:.4f}",
+                    results=[]
+                )
+            )
         results = [
             SearchResult(
                 reference_id=item["reference_id"],
@@ -574,16 +660,44 @@ def search_api(req:ChatRequest):
             for item in retrieved_chunks
         ]
 
+        score_brief = [
+            {
+                "chunk_id": item["chunk_id"],
+                "score": round(item["hybrid_score"], 4),
+                "bm25": round(item["bm25_score"], 4),
+                "vector": round(item["vector_score"], 4),
+            }
+            for item in retrieved_chunks
+        ]
+        logger.info(f"[search] retrieve_hits={score_brief}")
+
+        logger.info("[search] final_status=ok reason=检索成功")
+        response.status_code = 200
         return SearchResponse(
             code=0,
             message="success",
             data=SearchData(
-                question=req.question,
+                question=question,
+                status="ok",
+                reason="检索成功",
                 results=results
             )
         )
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception(f"[search] final_status=error reason=search 接口处理异常 error={e}")
+        response.status_code = 500
+        return SearchResponse(
+            code="INTERNAL_ERROR",
+            message="服务器内部错误",
+            data=SearchData(
+                question=question,
+                status="error",
+                reason="search 接口处理异常",
+                results=[]
+            )
+        )
+
 
 @app.post("/extract_refund_policy", response_model=ExtractResponse)
 def extract_api(req:ExtractRequest, response:Response):
