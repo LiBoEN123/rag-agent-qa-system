@@ -28,7 +28,7 @@ def build_index(all_chunks: list[dict], model=None):
         }
 
     local_texts = [chunk["text"] for chunk in all_chunks]
-    tokenized_chunks = [tokenize(text) for text in local_texts]
+    tokenized_texts = [tokenize(text) for text in local_texts]
 
     if model is None:
         model = SentenceTransformer(Settings.EMBEDDING_MODEL_NAME)
@@ -39,7 +39,7 @@ def build_index(all_chunks: list[dict], model=None):
         convert_to_numpy=True
     )
 
-    local_bm25 = BM25Okapi(tokenized_chunks)
+    local_bm25 = BM25Okapi(tokenized_texts)
 
     return {
         "texts": local_texts,
