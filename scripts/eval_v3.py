@@ -8,7 +8,7 @@ from app.config import Settings
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
-QUESTIONS_PATH = PROJECT_ROOT / "data" / "eval" / "generated_20_questions_latest_chunks_v3.json"
+QUESTIONS_PATH = PROJECT_ROOT / "data" / "eval" / "generated_20_questions_latest_chunks_v4.json"
 
 
 def load_questions(path):
@@ -314,7 +314,7 @@ def build_bad_cases_md(results, path, top_n=3):
 
 
 def main():
-    run_name = "baseline_20q_topk5_cs300_ol60_0.4b0.6v_min_eval"
+    run_name = "baseline_20q_topk5_cs600_ol120_0.4b0.6v_promptA_eval"
     top_k = 5
 
     Settings.RAG_FILE_PATH = PROJECT_ROOT / "data" / "kb"

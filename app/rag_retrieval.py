@@ -50,7 +50,7 @@ def clamp01(value: float) -> float:
     return value
 
 
-def make_snippet(text: str, max_len: int = 100) -> str:
+def make_snippet(text: str, max_len: int = 300) -> str:
     text = "".join((text or "").split())
     return text[:max_len]
 
