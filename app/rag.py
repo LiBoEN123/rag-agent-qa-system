@@ -308,8 +308,8 @@ def preview_docs():
     return preview_docs_impl(docs_registry)
 
 
-def preview_chunks(limit: int = 70, file_name: str | None = None):
-    return preview_chunks_impl(chunks, limit=limit, file_name=file_name)
+def preview_chunks(max_len:int, limit: int = 70, file_name: str | None = None):
+    return preview_chunks_impl(chunks, max_len=max_len, limit=limit, file_name=file_name)
 
 
 def get_chunk_full_text(chunk_id: int | str):

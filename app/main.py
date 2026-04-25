@@ -574,9 +574,10 @@ def docs_preview():
 
 @app.get("/chunks-preview")
 def chunks_preview(
+        max_len:int = Query(default=300, ge=1, le=1000),
         limit:int = Query(70, ge=1, le=1000),
         file_name:str | None=Query(None)):
-    data = preview_chunks(limit, file_name)
+    data = preview_chunks(max_len,limit, file_name)
     return {"count":len(data), "data":data}
 
 @app.post("/search", response_model=SearchResponse)

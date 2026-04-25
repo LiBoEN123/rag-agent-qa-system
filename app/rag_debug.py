@@ -5,7 +5,7 @@ def preview_docs(docs_registry):
     return docs_registry
 
 
-def preview_chunks(chunks, limit: int = 70, file_name: str | None = None):
+def preview_chunks(chunks, max_len:int, limit: int = 70, file_name: str | None = None):
     result = []
 
     for item in chunks:
@@ -17,7 +17,7 @@ def preview_chunks(chunks, limit: int = 70, file_name: str | None = None):
             "chunk_id": item["metadata"].get("chunk_id"),
             "source_path": item["metadata"].get("source_path"),
             "position": item["metadata"].get("position"),
-            "text_preview": make_snippet(item.get("text", ""), max_len=200),
+            "text_preview": make_snippet(item.get("text", ""), max_len=max_len),
             "text_length": len(item.get("text", ""))
         })
 
