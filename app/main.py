@@ -230,7 +230,7 @@ def build_chat_response(code:int|str,
 
 
 # =========================
-# 接口暴露
+# 可调用接口
 # =========================
 
 @app.on_event("startup")
