@@ -329,7 +329,7 @@ def ask_api(req: ChatRequest, response: Response):
 
         try:
             logger.info("[answer] 开始处理：工具优先，否则走 RAG")
-            result = run_agent_once(question, final_top_k)
+            result = run_agent_once(question, final_top_k, decision)
 
         except Exception as e:
             logger.exception(f"[answer] 处理失败 error={e}")
@@ -640,6 +640,37 @@ def kb_summary():
             "chunk_count":status.get("chunk_count"),
             "file_names":[doc["file_name"] for doc in docs],
             "documents":docs
+        }
+    }
+
+@app.post("/decide")
+def decide_api(req:ChatRequest, response:Response):
+    question = (req.question or "").strip()
+
+    if not question:
+        response.status_code = 400
+        return {
+            "code": "EMPTY_QUESTION",
+            "message": "问题不能为空",
+            "data": {
+                "question": question,
+                "decision": "clarify",
+                "reason": "用户未输入问题"
+            }
+        }
+
+    final_top_k = req.top_k if req.top_k is not None else Settings.TOP_K
+
+    decision = route_agent_action(question, final_top_k)
+
+    logger.info(f"[decision] question={question[:50]} decision={decision}")
+
+    return {
+        "code": 0,
+        "message": "success",
+        "data": {
+            "question": question,
+            "decision": decision,
         }
     }
 

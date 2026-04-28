@@ -1,6 +1,7 @@
 from app.untils import get_logger
 from app.tools import dispatch_tool
 from app.rag import ask, search_relevant_chunks
+import re
 
 
 logger = get_logger('chat_service')
@@ -14,14 +15,24 @@ OUT_OF_SCOPE_KEYWORDS = [
     "python教程", "java教程", "怎么写代码"
 ]
 
+def normalize_question(question: str) -> str:
+    q = (question or "").strip()
+    q = q.replace("？", "?")
+    q = q.replace("：", ":")
+    q = q.replace("，", ",")
+    q = q.replace("。", "")
+    return q
+
 # Agent决策层：判断走哪个动作
 def route_agent_action(question: str, top_k:int) -> dict:
-    q = (question or "").strip()
+    q =normalize_question(question)
 
     # 1. 空问题：需要澄清
     if not q:
         return {
+            "decision": "clarify",
             "action": "clarify",
+            "tool_name": "",
             "tool_args": {},
             "reason": "用户未输入问题",
             "clarification_question": "请直接输入你想查询的具体问题，例如：每个 Vue 应用是通过什么函数创建实例的？"
@@ -30,50 +41,74 @@ def route_agent_action(question: str, top_k:int) -> dict:
     # 2. 用户问系统能力：可以直接回答，不需要查知识库
     if q in ["你是谁?", "你能做什么?", "你可以做什么?", "你有什么功能?"]:
         return {
+            "decision": "direction",
             "action": "direct_answer",
+            "tool_name": "",
             "tool_args": {},
             "reason": "用户询问系统能力，可以直接回答"
         }
 
-    # 3. 用户问知识库文档数量或列表：调用 list_documents
+    # 3. 用户问知识库某文档内容：调用 get_chunk_text
+    chunk_id = extract_chunk_id(q)
+    if chunk_id is not None:
+        return {
+            "decision": "use_tool",
+            "action": "get_chunk_text",
+            "tool_name": "get_chunk_text",
+            "tool_args": {"chunk_id": chunk_id},
+            "reason": "用户未输入问题",
+            "clarification_question": "请直接输入你想查询的具体问题，例如：每个 Vue 应用是通过什么函数创建实例的？"
+            }
+
+    # 4. 用户问知识库文档数量或列表：调用 list_documents
     if "文档" in q and any(x in q for x in ["几个", "多少", "数量", "列表", "有哪些"]):
         return {
+            "decision": "use_tool",
             "action": "list_documents",
+            "tool_name": "list_documents",
             "tool_args": {},
             "reason": "用户询问知识库文档列表或文档数量"
         }
 
-    # 4. 用户输入简单数学表达式：调用 simple_calculator
+    # 5. 用户输入简单数学表达式：调用 simple_calculator
     expression = extract_simple_math_expression(question)
     if expression is not None:
         return {
+            "decision": "use_tool",
             "action": "simple_calculator",
+            "tool_name": "simple_calculator",
             "tool_args": {
                 "expression": expression
             },
             "reason": "用户问题是简单四则运算"
         }
 
-    # 5. 明显超出知识库范围：拒答
+    # 6. 明显超出知识库范围：拒答
     if is_out_of_scope(q):
         return {
+            "decision": "refuse",
             "action": "refuse",
+            "tool_name": "",
             "tool_args": {},
             "reason": "问题主题超出当前知识库范围"
         }
 
-    # 6. 指代太模糊：澄清
+    # 7. 指代太模糊：澄清
     if q in ["这个怎么弄", "这个怎么配置", "这个是什么意思", "这个怎么解决"]:
         return {
+            "decision": "clarify",
             "action": "clarify",
+            "tool_name": "",
             "tool_args": {},
             "reason": "问题存在明显指代不明",
             "clarification_question": "你说的“这个”具体指哪个功能、哪份文档或哪段报错？请补充一下对象。"
         }
 
-    # 7. 默认：当成知识库问题，走 RAG
+    # 8. 默认：当成知识库问题，走 RAG
     return {
+        "decision": "direct_answer",
         "action": "search_knowledge_base",
+        "tool_name": "",
         "tool_args": {
             "query": q,
             "top_k": top_k
@@ -82,15 +117,19 @@ def route_agent_action(question: str, top_k:int) -> dict:
     }
 
 def run_agent_once(question: str, top_k: int, decision: dict | None=None) -> dict:
-    decision = decision or route_agent_action(question, top_k)
-    action = decision['action']
+    decision_type = decision.get("decision")
+    action = decision.get("action")
+    tool_name = decision.get("tool_name", "")
+    tool_args = decision.get("tool_args", {})
 
     logger.info(
-        f"[agent] action={action} reason={decision.get('reason')} question={question[:50]}"
+        f"[agent] decision={decision_type} action={action} "
+        f"tool_name={tool_name} reason={decision.get('reason')} "
+        f"question={question[:50]}"
     )
 
     # 1. 需要澄清
-    if action == "clarify":
+    if decision_type == "clarify":
         return {
             "status": "NEED_CLARIFICATION",
             "answer": "",
@@ -118,7 +157,7 @@ def run_agent_once(question: str, top_k: int, decision: dict | None=None) -> dic
         }
 
     # 3. 拒答
-    if action == "refuse":
+    if decision_type == "refuse":
         return {
             "status": "NO_RELEVANT_INFO",
             "answer": "这个问题不属于当前知识库覆盖范围，我目前只能根据已收录资料回答相关问题。",
@@ -129,39 +168,21 @@ def run_agent_once(question: str, top_k: int, decision: dict | None=None) -> dic
             "reason": decision.get("reason", "问题超出知识库范围")
         }
 
-    # 4. 调用 list_documents 工具
-    if action == "list_documents":
-        tool_result = dispatch_tool(action, decision.get("tool_args", {}))
+    if decision_type == "use_tool":
+        tool_result = dispatch_tool(tool_name, tool_args)
 
         if tool_result.get("status") != "success":
             return {
-                "status": "MODEL_BAD_OUTPUT",
+                "status": "TOOL_ERROR",
                 "answer": "",
                 "references": [],
                 "confidence": 0.0,
                 "need_clarification": False,
                 "clarification_question": "",
-                "reason": tool_result.get("error", "list_documents 工具执行失败")
+                "reason": tool_result.get("error", f"{tool_name} 工具执行失败")
             }
 
-        output = tool_result.get("output", {})
-        docs = output.get("documents", [])
-        count = output.get("count", 0)
-
-        doc_names = []
-        for d in docs[:10]:
-            doc_names.append(
-                d.get("source_file")
-                or d.get("file_name")
-                or d.get("title")
-                or d.get("doc_name")
-                or d.get("doc_id")
-                or "未命名文档"
-            )
-
-        answer = f"当前系统中共有 {count} 个文档。"
-        if doc_names:
-            answer += " 文档包括：" + "、".join(doc_names)
+        answer = format_tool_answer(tool_name, tool_result.get("output", {}))
 
         return {
             "status": "OK",
@@ -170,34 +191,7 @@ def run_agent_once(question: str, top_k: int, decision: dict | None=None) -> dic
             "confidence": 1.0,
             "need_clarification": False,
             "clarification_question": "",
-            "reason": "命中文档列表工具"
-        }
-    # 5. 调用 simple_calculator 工具
-    if action == "simple_calculator":
-        tool_result = dispatch_tool("simple_calculator", decision["tool_args"])
-
-        if tool_result.get("status") != "success":
-            return {
-                "status": "MODEL_BAD_OUTPUT",
-                "answer": "",
-                "references": [],
-                "confidence": 0.0,
-                "need_clarification": False,
-                "clarification_question": "",
-                "reason": tool_result.get("error", "计算工具执行失败")
-            }
-
-        output = tool_result.get("output", {})
-        answer = output.get("result")
-
-        return {
-            "status": "OK",
-            "answer": f"计算结果是：{answer}",
-            "references": [],
-            "confidence": 1.0,
-            "need_clarification": False,
-            "clarification_question": "",
-            "reason": "Agent 选择 simple_calculator 工具"
+            "reason": f"Agent 选择工具：{tool_name}"
         }
 
     # 6. 调用 search_knowledge_base，也就是原来的 RAG
@@ -233,6 +227,61 @@ def run_agent_once(question: str, top_k: int, decision: dict | None=None) -> dic
         "clarification_question": "",
         "reason": f"未知 Agent action: {action}"
     }
+
+def format_tool_answer(tool_name: str, output: dict) -> str:
+    if tool_name == "simple_calculator":
+        return f"计算结果是：{output.get("result")}"
+    if tool_name == "list_documents":
+        docs = output.get("documents", [])
+        count = output.get("count", 0)
+
+        doc_names = []
+        for d in docs[:10]:
+            doc_names.append(
+                d.get("source_file")
+                or d.get("file_name")
+                or d.get("title")
+                or d.get("doc_name")
+                or d.get("doc_id")
+                or "未命名文档"
+            )
+
+        answer = f"当前系统中共有 {count} 个文档。"
+        if doc_names:
+            answer += " 文档包括：" + "、".join(doc_names)
+
+        return answer
+
+    if tool_name == "get_chunk_text":
+        chunk_id = output.get("chunk_id")
+        chunk = output.get("chunk", {})
+
+        text = (
+            chunk.get("text")
+            or chunk.get("content")
+            or chunk.get("chunk_text")
+            or str(chunk)
+        )
+
+        return f"chunk_{chunk_id} 内容如下：\n{text}"
+
+    return str(output)
+
+def extract_chunk_id(q: str) -> int | None:
+    patterns = [
+        r"chunk[_\s-]?id\s*[:=]?\s*(\d+)",
+        r"chunk\s*(\d+)",
+        r"第\s*(\d+)\s*个\s*chunk",
+        r"查看\s*(\d+)\s*号\s*chunk",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, q, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+
+    return None
+
 
 def is_out_of_scope(question:str) -> bool:
     q = (question or "").strip().lower()
