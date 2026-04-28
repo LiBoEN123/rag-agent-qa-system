@@ -3,6 +3,7 @@ import time
 from app.rag import preview_docs, get_chunk_full_text
 import ast
 import operator as op
+from typing import Any
 
 _ALLOWED_OPERATORS = {
     ast.Add: op.add,
@@ -12,6 +13,26 @@ _ALLOWED_OPERATORS = {
     ast.USub: op.neg,
     ast.UAdd: lambda x: x,
 }
+
+def tool_success(tool_name: str, tool_input: dict, output: Any) -> dict:
+    return {
+        "status": "success",
+        "ok": True,
+        "tool_name": tool_name,
+        "tool_input": tool_input,
+        "output": output,
+        "error": ""
+    }
+
+def tool_error(tool_name: str, tool_input: dict, error: str) -> dict:
+    return {
+        "status": "error",
+        "ok": False,
+        "tool_name": tool_name,
+        "tool_input": tool_input,
+        "output": None,
+        "error":error
+    }
 
 def safe_eval_expr(expression:str) -> int | float:
 
@@ -38,39 +59,95 @@ def safe_eval_expr(expression:str) -> int | float:
     return _eval(tree)
 
 def simple_calculator(expression:str) -> dict:
+    tool_name = "simple_calculator"
+    tool_input = {"expression": expression}
+
     try:
+        if not expression or not str(expression).strip():
+            return tool_error(tool_name, tool_input, "expression 不能为空")
+
         result = safe_eval_expr(expression)
-        return {
-            "ok": True,
-            "result": result,
-            "expression": expression,
-            "error": ""
-        }
+        return tool_success(
+            tool_name=tool_name,
+            tool_input=tool_input,
+            output={
+                "expression": expression,
+                "result": result
+            }
+        )
 
     except Exception as e:
-        return {
-            "ok": False,
-            "result": None,
-            "expression": expression,
-            "error": str(e)
-        }
+        return tool_error(
+            tool_name=tool_name,
+            tool_input=tool_input,
+            error=str(e)
+        )
 
-def list_documents():
-    docs = preview_docs()
-    return {
-        "count": len(docs),
-        "documents": docs
-    }
+def list_documents() -> dict:
+    tool_name = "list_documents"
+    tool_input = {}
 
-def get_chunk_text(chunk_id: int | str):
-    return get_chunk_full_text(chunk_id)
+    try:
+        docs = preview_docs()
+
+        return tool_success(
+            tool_name=tool_name,
+            tool_input=tool_input,
+            output={
+                "count": len(docs),
+                "documents": docs
+            }
+        )
+
+    except Exception as e:
+        return tool_error(
+            tool_name=tool_name,
+            tool_input=tool_input,
+            error=str(e)
+        )
+
+def get_chunk_text(chunk_id: int | str) -> dict:
+    tool_name = "get_chunk_text"
+    tool_input = {"chunk_id": chunk_id}
+
+    try:
+        if not chunk_id or str(chunk_id).strip() == "":
+            return tool_error(tool_name, tool_input, "chunk_id 不能为空")
+
+        chunk = get_chunk_full_text(chunk_id)
+
+        if not chunk.get("found"):
+            return tool_error(
+                tool_name,
+                tool_input,
+                f"未找到 chunk_id={chunk_id} 的 chunk，可能是知识库未初始化或 chunk_id 不存在"
+            )
+
+        return tool_success(
+            tool_name=tool_name,
+            tool_input=tool_input,
+            output={
+                "chunk_id": chunk_id,
+                "chunk": chunk
+            }
+        )
+
+    except Exception as e:
+        return tool_error(
+            tool_name=tool_name,
+            tool_input=tool_input,
+            error=str(e)
+        )
+
 
 def append_tool_log(record: dict):
     with open("tool_calls.jsonl", "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-def dispatch_tool(tool_name: str, tool_args: dict):
+def dispatch_tool(tool_name: str, tool_args: dict | None=None):
+    tool_args = tool_args or {}
     start = time.time()
+
     try:
         if tool_name == "list_documents":
             result = list_documents()
@@ -79,11 +156,11 @@ def dispatch_tool(tool_name: str, tool_args: dict):
         elif tool_name == "get_chunk_text":
             result = get_chunk_text(tool_args.get("chunk_id"))
         else:
-            result = {"error": f"unknown tool: {tool_name}"}
-
-        success = result.get("ok", True) if isinstance(result, dict) else True
-        if isinstance(result, dict) and result.get("error"):
-            success = False
+            result = tool_error(
+                tool_name=tool_name,
+                tool_input=tool_args,
+                error=f"unknown tool: {tool_name}"
+            )
 
         append_tool_log({
             "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -91,21 +168,59 @@ def dispatch_tool(tool_name: str, tool_args: dict):
             "tool_args": tool_args,
             "tool_result": result,
             "elapsed_ms": int((time.time() - start) * 1000),
-            "success": success
+            "success": result.get("ok", False)
         })
         return result
 
     except Exception as e:
-        err = {"error": str(e)}
+        result = tool_error(
+            tool_name=tool_name,
+            tool_input=tool_args,
+            error=str(e)
+        )
+
         append_tool_log({
             "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
             "tool_name": tool_name,
             "tool_args": tool_args,
-            "tool_result": err,
+            "tool_result": result,
             "elapsed_ms": int((time.time() - start) * 1000),
             "success": False
         })
-        return err
+
+        return result
+
+def run_manual_examples():
+    examples = [
+        {
+            "tool_name": "simple_calculator",
+            "tool_args": {"expression": "1 + 2 * 3"}
+        },
+        {
+            "tool_name": "simple_calculator",
+            "tool_args": {"expression": "10 / 0"}
+        },
+        {
+            "tool_name": "list_documents",
+            "tool_args": {}
+        },
+        {
+            "tool_name": "get_chunk_text",
+            "tool_args": {"chunk_id": 1}
+        },
+        {
+            "tool_name": "unknown_tool",
+            "tool_args": {}
+        }
+    ]
+
+    for item in examples:
+        result = dispatch_tool(item["tool_name"], item["tool_args"])
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    run_manual_examples()
 
 
 
