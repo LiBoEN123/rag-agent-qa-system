@@ -63,6 +63,9 @@ class ChatData(BaseModel):
     status: PublicStatus
     clarification_question:str = Field(..., description="补充提示")
     reason:str = Field(..., description="理由")
+    action:str = Field(default="", description="本次Agent选择的动作")
+    tool_result_summary:str = Field(default="", description="工具结果摘要")
+    tool_trace:list[dict] = Field(default_factory=list, description="工具调用或路径追踪")
 
 class ChatResponse(BaseModel):
     code:int|str
@@ -212,7 +215,10 @@ def build_chat_response(code:int|str,
                         need_clarification: bool = False,
                         status: PublicStatus = "ok",
                         clarification_question:str = "",
-                        reason:str = ""
+                        reason:str = "",
+                        action:str = "",
+                        tool_result_summary:str = "",
+                        tool_trace:list | None = None,
                         ) -> ChatResponse:
     return ChatResponse(code=code,
                         message=message,
@@ -224,7 +230,10 @@ def build_chat_response(code:int|str,
                             need_clarification=need_clarification,
                             status=status,
                             clarification_question=clarification_question,
-                            reason=reason
+                            reason=reason,
+                            action=action,
+                            tool_result_summary=tool_result_summary,
+                            tool_trace=tool_trace
                             )
                         )
 
@@ -360,7 +369,10 @@ def ask_api(req: ChatRequest, response: Response):
                 need_clarification=True,
                 status="clarify",
                 clarification_question=result.get("clarification_question", ""),
-                reason=result.get("reason", "问题缺少关键限定信息")
+                reason=result.get("reason", "问题缺少关键限定信息"),
+                action=result.get("action", ""),
+                tool_result_summary=result.get("tool_result_summary", ""),
+                tool_trace=result.get("tool_trace", [])
             )
 
         if result["status"] == "NO_RELEVANT_INFO":
@@ -378,7 +390,52 @@ def ask_api(req: ChatRequest, response: Response):
                 need_clarification=result.get("need_clarification", False),
                 status="no_evidence",
                 clarification_question="",
-                reason=result.get("reason", "模型判断当前上下文不足以支撑回答")
+                reason=result.get("reason", "模型判断当前上下文不足以支撑回答"),
+                action=result.get("action", ""),
+                tool_result_summary=result.get("tool_result_summary", ""),
+                tool_trace=result.get("tool_trace", [])
+            )
+
+        if result["status"] == "TOOL_ERROR":
+            logger.warning(
+                f"[chat] final_status=error reason={result.get('reason', '工具调用失败')}"
+            )
+            response.status_code = 200
+            return build_chat_response(
+                code="TOOL_ERROR",
+                message="工具调用失败",
+                question=question,
+                answer=result.get("answer", ""),
+                references=[],
+                confidence=result.get("confidence", 0.0),
+                need_clarification=result.get("need_clarification", False),
+                status="error",
+                clarification_question=result.get("clarification_question", ""),
+                reason=result.get("reason", "工具调用失败"),
+                action=result.get("action", ""),
+                tool_result_summary=result.get("tool_result_summary", ""),
+                tool_trace=result.get("tool_trace", [])
+            )
+
+        if result["status"] == "OUT_OF_SCOPE":
+            logger.warning(
+                f"[chat] final_status=out_of_scope reason={result.get('reason', '超出知识库范围')}"
+            )
+            response.status_code = 200
+            return build_chat_response(
+                code="OUT_OF_SCOPE",
+                message="问题超出当前知识库范围",
+                question=question,
+                answer=result.get("answer", ""),
+                references=[],
+                confidence=result.get("confidence", 0.0),
+                need_clarification=False,
+                status="out_of_scope",
+                clarification_question="",
+                reason=result.get("reason", "问题超出知识库范围"),
+                action=result.get("action", ""),
+                tool_result_summary=result.get("tool_result_summary", ""),
+                tool_trace=result.get("tool_trace", [])
             )
 
         if result["status"] == "MODEL_BAD_OUTPUT":
@@ -396,7 +453,10 @@ def ask_api(req: ChatRequest, response: Response):
                 need_clarification=result.get("need_clarification", False),
                 status="error",
                 clarification_question="",
-                reason=result.get("reason", "模型返回结构不符合预期")
+                reason=result.get("reason", "模型返回结构不符合预期"),
+                action=result.get("action", ""),
+                tool_result_summary=result.get("tool_result_summary", ""),
+                tool_trace=result.get("tool_trace", [])
             )
 
         logger.info(
@@ -413,7 +473,10 @@ def ask_api(req: ChatRequest, response: Response):
             need_clarification=result.get("need_clarification", False),
             status="ok",
             clarification_question=result.get("clarification_question", ""),
-            reason=result.get("reason", "正常回答")
+            reason=result.get("reason", "正常回答"),
+            action=result.get("action", ""),
+            tool_result_summary=result.get("tool_result_summary", ""),
+            tool_trace=result.get("tool_trace", [])
         )
 
     except HTTPException:

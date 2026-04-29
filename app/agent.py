@@ -41,7 +41,7 @@ def route_agent_action(question: str, top_k:int) -> dict:
     # 2. 用户问系统能力：可以直接回答，不需要查知识库
     if q in ["你是谁?", "你能做什么?", "你可以做什么?", "你有什么功能?"]:
         return {
-            "decision": "direction",
+            "decision": "direct_answer",
             "action": "direct_answer",
             "tool_name": "",
             "tool_args": {},
@@ -56,8 +56,7 @@ def route_agent_action(question: str, top_k:int) -> dict:
             "action": "get_chunk_text",
             "tool_name": "get_chunk_text",
             "tool_args": {"chunk_id": chunk_id},
-            "reason": "用户未输入问题",
-            "clarification_question": "请直接输入你想查询的具体问题，例如：每个 Vue 应用是通过什么函数创建实例的？"
+            "reason": "用户要求查看指定 chunk 内容"
             }
 
     # 4. 用户问知识库文档数量或列表：调用 list_documents
@@ -106,7 +105,7 @@ def route_agent_action(question: str, top_k:int) -> dict:
 
     # 8. 默认：当成知识库问题，走 RAG
     return {
-        "decision": "direct_answer",
+        "decision": "use_knowledge_base",
         "action": "search_knowledge_base",
         "tool_name": "",
         "tool_args": {
@@ -117,10 +116,24 @@ def route_agent_action(question: str, top_k:int) -> dict:
     }
 
 def run_agent_once(question: str, top_k: int, decision: dict | None=None) -> dict:
+    if decision is None:
+        decision = route_agent_action(question, top_k)
+
     decision_type = decision.get("decision")
     action = decision.get("action")
     tool_name = decision.get("tool_name", "")
     tool_args = decision.get("tool_args", {})
+
+    tool_trace = [
+        {
+            "step": "decide",
+            "decision_type": decision_type,
+            "action": action,
+            "tool_name": tool_name,
+            "tool_args": tool_args,
+            "reason": decision.get("reason", "")
+        }
+    ]
 
     logger.info(
         f"[agent] decision={decision_type} action={action} "
@@ -142,32 +155,53 @@ def run_agent_once(question: str, top_k: int, decision: dict | None=None) -> dic
 
     # 2. 直接回答
     if action == "direct_answer":
-        return {
-            "status": "OK",
-            "answer": (
+        answer = (
                 "我是一个基于当前知识库的问答助手。"
                 "我可以根据已加载文档回答问题，也可以列出知识库文档，"
                 "并处理简单四则运算。对于知识库没有覆盖的问题，我会说明无法根据文档确定。"
-            ),
+            )
+
+        tool_trace.append({
+            "step": "final_answer",
+            "answer_preview": answer[:80]
+        })
+
+        return {
+            "status": "OK",
+            "answer": answer,
             "references": [],
             "confidence": 1.0,
             "need_clarification": False,
             "clarification_question": "",
-            "reason": decision.get("reason", "直接回答系统能力问题")
+            "reason": decision.get("reason", "直接回答系统能力问题"),
+            "action": action,
+            "tool_result_summary": "未调用工具，直接回答",
+            "tool_trace":tool_trace
         }
 
     # 3. 拒答
     if decision_type == "refuse":
+        answer = "这个问题不属于当前知识库覆盖范围，我目前只能根据已收录资料回答相关问题。"
+
+        tool_trace.append({
+            "step": "final_answer",
+            "answer_preview": answer[:80]
+        })
+
         return {
-            "status": "NO_RELEVANT_INFO",
-            "answer": "这个问题不属于当前知识库覆盖范围，我目前只能根据已收录资料回答相关问题。",
+            "status": "OUT_OF_SCOPE",
+            "answer": answer,
             "references": [],
             "confidence": 0.0,
             "need_clarification": False,
             "clarification_question": "",
-            "reason": decision.get("reason", "问题超出知识库范围")
+            "reason": decision.get("reason", "问题超出知识库范围"),
+            "action": action,
+            "tool_result_summary": "未调用工具，直接拒答",
+            "tool_trace":tool_trace
         }
 
+    # 4.调用工具
     if decision_type == "use_tool":
         tool_result = dispatch_tool(tool_name, tool_args)
 
@@ -179,10 +213,23 @@ def run_agent_once(question: str, top_k: int, decision: dict | None=None) -> dic
                 "confidence": 0.0,
                 "need_clarification": False,
                 "clarification_question": "",
-                "reason": tool_result.get("error", f"{tool_name} 工具执行失败")
+                "reason": tool_result.get("error", f"{tool_name} 工具执行失败"),
+                "action": action,
+                "tool_result_summary": summarize_tool_result(tool_name, tool_result),
+                "tool_trace": tool_trace
             }
 
         answer = format_tool_answer(tool_name, tool_result.get("output", {}))
+
+        tool_trace.append({
+            "step": "format_context",
+            "summary": f"{tool_name} 工具结果已转换为可读回答"
+        })
+
+        tool_trace.append({
+            "step": "final_answer",
+            "answer_preview": answer[:80]
+        })
 
         return {
             "status": "OK",
@@ -191,7 +238,10 @@ def run_agent_once(question: str, top_k: int, decision: dict | None=None) -> dic
             "confidence": 1.0,
             "need_clarification": False,
             "clarification_question": "",
-            "reason": f"Agent 选择工具：{tool_name}"
+            "reason": f"Agent 选择工具：{tool_name}",
+            "action": action,
+            "tool_result_summary": summarize_tool_result(tool_name, tool_result),
+            "tool_trace": tool_trace
         }
 
     # 6. 调用 search_knowledge_base，也就是原来的 RAG
@@ -214,8 +264,37 @@ def run_agent_once(question: str, top_k: int, decision: dict | None=None) -> dic
             f"[retrieve] 检索完成 chunks_len={len(retrieved_chunks)} hits={hit_brief}"
         )
 
+        tool_trace.append({
+            "step": "call_tool",
+            "tool_name": "search_knowledge_base",
+            "tool_args": {
+                "query": question,
+                "top_k": top_k
+            },
+            "success": True,
+            "result_summary": f"检索到 {len(retrieved_chunks)} 个候选 chunk",
+            "hits": hit_brief
+        })
+
+        tool_trace.append({
+            "step": "format_context",
+            "summary": f"将 {len(retrieved_chunks)} 个 chunk 交给 RAG 回答逻辑"
+        })
+
         logger.info("[answer] 开始调用 RAG 问答逻辑")
-        return ask(question, top_k=top_k, retrieved_chunks=retrieved_chunks)
+
+        rag_result = ask(question, top_k=top_k, retrieved_chunks=retrieved_chunks)
+
+        tool_trace.append({
+            "step": "final_answer",
+            "answer_preview": rag_result.get("answer", "")[:80]
+        })
+
+        rag_result["action"] = action
+        rag_result["tool_result_summary"] = f"知识库检索完成，召回 {len(retrieved_chunks)} 个 chunk"
+        rag_result["tool_trace"] = tool_trace
+
+        return rag_result
 
     # 7. 防御分支：理论上不应该走到这里
     return {
@@ -230,7 +309,7 @@ def run_agent_once(question: str, top_k: int, decision: dict | None=None) -> dic
 
 def format_tool_answer(tool_name: str, output: dict) -> str:
     if tool_name == "simple_calculator":
-        return f"计算结果是：{output.get("result")}"
+        return f"计算结果是：{output.get('result')}"
     if tool_name == "list_documents":
         docs = output.get("documents", [])
         count = output.get("count", 0)
@@ -266,6 +345,23 @@ def format_tool_answer(tool_name: str, output: dict) -> str:
         return f"chunk_{chunk_id} 内容如下：\n{text}"
 
     return str(output)
+
+def summarize_tool_result(tool_name: str, tool_result: dict) -> str:
+    if tool_result["status"] != "success":
+        return f"{tool_name} 工具执行失败：{tool_result.get('error', '')}"
+
+    output = tool_result.get("output", {})
+
+    if tool_name == "simple_calculator":
+        return f"simple_calculator 执行成功，结果为 {output.get('result')}"
+
+    if tool_name == "list_documents":
+        return f"list_documents 执行成功，共找到 {output.get('count', 0)} 个文档"
+
+    if tool_name == "get_chunk_text":
+        return f"get_chunk_text 执行成功，返回 chunk_id={output.get('chunk_id')} 的内容"
+
+    return f"{tool_name} 执行成功"
 
 def extract_chunk_id(q: str) -> int | None:
     patterns = [
