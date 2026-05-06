@@ -1,180 +1,172 @@
-# Mini RAG：中文知识库问答系统
+# Mini RAG Agent：中文知识库问答与最小 Agent 系统
 
-一个基于 **FastAPI** 的最小可运行中文 RAG 问答系统。  
-项目支持读取本地 `.txt` 和 `.md` 文档，完成文档加载、文本切块、向量化、BM25 + 向量混合检索、答案生成、拒答判断和引用返回，适合用于学习、演示和简历项目展示。
+本项目是一个基于 **FastAPI** 的中文 RAG 知识库问答系统，并在此基础上升级为一个**最小 Agent**。
 
----
+系统不仅可以根据本地知识库回答问题，还可以先判断用户问题类型，再选择不同执行路径：
 
-## 1. 项目简介
+- 知识库问题：走 RAG 检索问答；
+- 简单计算问题：调用 `simple_calculator`；
+- 文档列表问题：调用 `list_documents`；
+- chunk 查看问题：调用 `get_chunk_text`；
+- 指代不清的问题：返回澄清提示；
+- 明显超出知识库范围的问题：返回拒答结果。
 
-传统大模型无法直接理解用户本地或私有文档内容，直接提问时容易出现回答不准确、无法追溯来源、甚至编造答案的问题。
-
-本项目通过 RAG（Retrieval-Augmented Generation，检索增强生成）流程解决这一问题：
-
-1. 先读取本地知识库文档；
-2. 将文档切分成可检索的 chunk；
-3. 使用 Embedding 模型生成文本向量；
-4. 同时构建 BM25 关键词检索与向量语义检索；
-5. 用户提问；
-6. 根据用户问题类型选择走工具路径还是问答路径；
-7. 再将问题与上下文一起交给大模型生成答案；
-8. 最终返回答案和引用来源。
-
-项目目标不是做一个复杂系统，而是实现一个**可运行、可调试、可演示、可说明**的最小 RAG 系统。
+项目目标是实现一个**可运行、可调试、可演示、可评测**的 RAG + Agent 入门系统。
 
 ---
 
-## 2. 项目目标
+## 1. 项目背景
 
-本项目主要用于解决以下问题：
+普通大模型无法直接访问本地知识库内容。  
+如果直接提问，大模型容易出现以下问题：
 
-- 用户面对大量文档时，难以快速定位答案；
-- 普通关键词搜索无法理解自然语言问题；
-- 直接问大模型时，模型无法知道本地知识库内容；
-- 大模型可能脱离文档编造答案；
-- 问答结果缺少引用来源，难以验证可信度。
+- 不知道本地文档中的具体内容；
+- 回答可能脱离文档，产生幻觉；
+- 答案缺少引用来源，难以验证；
+- 所有问题都交给大模型处理，缺少任务分流能力。
 
-本项目希望实现：
-
-- 支持用户使用自然语言提问；
-- 支持从本地知识库中召回相关片段；
-- 支持基于检索结果生成回答；
-- 支持返回答案引用来源；
-- 支持低相关问题拒答，减少幻觉；
-- 支持通过接口演示完整 RAG 链路。
+本项目使用 RAG 解决“根据本地文档回答问题”的问题，并进一步加入最小 Agent，使系统具备基础的任务判断和工具调用能力。
 
 ---
 
-## 3. 当前已实现功能
+## 2. 项目核心能力
 
-### 3.1 文档加载
+### 2.1 RAG 问答能力
 
-- 自动读取本地知识库目录中的 `.txt` 和 `.md` 文件；
-- 暂不支持 PDF、DOCX、图片等文件类型；
-- 当知识库为空时，系统会返回 `NO_DOCUMENTS` 状态，避免后续初始化异常。
+系统支持：
 
-### 3.2 文档切块
-
-- `.txt` 文档使用递归切分策略，按照段落、换行、标点等规则切块；
-- `.md` 文档先按照标题层级切分，再进行二次递归切块；
-- 每个 chunk 会保留元数据，例如：
-  - `source_file`
-  - `chunk_id`
-  - `chunk_index`
-
-### 3.3 混合检索
-
-系统同时使用两种检索方式：
-
-| 检索方式 | 作用 |
-|---|---|
-| BM25 关键词检索 | 适合匹配明确关键词 |
-| Embedding 向量检索 | 适合理解语义相近的问题 |
-
-当前混合打分策略：
-
-```text
-hybrid_score = 0.4 * bm25_score + 0.76* vector_score
-```
-
-系统根据混合分数排序后返回 Top-K 相关片段。
-
-### 3.4 问答生成
-
-- 将用户问题和检索得到的上下文片段拼接为 Prompt；
+- 读取本地 `.txt` 和 `.md` 文档；
+- 对文档进行清洗和 chunk 切分；
+- 使用 BM25 做关键词检索；
+- 使用 Embedding 做语义检索；
+- 融合 BM25 分数和向量相似度进行混合排序；
+- 将召回片段拼接为上下文；
 - 调用大模型生成答案；
-- 当前默认使用 DeepSeek 接口；
-- 要求模型只能基于参考资料回答；
-- 返回结构化 JSON，包括答案、引用、置信度等字段。
+- 返回答案、引用来源、置信度和状态信息。
 
-### 3.5 拒答机制
+### 2.2 最小 Agent 能力
 
-当系统判断文档不足以回答问题时，会拒绝回答。
+系统在 `/chat` 接口中加入 Agent 决策流程。
 
-触发拒答的常见情况：
+用户提问后，系统会先调用 `route_agent_action()` 判断问题类型，再由 `run_agent_once()` 执行对应路径。
 
-- 知识库中没有文档；
-- 检索结果为空；
-- Top1 与 Top2 的 hybrid 分数差距过低；
-- Top1 的 vector 分数过低；
-- 问题明显超出知识库范围。
+当前支持的 action 包括：
 
-默认拒答回答：
+| action | 说明 |
+|---|---|
+| `search_knowledge_base` | 默认知识库问答路径，走 RAG 检索与生成 |
+| `simple_calculator` | 处理简单四则运算 |
+| `list_documents` | 查看当前知识库文档数量和列表 |
+| `get_chunk_text` | 根据 chunk_id 查看指定 chunk 内容 |
+| `direct_answer` | 回答系统能力类问题 |
+| `clarify` | 问题不完整或指代不明时要求用户补充 |
+| `refuse` | 明显超出知识库范围时拒答 |
+
+---
+
+## 3. 普通 RAG 与最小 Agent 的区别
+
+普通 RAG 的流程比较固定：
 
 ```text
-我无法根据提供的文档确定答案
+用户提问
+  ↓
+检索知识库
+  ↓
+拼接上下文
+  ↓
+调用大模型
+  ↓
+返回答案和引用
 ```
 
-### 3.6 调试与演示接口
+本项目升级后的最小 Agent 流程是：
 
-项目提供多个接口，方便观察 RAG 的中间过程：
+```text
+用户提问
+  ↓
+Agent 决策
+  ↓
+判断问题类型
+  ↓
+选择执行路径
+  ↓
+RAG 问答 / 工具调用 / 澄清 / 拒答
+  ↓
+返回统一结构结果
+```
 
-| 接口                       | 作用           |
-| ------------------------ | ------------ |
-| `/health`                | 健康检查         |
-| `/docs-preview`          | 查看已加载文档      |
-| `/chunks-preview`        | 预览切分后的 chunk |
-| `/search`                | 只检索，不生成答案    |
-| `/chat`                  | 完整问答链路       |
-| `/extract_refund_policy` | 退款政策结构化抽取示例  |
-| `/kb_summary`            | 统计知识库文档情况    |
-
-### 3.7 基础工具调用
-
-当前项目支持简单的规则路由工具调用：
-
-| 工具 | 作用 |
-|---|---|
-| `list_documents` | 查看当前加载的文档列表与数量 |
-| `get_chunk_text` | 根据 `chunk_id` 查看原文 |
-
-当前工具调用属于基础版规则路由，还不是完整的模型自主 function calling。
+也就是说，本项目第 8 周的重点不是“多写几个工具”，而是让系统具备初步的**任务分流能力**。
 
 ---
 
 ## 4. 系统架构
 
-### 4.1 整体流程
+### 4.1 整体架构
 
 ```text
-本地文档
+                    用户问题
+                       ↓
+                 FastAPI /chat
+                       ↓
+              route_agent_action()
+                       ↓
+              判断应该执行的 action
+                       ↓
+        ┌──────────────┼──────────────┐
+        ↓              ↓              ↓
+   RAG 问答路径      工具调用路径      澄清 / 拒答
+        ↓              ↓              ↓
+ search_knowledge   calculator     clarify / refuse
+        ↓          list_documents
+  检索相关 chunk    get_chunk_text
+        ↓              ↓
+  拼接上下文          格式化工具结果
+        ↓              ↓
+  调用大模型          直接返回结果
+        ↓              ↓
+        └────── 统一 ChatResponse ──────┘
+```
+
+### 4.2 RAG 问答路径
+
+```text
+用户问题
   ↓
-文档加载
-  ↓
-文档切块
-  ↓
-Embedding 向量化
-  ↓
-构建 BM25 索引与向量索引
-  ↓
-用户提问
-  ↓
-根据用户问题类型选择工具和问答
-  ↓
-问答                              工具                 
-  ↓                                ↓
-BM25 + 向量混合检索               调用大模型生成答案
+BM25 + 向量混合检索
   ↓
 相关性阈值判断
   ↓
-拼接 Prompt
+构建上下文 context
   ↓
-调用大模型生成答案
+调用大模型
   ↓
-解析结构化 JSON
+解析模型 JSON 输出
   ↓
-返回答案与引用来源
+绑定引用 references
+  ↓
+估算 confidence
+  ↓
+返回答案
 ```
 
-### 4.2 分层说明
+### 4.3 工具调用路径
 
-| 层级 | 说明 |
-|---|---|
-| 数据处理层 | 读取本地 `.txt` 和 `.md` 文档 |
-| 分块层 | 将长文档切分为适合检索的 chunk |
-| 检索层 | 使用 BM25 和向量相似度召回相关片段 |
-| 生成层 | 将问题和上下文传给大模型生成答案 |
-| 输出层 | 返回统一 JSON，包括答案、引用和状态信息 |
+```text
+用户问题
+  ↓
+Agent 判断为工具类问题
+  ↓
+提取工具参数
+  ↓
+dispatch_tool()
+  ↓
+工具执行
+  ↓
+format_tool_answer()
+  ↓
+返回工具结果
+```
 
 ---
 
@@ -183,36 +175,36 @@ BM25 + 向量混合检索               调用大模型生成答案
 ```text
 mini-rag/
 ├── app/
-│   ├── main.py          # FastAPI 入口，暴露接口
-│   ├── rag.py           # RAG 逻辑主控
-│   ├── rag_debug.py     # RAG 调试和预览
-│   ├── rag_generation.py# RAG 答案生成与结果解析
-│   ├── rag_ingest.py    # RAG 文档摄取与切分
-│   ├── rag_store.py     # RAG 索引构建与缓存持久化
-│   ├── rag_retrieval.py # RAG 检索与检索前后判断
-│   ├── config.py        # 配置读取与校验
-│   ├── prompts.py       # Prompt 管理
-│   ├── rebuild_kb.py    # 手动重建知识库索引
-│   └── utils.py         # 日志等工具函数
+│   ├── main.py              # FastAPI 入口，定义接口和响应结构
+│   ├── agent.py             # Agent 决策与执行逻辑
+│   ├── rag.py               # RAG 总控逻辑
+│   ├── rag_ingest.py        # 文档读取、清洗和切分
+│   ├── rag_retrieval.py     # BM25 + 向量检索与拒答判断
+│   ├── rag_generation.py    # Prompt 构建、模型调用、结果解析
+│   ├── rag_store.py         # 索引构建、缓存保存、manifest 判断
+│   ├── rag_debug.py         # 文档和 chunk 预览工具
+│   ├── tools.py             # 工具函数注册与分发
+│   ├── config.py            # 环境变量和配置项
+│   ├── prompts.py           # Prompt 模板
+│   └── untils.py            # 日志等通用工具
 ├── data/
-│   ├── eval/            # 评测问题
-│   └── kb/              # 知识库文档
-├── outputs/             # 评测结果输出目录
+│   ├── kb/                  # 知识库文档
+│   └── eval/                # 评测数据
 ├── scripts/
-│   └── eval.py          # 离线评测脚本
-├── tests/
-│   └── test_api.py      # 接口测试
-├── .env.example         # 环境变量模板
-├── .gitignore
+│   ├── eval.py              # RAG 离线评测脚本
+│   └── agent_eval.py        # Agent 路由评测脚本
+├── outputs/                 # 评测输出结果
+├── tests/                   # 接口测试
+├── .env.example             # 环境变量示例
 ├── requirements.txt
 └── README.md
 ```
 
-> 注意：如果你的实际文件名仍是 `untils.py` 或目录名仍是 `test/`，请保持 README 与代码仓库一致。建议后续统一改为 `utils.py` 和 `tests/`。
+> 说明：当前代码中实际导入的是 `app.untils`，所以 README 里应写 `untils.py`，不要写成 `utils.py`，除非后续把文件名统一改掉。
 
 ---
 
-## 6. 环境依赖
+## 6. 环境准备
 
 建议使用：
 
@@ -220,39 +212,13 @@ mini-rag/
 Python 3.10+
 ```
 
-核心依赖：
-
-- fastapi
-- uvicorn
-- pydantic
-- python-dotenv
-- charset-normalizer
-- langchain-text-splitters
-- numpy
-- jieba
-- rank-bm25
-- sentence-transformers
-- requests
-
 安装依赖：
 
 ```bash
 pip install -r requirements.txt
 ```
 
----
-
-## 7. 环境配置
-
-本项目使用 `.env` 管理运行时配置。
-
-### 7.1 创建配置文件
-
-macOS / Linux：
-
-```bash
-cp .env.example .env
-```
+创建 `.env` 文件：
 
 Windows：
 
@@ -260,352 +226,111 @@ Windows：
 copy .env.example .env
 ```
 
-### 7.2 配置项说明
+macOS / Linux：
 
-| 配置项                    | 是否必填 | 默认值                                            | 说明                        |
-| ---------------------- | ---- | ---------------------------------------------- | ------------------------- |
-| `RAG_FILE_PATH`        | 是    | 无                                              | 知识库文档路径或目录，例如 `./data/kb` |
-| `TOP_K`                | 否    | `3`                                            | 默认召回条数                    |
-| `CHUNK_SIZE`           | 否    | `800`                                          | 每个文本块最大长度                 |
-| `CHUNK_OVERLAP`        | 否    | `120`                                          | 相邻文本块重叠长度                 |
-| `EMBEDDING_MODEL_NAME` | 是    | 无                                              | Embedding 模型名称            |
-| `LLM_API_KEY`          | 是    | 无                                              | 大模型接口密钥                   |
-| `MODEL_NAME`           | 否    | `deepseek-chat`                                | 大模型名称                     |
-| `LLM_API_URL`          | 否    | `https://api.deepseek.com/v1/chat/completions` | 大模型接口地址                   |
-| `MARGIN_THRESHOLD`     | 否    | `0.01`                                         | Top1与Top2 hybrid 分数差距拒答阈值 |
-| `VECTOR_THRESHOLD`     | 否    | `0.35`                                         | vector 分数拒答阈值             |
-| `MAX_CONTEXT_CHARS`    | 否    | 视代码配置而定                                        | 拼接给大模型的最大上下文长度            |
-| `TEMPERATURE`          | 否    | 视代码配置而定                                        | 大模型生成随机性                  |
+```bash
+cp .env.example .env
+```
 
 ---
 
-## 8. 何时需要重建索引
+## 7. 环境变量配置
 
-### 8.1 需要重建索引的情况
+`.env` 中需要配置以下内容：
 
-以下情况需要重建索引：
+| 配置项 | 是否必填 | 说明 |
+|---|---|---|
+| `RAG_FILE_PATH` | 是 | 知识库目录，例如 `./data/kb` |
+| `TOP_K` | 否 | 默认召回 chunk 数量 |
+| `CHUNK_SIZE` | 否 | chunk 最大长度 |
+| `CHUNK_OVERLAP` | 否 | 相邻 chunk 重叠长度 |
+| `EMBEDDING_MODEL_NAME` | 是 | Embedding 模型名称 |
+| `LLM_API_KEY` 或 `DEEPSEEK_API_KEY` | 是 | 大模型 API Key，按你的代码配置保持一致 |
+| `MODEL_NAME` | 否 | 大模型名称，例如 `deepseek-chat` |
+| `LLM_API_URL` | 否 | 大模型接口地址 |
+| `VECTOR_THRESHOLD` | 否 | 向量分数过低时拒答 |
+| `MARGIN_THRESHOLD` | 否 | Top1 与 Top2 分数差距阈值 |
+| `MAX_CONTEXT_CHARS` | 否 | 拼接给大模型的最大上下文长度 |
+| `AUTO_REBUILD_ON_STARTUP` | 否 | 是否启动时强制重建索引 |
+
+---
+
+## 8. 启动项目
+
+在项目根目录运行：
+
+```bash
+uvicorn app.main:app --reload
+```
+
+启动后访问 Swagger：
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+健康检查：
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+---
+
+## 9. 索引构建与缓存机制
+
+项目启动时会检查知识库是否需要重建索引：
+
+```text
+启动服务
+  ↓
+Settings.validate()
+  ↓
+needs_rebuild()
+  ↓
+判断是否需要重建
+  ↓
+需要重建：rebuild_and_persist_index()
+不需要重建：load_index_cache()
+```
+
+需要重建索引的情况：
 
 - 新增知识库文档；
 - 删除知识库文档；
 - 修改知识库文档内容；
 - 修改 `CHUNK_SIZE`；
 - 修改 `CHUNK_OVERLAP`；
-- 修改 `EMBEDDING_MODEL_NAME`。
+- 修改 Embedding 模型。
 
-### 8.2 通常不需要重建索引的情况
-
-以下情况通常不需要重建索引：
+通常不需要重建索引的情况：
 
 - 修改 `TOP_K`；
-- 修改 `MAX_CONTEXT_CHARS`；
+- 修改 Prompt；
 - 修改 `MODEL_NAME`；
 - 修改 `TEMPERATURE`；
-- 修改 Prompt；
 - 修改拒答提示文案。
 
-### 8.3 手动重建索引
+---
 
-macOS / Linux：
+## 10. API 接口说明
 
-```bash
-python app/rebuild_kb.py
-```
-
-Windows：
-
-```bash
-python app\rebuild_kb.py
-```
+| 接口 | 方法 | 作用 |
+|---|---|---|
+| `/health` | GET | 健康检查 |
+| `/docs-preview` | GET | 查看已加载文档 |
+| `/chunks-preview` | GET | 查看切分后的 chunk |
+| `/search` | POST | 只检索，不调用大模型 |
+| `/chat` | POST | 完整 Agent + RAG 问答入口 |
+| `/extract_refund_policy` | POST | 退款政策结构化抽取示例 |
+| `/kb_summary` | POST | 查看知识库统计信息 |
+| `/decide` | POST | 只查看 Agent 决策结果，不执行最终问答 |
 
 ---
 
-## 9. 启动项目
+## 11. `/chat` 接口说明
 
-### 9.1 本地启动
-
-1. 创建并激活虚拟环境；
-2. 安装依赖；
-3. 将 `.txt` 或 `.md` 文档放入知识库目录；
-4. 配置 `.env`；
-5. 在项目根目录运行服务：
-
-```bash
-uvicorn app.main:app --reload
-```
-
-启动后访问：
-
-```text
-http://127.0.0.1:8000/docs
-```
-
----
-
-## 10. Docker 启动
-
-### 10.1 构建镜像
-
-```bash
-docker build -t rag-demo:latest .
-```
-
-### 10.2 运行容器
-
-```bash
-docker run --rm -p 8000:8000 rag-demo:latest
-```
-
-服务启动后访问：
-
-```text
-http://localhost:8000/docs
-```
-
----
-
-## 11. API 接口说明
-
-### 11.1 健康检查
-
-```http
-GET /health
-```
-
-示例：
-
-```bash
-curl http://127.0.0.1:8000/health
-```
-
-返回示例：
-
-```json
-{
-  "code": 0,
-  "message": "success",
-  "data": {
-    "status": "ok"
-  }
-}
-```
-
----
-
-### 11.2 文档预览
-
-```http
-GET /docs-preview
-```
-
-示例：
-
-```bash
-curl http://127.0.0.1:8000/docs-preview
-```
-
-作用：查看当前加载了哪些文档。
-
----
-
-### 11.3 Chunk 预览
-
-```http
-GET /chunks-preview
-```
-
-示例：
-
-```bash
-curl "http://127.0.0.1:8000/chunks-preview?limit=10"
-```
-
-作用：查看文档切分后的 chunk 内容，方便调试切块效果。
-
----
-
-### 11.4 检索接口
-
-```http
-POST /search
-```
-
-作用：只执行检索，不调用大模型生成答案，适合演示“先检索，再生成”的过程。
-
-请求示例：
-
-```bash
-curl -X POST "http://127.0.0.1:8000/search" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "question": "每个 Vue 应用都是通过什么函数创建应用实例的？",
-    "top_k": 5
-  }'
-```
-
-返回示例：
-
-```json
-{
-  "code": 0,
-  "message": "success",
-  "data": {
-    "question": "每个 Vue 应用都是通过什么函数创建应用实例的？",
-    "status": "ok",
-    "reason": "检索成功",
-    "results": [
-      {
-        "reference_id": "Reference 1",
-        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
-        "file_name": "application.md",
-        "chunk_id": 1,
-        "position": 1,
-        "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>应用实例{#the-application-instance}每个Vue应用都是通过[`createApp`](/api/application#createapp)函数创建一个新的**应用实例**：```jsimport{createApp}from'vue'constapp=createApp({/*根组件选项*/})```",
-        "score": 1,
-        "bm25_score": 31.69338498402554,
-        "vector_score": 0.741374135017395
-      },
-      {
-        "reference_id": "Reference 2",
-        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
-        "file_name": "application.md",
-        "chunk_id": 6,
-        "position": 6,
-        "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>多个应用实例{#multiple-application-instances}应用实例并不只限于一个。`createApp`API允许你在同一个页面中创建多个共存的Vue应用，而且每个应用都拥有自己的用于配置和全局资源的作用域。```jsconstapp1=createApp({/*...*/})app1.mount('#container-1')constapp2=createApp({/*...*/})app2.mount('#container-2')```如果你正在使用Vue来增强服务端渲染HTM",
-        "score": 0.8979523181915283,
-        "bm25_score": 27.480818881081085,
-        "vector_score": 0.6945750117301941
-      },
-      {
-        "reference_id": "Reference 3",
-        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
-        "file_name": "application.md",
-        "chunk_id": 5,
-        "position": 5,
-        "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>应用配置{#app-configurations}应用实例会暴露一个`.config`对象允许我们配置一些应用级的选项，例如定义一个应用级的错误处理器，用来捕获所有子组件上的错误：```jsapp.config.errorHandler=(err)=>{/*处理错误*/}```应用实例还提供了一些方法来注册应用范围内可用的资源，例如注册一个组件：```jsapp.component('TodoDeleteButton',TodoDeleteButton)```这使得`TodoDeleteButton`在应",
-        "score": 0.7884707450866699,
-        "bm25_score": 23.78919390226851,
-        "vector_score": 0.6310862302780151
-      },
-      {
-        "reference_id": "Reference 4",
-        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
-        "file_name": "application.md",
-        "chunk_id": 2,
-        "position": 2,
-        "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>根组件{#the-root-component}我们传入`createApp`的对象实际上是一个组件，每个应用都需要一个“根组件”，其他组件将作为其子组件。如果你使用的是单文件组件，我们可以直接从另一个文件中导入根组件。```jsimport{createApp}from'vue'//从一个单文件组件中导入根组件importAppfrom'./App.vue'constapp=createApp(App)```虽然本指南中的许多示例只需要一个组件，但大多数真实的应用都是由一棵嵌套的、可重用的组件树组成的。",
-        "score": 0.7358264923095703,
-        "bm25_score": 24.326581091026174,
-        "vector_score": 0.5634583234786987
-      },
-      {
-        "reference_id": "Reference 5",
-        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\introduction.md",
-        "file_name": "introduction.md",
-        "chunk_id": 116,
-        "position": 16,
-        "snippet": "[标题路径]简介{#introduction}>API风格{#api-styles}>该选哪一个？{#which-to-choose}两种API风格都能够覆盖大部分的应用场景。它们只是同一个底层系统所提供的两套不同的接口。实际上，选项式API是在组合式API的基础上实现的！关于Vue的基础概念和知识在它们之间都是通用的。选项式API以“组件实例”的概念为中心(即上述例子中的`this`)，对于有面向对象语言背景的用户来说，这通常与基于类的心智模型更为一致。同时，它将响应性相关的细节抽象出来，并强制按照选项来组织代码，从而对初学者而言更为友好。组合式API的核心思想是直接在函数作用域内定义响应式",
-        "score": 0.7060389518737793,
-        "bm25_score": 19.44158894043517,
-        "vector_score": 0.6084402203559875
-      }
-    ]
-  }
-}
-```
-
----
-
-### 11.5 问答接口
-
-```http
-POST /chat
-```
-
-作用：执行完整 RAG 问答链路。
-
-请求示例：
-
-```bash
-curl -X POST "http://127.0.0.1:8000/chat" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "question": "每个 Vue 应用都是通过什么函数创建应用实例的？",
-    "top_k": 5
-  }'
-```
-
-返回示例：
-
-```json
-{
-  "code": 0,
-  "message": "success",
-  "data": {
-    "question": "每个 Vue 应用都是通过什么函数创建应用实例的？",
-    "answer": "每个 Vue 应用都是通过 `createApp` 函数创建应用实例的。",
-    "references": [
-      {
-        "reference_id": "Reference 1",
-        "file_name": "application.md",
-        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
-        "chunk_id": 1,
-        "position": 1,
-        "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>应用实例{#the-application-instance}每个Vue应用都是通过[`createApp`](/api/application#createapp)函数创建一个新的**应用实例**：```jsimport{createApp}from'vue'constapp=createApp({/*根组件选项*/})```",
-        "score": 1
-      }
-    ],
-    "confidence": 0.521,
-    "need_clarification": false,
-    "status": "ok",
-    "clarification_question": "",
-    "reason": "检索命中有效证据，且答案成功绑定引用"
-  }
-}
-```
-
----
-
-## 12. 知识库范围示例：Vue 3 入门问答
-
-当前项目可作为 Vue 3 入门知识库问答系统使用。
-
-### 12.1 当前覆盖内容
-
-- Vue 是什么，以及适用场景；
-- Vue 项目的快速开始方式；
-- Vue 应用的创建与挂载；
-- 模板语法与常见指令；
-- 响应式基础；
-- 计算属性；
-- 条件渲染；
-- 列表渲染；
-- 事件处理；
-- 基础组件概念与使用方法。
-
-### 12.2 适合回答的问题
-
-- Vue 是什么？
-- Vue 应用如何创建？
-- 模板语法怎么写？
-- 什么是响应式？
-- 计算属性和方法有什么区别？
-- `v-if` 和 `v-show` 有什么区别？
-- `v-for` 为什么建议配合 `key`？
-- Vue 事件怎么绑定？
-- Vue 组件是什么，怎么使用？
-
-### 12.3 不适合回答的问题
-
-- Vue 组件高级通信机制的完整实现细节；
-- 插槽、依赖注入等进阶专题；
-- Vue 工程化、路由、状态管理等扩展主题；
-- 与 Vue 无关的通用前端问题。
-
----
-
-## 13. 手工测试清单
-
-### 13.1 能回答的问题
+`/chat` 是本项目最重要的接口。
 
 请求示例：
 
@@ -616,256 +341,515 @@ curl -X POST "http://127.0.0.1:8000/chat" \
 }
 ```
 
-检查点：
+返回结构核心字段：
 
-- 回答内容是否和文档一致；
-- 是否返回引用来源；
-- 引用片段是否能支撑答案。
+| 字段 | 说明 |
+|---|---|
+| `answer` | 最终回答 |
+| `references` | 引用来源 |
+| `confidence` | 置信度 |
+| `status` | 本次回答状态 |
+| `reason` | 状态原因 |
+| `action` | Agent 本次选择的动作 |
+| `tool_result_summary` | 工具或 RAG 路径结果摘要 |
+| `tool_trace` | Agent 决策和执行过程追踪 |
+
+其中 `action` 和 `tool_trace` 是第 8 周展示 Agent 效果的重点。
 
 ---
 
-### 13.2 不能回答的问题
+## 12. Agent 决策规则
 
-请求示例：
+当前 Agent 使用规则路由，不是完整的模型自主 function calling。
+
+决策逻辑如下：
+
+```text
+1. 空问题
+   → clarify
+
+2. 用户询问系统能力
+   → direct_answer
+
+3. 问题中包含 chunk_id 或“查看第几个 chunk”
+   → get_chunk_text
+
+4. 问题询问文档数量、文档列表、有哪些文档
+   → list_documents
+
+5. 问题是简单四则运算表达式
+   → simple_calculator
+
+6. 问题明显超出知识库范围
+   → refuse
+
+7. 问题指代不明
+   → clarify
+
+8. 其他情况
+   → search_knowledge_base
+```
+
+---
+
+## 13. 演示样例
+
+### 13.1 知识库问答路径
+
+请求：
 
 ```json
 {
-  "question": "这份文档中提到的 Vue 当前最新稳定版本号是多少？",
+  "question": "每个 Vue 应用都是通过什么函数创建应用实例的？",
   "top_k": 5
 }
 ```
 
-期望结果：
+预期路径：
+
+```text
+Agent → search_knowledge_base → 检索 chunk → 调用大模型 → 返回答案和引用
+```
+
+重点观察：
+
+```json
+{
+  "action": "search_knowledge_base",
+  "tool_result_summary": "知识库检索完成，召回 5 个 chunk"
+}
+```
+
+---
+
+### 13.2 简单计算工具路径
+
+请求：
+
+```json
+{
+  "question": "1 + 2 * 3 等于多少？",
+  "top_k": 5
+}
+```
+
+预期路径：
+
+```text
+Agent → simple_calculator → 返回计算结果
+```
+
+预期回答：
+
+```text
+计算结果是：7
+```
+
+重点观察：
+
+```json
+{
+  "action": "simple_calculator",
+  "tool_result_summary": "simple_calculator 执行成功，结果为 7"
+}
+```
+
+---
+
+### 13.3 文档列表工具路径
+
+请求：
+
+```json
+{
+  "question": "当前知识库有哪些文档？",
+  "top_k": 5
+}
+```
+
+预期路径：
+
+```text
+Agent → list_documents → 返回文档数量和文档名
+```
+
+重点观察：
+
+```json
+{
+  "action": "list_documents"
+}
+```
+
+---
+
+### 13.4 chunk 查看工具路径
+
+请求：
+
+```json
+{
+  "question": "查看 chunk 1 的内容",
+  "top_k": 5
+}
+```
+
+预期路径：
+
+```text
+Agent → get_chunk_text → 返回指定 chunk 原文
+```
+
+重点观察：
+
+```json
+{
+  "action": "get_chunk_text"
+}
+```
+
+---
+
+### 13.5 指代不明问题
+
+请求：
+
+```json
+{
+  "question": "这个怎么弄？",
+  "top_k": 5
+}
+```
+
+预期路径：
+
+```text
+Agent → clarify → 要求用户补充说明
+```
+
+预期状态：
+
+```json
+{
+  "status": "clarify",
+  "need_clarification": true
+}
+```
+
+---
+
+### 13.6 超出知识库范围问题
+
+请求：
+
+```json
+{
+  "question": "今天天气怎么样？",
+  "top_k": 5
+}
+```
+
+预期路径：
+
+```text
+Agent → refuse → 返回超出知识库范围
+```
+
+预期状态：
+
+```json
+{
+  "status": "out_of_scope",
+  "action": "refuse"
+}
+```
+
+---
+
+## 14. `/decide` 接口演示
+
+`/decide` 只展示 Agent 的决策结果，不执行工具或 RAG。
+
+请求：
+
+```json
+{
+  "question": "1 + 2 * 3 等于多少？",
+  "top_k": 5
+}
+```
+
+预期返回：
 
 ```json
 {
   "code": 0,
   "message": "success",
   "data": {
-    "answer": "我无法根据提供的文档确定答案",
-    "references": []
+    "question": "1 + 2 * 3 等于多少？",
+    "decision": {
+      "decision": "use_tool",
+      "action": "simple_calculator",
+      "tool_name": "simple_calculator",
+      "tool_args": {
+        "expression": "1 + 2 * 3"
+      },
+      "reason": "用户问题是简单四则运算"
+    }
   }
 }
 ```
 
+这个接口适合用来演示 Agent 的 decision 流程。
+
 ---
 
-### 13.3 空问题
+## 15. `/search` 接口演示
 
-请求示例：
+`/search` 只执行检索，不调用大模型。
+
+适合用来观察：
+
+- 哪些 chunk 被召回；
+- 每个 chunk 的 BM25 分数；
+- 每个 chunk 的 vector 分数；
+- hybrid score 排序是否合理。
+
+请求：
 
 ```json
 {
-  "question": "",
+  "question": "每个 Vue 应用都是通过什么函数创建应用实例的？",
   "top_k": 5
 }
 ```
 
-期望结果：
+返回中重点看：
 
 ```json
 {
-  "success": false,
-  "code": "EMPTY_QUESTION",
-  "message": "问题不能为空，请输入你想查询的内容"
+  "reference_id": "Reference 1",
+  "file_name": "application.md",
+  "chunk_id": 1,
+  "snippet": "...",
+  "score": 1,
+  "bm25_score": 34.05,
+  "vector_score": 0.74
 }
 ```
 
 ---
 
-### 13.4 重复提问
+## 16. Agent 基础评测
 
-请求示例：
+第 8 周评测重点是验证 Agent 是否选对路径。
+
+评测样例可以包含：
+
+```json
+[
+  {
+    "id": "case_001",
+    "question": "1 + 2 * 3 等于多少？",
+    "expected_action": "simple_calculator"
+  },
+  {
+    "id": "case_002",
+    "question": "当前知识库有哪些文档？",
+    "expected_action": "list_documents"
+  },
+  {
+    "id": "case_003",
+    "question": "查看 chunk 1 的内容",
+    "expected_action": "get_chunk_text"
+  },
+  {
+    "id": "case_004",
+    "question": "每个 Vue 应用都是通过什么函数创建应用实例的？",
+    "expected_action": "search_knowledge_base"
+  },
+  {
+    "id": "case_005",
+    "question": "这个怎么弄？",
+    "expected_action": "clarify"
+  },
+  {
+    "id": "case_006",
+    "question": "今天天气怎么样？",
+    "expected_action": "refuse"
+  }
+]
+```
+
+评测指标：
+
+```text
+Action Accuracy = 预测正确的样例数 / 总样例数
+```
+
+示例输出：
+
+```text
+总样例数：20
+通过数：18
+失败数：2
+Action Accuracy：90.00%
+```
+
+---
+
+## 17. 手工测试清单
+
+### 17.1 RAG 问答是否正常
+
+测试问题：
 
 ```json
 {
-  "question": "这份文档中提到的 Vue 当前最新稳定版本号是多少？",
+  "question": "每个 Vue 应用都是通过什么函数创建应用实例的？",
   "top_k": 5
 }
 ```
 
 检查点：
 
-- 多次回答的核心内容是否一致；
-- 多次返回的引用来源是否大体一致；
-- 不应出现明显随机编造。
+- `action` 是否为 `search_knowledge_base`；
+- 是否返回 `references`；
+- `snippet` 是否能支撑答案；
+- `confidence` 是否在 0 到 1 之间。
 
 ---
 
-## 14. 已踩过的坑
+### 17.2 工具调用是否正常
 
-### 14.1 数据目录为空导致初始化异常
+测试问题：
 
-问题：如果数据目录为空，还继续构建 Embedding 和 BM25，后续链路会不稳定。  
-解决：没有文档时直接返回 `NO_DOCUMENTS` 状态，不继续初始化。
+```json
+{
+  "question": "1 + 2 * 3 等于多少？",
+  "top_k": 5
+}
+```
 
-### 14.2 单一检索方式不够稳定
+检查点：
 
-问题：只用关键词检索容易漏召回，只用向量检索有时排序不稳定。  
-解决：使用 BM25 + 向量检索的混合检索方式，提高召回稳定性。
-
-### 14.3 模型输出格式不稳定
-
-问题：大模型有时会输出 Markdown 代码块或额外解释，导致 JSON 解析失败。  
-解决：增加 JSON 解析和兜底逻辑，解析失败时返回安全默认答案。
-
-### 14.4 模型可能脱离文档回答
-
-问题：RAG 不能完全避免幻觉。  
-解决：
-
-- 检索分数过低时直接拒答；
-- Prompt 中要求模型只能基于参考资料回答；
-- 返回引用来源，方便用户核验。
+- `action` 是否为 `simple_calculator`；
+- 是否没有走 RAG；
+- 结果是否为 7；
+- `tool_trace` 中是否出现 `call_tool`。
 
 ---
 
-## 15. 已知问题
+### 17.3 拒答是否正常
 
-### 15.1 `/chat` 用户输出与日志状态不一致
+测试问题：
 
-现象：当问题无法根据文档回答时，接口会正常返回“我无法根据提供的文档确定答案”，但日志中仍显示流程成功结束。
+```json
+{
+  "question": "今天天气怎么样？",
+  "top_k": 5
+}
+```
 
-影响：日志只能说明接口执行成功，不能直观看出本次回答是“正常回答”还是“拒答”。
+检查点：
 
-当前处理：暂时接受。
-
-后续优化：
-
-- 在返回结果中明确区分 `answered`、`rejected`、`need_clarification` 等状态；
-- 在日志中记录拒答原因，例如 `LOW_SCORE`、`NO_DOCUMENTS`、`OUT_OF_SCOPE`。
+- `action` 是否为 `refuse`；
+- `status` 是否为 `out_of_scope`；
+- 是否没有返回伪造答案。
 
 ---
 
-## 16. 下一步优化方向
+### 17.4 澄清是否正常
 
-后续可以从以下方向继续完善：
+测试问题：
 
-- 支持 PDF、DOCX 文档解析；
-- 支持扫描版 PDF 的 OCR；
-- 增加 rerank，提高 Top-K 排序质量；
-- 优化 chunk 切分策略；
+```json
+{
+  "question": "这个怎么弄？",
+  "top_k": 5
+}
+```
+
+检查点：
+
+- `action` 是否为 `clarify`；
+- `need_clarification` 是否为 `true`；
+- 是否返回 `clarification_question`。
+
+---
+
+## 18. 当前项目特点
+
+本项目的重点不是追求复杂 Agent 框架，而是完成一个清晰、可解释的最小闭环：
+
+```text
+问题输入
+  ↓
+Agent 决策
+  ↓
+选择路径
+  ↓
+执行工具或 RAG
+  ↓
+返回统一结果
+  ↓
+通过样例评测验证
+```
+
+当前实现的优点：
+
+- 结构清晰，适合初学者理解 RAG 与 Agent；
+- 接口返回包含 action 和 trace，便于展示路径差异；
+- RAG 与工具调用共用 `/chat` 入口；
+- 提供 `/decide` 接口，可以单独观察 Agent 决策；
+- 支持索引缓存，避免每次启动都完整重建；
+- 返回引用来源，方便验证答案依据。
+
+---
+
+## 19. 已知限制
+
+当前版本仍然是最小实现，存在以下限制：
+
+- Agent 决策主要依赖规则判断，不是大模型自主规划；
+- 工具数量较少，只覆盖计算、文档列表和 chunk 查看；
+- `simple_calculator` 只适合简单四则运算；
+- 超出知识库范围的判断主要依赖关键词规则；
+- RAG 的回答质量依赖检索结果和大模型输出稳定性；
+- 暂不支持 PDF、DOCX、图片等复杂文档格式。
+
+---
+
+## 20. 后续优化方向
+
+后续可以继续优化：
+
+- 增加更多工具，例如知识库统计、关键词搜索、文档摘要；
+- 改进 Agent 路由策略，减少硬编码关键词；
+- 将 Agent 决策结果与评测脚本更好地结合；
 - 增加多轮对话能力；
-- 增加前端页面；
-- 增加自动化评测集；
-- 增加更完整的 function calling 能力；
-- 增加日志中的回答状态与拒答原因；
-- 支持多知识库切换。
+- 支持更多文档格式；
+- 优化 confidence 计算方式；
+- 增加 pytest 自动化测试；
+- 完善 Docker Compose 部署方式。
 
 ---
 
-## 17. 项目展示讲稿
+## 21. 项目展示讲稿
 
-可以用下面这段话快速介绍项目：
+可以用下面这段话介绍项目：
 
-> 我做的是一个基于 FastAPI 的最小中文 RAG 知识库问答系统，主要解决大模型无法直接回答本地文档内容、容易编造答案、缺少引用来源的问题。  
-> 系统会先读取本地 `.txt` 和 `.md` 文档，对文档进行切块和向量化，同时构建 BM25 关键词索引和向量索引。用户提问时，系统会通过混合检索召回相关片段，再把问题和上下文一起交给大模型生成答案。  
-> 为了减少幻觉，我加入了相关性阈值判断和拒答机制；为了方便验证，我让系统返回答案对应的引用来源。目前项目已经支持健康检查、文档预览、chunk 预览、检索接口和完整问答接口，适合作为一个可演示、可调试、可写进简历的 RAG 入门项目。
+> 我做的是一个基于 FastAPI 的中文 RAG 知识库问答系统，并在第 8 周将它升级成了一个最小 Agent。  
+> 原来的 RAG 流程是用户提问后直接检索知识库，再调用大模型生成答案。这样虽然能回答文档问题，但所有问题都会走同一条路径。  
+> 现在系统会先通过 Agent 决策模块判断问题类型。如果是知识库问题，就走 RAG 检索问答；如果是简单计算问题，就调用计算工具；如果是查看文档列表或 chunk 内容，就调用对应工具；如果问题指代不清，就返回澄清提示；如果明显超出知识库范围，就拒答。  
+> 为了方便展示和验证，我在返回结果中加入了 action、tool_result_summary 和 tool_trace，可以看到系统本次到底选择了哪条路径。这样项目不只是一个普通问答接口，而是具备了基础任务分流能力的最小 Agent 系统。
 
 ---
 
-## 18. 简历描述参考
+## 22. 简历描述参考
 
-可以将项目压缩成下面几条写进简历：
-
-- 基于 FastAPI 实现中文 RAG 知识库问答系统，支持 `.txt` / `.md` 文档加载、递归切块、Embedding 向量化、BM25 + 向量混合检索和大模型答案生成。
-- 设计检索增强问答链路，支持返回引用来源、结构化 JSON 输出和低相关问题拒答，提升回答可解释性并降低模型幻觉风险。
-- 提供 `/search`、`/chat`、`/docs-preview`、`/chunks-preview` 等接口，支持完整 RAG 流程调试、演示和手工测试。
-- 封装 Prompt 管理、基础工具调用和评测脚本，使项目具备可维护、可验证、可展示的 LLM 应用工程雏形。
-
-## 19 Agent设计
-
-针对目前的RAG项目引入了一些简单的Agent工具，成立一个最小的Agent项目
-
-### 19.1 普通RAG与最小Agent的区别
-
-普通RAG的流程是固定的
-```
-用户提问 -> 检索文档 -> 拼接上下文 -> 调用大模型 -> 返回答案和引用
-```
-
-而最小Agent的流程为
-```
-用户提问 -> 判断问题类型 -> 选择相应工具函数 -> 执行相应工具函数 -> 生成答案
-```
-
-也就是说，最小 Agent 的核心不是“会聊天”，而是“能根据任务选择动作”。
-
-### 19.2 当前 Agent 支持的动作  
-  
-| 动作                    | 说明                 | 是否调用工具 |     |
-| --------------------- | ------------------ | ------ | --- |
-| search_knowledge_base | 从知识库检索相关内容，并基于引用回答 | 是      |     |
-| list_documents        | 查看当前知识库中有哪些文档      | 是      |     |
-| simple_calculator     | 执行简单四则运算           | 是      |     |
-| clarify               | 问题不清楚时要求用户补充信息     | 否      |     |
-| refuse                | 问题超出知识库范围时拒答       | 否      |     |
-| direct_answer         | 对系统能力类问题直接回答       | 否      |     |
-
-### 19.3 工具定义
-
-#### search_knowledge_base  
-  
-定义：根据用户问题，从知识库中检索相关 chunk，并基于检索结果生成答案。  
-  
-输入：  
-  
-- query：用户问题  
-- top_k：召回条数  
-  
-输出：  
-  
-- answer：回答  
-- references：引用来源  
-- confidence：置信度  
-- status：回答状态  
-  
-调用时机：  
-  
-- 用户询问知识库资料中的事实、流程、定义、规则、配置方法时调用。  
-  
-#### list_documents  
-  
-定义：列出当前知识库已经加载的文档。  
-  
-输入：  
-  
-- 无  
-  
-输出：  
-  
-- count：文档数量  
-- documents：文档列表  
-  
-调用时机：  
-  
-- 用户询问“有哪些文档”“几个文档”“文档列表”“知识库包含什么资料”时调用。  
-  
-#### simple_calculator  
-  
-定义：执行简单数字四则运算。  
-  
-输入：  
-  
-- expression：数学表达式，例如 `100 * 3 + 50`  
-  
-输出：  
-  
-- result：计算结果  
-  
-调用时机：  
-  
-- 用户问题主要是简单计算，不需要查知识库时调用。
-
-## 20 Agent 路由测试表
-
-| 编号 | 用户问题 | 预期动作 | 理由 |
-|---|---|---|---|
-| 1 | 当前知识库里有哪些文档？ | list_documents | 用户询问文档列表 |
-| 2 | 知识库里有几个文档？ | list_documents | 用户询问文档数量 |
-| 3 | 每个 Vue 应用都是通过什么函数创建应用实例的？ | search_knowledge_base | 需要根据知识库内容回答 |
-| 4 | Vue 的响应式基础是什么？ | search_knowledge_base | 需要检索知识库 |
-| 5 | 100 * 3 + 50 是多少？ | simple_calculator | 纯数字计算，不需要查库 |
-| 6 | 这个怎么配置？ | clarify | 指代不明，需要用户补充对象 |
-| 7 | 今天天气怎么样？ | refuse | 超出当前知识库范围 |
-| 8 | 你可以做什么？ | direct_answer | 可以直接说明系统能力 |
+- 基于 FastAPI 实现中文 RAG + 最小 Agent 问答系统，支持本地 `.txt` / `.md` 文档加载、chunk 切分、BM25 + 向量混合检索和大模型答案生成。
+- 设计 Agent 路由模块，根据用户问题选择 RAG 问答、简单计算、文档列表查询、chunk 内容查询、澄清或拒答路径。
+- 在 `/chat` 接口中返回 `action`、`tool_result_summary` 和 `tool_trace`，提升系统执行过程的可解释性。
+- 实现索引缓存与 manifest 判断机制，减少重复构建索引的成本。
+- 设计基础评测样例，通过 expected_action 与 actual_action 对比验证 Agent 路由准确率。
