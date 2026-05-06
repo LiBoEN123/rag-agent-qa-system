@@ -116,7 +116,7 @@ def route_agent_action(question: str, top_k:int) -> dict:
         "reason": "默认作为知识库问答问题处理"
     }
 
-def run_agent_once(question: str, top_k: int, decision: dict | None = None) -> dict:
+def run_agent_once(question: str, top_k: int, decision: dict | None = None, trace_id : str = "") -> dict:
     """
     执行一次最小 Agent 流程。
 
@@ -150,7 +150,7 @@ def run_agent_once(question: str, top_k: int, decision: dict | None = None) -> d
     ]
 
     logger.info(
-        f"[agent] decision={decision_type} action={action} "
+        f"[trace_id={trace_id}] [agent] decision={decision_type} action={action} "
         f"tool_name={tool_name} reason={decision.get('reason')} "
         f"question={(question or '')[:50]}"
     )
@@ -346,7 +346,7 @@ def run_agent_once(question: str, top_k: int, decision: dict | None = None) -> d
     # 6. 走知识库 RAG
     # =========================
     if action == "search_knowledge_base":
-        logger.info(f"[retrieve] 开始检索 top_k={top_k}")
+        logger.info(f"[trace_id={trace_id}] [retrieve] 开始检索 top_k={top_k}")
 
         retrieved_chunks = search_relevant_chunks(question, top_k)
 
@@ -389,7 +389,7 @@ def run_agent_once(question: str, top_k: int, decision: dict | None = None) -> d
         ]
 
         logger.info(
-            f"[retrieve] 检索完成 chunks_len={len(retrieved_chunks)} hits={hit_brief}"
+            f"[trace_id={trace_id}] [retrieve] 检索完成 chunks_len={len(retrieved_chunks)} hits={hit_brief}"
         )
 
         tool_trace.append({
@@ -410,9 +410,7 @@ def run_agent_once(question: str, top_k: int, decision: dict | None = None) -> d
             "summary": f"将 {len(retrieved_chunks)} 个 chunk 交给 RAG 回答逻辑"
         })
 
-        logger.info("[answer] 开始调用 RAG 问答逻辑")
-
-        rag_result = ask(question, top_k=top_k, retrieved_chunks=retrieved_chunks)
+        rag_result = ask(question, top_k=top_k, retrieved_chunks=retrieved_chunks, trace_id=trace_id)
 
         rag_status = rag_result.get("status", "OK")
 

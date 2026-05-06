@@ -1,5 +1,6 @@
 from typing import Any, Dict, List
 
+from app.untils import get_logger
 from app.config import Settings
 from app.prompts import NO_ANSWER_FALLBACK
 from app.rag_debug import (
@@ -36,6 +37,8 @@ from app.rag_store import (
 # =========================
 # 全局状态 / 常量
 # =========================
+logger = get_logger('chat_service')
+
 chunks: list[dict] = []
 texts: list[str] = []
 docs_registry: list[dict] = []
@@ -229,8 +232,11 @@ def search_relevant_chunks(question: str, top_k: int = 3) -> List[Dict[str, Any]
 def ask(
     question: str,
     top_k: int = 3,
-    retrieved_chunks: List[Dict[str, Any]] | None = None
+    retrieved_chunks: List[Dict[str, Any]] | None = None,
+    trace_id : str = ""
 ):
+    logger.info(f"[trace_id={trace_id}] [rag] 开始问答流程 top_k={top_k}")
+
     if retrieved_chunks is None:
         retrieved_chunks = retrieve(question, top_k)
 
@@ -257,8 +263,23 @@ def ask(
         }
 
     context = build_context(retrieved_chunks, Settings.MAX_CONTEXT_CHARS)
+
+    logger.info(
+        f"[trace_id={trace_id}] [rag] context 构造完成 context_len={len(context)}"
+    )
+    logger.info(f"[trace_id={trace_id}] [llm] 开始调用模型")
+
     llm_out = call_llm(question, context)
+
+    logger.info(
+        f"[trace_id={trace_id}] [llm] 模型调用完成 output_len={len(llm_out or '')}"
+    )
+
     parsed = parse_llm_output(llm_out)
+
+    logger.info(
+        f"[trace_id={trace_id}] [parse] 模型输出解析完成 ok={parsed.get('ok')}"
+    )
 
     if not parsed["ok"]:
         return {

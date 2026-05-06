@@ -15,6 +15,7 @@ from app.untils import get_logger
 from app.extract_refund_policy import extract_refund_policy
 from typing import Literal, TypeAlias
 from app.agent import route_agent_action, run_agent_once
+from app.observability import create_trace_id
 
 PublicStatus: TypeAlias = Literal[
     "ok",
@@ -70,6 +71,7 @@ class ChatData(BaseModel):
 class ChatResponse(BaseModel):
     code:int|str
     message:str
+    trace_id:str = Field(default="", description="本次请求追踪的id")
     data:ChatData
 
     model_config = ConfigDict(
@@ -208,6 +210,7 @@ class ExtractResponse(BaseModel):
 # chat接口回复结构定义
 def build_chat_response(code:int|str,
                         message:str,
+                        trace_id:str,
                         question:str,
                         answer:str="",
                         references:list | None = None,
@@ -222,6 +225,7 @@ def build_chat_response(code:int|str,
                         ) -> ChatResponse:
     return ChatResponse(code=code,
                         message=message,
+                        trace_id=trace_id,
                         data=ChatData(
                             question=question,
                             answer=answer,
@@ -233,7 +237,7 @@ def build_chat_response(code:int|str,
                             reason=reason,
                             action=action,
                             tool_result_summary=tool_result_summary,
-                            tool_trace=tool_trace
+                            tool_trace=tool_trace or []
                             )
                         )
 
@@ -292,15 +296,17 @@ def health():
 
 @app.post("/chat", response_model=ChatResponse)
 def ask_api(req: ChatRequest, response: Response):
+    trace_id = create_trace_id()
     question = (req.question or "").strip()
-    logger.info(f"[chat] 收到请求 question_len={len(question)}，preview={question[:50]}")
+    logger.info(f"[trace_id={trace_id}] [chat] 收到请求 question_len={len(question)}，preview={question[:50]}")
     try:
         if not question:
-            logger.warning("[chat] final_status=clarify reason=用户未输入问题")
+            logger.warning(f"[trace_id={trace_id}] [chat] final_status=clarify reason=用户未输入问题")
             response.status_code = 400
             return build_chat_response(
                 code="EMPTY_QUESTION",
                 message="问题不能为空，请输入你想查询的内容",
+                trace_id=trace_id,
                 question=question,
                 confidence=0.0,
                 need_clarification=True,
@@ -323,11 +329,12 @@ def ask_api(req: ChatRequest, response: Response):
         if action in need_rag_ready_actions:
             rag_status = get_rag_status()
             if not rag_status["ready"]:
-                logger.warning("[chat] final_status=empty_index reason=知识库未准备完成")
+                logger.warning(f"[trace_id={trace_id}] [chat] final_status=empty_index reason=知识库未准备完成")
                 response.status_code = 503
                 return build_chat_response(
                     code="NO_DOCUMENTS",
                     message=rag_status["message"],
+                    trace_id=trace_id,
                     question=question,
                     confidence=0.0,
                     need_clarification=False,
@@ -337,15 +344,15 @@ def ask_api(req: ChatRequest, response: Response):
                 )
 
         try:
-            logger.info("[answer] 开始处理：工具优先，否则走 RAG")
-            result = run_agent_once(question, final_top_k, decision)
+            result = run_agent_once(question, final_top_k, decision, trace_id)
 
         except Exception as e:
-            logger.exception(f"[answer] 处理失败 error={e}")
+            logger.exception(f"[trace_id={trace_id}] [answer] 处理失败 error={e}")
             response.status_code = 500
             return build_chat_response(
                 code="MODEL_ERROR",
                 message="处理失败，请稍后重试",
+                trace_id=trace_id,
                 question=question,
                 confidence=0.0,
                 need_clarification=False,
@@ -356,12 +363,13 @@ def ask_api(req: ChatRequest, response: Response):
 
         if result["status"] == "NEED_CLARIFICATION":
             logger.warning(
-                f"[chat] final_status=need_clarification reason=问题信息不足"
+                f"[trace_id={trace_id}] [chat] final_status=need_clarification reason=问题信息不足"
             )
             response.status_code = 200
             return build_chat_response(
                 code="NEED_CLARIFICATION",
                 message="问题信息不足，需要补充后再回答",
+                trace_id=trace_id,
                 question=question,
                 answer="",
                 references=[],
@@ -377,12 +385,13 @@ def ask_api(req: ChatRequest, response: Response):
 
         if result["status"] == "NO_RELEVANT_INFO":
             logger.warning(
-                f"[chat] final_status=no_evidence reason={result.get('reason', '检索证据不足')}"
+                f"[trace_id={trace_id}] [chat] final_status=no_evidence reason={result.get('reason', '检索证据不足')}"
             )
             response.status_code = 200
             return build_chat_response(
                 code="NO_RELEVANT_INFO",
                 message="我没有在文档中找到相关信息",
+                trace_id=trace_id,
                 question=question,
                 answer=result.get("answer", ""),
                 references=result.get("references", []),
@@ -398,12 +407,13 @@ def ask_api(req: ChatRequest, response: Response):
 
         if result["status"] == "TOOL_ERROR":
             logger.warning(
-                f"[chat] final_status=error reason={result.get('reason', '工具调用失败')}"
+                f"[trace_id={trace_id}] [chat] final_status=error reason={result.get('reason', '工具调用失败')}"
             )
             response.status_code = 200
             return build_chat_response(
                 code="TOOL_ERROR",
                 message="工具调用失败",
+                trace_id=trace_id,
                 question=question,
                 answer=result.get("answer", ""),
                 references=[],
@@ -419,12 +429,13 @@ def ask_api(req: ChatRequest, response: Response):
 
         if result["status"] == "OUT_OF_SCOPE":
             logger.warning(
-                f"[chat] final_status=out_of_scope reason={result.get('reason', '超出知识库范围')}"
+                f"[trace_id={trace_id}] [chat] final_status=out_of_scope reason={result.get('reason', '超出知识库范围')}"
             )
             response.status_code = 200
             return build_chat_response(
                 code="OUT_OF_SCOPE",
                 message="问题超出当前知识库范围",
+                trace_id=trace_id,
                 question=question,
                 answer=result.get("answer", ""),
                 references=[],
@@ -440,12 +451,13 @@ def ask_api(req: ChatRequest, response: Response):
 
         if result["status"] == "MODEL_BAD_OUTPUT":
             logger.warning(
-                f"[chat] final_status=error reason={result.get('reason', '模型输出格式异常')}"
+                f"[trace_id={trace_id}] [chat] final_status=error reason={result.get('reason', '模型输出格式异常')}"
             )
             response.status_code = 200
             return build_chat_response(
                 code="MODEL_BAD_OUTPUT",
                 message="模型输出格式异常，请稍候重试",
+                trace_id=trace_id,
                 question=question,
                 answer=result.get("answer", ""),
                 references=[],
@@ -460,12 +472,13 @@ def ask_api(req: ChatRequest, response: Response):
             )
 
         logger.info(
-            f"[chat] final_status=ok reason={result.get('reason', '正常回答')}"
+            f"[trace_id={trace_id}] [chat] final_status=ok reason={result.get('reason', '正常回答')}"
         )
         response.status_code = 200
         return build_chat_response(
             code=0,
             message="success",
+            trace_id=trace_id,
             question=question,
             answer=result["answer"],
             references=result.get("references", []),
@@ -482,11 +495,12 @@ def ask_api(req: ChatRequest, response: Response):
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"[chat] 未知异常 error={e}")
+        logger.exception(f"[trace_id={trace_id}] [chat] 未知异常 error={e}")
         response.status_code = 500
         return build_chat_response(
             code="INTERNAL_ERROR",
             message="服务器内部错误",
+            trace_id=trace_id,
             question=question,
             confidence=0.0,
             need_clarification=False
