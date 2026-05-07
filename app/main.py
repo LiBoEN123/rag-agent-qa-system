@@ -34,6 +34,7 @@ app = FastAPI(title='Mini Rag API', version='1.0.0')
 logger = get_logger('chat_service')
 
 METRICS_PATH = Path("logs") / "metrics.jsonl"
+BAD_CASES_PATH = Path("logs") / "bad_cases.jsonl"
 
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="milliseconds")
@@ -88,6 +89,24 @@ def write_metrics(record: dict) -> None:
 
     with METRICS_PATH.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+def write_bad_cases(record: dict) -> None:
+
+    BAD_CASES_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    normalized_record = {
+        "created_at": now_iso(),
+        "trace_id": record.get("trace_id", ""),
+        "question": record.get("question", ""),
+        "answer": record.get("answer", ""),
+        "references": record.get("references", []),
+        "route": record.get("route", ""),
+        "error_type": record.get("error_type", ""),
+        "note": record.get("note", ""),
+    }
+
+    with BAD_CASES_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(normalized_record, ensure_ascii=False) + "\n")
 
 def log_and_write_metrics(record: dict) -> None:
 
@@ -422,6 +441,17 @@ def ask_api(req: ChatRequest, response: Response):
     trace_id = create_trace_id()
     question = (req.question or "").strip()
 
+    bad_case = {
+        "created_at": now_iso(),
+        "trace_id":trace_id,
+        "question":question,
+        "answer":"",
+        "references":[],
+        "route":"",
+        "error_type":"",
+        "note":""
+    }
+
     metrics = {
         "trace_id": trace_id,
         "start_time": start_time,
@@ -446,6 +476,10 @@ def ask_api(req: ChatRequest, response: Response):
 
             metrics["status"] = "no_relevant_info"
             metrics["reason"] = "用户未输入问题"
+
+            bad_case["error_type"] = "empty_question"
+            bad_case["note"] = "输入问题为空，请输入想要询问的问题"
+            write_bad_cases(bad_case)
 
             return build_chat_response(
                 code="EMPTY_QUESTION",
@@ -480,6 +514,10 @@ def ask_api(req: ChatRequest, response: Response):
                 metrics["action"] = action or ""
                 metrics["reason"] = "知识库未准备完成"
 
+                bad_case["error_type"] = "retrieval_error"
+                bad_case["note"] = "知识库未准备完成，请检查知识库"
+                write_bad_cases(bad_case)
+
                 return build_chat_response(
                     code="NO_DOCUMENTS",
                     message=rag_status["message"],
@@ -493,7 +531,7 @@ def ask_api(req: ChatRequest, response: Response):
                 )
 
         try:
-            result = run_agent_once(question, final_top_k, decision, trace_id)
+            result = run_agent_once(write_bad_cases, question, final_top_k, decision, trace_id, bad_case)
 
             trace_metrics = collect_trace_metrics(result)
 
@@ -515,6 +553,11 @@ def ask_api(req: ChatRequest, response: Response):
             metrics["tool_called"] = bool(decision.get("tool_name", ""))
             metrics["tool_success"] = False
             metrics["reason"] = str(e)
+
+            bad_case["route"] = decision.get("decision", "")
+            bad_case["error_type"] = "model_error"
+            bad_case["note"] = "工具调用或模型调用异常"
+            write_bad_cases(bad_case)
 
             response.status_code = 500
             return build_chat_response(
@@ -663,6 +706,10 @@ def ask_api(req: ChatRequest, response: Response):
     except HTTPException:
         metrics["status"] = "internal_error"
         metrics["reason"] = "HTTPException"
+
+        bad_case["error_type"] = "internal_error"
+        bad_case["note"] = "HTTPException"
+        write_bad_cases(bad_case)
         raise
     except Exception as e:
         logger.exception(f"[trace_id={trace_id}] [chat] 未知异常 error={e}")

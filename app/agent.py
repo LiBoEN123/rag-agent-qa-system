@@ -130,7 +130,11 @@ def route_agent_action(question: str, top_k:int) -> dict:
         "reason": "默认作为知识库问答问题处理"
     }
 
-def run_agent_once(question: str, top_k: int, decision: dict | None = None, trace_id : str = "") -> dict:
+def run_agent_once(
+        write_bad_cases,
+        question: str, top_k: int,
+        decision: dict | None = None, trace_id : str = "",
+        bad_case: dict | None = None) -> dict:
     """
     执行一次最小 Agent 流程。
 
@@ -140,6 +144,17 @@ def run_agent_once(question: str, top_k: int, decision: dict | None = None, trac
     3. 保持原来的大写业务状态，方便 main.py 分流。
     4. 补上工具异常、工具失败、RAG 空结果时的可读返回。
     """
+
+    if bad_case is None:
+        bad_case = {
+            "trace_id": trace_id,
+            "question": question,
+            "answer": "",
+            "references": [],
+            "route": "",
+            "error_type": "",
+            "note": ""
+        }
 
     # =========================
     # 1. 先做路由决策
@@ -286,6 +301,12 @@ def run_agent_once(question: str, top_k: int, decision: dict | None = None, trac
                 "error": error_msg
             })
 
+            bad_case["answer"] = f"工具 {tool_name} 执行异常，无法完成本次请求。"
+            bad_case["route"] = route_decision
+            bad_case["error_type"] = "tool_error"
+            bad_case["note"] = f"工具 {tool_name} 执行错误：{error_msg}"
+            write_bad_cases(bad_case)
+
             return {
                 "status": "TOOL_ERROR",
                 "answer": f"工具 {tool_name} 执行异常，无法完成本次请求。",
@@ -308,6 +329,12 @@ def run_agent_once(question: str, top_k: int, decision: dict | None = None, trac
                 "final_status": "tool_error",
                 "error": f"工具返回值类型异常：{type(tool_result)}"
             })
+
+            bad_case["answer"] = f"工具 {tool_name} 返回格式异常，无法完成本次请求。"
+            bad_case["route"] =route_decision
+            bad_case["error_type"] = "tool_error"
+            bad_case["note"] = f"工具 {tool_name} 返回格式异常，返回值不是 dict"
+            write_bad_cases(bad_case)
 
             return {
                 "status": "TOOL_ERROR",
@@ -337,6 +364,12 @@ def run_agent_once(question: str, top_k: int, decision: dict | None = None, trac
                 "final_status": "tool_error",
                 "error": error_msg
             })
+
+            bad_case["answer"] = f"工具 {tool_name} 执行失败，无法完成本次请求。"
+            bad_case["route"] = route_decision
+            bad_case["error_type"] = "tool_error"
+            bad_case["note"] = f"工具 {tool_name} 执行失败：{error_msg}"
+            write_bad_cases(bad_case)
 
             return {
                 "status": "TOOL_ERROR",
@@ -406,6 +439,12 @@ def run_agent_once(question: str, top_k: int, decision: dict | None = None, trac
                 "result_summary": "没有检索到候选 chunk"
             })
 
+            bad_case["answer"] = "没有检索到足够相关的知识库内容，无法根据当前文档回答。"
+            bad_case["route"] = route_decision
+            bad_case["error_type"] = "retrieval_error"
+            bad_case["note"] = "没有检索到候选 chunk"
+            write_bad_cases(bad_case)
+
             return {
                 "status": "NO_RELEVANT_INFO",
                 "answer": "没有检索到足够相关的知识库内容，无法根据当前文档回答。",
@@ -467,11 +506,39 @@ def run_agent_once(question: str, top_k: int, decision: dict | None = None, trac
         rag_status = rag_result.get("status", "OK")
 
         if rag_status == "NO_RELEVANT_INFO":
+
             final_status = "no_evidence"
+
+            bad_case["answer"] = rag_result.get("answer", "")
+            bad_case["references"] = rag_result.get("references", [])
+            bad_case["route"] = route_decision
+            bad_case["error_type"] = "retrieval_error"
+            bad_case["note"] = "没有检索到候选 chunk"
+            write_bad_cases(bad_case)
+
         elif rag_status == "NEED_CLARIFICATION":
+
             final_status = "clarify"
+
+            bad_case["answer"] = rag_result.get("answer", "")
+            bad_case["references"] = rag_result.get("references", [])
+            bad_case["route"] = route_decision
+            bad_case["error_type"] = "ambiguous_error"
+            bad_case["note"] = "问题指代不明，请补充说明"
+            write_bad_cases(bad_case)
+
         elif rag_status == "MODEL_BAD_OUTPUT":
+
             final_status = "error"
+
+            bad_case["answer"] = rag_result.get("answer", "")
+            bad_case["references"] = rag_result.get("references", [])
+            bad_case["references"] = rag_result.get("references", [])
+            bad_case["route"] = route_decision
+            bad_case["error_type"] = "parse_error"
+            bad_case["note"] = "模型未按约定 JSON 格式返回"
+            write_bad_cases(bad_case)
+
         else:
             final_status = "ok"
 
