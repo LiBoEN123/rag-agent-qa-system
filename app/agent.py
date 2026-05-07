@@ -15,6 +15,20 @@ OUT_OF_SCOPE_KEYWORDS = [
     "python教程", "java教程", "怎么写代码"
 ]
 
+def get_route_decision(decision:dict) -> str:
+    action = decision.get("action", "")
+    
+    if action == "search_knowledge_base":
+        return "rag"
+
+    if action == ["simple_calculator", "list_documents", "get_chunk_text"]:
+        return action
+
+    if action == ["clarify", "refuse", "direct_answer"]:
+        return action
+
+    return "unknown"
+
 def normalize_question(question: str) -> str:
     q = (question or "").strip()
     q = q.replace("？", "?")
@@ -134,6 +148,7 @@ def run_agent_once(question: str, top_k: int, decision: dict | None = None, trac
         decision = route_agent_action(question, top_k)
 
     decision_type = decision.get("decision")
+    route_decision = get_route_decision(decision)
     action = decision.get("action")
     tool_name = decision.get("tool_name", "")
     tool_args = decision.get("tool_args", {})
@@ -141,6 +156,7 @@ def run_agent_once(question: str, top_k: int, decision: dict | None = None, trac
     tool_trace = [
         {
             "step": "decide",
+            "route_decision": route_decision,
             "decision_type": decision_type,
             "action": action,
             "tool_name": tool_name,
@@ -150,7 +166,8 @@ def run_agent_once(question: str, top_k: int, decision: dict | None = None, trac
     ]
 
     logger.info(
-        f"[trace_id={trace_id}] [agent] decision={decision_type} action={action} "
+        f"[trace_id={trace_id}] [agent] route_decision={route_decision} "
+        f"decision={decision_type} action={action} "
         f"tool_name={tool_name} reason={decision.get('reason')} "
         f"question={(question or '')[:50]}"
     )
@@ -247,10 +264,19 @@ def run_agent_once(question: str, top_k: int, decision: dict | None = None, trac
         })
 
         try:
+            logger.info(
+                f"[trace_id={trace_id}] [tool] tool_name={tool_name} "
+                f"tool_status=running tool_error="
+            )
             tool_result = dispatch_tool(tool_name, tool_args)
 
         except Exception as e:
             error_msg = str(e)
+
+            logger.warning(
+                f"[trace_id={trace_id}] [tool] tool_name={tool_name} "
+                f"tool_status=error tool_error={error_msg}"
+            )
 
             tool_trace.append({
                 "step": "call_tool",
@@ -274,6 +300,7 @@ def run_agent_once(question: str, top_k: int, decision: dict | None = None, trac
             }
 
         if not isinstance(tool_result, dict):
+            logger.info(f"[trace_id={trace_id}] [agent] 工具返回异常，tool_status:error tool_error:{type(tool_result)}")
             tool_trace.append({
                 "step": "call_tool",
                 "tool_name": tool_name,
@@ -298,6 +325,11 @@ def run_agent_once(question: str, top_k: int, decision: dict | None = None, trac
         if tool_result.get("status") != "success":
             error_msg = tool_result.get("error", f"{tool_name} 工具执行失败")
 
+            logger.warning(
+                f"[trace_id={trace_id}] [tool] tool_name={tool_name} "
+                f"tool_status=error tool_error={error_msg}"
+            )
+
             tool_trace.append({
                 "step": "call_tool",
                 "tool_name": tool_name,
@@ -319,6 +351,10 @@ def run_agent_once(question: str, top_k: int, decision: dict | None = None, trac
                 "tool_trace": tool_trace
             }
 
+        logger.info(
+            f"[trace_id={trace_id}] [tool] tool_name={tool_name} "
+            f"tool_status=success tool_error="
+        )
         answer = format_tool_answer(tool_name, tool_result.get("output", {}))
 
         tool_trace.append({
@@ -351,6 +387,12 @@ def run_agent_once(question: str, top_k: int, decision: dict | None = None, trac
         retrieved_chunks = search_relevant_chunks(question, top_k)
 
         if not retrieved_chunks:
+
+            logger.warning(
+                f"[trace_id={trace_id}] [retrieve] retrieved_count=0 "
+                f"top_chunk_ids=[] top_scores=[]"
+            )
+
             tool_trace.append({
                 "step": "call_tool",
                 "tool_name": "search_knowledge_base",
@@ -388,8 +430,15 @@ def run_agent_once(question: str, top_k: int, decision: dict | None = None, trac
             for chunk in retrieved_chunks
         ]
 
+        retrieved_count = len(retrieved_chunks)
+        top_chunk_ids = [chunk.get("chunk_id") for chunk in retrieved_chunks]
+        top_scores = [
+            round(chunk.get("hybrid_score", 0), 4)
+            for chunk in retrieved_chunks]
+
         logger.info(
-            f"[trace_id={trace_id}] [retrieve] 检索完成 chunks_len={len(retrieved_chunks)} hits={hit_brief}"
+            f"[trace_id={trace_id}] [retrieve] retrieved_count={retrieved_count} "
+            f"top_chunk_ids={top_chunk_ids} top_scores={top_scores} hits={hit_brief}"
         )
 
         tool_trace.append({
@@ -401,6 +450,9 @@ def run_agent_once(question: str, top_k: int, decision: dict | None = None, trac
             },
             "tool_status": "success",
             "success": True,
+            "retrieved_count": retrieved_count,
+            "top_chunk_ids": top_chunk_ids,
+            "top_scores": top_scores,
             "result_summary": f"检索到 {len(retrieved_chunks)} 个候选 chunk",
             "hits": hit_brief
         })

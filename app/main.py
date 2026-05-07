@@ -241,6 +241,31 @@ def build_chat_response(code:int|str,
                             )
                         )
 
+def get_normalize_status(result: dict) -> str:
+    status = result.get("status", "")
+
+    status_map = {
+        "OK": "ok",
+        "NO_RELEVANT_INFO": "no_evidence",
+        "NEED_CLARIFICATION": "clarify",
+        "TOOL_ERROR": "error",
+        "OUT_OF_SCOPE": "out_of_scope",
+        "MODEL_BAD_OUTPUT": "error",
+    }
+
+    return status_map.get(status, "unknown")
+
+def log_final_status(trace_id: str, result: dict):
+    answer_status = get_normalize_status(result)
+    reference_count = len(result.get("references") or [])
+    need_clarification = result.get("need_clarification", False)
+
+    logger.info(
+        f"[trace_id={trace_id}] [final] answer_status={answer_status} "
+        f"reference_count={reference_count} need_clarification={need_clarification}"
+    )
+
+
 
 # =========================
 # 可调用接口
@@ -345,6 +370,7 @@ def ask_api(req: ChatRequest, response: Response):
 
         try:
             result = run_agent_once(question, final_top_k, decision, trace_id)
+            log_final_status(trace_id, result)
 
         except Exception as e:
             logger.exception(f"[trace_id={trace_id}] [answer] 处理失败 error={e}")
