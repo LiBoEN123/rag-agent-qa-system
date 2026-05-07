@@ -6,3 +6,4 @@ __pycache__/
 .idea/
 paraphrase-multilingual-MiniLM-L12-v2/
 /outputs/
+logs/

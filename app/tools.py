@@ -1,5 +1,6 @@
 import json
 import time
+from pathlib import Path
 from app.rag import preview_docs, get_chunk_full_text
 import ast
 import operator as op
@@ -13,6 +14,8 @@ _ALLOWED_OPERATORS = {
     ast.USub: op.neg,
     ast.UAdd: lambda x: x,
 }
+
+TOOL_CALLS_PATH = Path("logs") / "tool_calls.jsonl"
 
 def tool_success(tool_name: str, tool_input: dict, output: Any) -> dict:
     return {
@@ -140,8 +143,13 @@ def get_chunk_text(chunk_id: int | str) -> dict:
         )
 
 
-def append_tool_log(record: dict):
-    with open("tool_calls.jsonl", "a", encoding="utf-8") as f:
+def append_tool_log(record: dict) -> None:
+    """
+    每次工具调用写一行 JSON 到 logs/tool_calls.jsonl
+    """
+    TOOL_CALLS_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    with TOOL_CALLS_PATH.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 def dispatch_tool(tool_name: str, tool_args: dict | None=None):

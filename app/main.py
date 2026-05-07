@@ -1,5 +1,11 @@
 from fastapi import FastAPI, HTTPException, Query, Response
 from pydantic import BaseModel, Field, ConfigDict
+from typing import Literal, TypeAlias
+import time
+import json
+from pathlib import Path
+from datetime import datetime
+from collections import Counter
 from app.rag import (
     preview_docs,
     preview_chunks,
@@ -13,7 +19,6 @@ from app.rag import (
 from app.config import Settings
 from app.untils import get_logger
 from app.extract_refund_policy import extract_refund_policy
-from typing import Literal, TypeAlias
 from app.agent import route_agent_action, run_agent_once
 from app.observability import create_trace_id
 
@@ -27,6 +32,78 @@ PublicStatus: TypeAlias = Literal[
 ]
 app = FastAPI(title='Mini Rag API', version='1.0.0')
 logger = get_logger('chat_service')
+
+METRICS_PATH = Path("logs") / "metrics.jsonl"
+
+def now_iso() -> str:
+    return datetime.now().isoformat(timespec="milliseconds")
+
+def normalize_metrics_status(result_status: str) -> str:
+
+    status_map = {
+        "OK": "success",
+        "NO_RELEVANT_INFO": "no_relevant_info",
+        "TOOL_ERROR": "tool_error",
+        "MODEL_BAD_OUTPUT": "model_bad_output",
+        "NEED_CLARIFICATION": "no_relevant_info",
+        "OUT_OF_SCOPE": "no_relevant_info",
+    }
+
+    return status_map.get(result_status, "internal_error")
+
+def collect_trace_metrics(result: dict) -> dict:
+
+    tool_trace = result.get("tool_trace") or []
+
+    retrieved_count = 0
+    tool_called = False
+    tool_success = False
+    tool_name = ""
+
+    real_tools = {"simple_calculator", "list_documents", "get_chunk_text"}
+
+    for step in tool_trace:
+        current_tool_name = step.get("tool_name", "")
+
+        if current_tool_name == "search_knowledge_base":
+            retrieved_count = step.get("retrieved_count", retrieved_count)
+
+        if current_tool_name in real_tools:
+            tool_name = current_tool_name
+            tool_called = True
+
+            if step.get("tool_status") == "success":
+                tool_success = True
+
+    return {
+        "retrieved_count": retrieved_count,
+        "tool_called": tool_called,
+        "tool_success": tool_success,
+        "tool_name": tool_name,
+    }
+
+def write_metrics(record: dict) -> None:
+
+    METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    with METRICS_PATH.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+def log_and_write_metrics(record: dict) -> None:
+
+    logger.info(
+        f"[trace_id={record.get('trace_id')}] "
+        "[metrics] "
+        f"latency_ms={record.get('latency_ms')} "
+        f"status={record.get('status')} "
+        f"reference_count={record.get('reference_count')} "
+        f"retrieved_count={record.get('retrieved_count')} "
+        f"tool_called={record.get('tool_called')} "
+        f"tool_success={record.get('tool_success')} "
+        f"tool_name={record.get('tool_name')}"
+    )
+
+    write_metrics(record)
 
 
 # =========================
@@ -265,6 +342,24 @@ def log_final_status(trace_id: str, result: dict):
         f"reference_count={reference_count} need_clarification={need_clarification}"
     )
 
+def read_recent_metrics(limit: int = 20) -> list[dict]:
+
+    if not METRICS_PATH.exists():
+        return []
+
+    lines = METRICS_PATH.read_text(encoding='utf-8').splitlines()
+    recent_lines = lines[-limit:]
+
+    records = []
+
+    for line in recent_lines:
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+
+    return records
+
 
 
 # =========================
@@ -321,13 +416,37 @@ def health():
 
 @app.post("/chat", response_model=ChatResponse)
 def ask_api(req: ChatRequest, response: Response):
+    start_perf = time.perf_counter()
+    start_time = now_iso()
+
     trace_id = create_trace_id()
     question = (req.question or "").strip()
+
+    metrics = {
+        "trace_id": trace_id,
+        "start_time": start_time,
+        "end_time": "",
+        "latency_ms": 0,
+        "status": "internal_error",
+        "question_len": len(question),
+        "reference_count": 0,
+        "retrieved_count": 0,
+        "tool_called": False,
+        "tool_success": False,
+        "tool_name": "",
+        "action": "",
+        "reason": "",
+    }
+
     logger.info(f"[trace_id={trace_id}] [chat] 收到请求 question_len={len(question)}，preview={question[:50]}")
     try:
         if not question:
             logger.warning(f"[trace_id={trace_id}] [chat] final_status=clarify reason=用户未输入问题")
             response.status_code = 400
+
+            metrics["status"] = "no_relevant_info"
+            metrics["reason"] = "用户未输入问题"
+
             return build_chat_response(
                 code="EMPTY_QUESTION",
                 message="问题不能为空，请输入你想查询的内容",
@@ -356,6 +475,11 @@ def ask_api(req: ChatRequest, response: Response):
             if not rag_status["ready"]:
                 logger.warning(f"[trace_id={trace_id}] [chat] final_status=empty_index reason=知识库未准备完成")
                 response.status_code = 503
+
+                metrics["status"] = "internal_error"
+                metrics["action"] = action or ""
+                metrics["reason"] = "知识库未准备完成"
+
                 return build_chat_response(
                     code="NO_DOCUMENTS",
                     message=rag_status["message"],
@@ -370,10 +494,28 @@ def ask_api(req: ChatRequest, response: Response):
 
         try:
             result = run_agent_once(question, final_top_k, decision, trace_id)
-            log_final_status(trace_id, result)
+
+            trace_metrics = collect_trace_metrics(result)
+
+            metrics["status"] = normalize_metrics_status(result.get("status", ""))
+            metrics["reference_count"] = len(result.get("references") or [])
+            metrics["retrieved_count"] = trace_metrics["retrieved_count"]
+            metrics["tool_called"] = trace_metrics["tool_called"]
+            metrics["tool_success"] = trace_metrics["tool_success"]
+            metrics["tool_name"] = trace_metrics["tool_name"]
+            metrics["action"] = result.get("action", action or "")
+            metrics["reason"] = result.get("reason", "")
 
         except Exception as e:
             logger.exception(f"[trace_id={trace_id}] [answer] 处理失败 error={e}")
+
+            metrics["status"] = "internal_error"
+            metrics["action"] = action or ""
+            metrics["tool_name"] = decision.get("tool_name", "")
+            metrics["tool_called"] = bool(decision.get("tool_name", ""))
+            metrics["tool_success"] = False
+            metrics["reason"] = str(e)
+
             response.status_code = 500
             return build_chat_response(
                 code="MODEL_ERROR",
@@ -519,9 +661,15 @@ def ask_api(req: ChatRequest, response: Response):
         )
 
     except HTTPException:
+        metrics["status"] = "internal_error"
+        metrics["reason"] = "HTTPException"
         raise
     except Exception as e:
         logger.exception(f"[trace_id={trace_id}] [chat] 未知异常 error={e}")
+
+        metrics["status"] = "internal_error"
+        metrics["reason"] = str(e)
+
         response.status_code = 500
         return build_chat_response(
             code="INTERNAL_ERROR",
@@ -531,6 +679,12 @@ def ask_api(req: ChatRequest, response: Response):
             confidence=0.0,
             need_clarification=False
         )
+
+    finally:
+        metrics["end_time"] = now_iso()
+        metrics["latency_ms"] = int((time.perf_counter() - start_perf) * 1000)
+
+        log_and_write_metrics(metrics)
 
 @app.get("/docs-preview")
 def docs_preview():
@@ -774,6 +928,36 @@ def decide_api(req:ChatRequest, response:Response):
         "data": {
             "question": question,
             "decision": decision,
+        }
+    }
+
+@app.get("/metrics-summary")
+def metrics_summary(limit: int = Query(20, ge=1, le=200)):
+    records = read_recent_metrics(limit)
+
+    status_counter = Counter(record.get("status", "unknown") for record in records)
+
+    if records:
+        avg_latency_ms = round(
+            sum(record.get("latency_ms", 0) for record in records) /
+            len(records), 2)
+
+    else:
+        avg_latency_ms = 0
+
+    return {
+        "code": 0,
+        "message": "success",
+        "data": {
+            "limit": limit,
+            "total": len(records),
+            "status_count": dict(status_counter),
+            "success_count": status_counter.get("success", 0),
+            "no_relevant_info_count": status_counter.get("no_relevant_info", 0),
+            "tool_error_count": status_counter.get("tool_error", 0),
+            "model_bad_output_count": status_counter.get("model_bad_output", 0),
+            "internal_error_count": status_counter.get("internal_error", 0),
+            "avg_latency_ms": avg_latency_ms,
         }
     }
 

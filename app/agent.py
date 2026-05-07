@@ -17,14 +17,14 @@ OUT_OF_SCOPE_KEYWORDS = [
 
 def get_route_decision(decision:dict) -> str:
     action = decision.get("action", "")
-    
+
     if action == "search_knowledge_base":
         return "rag"
 
-    if action == ["simple_calculator", "list_documents", "get_chunk_text"]:
+    if action in ["simple_calculator", "list_documents", "get_chunk_text"]:
         return action
 
-    if action == ["clarify", "refuse", "direct_answer"]:
+    if action in ["clarify", "refuse", "direct_answer"]:
         return action
 
     return "unknown"
