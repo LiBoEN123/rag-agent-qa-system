@@ -542,6 +542,25 @@ def run_agent_once(
         else:
             final_status = "ok"
 
+            is_bad_reference, reference_note = check_reference_reliability(
+                question,
+                rag_result.get("answer", ""),
+                rag_result.get("references", [])
+            )
+
+            if is_bad_reference:
+                bad_case["answer"] = rag_result.get("answer", "")
+                bad_case["references"] = rag_result.get("references", [])
+                bad_case["route"] = route_decision
+                bad_case["error_type"] = "reference_error"
+                bad_case["note"] = reference_note
+                write_bad_cases(bad_case)
+
+                logger.warning(
+                    f"[trace_id={trace_id}] [bad_case] "
+                    f"error_type=reference_error note={reference_note}"
+                )
+
         tool_trace.append({
             "step": "final_answer",
             "tool_status": "skipped",
@@ -688,3 +707,72 @@ def extract_simple_math_expression(question:str) -> str |None:
             return q
 
     return None
+
+REFERENCE_STOPWORDS = {
+    "这个", "那个", "什么", "怎么", "如何", "为什么", "是否", "可以", "需要",
+    "用户", "问题", "回答", "根据", "文档", "内容", "相关", "说明",
+    "的是", "一个", "以及", "进行", "通过", "如果", "时候", "没有",
+    "the", "and", "for", "with", "from", "this", "that", "what", "how"
+}
+
+def extract_reference_keywords(text: str) -> set[str]:
+    text = (text or "").lower()
+
+    keywords = set()
+
+    # 英文、数字、函数名，例如 createapp、mount、v-model、computed
+    english_tokens = re.findall(r"[a-zA-Z_][a-zA-Z0-9_\-]{1,}|\d+(?:\.\d+)?", text)
+    for token in english_tokens:
+        token = (token or "").strip().lower()
+        if token and token not in REFERENCE_STOPWORDS:
+            keywords.add(token)
+
+    # 中文连续片段
+    chinese_blocks = re.findall(r"[\u4e00-\u9fff]{2,}", text)
+    for block in chinese_blocks:
+        for i in range(len(block) - 1):
+            word = block[i: i+2]
+            if word and word not in REFERENCE_STOPWORDS:
+                keywords.add(word)
+
+    return keywords
+
+def check_reference_reliability(
+        question: str,
+        answer: str,
+        references: list[dict],
+        min_overlap_ratio: float = 0.2
+) -> tuple[bool, str]:
+
+    if not question:
+        return False, ""
+
+    if not references:
+        return True, "答案非空，但reference为空，无法验证答案依据"
+
+    evidence_text = "\n".join(
+        str(ref.get("snippet") or ref.get("text") or ref.get("content") or "")
+        for ref in references
+    )
+
+    if not evidence_text.strip():
+        return True, "references 存在，但 snippet/text 为空，无法验证答案依据"
+
+    expected_keywords = extract_reference_keywords(question + "\n" + answer)
+    evidence_kewords = extract_reference_keywords(evidence_text)
+
+    if not expected_keywords:
+        return False, ""
+
+    overlap_keywords = expected_keywords & evidence_kewords
+    overlap_ratio = len(overlap_keywords) / max(len(expected_keywords), 1)
+
+    if overlap_ratio < min_overlap_ratio:
+        return True, (
+            f"答案与引用片段关键词重合度过低，"
+            f"overlap_ratio={overlap_ratio:.2f}，"
+            f"matched_keywords={sorted(list(overlap_keywords))[:10]}"
+        )
+
+    return False, ""
+

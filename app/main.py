@@ -477,10 +477,6 @@ def ask_api(req: ChatRequest, response: Response):
             metrics["status"] = "no_relevant_info"
             metrics["reason"] = "用户未输入问题"
 
-            bad_case["error_type"] = "empty_question"
-            bad_case["note"] = "输入问题为空，请输入想要询问的问题"
-            write_bad_cases(bad_case)
-
             return build_chat_response(
                 code="EMPTY_QUESTION",
                 message="问题不能为空，请输入你想查询的内容",
