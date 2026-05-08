@@ -2,6 +2,8 @@ from app.untils import get_logger
 from app.tools import dispatch_tool
 from app.rag import ask, search_relevant_chunks
 import re
+import ast
+import unicodedata
 
 
 logger = get_logger('chat_service')
@@ -40,7 +42,7 @@ def normalize_question(question: str) -> str:
 
 # Agent决策层：判断走哪个动作
 def route_agent_action(question: str, top_k:int) -> dict:
-    q =normalize_question(question)
+    q = normalize_question(question)
 
     # 1. 空问题：需要澄清
     if not q:
@@ -676,35 +678,81 @@ def is_out_of_scope(question:str) -> bool:
     return any(keyword in q for keyword in OUT_OF_SCOPE_KEYWORDS)
 
 # 简单计算判断函数
-def extract_simple_math_expression(question:str) -> str |None:
-    q = (question or "").strip()
+def normalize_math_text(text: str) -> str:
+    # 全角字符转半角，例如：１＋２ -> 1+2
+    text = unicodedata.normalize("NFKC", text or "")
 
-    # 去掉一些常见中文表达
-    remove_words = [
-    "请帮我算一下",
-    "帮我算一下",
-    "请计算",
-    "计算",
-    "结果是多少",
-    "等于多少",
-    "是多少",
-    "？",
-    "?",
-    "，",
-    ",",
-    "。"
-]
+    # 中文运算词转成符号，例如：加 -> +
+    replacements = [
+        (r"加上|加", "+"),
+        (r"减去|减掉|减", "-"),
+        (r"乘以|乘上|乘", "*"),
+        (r"除以|除", "/"),
+        (r"×|x|X", "*"),
+        (r"÷", "/"),
+        (r"负\s*(?=\d|\()", "-"),
+    ]
 
-    for word in remove_words:
-        q = q.replace(word, "")
+    for pattern, repl in replacements:
+        text = re.sub(pattern, repl, text)
 
-    q = q.strip()
+    # 处理千分位：1,000 + 2,000 -> 1000 + 2000
+    text = re.sub(r"(?<=\d),(?=\d{3}\b)", "", text)
 
-    # 只保留数字，小数点，四则运算符和括号
-    allowed_chars = set("0123456789.+-*/() ")
-    if q and all(ch in allowed_chars for ch in q):
-        if any(op in q for op in ["+", "-", "*", "/"]):
-            return q
+    return text
+
+def is_safe_math_expression(expr: str) -> bool:
+
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except SyntaxError:
+        return False
+
+    allowed_nodes = (
+        ast.Expression,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.Constant,
+        ast.Add,
+        ast.Sub,
+        ast.Div,
+        ast.Mult,
+        ast.UAdd,
+        ast.USub
+    )
+
+    has_binary_operator = False
+
+    for node in ast.walk(tree):
+        if not isinstance(node, allowed_nodes):
+            return False
+
+        if isinstance(node, ast.BinOp):
+            has_binary_operator = True
+
+        if isinstance(node, ast.Constant):
+            if not isinstance(node.value, (int, float)):
+                return False
+
+    return has_binary_operator
+
+
+def extract_simple_math_expression(question:str) -> str | None:
+    text = normalize_math_text(question)
+
+    # 从整句话中提取由数字、运算符、小数点、括号、空格组成的片段
+    candidates = re.findall(r"[0-9+\-*/().\s]+", text)
+
+    # 优先尝试更长的候选表达式
+    candidates = sorted(
+        (c.strip() for c in candidates if c.strip()),
+        key=len,
+        reverse=True
+    )
+
+    for expr in candidates:
+        if is_safe_math_expression(expr):
+            return expr
 
     return None
 
