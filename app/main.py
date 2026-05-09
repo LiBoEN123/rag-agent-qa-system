@@ -36,6 +36,50 @@ logger = get_logger('chat_service')
 METRICS_PATH = Path("logs") / "metrics.jsonl"
 BAD_CASES_PATH = Path("logs") / "bad_cases.jsonl"
 
+# 真正应该进入 bad_cases.jsonl 的错误类型
+
+REAL_BAD_CASE = {
+"tool_error",            # 工具执行异常、工具返回格式异常
+    "parse_error",           # 模型没有按 JSON 格式返回
+    "reference_error",       # 答案和引用不匹配，或答案有内容但引用为空
+    "model_error",           # 模型调用异常
+    "internal_error",        # 后端内部异常
+    "agent_decision_error",  # Agent 决策出现未知 action
+    "index_not_ready",       # 知识库未准备完成
+}
+
+# 这些属于正常业务结果，不应该进入 bad_cases.jsonl
+
+EXPECTED_NON_BAD_CASE_TYPES = {
+    "",
+    "empty_question",
+    "invalid_input",
+    "clarify_needed",
+    "ambiguous_error",
+    "expected_refusal",
+    "out_of_scope",
+    "out_of_scope_error",
+    "out_of_scope_refused",
+    "no_relevant_info",
+    "insufficient",
+    "retrieval_error",   # 注意：这里先不把“没检索到”当成 bad case
+}
+
+def should_write_bad_case(record: dict) -> bool:
+    # 判断是否真的要写入 bad_cases.jsonl。
+    error_type = str(record.get("error_type", "") or "").strip()
+
+    if error_type in REAL_BAD_CASE:
+        return True
+
+    if error_type in EXPECTED_NON_BAD_CASE_TYPES:
+        return False
+
+    # 防御：如果以后出现了未知 error_type，先不要静默写入。
+    logger.info(f"[trace_id={record.get('trace_id', '')}] [bad_case] skip unknown error_type={error_type}")
+
+    return False
+
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="milliseconds")
 
@@ -91,6 +135,22 @@ def write_metrics(record: dict) -> None:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 def write_bad_cases(record: dict) -> None:
+    """
+       写入真正失败案例。
+
+       注意：
+       这个函数内部会先判断 should_write_bad_case(record)。
+       所以即使 agent.py 误调用了 write_bad_cases，
+       空问题、正常拒答、正常澄清、正常无证据也不会写进 bad_cases.jsonl。
+       """
+
+    if not should_write_bad_case(record):
+        logger.info(
+            f"[trace_id={record.get('trace_id', '')}] [bad_case] skip"
+            f"error_type={record.get('error_type', '')}"
+            f"note={record.get('note', '')}"
+        )
+        return
 
     BAD_CASES_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -107,6 +167,13 @@ def write_bad_cases(record: dict) -> None:
 
     with BAD_CASES_PATH.open("a", encoding="utf-8") as f:
         f.write(json.dumps(normalized_record, ensure_ascii=False) + "\n")
+
+    logger.info(
+        f"[trace_id={record.get('trace_id', '')}] [bad_case] written"
+        f"route={record.get('route', '')}"
+        f"error_type={record.get('error_type', '')}"
+        f"note={record.get('note', '')}"
+    )
 
 def log_and_write_metrics(record: dict) -> None:
 
@@ -510,7 +577,8 @@ def ask_api(req: ChatRequest, response: Response):
                 metrics["action"] = action or ""
                 metrics["reason"] = "知识库未准备完成"
 
-                bad_case["error_type"] = "retrieval_error"
+                bad_case["route"] = action or "rag"
+                bad_case["error_type"] = "index_not_ready"
                 bad_case["note"] = "知识库未准备完成，请检查知识库"
                 write_bad_cases(bad_case)
 
@@ -550,9 +618,9 @@ def ask_api(req: ChatRequest, response: Response):
             metrics["tool_success"] = False
             metrics["reason"] = str(e)
 
-            bad_case["route"] = decision.get("decision", "")
-            bad_case["error_type"] = "model_error"
-            bad_case["note"] = "工具调用或模型调用异常"
+            bad_case["route"] = action or decision.get("decision", "")
+            bad_case["error_type"] = "internal_error"
+            bad_case["note"] = f"run_agent_once 执行异常：{str(e)}"
             write_bad_cases(bad_case)
 
             response.status_code = 500

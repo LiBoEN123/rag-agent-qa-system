@@ -441,12 +441,6 @@ def run_agent_once(
                 "result_summary": "没有检索到候选 chunk"
             })
 
-            bad_case["answer"] = "没有检索到足够相关的知识库内容，无法根据当前文档回答。"
-            bad_case["route"] = route_decision
-            bad_case["error_type"] = "retrieval_error"
-            bad_case["note"] = "没有检索到候选 chunk"
-            write_bad_cases(bad_case)
-
             return {
                 "status": "NO_RELEVANT_INFO",
                 "answer": "没有检索到足够相关的知识库内容，无法根据当前文档回答。",
@@ -511,30 +505,39 @@ def run_agent_once(
 
             final_status = "no_evidence"
 
-            bad_case["answer"] = rag_result.get("answer", "")
-            bad_case["references"] = rag_result.get("references", [])
-            bad_case["route"] = route_decision
-            bad_case["error_type"] = "retrieval_error"
-            bad_case["note"] = "没有检索到候选 chunk"
-            write_bad_cases(bad_case)
+            answer_text = rag_result.get("answer", "")
+            references = rag_result.get("references", []) or []
+            reason_text = rag_result.get("reason", "")
+
+            is_bad_reference, reference_note = should_record_reference_bad_case(
+                question=question,
+                answer=answer_text,
+                references=references,
+                reason=reason_text
+            )
+
+            if is_bad_reference:
+                bad_case["answer"] = answer_text
+                bad_case["references"] = references
+                bad_case["route"] = route_decision
+                bad_case["error_type"] = "reference_error"
+                bad_case["note"] = reference_note
+                write_bad_cases(bad_case)
+
+                logger.warning(
+                    f"[trace_id={trace_id}] [bad_case] "
+                    f"error_type=reference_error note={reference_note}"
+                )
 
         elif rag_status == "NEED_CLARIFICATION":
 
             final_status = "clarify"
-
-            bad_case["answer"] = rag_result.get("answer", "")
-            bad_case["references"] = rag_result.get("references", [])
-            bad_case["route"] = route_decision
-            bad_case["error_type"] = "ambiguous_error"
-            bad_case["note"] = "问题指代不明，请补充说明"
-            write_bad_cases(bad_case)
 
         elif rag_status == "MODEL_BAD_OUTPUT":
 
             final_status = "error"
 
             bad_case["answer"] = rag_result.get("answer", "")
-            bad_case["references"] = rag_result.get("references", [])
             bad_case["references"] = rag_result.get("references", [])
             bad_case["route"] = route_decision
             bad_case["error_type"] = "parse_error"
@@ -585,6 +588,13 @@ def run_agent_once(
         "final_status": "error",
         "error": f"未知 Agent action: {action}"
     })
+
+    bad_case["answer"] = "Agent 决策结果异常，无法完成本次请求。"
+    bad_case["references"] = []
+    bad_case["route"] = route_decision
+    bad_case["error_type"] = "agent_decision_error"
+    bad_case["note"] = f"未知 Agent action: {action}"
+    write_bad_cases(bad_case)
 
     return {
         "status": "MODEL_BAD_OUTPUT",
@@ -824,3 +834,28 @@ def check_reference_reliability(
 
     return False, ""
 
+def should_record_reference_bad_case(
+        question: str,
+        answer: str,
+        references: list[dict],
+        reason: str
+) -> tuple[bool, str]:
+
+    answer = (answer or "").strip()
+    reason = (reason or "").strip()
+
+    if not question:
+        return False, ""
+
+    if "我无法根据提供的文档确定答案" in answer:
+        return False, ""
+
+    if "检索结果为空" in reason or "top1 分数低于阈值" in reason:
+        return False, ""
+
+    if "模型给出的答案没有足够的引用支撑" in reason:
+        return check_reference_reliability(question,
+                                           answer,
+                                           references)
+
+    return False, ""

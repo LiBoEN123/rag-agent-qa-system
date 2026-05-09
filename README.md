@@ -853,3 +853,12 @@ Agent 决策
 - 在 `/chat` 接口中返回 `action`、`tool_result_summary` 和 `tool_trace`，提升系统执行过程的可解释性。
 - 实现索引缓存与 manifest 判断机制，减少重复构建索引的成本。
 - 设计基础评测样例，通过 expected_action 与 actual_action 对比验证 Agent 路由准确率。
+
+---
+## 23. 优化记录
+### 1. simple_calculator决策优化
+- 问题现象：Agent针对`simple_calculator`的决策路由设计的比较简单，只针对部分提问词，问题稍做改变就会转向其它路由。
+- 日志证据：用户提问`1+2+3的结果是什么`，结果走的是rag的路由。
+- 修改内容：在`agent.py`中新增`normalize_math_text`和`is_safe_math_expression`，二者分别将提问中的计算表达式规范化并判断表达式是否为正常简单计算，并修改`extract_simple_math_expression`，变为提取提问中的表达式，利用新增函数进行规范和判断，最终返回可计算的标准表达式。
+- 复测结果：对于任意含计算的提问（提问的表达式需为阿拉伯数字），都能正常走`simple_calculator`的路由并计算出正确结果。
+
