@@ -609,6 +609,10 @@ def run_agent_once(
         "tool_trace": tool_trace
     }
 
+# =========================
+# 规范工具输出回答
+# =========================
+
 def format_tool_answer(tool_name: str, output: dict) -> str:
     if tool_name == "simple_calculator":
         return f"计算结果是：{output.get('result')}"
@@ -648,6 +652,10 @@ def format_tool_answer(tool_name: str, output: dict) -> str:
 
     return str(output)
 
+# =========================
+# tool_result_summary 调用函数
+# =========================
+
 def summarize_tool_result(tool_name: str, tool_result: dict) -> str:
     if tool_result["status"] != "success":
         return f"{tool_name} 工具执行失败：{tool_result.get('error', '')}"
@@ -664,6 +672,10 @@ def summarize_tool_result(tool_name: str, tool_result: dict) -> str:
         return f"get_chunk_text 执行成功，返回 chunk_id={output.get('chunk_id')} 的内容"
 
     return f"{tool_name} 执行成功"
+
+# =========================
+# 判断问题是否走 get_chunk_text 路由
+# =========================
 
 def extract_chunk_id(q: str) -> int | None:
     patterns = [
@@ -687,7 +699,10 @@ def is_out_of_scope(question:str) -> bool:
         return False
     return any(keyword in q for keyword in OUT_OF_SCOPE_KEYWORDS)
 
-# 简单计算判断函数
+# =========================
+# 判断问题是否走 simple_calculator 路由
+# =========================
+
 def normalize_math_text(text: str) -> str:
     # 全角字符转半角，例如：１＋２ -> 1+2
     text = unicodedata.normalize("NFKC", text or "")
@@ -772,6 +787,10 @@ REFERENCE_STOPWORDS = {
     "的是", "一个", "以及", "进行", "通过", "如果", "时候", "没有",
     "the", "and", "for", "with", "from", "this", "that", "what", "how"
 }
+
+# =========================
+# 判断引用是否支撑回答
+# =========================
 
 def extract_reference_keywords(text: str) -> set[str]:
     text = (text or "").lower()
