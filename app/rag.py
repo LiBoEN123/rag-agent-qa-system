@@ -269,7 +269,7 @@ def ask(
     )
     logger.info(f"[trace_id={trace_id}] [llm] 开始调用模型")
 
-    llm_out = call_llm(question, context)
+    llm_out = call_llm(question, context, trace_id)
 
     logger.info(
         f"[trace_id={trace_id}] [llm] 模型调用完成 output_len={len(llm_out or '')}"

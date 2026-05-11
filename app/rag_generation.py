@@ -6,6 +6,9 @@ import requests
 from app.config import Settings
 from app.prompts import SYSTEM_PROMPT_A, SYSTEM_PROMPT_B, USER_PROMPT, NO_ANSWER_FALLBACK
 from app.rag_retrieval import clamp01, make_snippet
+from app.untils import get_logger
+
+logger = get_logger('chat_service')
 
 
 def build_context(retrieved_chunks, max_chars: int = Settings.MAX_CONTEXT_CHARS):
@@ -31,7 +34,7 @@ def build_context(retrieved_chunks, max_chars: int = Settings.MAX_CONTEXT_CHARS)
     return "\n".join(parts)
 
 
-def call_llm(question: str, context: str):
+def call_llm(question: str, context: str, trace_id : str = ""):
     api_key = Settings.LLM_API_KEY
     model_name = Settings.MODEL_NAME
     api_url = Settings.LLM_API_URL
@@ -63,6 +66,12 @@ def call_llm(question: str, context: str):
     resp.raise_for_status()
 
     data = resp.json()
+
+    logger.info(
+        f"[trace_id={trace_id}] [llm] response_model={data.get('model')}, "
+        f"response_id={data.get('id', '')}"
+    )
+
     content = data["choices"][0]["message"]["content"]
     return content
 
