@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, HTTPException, Query, Response, Request
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Literal, TypeAlias
 import time
@@ -82,6 +82,52 @@ def should_write_bad_case(record: dict) -> bool:
 
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="milliseconds")
+
+@app.middleware("http")
+async def trace_and_timing_middleware(request: Request, call_next):
+    if request.url.path != "/chat":
+        return await call_next(request)
+
+    trace_id = request.headers.get("X-Trace-Id") or create_trace_id()
+
+    request_enter_perf = time.perf_counter()
+    request_enter_time = now_iso()
+
+    request.state.trace_id = trace_id
+    request.state.request_enter_pref = request_enter_perf
+    request.state.request_enter_time = request_enter_time
+
+    logger.info(
+        f"[trace_id={trace_id}] [http] request_enter"
+        f"path={request.url.path}"
+        f"method={request.method}"
+        f"request_enter_time={request.state.request_enter_time}"
+    )
+
+    try:
+        response = await call_next(request)
+    except Exception as e:
+        total_cost_ms = int((time.perf_counter() - request_enter_perf) * 1000)
+        logger.info(
+            f"[trace_id={trace_id}] [http] request_enrror"
+            f"total_cost_ms={total_cost_ms}"
+            f"error={repr(e)}"
+        )
+        raise
+
+    total_cost_ms = int((time.perf_counter() - request_enter_perf) * 1000)
+
+    logger.info(
+        f"[trace_id={trace_id}] [http] response_end "
+        f"status_code={response.status_code} "
+        f"total_cost_ms={total_cost_ms}"
+    )
+
+    response.headers["X-Trace-Id"] = trace_id
+    response.headers["X-Total-Cost-Ms"] = str(total_cost_ms)
+
+    return response
+
 
 def normalize_metrics_status(result_status: str) -> str:
 
@@ -180,13 +226,20 @@ def log_and_write_metrics(record: dict) -> None:
     logger.info(
         f"[trace_id={record.get('trace_id')}] "
         "[metrics] "
+        f"queue_wait_ms={record.get('queue_wait_ms')} "
         f"latency_ms={record.get('latency_ms')} "
+        f"total_cost_ms={record.get('total_cost_ms')} "
+        f"route_cost_ms={record.get('route_cost_ms')} "
+        f"rag_ready_check_cost_ms={record.get('rag_ready_check_cost_ms')} "
+        f"agent_cost_ms={record.get('agent_cost_ms')} "
         f"status={record.get('status')} "
         f"reference_count={record.get('reference_count')} "
         f"retrieved_count={record.get('retrieved_count')} "
         f"tool_called={record.get('tool_called')} "
         f"tool_success={record.get('tool_success')} "
-        f"tool_name={record.get('tool_name')}"
+        f"tool_name={record.get('tool_name')} "
+        f"action={record.get('action')} "
+        f"reason={record.get('reason')}"
     )
 
     write_metrics(record)
@@ -501,12 +554,34 @@ def health():
 }
 
 @app.post("/chat", response_model=ChatResponse)
-def ask_api(req: ChatRequest, response: Response):
-    start_perf = time.perf_counter()
-    start_time = now_iso()
+def ask_api(req: ChatRequest, request: Request, response: Response):
+    process_start_perf = time.perf_counter()
+    process_start_time = now_iso()
 
-    trace_id = create_trace_id()
+    trace_id = getattr(request.state, "trace_id", "") or create_trace_id()
+
+    request_enter_perf = getattr(
+        request.state,
+        "request_enter_perf",
+        process_start_perf
+    )
+
+    request_enter_time = getattr(
+        request.state,
+        "request_enter_time",
+        process_start_time
+    )
+
+    queue_wait_ms = int((process_start_perf - request_enter_perf) * 1000)
+
     question = (req.question or "").strip()
+
+    logger.info(
+        f"[trace_id={trace_id}] [chat] process_start "
+        f"queue_wait_ms={queue_wait_ms} "
+        f"question_len={len(question)} "
+        f"preview={question[:50]}"
+    )
 
     bad_case = {
         "created_at": now_iso(),
@@ -521,9 +596,29 @@ def ask_api(req: ChatRequest, response: Response):
 
     metrics = {
         "trace_id": trace_id,
-        "start_time": start_time,
+
+        # HTTP 层进入时间
+        "request_enter_time": request_enter_time,
+
+        # /chat 真正开始处理时间
+        "process_start_time": process_start_time,
+
         "end_time": "",
+
+        # 进入服务后等待进入处理函数的时间
+        "queue_wait_ms": queue_wait_ms,
+
+        # /chat 函数内部处理耗时
         "latency_ms": 0,
+
+        # request_enter 到 response_end 的总耗时
+        "total_cost_ms": 0,
+
+        # 细分阶段耗时
+        "route_cost_ms": 0,
+        "rag_ready_check_cost_ms": 0,
+        "agent_cost_ms": 0,
+
         "status": "internal_error",
         "question_len": len(question),
         "reference_count": 0,
@@ -558,8 +653,21 @@ def ask_api(req: ChatRequest, response: Response):
 
         final_top_k = req.top_k if req.top_k is not None else Settings.TOP_K
 
+        route_start = time.perf_counter()
+
         decision = route_agent_action(question, final_top_k)
+
+        route_cost_ms = int((time.perf_counter() - route_start) * 1000)
+        metrics["route_cost_ms"] = route_cost_ms
+
         action = decision.get("action")
+
+        logger.info(
+            f"[trace_id={trace_id}] [agent] route_end "
+            f"action={action} "
+            f"route_cost_ms={route_cost_ms} "
+            f"reason={decision.get('reason', '')}"
+        )
 
         need_rag_ready_actions = {
             "search_knowledge_base",
@@ -568,7 +676,23 @@ def ask_api(req: ChatRequest, response: Response):
         }
 
         if action in need_rag_ready_actions:
+            ready_check_start = time.perf_counter()
+
             rag_status = get_rag_status()
+
+            rag_ready_check_cost_ms = int(
+                (time.perf_counter() - ready_check_start) * 1000
+            )
+
+            metrics["rag_ready_check_cost_ms"] = rag_ready_check_cost_ms
+
+            logger.info(
+                f"[trace_id={trace_id}] [rag] ready_check_end "
+                f"ready={rag_status.get('ready')} "
+                f"rag_ready_check_cost_ms={rag_ready_check_cost_ms} "
+                f"message={rag_status.get('message', '')}"
+            )
+
             if not rag_status["ready"]:
                 logger.warning(f"[trace_id={trace_id}] [chat] final_status=empty_index reason=知识库未准备完成")
                 response.status_code = 503
@@ -595,7 +719,27 @@ def ask_api(req: ChatRequest, response: Response):
                 )
 
         try:
-            result = run_agent_once(write_bad_cases, question, final_top_k, decision, trace_id, bad_case)
+            agent_start = time.perf_counter()
+
+            result = run_agent_once(
+                write_bad_cases,
+                question,
+                final_top_k,
+                decision,
+                trace_id,
+                bad_case
+            )
+
+            agent_cost_ms = int((time.perf_counter() - agent_start) * 1000)
+            metrics["agent_cost_ms"] = agent_cost_ms
+
+            logger.info(
+                f"[trace_id={trace_id}] [agent] run_agent_once_end "
+                f"status={result.get('status', '')} "
+                f"agent_cost_ms={agent_cost_ms} "
+                f"answer_len={len(result.get('answer', '') or '')} "
+                f"reference_count={len(result.get('references') or [])}"
+            )
 
             trace_metrics = collect_trace_metrics(result)
 
@@ -791,9 +935,32 @@ def ask_api(req: ChatRequest, response: Response):
             need_clarification=False
         )
 
+
     finally:
+        process_end_perf = time.perf_counter()
+
         metrics["end_time"] = now_iso()
-        metrics["latency_ms"] = int((time.perf_counter() - start_perf) * 1000)
+
+        # /chat 内部真正处理耗时
+        metrics["latency_ms"] = int(
+            (process_end_perf - process_start_perf) * 1000
+        )
+
+        # 从 HTTP 请求进入，到 /chat 处理结束的总耗时
+        metrics["total_cost_ms"] = int(
+            (process_end_perf - request_enter_perf) * 1000
+        )
+
+        logger.info(
+            f"[trace_id={trace_id}] [chat] process_end "
+            f"status={metrics.get('status')} "
+            f"queue_wait_ms={metrics.get('queue_wait_ms')} "
+            f"latency_ms={metrics.get('latency_ms')} "
+            f"total_cost_ms={metrics.get('total_cost_ms')} "
+            f"route_cost_ms={metrics.get('route_cost_ms')} "
+            f"rag_ready_check_cost_ms={metrics.get('rag_ready_check_cost_ms')} "
+            f"agent_cost_ms={metrics.get('agent_cost_ms')}"
+        )
 
         log_and_write_metrics(metrics)
 
