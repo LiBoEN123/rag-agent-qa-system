@@ -22,10 +22,15 @@ class Settings:
                                          "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 
     MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", 2500))
+    LLM_MAX_TOKNES = int(os.getenv("LLM_MAX_TOKENS", 1024))
 
     LLM_API_KEY = os.getenv("DEEPSEEK_API_KEY")
     MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-chat")
     LLM_API_URL = os.getenv("LLM_API_URL", "https://api.deepseek.com/v1/chat/completions")
+
+    LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", 60))
+    LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", 2))
+    LLM_RETRY_SLEEP = int(os.getenv("LLM_RETRY_SLEEP", 1))
 
     MARGIN_THRESHOLD = float(os.getenv("MARGIN_THRESHOLD", "0.03"))
     VECTOR_THRESHOLD = float(os.getenv("VECTOR_THRESHOLD", "0.35"))

@@ -923,3 +923,82 @@ bad_cases.jsonl 不记录正常拒答、空问题、模糊问题等预期行为�
 7. 失败案例：挑选部分失败案例展示其相关信息
 8. 日志格式问题: 统计有格式问题的日志
 9. 统计口径说明：对脚本的运行流程进行说明
+
+## 25. 模型来源配置说明
+
+### 25.1 使用 DeepSeek 云端 API
+`.env`示例
+```
+TOP_K=5  
+CHUNK_OVERLAP=120  
+CHUNK_SIZE=600  
+  
+EMBEDDING_MODEL_NAME=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2  
+  
+MAX_CONTEXT_CHARS=3000  
+  
+# =========================  
+# 请求控制  
+# =========================  
+  
+# 单次模型请求最多等 60 秒  
+LLM_TIMEOUT=60  
+# 失败后最多重试两次  
+LLM_MAX_RETRIES=2  
+# 每次重试前等待1秒  
+LLM_RETRY_SLEEP=1  
+  
+# =========================  
+# 模型相关参数  
+# =========================  
+DEEPSEEK_API_KEY=your_api_key
+MODEL_NAME=deepseek-chat  
+LLM_API_URL=https://api.deepseek.com/v1/chat/completions  
+  
+TEMPERATURE=0.1  
+LLM_MAX_TOKENS=1024  
+  
+# =========================  
+# 召回chunk的拒绝阈值  
+# =========================  
+MARGIN_THRESHOLD=0.01  
+VECTOR_THRESHOLD=0.35
+```
+### 25.2 使用本地 Ollama 模型
+`.env`示例
+```
+TOP_K=5  
+CHUNK_OVERLAP=120  
+CHUNK_SIZE=600  
+  
+EMBEDDING_MODEL_NAME=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2  
+  
+MAX_CONTEXT_CHARS=3000  
+  
+# =========================  
+# 请求控制  
+# =========================  
+  
+# 单次模型请求最多等 60 秒  
+LLM_TIMEOUT=60  
+# 失败后最多重试两次  
+LLM_MAX_RETRIES=2  
+# 每次重试前等待1秒  
+LLM_RETRY_SLEEP=1  
+  
+# =========================  
+# 模型相关参数  
+# =========================  
+DEEPSEEK_API_KEY=ollama
+MODEL_NAME=qwen2:7b  
+LLM_API_URL=http://127.0.0.1:11434/v1/chat/completions  
+  
+TEMPERATURE=0.1  
+LLM_MAX_TOKENS=1024  
+  
+# =========================  
+# 召回chunk的拒绝阈值  
+# =========================  
+MARGIN_THRESHOLD=0.01  
+VECTOR_THRESHOLD=0.35
+```

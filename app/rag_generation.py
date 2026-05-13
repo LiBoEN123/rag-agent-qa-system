@@ -1,4 +1,5 @@
 import json
+import time
 from typing import List
 
 import requests
@@ -11,12 +12,15 @@ from app.untils import get_logger
 logger = get_logger('chat_service')
 
 
-def build_context(retrieved_chunks, max_chars: int = Settings.MAX_CONTEXT_CHARS):
+def build_context(retrieved_chunks, max_chars: int | None=None):
+    if max_chars is None:
+        max_chars = Settings.MAX_CONTEXT_CHARS
+
     parts = []
     total = 0
 
     for item in retrieved_chunks:
-        snippet = item["text"][:300]
+        snippet = item["text"]
         block = (
             f"[{item['reference_id']}]\n"
             f"file_name:{item['file_name']}\n"
@@ -33,18 +37,56 @@ def build_context(retrieved_chunks, max_chars: int = Settings.MAX_CONTEXT_CHARS)
 
     return "\n".join(parts)
 
+class LLMCallError(Exception):
+    """模型调用失败时使用的统一异常。"""
+    def __init__(self, user_message: str, detail: str=""):
+        super().__init__(user_message)
+        self.user_message = user_message
+        self.detail = detail
+
+def build_llm_header() -> dict:
+    headers = {
+        "Content-Type": "application/json"
+    }
+
+    if Settings.LLM_API_KEY:
+        headers["Authorization"] = f"Bearer {Settings.LLM_API_KEY}"
+
+    return headers
+
+def get_http_error_message(status_code: int) -> str:
+    """把 HTTP 状态码转换成用户能看懂的提示。"""
+
+    if status_code == 400:
+        return "模型请求参数错误，请检查 model、messages、max_tokens 等配置。"
+
+    if status_code == 401:
+        return "模型调用未授权，请检查 API Key 是否正确。"
+
+    if status_code == 403:
+        return "模型调用被拒绝，请检查账号权限或模型访问权限。"
+
+    if status_code == 404:
+        return "模型接口地址或模型名称不存在，请检查 LLM_API_URL 和 MODEL_NAME。"
+
+    if status_code == 429:
+        return "模型请求过于频繁或额度不足，请稍后重试或检查账户额度。"
+
+    if status_code >= 500:
+        return "模型服务端异常，可能是模型服务暂时不可用。"
+
+    return f"模型服务返回异常状态码：{status_code}"
 
 def call_llm(question: str, context: str, trace_id : str = ""):
-    api_key = Settings.LLM_API_KEY
     model_name = Settings.MODEL_NAME
     api_url = Settings.LLM_API_URL
-
-    if not api_key:
-        raise ValueError("请先设置模型 API Key")
+    temperature = Settings.TEMPERATURE
+    max_tokens = Settings.LLM_MAX_TOKNES
 
     payload = {
         "model": model_name,
-        "temperature": Settings.TEMPERATURE,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT_A},
             {
@@ -57,23 +99,100 @@ def call_llm(question: str, context: str, trace_id : str = ""):
         ]
     }
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+    headers = build_llm_header()
 
-    resp = requests.post(api_url, headers=headers, json=payload, timeout=60)
-    resp.raise_for_status()
+    last_error = None
+    total_attempts = Settings.LLM_MAX_RETRIES + 1
 
-    data = resp.json()
+    for attempt in range(total_attempts):
+        try:
+            logger.info(
+                f"[trace_id={trace_id}] [llm] attempt={attempt + 1}/{total_attempts}, "
+                f"url={Settings.LLM_API_URL}, "
+                f"model={Settings.MODEL_NAME}, "
+                f"timeout={Settings.LLM_TIMEOUT}"
+            )
 
-    logger.info(
-        f"[trace_id={trace_id}] [llm] response_model={data.get('model')}, "
-        f"response_id={data.get('id', '')}"
-    )
+            response = requests.post(
+                api_url,
+                headers=headers,
+                json=payload,
+                timeout=Settings.LLM_TIMEOUT
+            )
 
-    content = data["choices"][0]["message"]["content"]
-    return content
+            # 优先处理非 200 状态码
+            if response.status_code != 200:
+                error_message = get_http_error_message(response.status_code)
+
+                # 5xx可以重试
+                if response.status_code >= 500:
+                    raise  requests.HTTPError(
+                        f"{error_message} response={response.text[:300]}"
+                    )
+
+                # 400 / 401 / 403 / 404 / 429 这类通常重试没意义，直接抛出
+                raise LLMCallError(
+                    user_message=error_message,
+                    detail=response.text[:500]
+                )
+
+            # 解析JSON
+            try:
+                data = response.json()
+            except Exception as e:
+                raise LLMCallError(
+                    user_message="模型返回内容不是合法 JSON。",
+                    detail=str(e)
+                )
+
+            # 解析 OpenAI-compatible 格式
+            try:
+                return data["choices"][0]["message"]["content"]
+            except Exception as e:
+                raise LLMCallError(
+                    user_message="模型返回格式不符合预期，缺少 choices/message/content 字段。",
+                    detail=str(e)
+                )
+
+        except LLMCallError:
+            # 已经是可读错误，直接抛给上层
+            raise
+
+        except requests.exceptions.Timeout as e:
+            last_error = e
+            error_message = "模型调用超时，请检查模型服务是否响应过慢，或适当调大 LLM_TIMEOUT。"
+
+        except requests.exceptions.ConnectionError as e:
+            last_error = e
+            error_message = "无法连接模型服务，请检查 LLM_API_URL 是否正确，以及模型服务是否已启动。"
+
+        except requests.exceptions.HTTPError as e:
+            last_error = e
+            error_message = "模型服务端异常，请稍后重试。"
+
+        except requests.exceptions.RequestException as e:
+            last_error = e
+            error_message = f"模型请求失败：{e}"
+
+            # 走到这里说明是可重试类错误
+        if attempt < Settings.LLM_MAX_RETRIES:
+            logger.warning(
+                f"[trace_id={trace_id}] [llm] 调用失败，准备重试 attempt={attempt + 1}/{total_attempts}, "
+                f"error={error_message}"
+            )
+            time.sleep(Settings.LLM_RETRY_SLEEP)
+            continue
+
+        logger.error(
+            f"[trace_id={trace_id}] [llm] 调用最终失败 attempts={total_attempts}, "
+            f"error={error_message}"
+        )
+
+        raise LLMCallError(
+            user_message=error_message,
+            detail=str(last_error)
+        )
+
 
 
 def parse_llm_output(llm_output: str):
