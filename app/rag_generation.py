@@ -81,7 +81,7 @@ def call_llm(question: str, context: str, trace_id : str = ""):
     model_name = Settings.MODEL_NAME
     api_url = Settings.LLM_API_URL
     temperature = Settings.TEMPERATURE
-    max_tokens = Settings.LLM_MAX_TOKNES
+    max_tokens = Settings.LLM_MAX_TOKENS
 
     payload = {
         "model": model_name,

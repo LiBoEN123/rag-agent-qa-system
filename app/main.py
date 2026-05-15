@@ -94,13 +94,13 @@ async def trace_and_timing_middleware(request: Request, call_next):
     request_enter_time = now_iso()
 
     request.state.trace_id = trace_id
-    request.state.request_enter_pref = request_enter_perf
+    request.state.request_enter_perf = request_enter_perf
     request.state.request_enter_time = request_enter_time
 
     logger.info(
-        f"[trace_id={trace_id}] [http] request_enter"
-        f"path={request.url.path}"
-        f"method={request.method}"
+        f"[trace_id={trace_id}] [http] request_enter "
+        f"path={request.url.path} "
+        f"method={request.method} "
         f"request_enter_time={request.state.request_enter_time}"
     )
 
@@ -109,7 +109,7 @@ async def trace_and_timing_middleware(request: Request, call_next):
     except Exception as e:
         total_cost_ms = int((time.perf_counter() - request_enter_perf) * 1000)
         logger.info(
-            f"[trace_id={trace_id}] [http] request_enrror"
+            f"[trace_id={trace_id}] [http] request_error"
             f"total_cost_ms={total_cost_ms}"
             f"error={repr(e)}"
         )
@@ -192,8 +192,8 @@ def write_bad_cases(record: dict) -> None:
 
     if not should_write_bad_case(record):
         logger.info(
-            f"[trace_id={record.get('trace_id', '')}] [bad_case] skip"
-            f"error_type={record.get('error_type', '')}"
+            f"[trace_id={record.get('trace_id', '')}] [bad_case] skip "
+            f"error_type={record.get('error_type', '')} "
             f"note={record.get('note', '')}"
         )
         return
@@ -215,9 +215,9 @@ def write_bad_cases(record: dict) -> None:
         f.write(json.dumps(normalized_record, ensure_ascii=False) + "\n")
 
     logger.info(
-        f"[trace_id={record.get('trace_id', '')}] [bad_case] written"
-        f"route={record.get('route', '')}"
-        f"error_type={record.get('error_type', '')}"
+        f"[trace_id={record.get('trace_id', '')}] [bad_case] written "
+        f"route={record.get('route', '')} "
+        f"error_type={record.get('error_type', '')} "
         f"note={record.get('note', '')}"
     )
 

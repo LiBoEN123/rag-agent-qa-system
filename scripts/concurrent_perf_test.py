@@ -13,7 +13,7 @@ CHAT_URL = "http://127.0.0.1:8000/chat"
 OUTPUT_DIR = Path("outputs/perf")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-RESULT_FILE = OUTPUT_DIR / "concurrent_perf_results.jsonl"
+RESULT_FILE = OUTPUT_DIR / "concurrent_Ollama_perf_results.jsonl"
 
 # 建议保留 1 作为基线，然后再测 2、3、5 并发
 CONCURRENCY_LEVELS = [1, 2, 3, 5]

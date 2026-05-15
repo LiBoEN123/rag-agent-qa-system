@@ -31,10 +31,27 @@ LLM_API_URL：选填，默认https://api.deepseek.com/v1/chat/completions，表�
 HYBRID_THRESHOLD：选填，默认0.40，表示混合分数拒答阈值，如果结果分数低于该值，则触发拒答。
 VECTOR_THRESHOLD：选填，默认0.35，表示向量分数拒答阈值，如果结果分数低于该值，则触发拒答。
 ```
+这里要说明一下两种情况
+### 4.1 项目用本地 Ollama
+那`.env`中模型的配置参数为
+```text
+MODEL_NAME=qwen2:7b
+LLM_API_URL=http://host.docker.internal:11434/v1/chat/completions
+LLM_API_KEY=ollama
+```
+
+### 4.2 DeepSeek 或其他云 API
+那`.env`中模型的配置参数为
+```text
+MODEL_NAME=deepseek-chat
+LLM_API_URL=https://api.deepseek.com/v1/chat/completions
+LLM_API_KEY=你的真实 key
+```
 
 ## 5.启动服务
+由于配置文件.env未传入镜像，故在常规启动代码上添加`--env-file .env`
 ```bash
-docker run --rm -p 8000:8000 rag-demo:latest
+docker run --rm -p 8000:8000 --env-file .env rag-demo:latest
 ```
 
 ## 6.验证服务
@@ -49,7 +66,7 @@ http://localhost:8000/docs
 然后在`/search`及`/chat`接口输入问题及召回条数
 ```
 {
-  "question": "购买七天后还能退款吗",
+  "question": "每个 Vue 应用都是通过什么函数创建应用实例的？",
   "top_k": 5
 }
 ```
@@ -57,7 +74,7 @@ http://localhost:8000/docs
 
 ## 7.常见问题
 - API Key不可用
-- 直接运行命令`docker build -t rag-demo:latest .`可能会出现网络不兼容问题导致失败
+- 直接运行命令`docker run --rm -p 8000:8000 --env-file .env rag-demo:latest`可能会出现网络不兼容问题导致失败
 
 
 

@@ -22,7 +22,7 @@ class Settings:
                                          "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
 
     MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", 2500))
-    LLM_MAX_TOKNES = int(os.getenv("LLM_MAX_TOKENS", 1024))
+    LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", 1024))
 
     LLM_API_KEY = os.getenv("DEEPSEEK_API_KEY")
     MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-chat")
