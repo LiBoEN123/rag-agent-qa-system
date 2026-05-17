@@ -50,7 +50,7 @@ doc_embeddings = None
 RAG_READY = False
 RAG_INIT_MESSAGE = "RAG 尚未初始化"
 NO_DOCUMENTS_MESSAGE = "当前知识库为空，请先在 data 目录中放入文档后再提问"
-STOPWORD = "我无法根据提供的文档确定答案"
+STOP_WORD = "我无法根据提供的文档确定答案"
 
 
 # =========================
@@ -294,7 +294,7 @@ def ask(
 
     final_references = format_reference(retrieved_chunks, parsed["references"])
 
-    if not final_references or STOPWORD in parsed["answer"]:
+    if not final_references or STOP_WORD in parsed["answer"]:
         return {
             "status": "NO_RELEVANT_INFO",
             "answer": parsed["answer"],

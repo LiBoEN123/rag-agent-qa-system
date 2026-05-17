@@ -28,7 +28,7 @@ def normalize_text(text: str):
 
 
 def dedupe_results(items: list[dict], prefix_len: int = 80) -> list[dict]:
-    seen = set()
+    seen = set() # seen 是一个集合，用来记录已经见过的文本特征。
     result = []
 
     for item in items:

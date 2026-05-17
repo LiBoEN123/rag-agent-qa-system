@@ -54,7 +54,7 @@ def build_llm_header() -> dict:
 
     return headers
 
-def get_http_error_message(status_code: int) -> str:
+def  get_http_error_message(status_code: int) -> str:
     """把 HTTP 状态码转换成用户能看懂的提示。"""
 
     if status_code == 400:
@@ -101,7 +101,6 @@ def call_llm(question: str, context: str, trace_id : str = ""):
 
     headers = build_llm_header()
 
-    last_error = None
     total_attempts = Settings.LLM_MAX_RETRIES + 1
 
     for attempt in range(total_attempts):

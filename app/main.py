@@ -39,7 +39,7 @@ BAD_CASES_PATH = Path("logs") / "bad_cases.jsonl"
 # 真正应该进入 bad_cases.jsonl 的错误类型
 
 REAL_BAD_CASE = {
-"tool_error",            # 工具执行异常、工具返回格式异常
+    "tool_error",            # 工具执行异常、工具返回格式异常
     "parse_error",           # 模型没有按 JSON 格式返回
     "reference_error",       # 答案和引用不匹配，或答案有内容但引用为空
     "model_error",           # 模型调用异常
