@@ -175,27 +175,34 @@ format_tool_answer()
 ```text
 mini-rag/
 ├── app/
-│   ├── main.py              # FastAPI 入口，定义接口和响应结构
-│   ├── agent.py             # Agent 决策与执行逻辑
-│   ├── rag.py               # RAG 总控逻辑
-│   ├── rag_ingest.py        # 文档读取、清洗和切分
-│   ├── rag_retrieval.py     # BM25 + 向量检索与拒答判断
-│   ├── rag_generation.py    # Prompt 构建、模型调用、结果解析
-│   ├── rag_store.py         # 索引构建、缓存保存、manifest 判断
-│   ├── rag_debug.py         # 文档和 chunk 预览工具
-│   ├── tools.py             # 工具函数注册与分发
-│   ├── config.py            # 环境变量和配置项
-│   ├── prompts.py           # Prompt 模板
-│   └── untils.py            # 日志等通用工具
+│   ├── main.py                    # FastAPI 入口，定义接口和响应结构
+│   ├── agent.py                   # Agent 决策与执行逻辑
+│   ├── rag.py                     # RAG 总控逻辑
+│   ├── rag_ingest.py              # 文档读取、清洗和切分
+│   ├── rag_retrieval.py           # BM25 + 向量检索与拒答判断
+│   ├── rag_generation.py          # Prompt 构建、模型调用、结果解析
+│   ├── rag_store.py               # 索引构建、缓存保存、manifest 判断
+│   ├── rag_debug.py               # 文档和 chunk 预览工具
+│   ├── extract_refund_policy.py   # 退款类信息抽取接口逻辑
+│   ├── tools.py                   # 工具函数注册与分发
+│   ├── config.py                  # 环境变量和配置项
+│   ├── prompts.py                 # Prompt 模板
+│   └── untils.py                  # 日志等通用工具
 ├── data/
-│   ├── kb/                  # 知识库文档
-│   └── eval/                # 评测数据
+│   ├── kb/                        # 知识库文档
+│   └── eval/                      # 评测数据
 ├── scripts/
-│   ├── eval.py              # RAG 离线评测脚本
-│   └── agent_eval.py        # Agent 路由评测脚本
-├── outputs/                 # 评测输出结果
-├── tests/                   # 接口测试
-├── .env.example             # 环境变量示例
+│   ├── eval.py                    # RAG 离线评测脚本
+│   └── agent_eval.py              # Agent 路由评测脚本
+│   └── concurrent_perf_test.py    # 简单并发压测
+│   └── decision.py                # 工具类路由决策测试
+│   └── perf_test.py               # 简单串发压测
+│   └── summarize_logs.py          # 日志汇总脚本
+│   └── test_local_llm.py          # 本地大模型测试
+├── logs/                          # 各类日志存放点
+├── outputs/                       # 评测输出结果
+├── tests/                         # 接口测试
+├── .env.example                   # 环境变量示例
 ├── requirements.txt
 └── README.md
 ```
