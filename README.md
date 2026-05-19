@@ -1009,3 +1009,62 @@ LLM_MAX_TOKENS=1024
 MARGIN_THRESHOLD=0.01  
 VECTOR_THRESHOLD=0.35
 ```
+
+## 26. 部署到 Kubernetes，组件如何拆分
+
+当前项目可以按照 Kubernetes 的对象职责拆成以下几类：  
+  
+### 26.1. FastAPI 后端服务  
+  
+FastAPI 是主要的业务入口，负责接收用户问题、调用检索逻辑、访问向量数据库、调用模型服务并返回结果。  
+  
+在 Kubernetes 中，FastAPI 适合使用 Deployment + Service 部署：  
+  
+- Deployment：负责运行 FastAPI Pod，维护副本数量，并支持滚动更新。  
+- Service：为 FastAPI Pod 提供稳定访问入口，避免直接依赖 Pod IP。  
+- ConfigMap：保存普通配置，例如模型名称、向量库地址、top_k、chunk_size 等。  
+- Secret：保存敏感信息，例如 LLM API Key、数据库密码、JWT Secret 等。  
+  
+### 26.2. 模型服务  
+  
+如果项目调用的是外部大模型 API，例如 OpenAI、Claude、DeepSeek 或通义千问，则模型服务本身不需要部署在 Kubernetes 内部。项目只需要通过 ConfigMap 配置模型名称、API 地址，通过 Secret 保存 API Key。  
+  
+如果后续改为自托管模型服务，例如 embedding 服务、reranker 服务或本地 LLM 服务，则可以使用 Deployment + Service 部署。但这类服务需要额外考虑 GPU、模型权重、显存、冷启动时间和资源限制。  
+  
+### 26.3. 数据库  
+  
+数据库属于有状态组件，不适合像普通无状态 API 一样简单用 Deployment 管理。  
+  
+生产环境中，PostgreSQL、Redis、向量数据库等更适合使用外部托管服务。FastAPI 通过 ConfigMap 和 Secret 获取数据库连接信息。  
+  
+如果必须部署到 Kubernetes 内部，则应考虑 StatefulSet、PersistentVolume、PersistentVolumeClaim、备份恢复和数据一致性。  
+  
+### 26.4. 向量数据库  
+  
+向量数据库保存文档 chunk、embedding 向量、metadata 和索引，属于有状态组件。  
+  
+如果使用外部向量数据库，FastAPI 只需要通过配置连接它。如果在 Kubernetes 内部自建向量数据库，则需要考虑持久化存储、备份、恢复和服务稳定性，不建议简单地按普通 Deployment 处理。  
+  
+### 26.5. 配置与密钥  
+  
+普通配置放入 ConfigMap，例如：  
+  
+- MODEL_NAME  
+- EMBEDDING_MODEL  
+- VECTOR_DB_HOST  
+- VECTOR_DB_PORT  
+- TOP_K  
+- CHUNK_SIZE  
+- LOG_LEVEL  
+  
+敏感配置放入 Secret，例如：  
+  
+- LLM_API_KEY  
+- DATABASE_PASSWORD  
+- JWT_SECRET  
+- S3_ACCESS_KEY  
+- S3_SECRET_KEY  
+  
+总体上，项目的 Kubernetes 拆分思路是：  
+  
+用户请求先进入 FastAPI Service，再转发到 FastAPI Deployment 管理的多个 Pod。FastAPI Pod 从 ConfigMap 读取普通配置，从 Secret 读取敏感配置，并访问外部数据库、向量数据库和模型服务。
