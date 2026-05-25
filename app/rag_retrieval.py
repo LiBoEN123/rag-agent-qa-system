@@ -1,5 +1,4 @@
 from typing import Any, Dict, List
-
 import jieba
 import numpy as np
 
@@ -54,6 +53,29 @@ def make_snippet(text: str, max_len: int = 300) -> str:
     text = "".join((text or "").split())
     return text[:max_len]
 
+def rerank(rerank_model, candidates: list[dict], question: str=""):
+
+    if not candidates:
+        return []
+
+    pairs = []
+    for item in candidates:
+        pairs.append((question, item["text"]))
+
+    scores = rerank_model.predict(pairs)
+
+    for item, score in zip(candidates, scores):
+        item["rerank_score"] = float(score)
+
+    candidates = sorted(
+        candidates,
+        key=lambda x: x["rerank_score"],
+        reverse=True
+    )
+
+    return candidates
+
+
 
 def retrieve(
     question: str,
@@ -61,7 +83,8 @@ def retrieve(
     bm25,
     doc_embeddings,
     model,
-    top_k: int = 3
+    rerank_model,
+    top_k: int = 5
 ):
     if bm25 is None or doc_embeddings is None or model is None:
         return []
@@ -85,7 +108,7 @@ def retrieve(
     vector_norm = minmax_score(vector_score)
     hybrid_score = 0.4 * bm25_norm + 0.6 * vector_norm
 
-    candidate_k = max(top_k * 3, top_k)
+    candidate_k = max(top_k * 5, top_k)
     top_indices = np.argsort(hybrid_score)[::-1][:candidate_k]
 
     raw_results = []
@@ -106,7 +129,8 @@ def retrieve(
         })
 
     deduped_results = dedupe_results(raw_results, prefix_len=80)
-    final_results = deduped_results[:top_k]
+    rerank_chunks = rerank(rerank_model, deduped_results, question)
+    final_results = rerank_chunks[:top_k]
 
     for rank, item in enumerate(final_results, start=1):
         item["reference_id"] = f"Reference {rank}"
@@ -120,35 +144,28 @@ def search_relevant_chunks(
     bm25,
     doc_embeddings,
     model,
-    top_k: int = 3
+    rerank_model,
+    top_k: int = 5
 ) -> List[Dict[str, Any]]:
-    return retrieve(question, chunks, bm25, doc_embeddings, model, top_k)
+    return retrieve(question, chunks, bm25, doc_embeddings, model, rerank_model, top_k)
 
 
 def should_refuse(
     retrieved_chunks,
     vector_threshold: float = None,
-    margin_threshold: float = None
 ):
     vector_threshold = (
-        vector_threshold if vector_threshold is not None else Settings.VECTOR_THRESHOLD
-    )
-    margin_threshold = (
-        margin_threshold if margin_threshold is not None else Settings.MARGIN_THRESHOLD
+        vector_threshold
+        if vector_threshold is not None
+        else Settings.VECTOR_THRESHOLD
     )
 
     if not retrieved_chunks:
         return True
 
     top1_vector = retrieved_chunks[0].get("vector_score", 0.0)
-    top1_hybrid = retrieved_chunks[0].get("hybrid_score", 0.0)
-    top2_hybrid = retrieved_chunks[1].get("hybrid_score", 0.0) if len(retrieved_chunks) > 1 else 0.0
-    margin = top1_hybrid - top2_hybrid
 
     if top1_vector < vector_threshold:
-        return True
-
-    if margin < margin_threshold:
         return True
 
     return False

@@ -2,7 +2,7 @@ import json
 
 import numpy as np
 from rank_bm25 import BM25Okapi
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 
 from app.config import Settings
 from app.rag_ingest import collect_supported_files
@@ -18,13 +18,14 @@ DOCS_REGISTRY_CACHE_PATH = INDEX_STORE_DIR / "docs_registry.json"
 EMBEDDINGS_CACHE_PATH = INDEX_STORE_DIR / "doc_embeddings.npy"
 
 
-def build_index(all_chunks: list[dict], model=None):
+def build_index(all_chunks: list[dict], model=None, rerank_model=None):
     if not all_chunks:
         return {
             "texts": [],
             "bm25": None,
             "doc_embeddings": None,
             "model": model,
+            "rerank_model": rerank_model
         }
 
     local_texts = [chunk["text"] for chunk in all_chunks]
@@ -32,6 +33,9 @@ def build_index(all_chunks: list[dict], model=None):
 
     if model is None:
         model = SentenceTransformer(Settings.EMBEDDING_MODEL_NAME)
+
+    if rerank_model is None:
+        rerank_model = CrossEncoder(Settings.RERANK_MODEL_NAME)
 
     local_doc_embeddings = model.encode(
         local_texts,
@@ -46,6 +50,7 @@ def build_index(all_chunks: list[dict], model=None):
         "bm25": local_bm25,
         "doc_embeddings": local_doc_embeddings,
         "model": model,
+        "rerank_model": rerank_model
     }
 
 
@@ -73,6 +78,7 @@ def build_current_manifest(
     return {
         "pipeline_version": 1,
         "embedding_model": Settings.EMBEDDING_MODEL_NAME,
+        "rerank_model": Settings.RERANK_MODEL_NAME,
         "build_config": {
             "chunk_size": chunk_size,
             "chunk_overlap": chunk_overlap,
@@ -115,6 +121,9 @@ def needs_rebuild(
 
     if old_manifest.get("embedding_model") != current_manifest.get("embedding_model"):
         return True, "embedding 模型变化，需要重建"
+
+    if old_manifest.get("rerank_model") != current_manifest.get("rerank_model"):
+        return True, "rerank 模型变化，需要重建"
 
     if old_manifest.get("build_config") != current_manifest.get("build_config"):
         return True, "chunk 参数变化，需要重建"
@@ -160,7 +169,7 @@ def save_index_cache(
     np.save(EMBEDDINGS_CACHE_PATH, doc_embeddings)
 
 
-def load_index_cache(model=None):
+def load_index_cache(model=None, rerank_model=None):
     if not index_cache_exists():
         return {
             "ok": False,
@@ -171,6 +180,7 @@ def load_index_cache(model=None):
             "doc_embeddings": None,
             "bm25": None,
             "model": model,
+            "rerank_model": rerank_model
         }
 
     try:
@@ -185,6 +195,9 @@ def load_index_cache(model=None):
         if model is None:
             model = SentenceTransformer(Settings.EMBEDDING_MODEL_NAME)
 
+        if rerank_model is None:
+            rerank_model = CrossEncoder(Settings.RERANK_MODEL_NAME)
+
         return {
             "ok": True,
             "message": "已从本地加载索引",
@@ -194,6 +207,7 @@ def load_index_cache(model=None):
             "doc_embeddings": doc_embeddings,
             "bm25": bm25,
             "model": model,
+            "rerank_model": rerank_model
         }
 
     except Exception as e:
@@ -206,4 +220,5 @@ def load_index_cache(model=None):
             "doc_embeddings": None,
             "bm25": None,
             "model": model,
+            "rerank_model": rerank_model
         }

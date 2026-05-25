@@ -735,8 +735,8 @@ def build_bad_cases_md(results, path, top_n=3):
 # =========================
 
 def main():
-    run_name = "baseline_20q_topk5_key_points_eval"
-    top_k = 5
+    run_name = "baseline_20q_topk5_key_points_rerank_eval"
+    top_k = 7
 
     Settings.RAG_FILE_PATH = PROJECT_ROOT / "data" / "kb"
     Settings.validate()

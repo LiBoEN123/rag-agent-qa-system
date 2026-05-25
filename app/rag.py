@@ -45,6 +45,7 @@ docs_registry: list[dict] = []
 
 bm25 = None
 model = None
+rerank_model = None
 doc_embeddings = None
 
 RAG_READY = False
@@ -73,7 +74,7 @@ def rebuild_index(
     chunk_size: int = Settings.CHUNK_SIZE,
     chunk_overlap: int = Settings.CHUNK_OVERLAP
 ):
-    global chunks, texts, docs_registry, bm25, model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE
+    global chunks, texts, docs_registry, bm25, model, rerank_model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE
 
     chunks = []
     texts = []
@@ -81,6 +82,7 @@ def rebuild_index(
     bm25 = None
     doc_embeddings = None
     model = None
+    rerank_model = None
     RAG_READY = False
     RAG_INIT_MESSAGE = "RAG 尚未初始化"
 
@@ -109,6 +111,7 @@ def rebuild_index(
     doc_embeddings = index_bundle["doc_embeddings"]
     docs_registry = docs_registry_local
     model = index_bundle["model"]
+    rerank_model = index_bundle["rerank_model"]
 
     if not chunks:
         RAG_INIT_MESSAGE = "文档已加载，但切分后没有可用 chunk"
@@ -175,7 +178,7 @@ def save_index_cache():
 
 
 def load_index_cache() -> tuple[bool, str]:
-    global chunks, texts, docs_registry, bm25, model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE
+    global chunks, texts, docs_registry, bm25, model, rerank_model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE
 
     result = load_index_cache_impl(model=model)
 
@@ -190,6 +193,7 @@ def load_index_cache() -> tuple[bool, str]:
     doc_embeddings = result["doc_embeddings"]
     bm25 = result["bm25"]
     model = result["model"]
+    rerank_model = result["rerank_model"]
 
     if not chunks:
         RAG_READY = False
@@ -211,6 +215,7 @@ def retrieve(question: str, top_k: int = 3):
         bm25=bm25,
         doc_embeddings=doc_embeddings,
         model=model,
+        rerank_model=rerank_model,
         top_k=top_k
     )
 
@@ -222,6 +227,7 @@ def search_relevant_chunks(question: str, top_k: int = 3) -> List[Dict[str, Any]
         bm25=bm25,
         doc_embeddings=doc_embeddings,
         model=model,
+        rerank_model=rerank_model,
         top_k=top_k
     )
 

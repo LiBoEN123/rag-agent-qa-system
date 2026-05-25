@@ -20,6 +20,8 @@ class Settings:
 
     EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME",
                                          "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+    RERANK_MODEL_NAME = os.getenv("RERANK_MODEL_NAME",
+                                  "BAAI/bge-reranker-v2-m3")
 
     MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", 2500))
     LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", 1024))
