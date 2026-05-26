@@ -1,8 +1,12 @@
+import time
 from typing import Any, Dict, List
 import jieba
 import numpy as np
 
 from app.config import Settings
+from app.untils import get_logger
+
+logger = get_logger('chat_service')
 
 
 AMBIGUOUS_WORDS = [
@@ -108,7 +112,7 @@ def retrieve(
     vector_norm = minmax_score(vector_score)
     hybrid_score = 0.4 * bm25_norm + 0.6 * vector_norm
 
-    candidate_k = max(top_k * 5, top_k)
+    candidate_k = max(top_k * 6, top_k)
     top_indices = np.argsort(hybrid_score)[::-1][:candidate_k]
 
     raw_results = []
@@ -129,7 +133,9 @@ def retrieve(
         })
 
     deduped_results = dedupe_results(raw_results, prefix_len=80)
+
     rerank_chunks = rerank(rerank_model, deduped_results, question)
+
     final_results = rerank_chunks[:top_k]
 
     for rank, item in enumerate(final_results, start=1):

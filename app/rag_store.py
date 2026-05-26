@@ -1,5 +1,5 @@
 import json
-
+import torch
 import numpy as np
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer, CrossEncoder
@@ -8,6 +8,7 @@ from app.config import Settings
 from app.rag_ingest import collect_supported_files
 from app.rag_retrieval import tokenize
 
+devcie = 'cuda' if torch.cuda.is_available() else "cpu"
 
 INDEX_STORE_DIR = Settings.INDEX_STORE_DIR
 
@@ -32,10 +33,10 @@ def build_index(all_chunks: list[dict], model=None, rerank_model=None):
     tokenized_texts = [tokenize(text) for text in local_texts]
 
     if model is None:
-        model = SentenceTransformer(Settings.EMBEDDING_MODEL_NAME)
+        model = SentenceTransformer(Settings.EMBEDDING_MODEL_NAME, device=devcie)
 
     if rerank_model is None:
-        rerank_model = CrossEncoder(Settings.RERANK_MODEL_NAME)
+        rerank_model = CrossEncoder(Settings.RERANK_MODEL_NAME, device=devcie)
 
     local_doc_embeddings = model.encode(
         local_texts,
@@ -193,10 +194,10 @@ def load_index_cache(model=None, rerank_model=None):
         bm25 = BM25Okapi(tokenized_chunks) if tokenized_chunks else None
 
         if model is None:
-            model = SentenceTransformer(Settings.EMBEDDING_MODEL_NAME)
+            model = SentenceTransformer(Settings.EMBEDDING_MODEL_NAME, device=devcie)
 
         if rerank_model is None:
-            rerank_model = CrossEncoder(Settings.RERANK_MODEL_NAME)
+            rerank_model = CrossEncoder(Settings.RERANK_MODEL_NAME, device=devcie)
 
         return {
             "ok": True,

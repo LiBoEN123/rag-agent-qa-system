@@ -103,7 +103,7 @@ def rebuild_index(
     for doc in docs_registry_local:
         doc["chunk_count"] = chunk_count_map.get(doc["source_path"], 0)
 
-    index_bundle = build_index(all_chunks, model=model)
+    index_bundle = build_index(all_chunks, model=model, rerank_model=rerank_model)
 
     chunks = all_chunks
     texts = index_bundle["texts"]

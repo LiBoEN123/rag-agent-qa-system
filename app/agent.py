@@ -1,3 +1,4 @@
+import time
 from app.untils import get_logger
 from app.tools import dispatch_tool
 from app.rag import ask, search_relevant_chunks
@@ -418,8 +419,15 @@ def run_agent_once(
     # =========================
     if action == "search_knowledge_base":
         logger.info(f"[trace_id={trace_id}] [retrieve] 开始检索 top_k={top_k}")
+        retrieve_start = time.perf_counter()
 
         retrieved_chunks = search_relevant_chunks(question, top_k)
+
+        retrieve_cost = int((time.perf_counter() - retrieve_start) * 1000)
+
+        logger.info(f"[trace_id={trace_id}] [retrieve] retrieve_cost_ms={retrieve_cost}")
+
+        rag_answer_start = time.perf_counter()
 
         if not retrieved_chunks:
 
@@ -498,6 +506,10 @@ def run_agent_once(
         })
 
         rag_result = ask(question, top_k=top_k, retrieved_chunks=retrieved_chunks, trace_id=trace_id)
+
+        rag_answer_cost = int((time.perf_counter() - rag_answer_start) * 1000)
+
+        logger.info(f"[trace_id={trace_id}] [rag] rag_answer_cost_ms={rag_answer_cost}")
 
         rag_status = rag_result.get("status", "OK")
 
