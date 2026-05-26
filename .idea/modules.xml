@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/mini-rag.iml" filepath="$PROJECT_DIR$/.idea/mini-rag.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/rag-agent-qa-system.iml" filepath="$PROJECT_DIR$/.idea/rag-agent-qa-system.iml" />
     </modules>
   </component>
 </project>
