@@ -69,11 +69,11 @@ def rerank(rerank_model, candidates: list[dict], question: str=""):
     scores = rerank_model.predict(pairs)
 
     for item, score in zip(candidates, scores):
-        item["rerank_score"] = float(score)
+        item["metadata"]["rerank_score"] = float(score)
 
     candidates = sorted(
         candidates,
-        key=lambda x: x["rerank_score"],
+        key=lambda x: x["metadata"]["rerank_score"],
         reverse=True
     )
 

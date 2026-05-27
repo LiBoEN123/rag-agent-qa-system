@@ -270,6 +270,7 @@ class ChatReferences(BaseModel):
     position: int | None = None
     snippet: str
     score: float
+    rerank_score: float
 
 class ChatData(BaseModel):
     question:str
@@ -328,6 +329,7 @@ class SearchResult(BaseModel):
     score:float
     bm25_score:float
     vector_score:float
+    rerank_score:float
 
 class SearchData(BaseModel):
     question:str
@@ -1053,7 +1055,8 @@ def search_api(req:ChatRequest, response:Response):
                 snippet=item["snippet"],
                 score=item["hybrid_score"],
                 bm25_score=item["bm25_score"],
-                vector_score=item["vector_score"]
+                vector_score=item["vector_score"],
+                rerank_score=item["metadata"]["rerank_score"]
             )
             for item in retrieved_chunks
         ]
@@ -1064,6 +1067,7 @@ def search_api(req:ChatRequest, response:Response):
                 "score": round(item["hybrid_score"], 4),
                 "bm25": round(item["bm25_score"], 4),
                 "vector": round(item["vector_score"], 4),
+                "rerank": round(item["metadata"]["rerank_score"], 4),
             }
             for item in retrieved_chunks
         ]

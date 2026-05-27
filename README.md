@@ -309,6 +309,7 @@ needs_rebuild()
 - 修改 `CHUNK_SIZE`；
 - 修改 `CHUNK_OVERLAP`；
 - 修改 Embedding 模型。
+- 修改`CrossEncoder`模型
 
 通常不需要重建索引的情况：
 
@@ -649,7 +650,7 @@ Agent → refuse → 返回超出知识库范围
 
 ## 16. Agent 基础评测
 
-第 8 周评测重点是验证 Agent 是否选对路径。
+评测重点是验证 Agent 是否选对路径。
 
 评测样例可以包含：
 
