@@ -1,4 +1,25 @@
-# 启动命令：python scripts/evaluate_rag_results.py --eval-file data/eval/rag_eval_questions_v2.json --pred-file outputs/predictions.csv --chunks-file data/manifest/chunks.json --out-dir outputs/rag_baseline --k 5
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Chunk-level RAG evaluation script.
+
+Typical usage:
+    python evaluate_rag_results.py \
+        --eval-file rag_eval_questions_v2.json \
+        --pred-file predictions.csv \
+        --chunks-file chunks.json \
+        --out-dir eval_report
+
+Prediction file can be CSV, JSON, or JSONL.
+
+Required prediction fields:
+    qid
+    answer  (or generated_answer / actual_answer / response)
+
+Optional prediction fields:
+    retrieved_chunk_ids  e.g. "1,3,5" or "[1,3,5]"
+    retrieved_doc_ids    e.g. "application.md|computed.md"
+"""
 
 from __future__ import annotations
 
@@ -17,27 +38,68 @@ CHUNK_FIELDS = ["retrieved_chunk_ids", "retrieved_chunks", "chunk_ids", "top_chu
 DOC_FIELDS = ["retrieved_doc_ids", "retrieved_docs", "doc_ids", "top_doc_ids"]
 
 REFUSAL_PATTERNS = [
-    "无法确认", "不能确认", "无法从文档", "文档没有", "文档未", "未提到",
-    "没有提供", "不知道", "不能回答", "无法回答", "没有说明", "无相关信息",
-    "根据现有文档无法", "从给定文档无法", "不在文档中"
+    # 强拒答
+    "无法确认", "不能确认", "无法确定", "无法回答", "不能回答", "不知道",
+    # 文档范围限制
+    "无法根据提供的文档确定", "无法根据当前文档确定", "无法根据提供的资料确定",
+    "根据提供的文档无法", "根据当前文档无法", "根据现有文档无法", "从给定文档无法",
+    "参考资料中未提供", "当前资料中未提供", "提供的资料中未提供",
+    "文档中未说明", "文档未说明", "文档没有说明", "文档没有提供",
+    "资料中未说明", "资料未说明", "没有相关信息", "无相关信息",
+    "未提到", "未提及", "没有提到", "没有提及", "不在文档中",
+]
+
+NEGATION_CUES = [
+    "未提供", "没有提供", "未说明", "没有说明", "未提到", "没有提到", "未提及", "没有提及",
+    "无法确认", "不能确认", "无法确定", "不能确定", "无", "不包含", "不在文档", "文档中没有",
+    "参考资料中没有", "参考资料中未", "当前资料中没有", "当前资料中未",
+]
+
+CANONICAL_REPLACEMENTS = [
+    ("无需", "不需要"),
+    ("不用", "不需要"),
+    ("不必", "不需要"),
+    ("未提及", "未说明"),
+    ("未提到", "未说明"),
+    ("没有提及", "未说明"),
+    ("没有提到", "未说明"),
+    ("参考资料", "文档"),
+    ("当前资料", "文档"),
+    ("提供的资料", "文档"),
 ]
 
 
 def normalize_text(s: Any) -> str:
-    """Normalize Chinese/English text for loose substring matching."""
+    """Normalize Chinese/English text for loose matching."""
     if s is None:
         return ""
     s = str(s).lower()
+    for old, new in CANONICAL_REPLACEMENTS:
+        s = s.replace(old.lower(), new.lower())
     s = re.sub(r"\s+", "", s)
     # remove common punctuation while keeping code-ish chars useful for Vue terms
     s = re.sub(r"[，。！？、；：,.!?;:（）()【】\[\]{}<>《》“”\"'`·\-_—|/\\]", "", s)
     return s
 
 
+def is_subsequence(short: str, long: str) -> bool:
+    """Allow small insertions between Chinese key-point words, e.g. 可以多个应用实例 -> 可以创建多个Vue应用实例."""
+    if not short or len(short) < 4:
+        return False
+    it = iter(long)
+    return all(ch in it for ch in short)
+
+
 def has_any(text: str, aliases: Iterable[str]) -> bool:
     norm = normalize_text(text)
     for a in aliases:
-        if normalize_text(a) and normalize_text(a) in norm:
+        na = normalize_text(a)
+        if not na:
+            continue
+        if na in norm:
+            return True
+        # 对中文短语做宽松匹配，避免“可以多个应用实例”与“可以创建多个 Vue 应用实例”这种同义表述漏判
+        if len(na) >= 5 and is_subsequence(na, norm):
             return True
     return False
 
@@ -193,12 +255,71 @@ def score_key_points(answer: str, question: Dict[str, Any]) -> Tuple[float, List
     return (hit / total if total else 1.0), missing, matched
 
 
+def has_negation_near(answer: str, start: int, end: int, window: int = 18) -> bool:
+    """If the model says '文档没有提供 X', X should not be counted as hallucination."""
+    left = max(0, start - window)
+    right = min(len(answer), end + window)
+    ctx = answer[left:right]
+    return any(cue in ctx for cue in NEGATION_CUES)
+
+
+def regex_forbidden_hit(answer: str, point: str) -> bool:
+    """Precise rules for common forbidden types to avoid false positives."""
+    # 只有真的给出百分比数值，才算“百分比数值”幻觉；“没有提供百分比”不算。
+    if "百分比" in point:
+        return bool(re.search(r"\d+(?:\.\d+)?\s*%|百分之[一二三四五六七八九十百千万零点\d]+", answer))
+
+    # 只有真的给出日期，才算发布日期幻觉；“没有发布日期”不算。
+    if "发布日期" in point:
+        return bool(re.search(r"\d{4}[-年/]\d{1,2}(?:[-月/]\d{1,2}日?)?", answer))
+
+    # 只有给出具体 star 数，才算；“无法确认 star 数量”不算。
+    if "star" in point.lower() or "星标" in point:
+        return bool(re.search(r"\d+(?:\.\d+)?\s*(?:k|m|万)?\s*(?:star|stars|星标)", answer, flags=re.I))
+
+    # 只有给出具体源码路径/行号，才算；“没有行号”不算。
+    if "源码" in point or "行号" in point:
+        return bool(re.search(r"packages/|runtime-core|apiCreateApp|第?\d+\s*行", answer, flags=re.I))
+
+    return False
+
+
+def alias_forbidden_hit(answer: str, alias: str) -> bool:
+    """Forbidden matching with context negation and safer English token boundaries."""
+    if not alias:
+        return False
+    # 单字符 forbidden 太容易误报，比如 k、行，直接跳过。
+    if len(alias.strip()) <= 1:
+        return False
+
+    # 英文内部实现词用单词边界，避免 Set 命中 setter。
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_+-]*", alias):
+        pattern = r"(?<![A-Za-z0-9_])" + re.escape(alias) + r"(?![A-Za-z0-9_])"
+        for m in re.finditer(pattern, answer, flags=re.I):
+            if not has_negation_near(answer, m.start(), m.end()):
+                return True
+        return False
+
+    # 中文/混合短语：找到原文位置后看附近是否是否定语境。
+    for m in re.finditer(re.escape(alias), answer, flags=re.I):
+        if not has_negation_near(answer, m.start(), m.end()):
+            return True
+    return False
+
+
 def score_forbidden(answer: str, question: Dict[str, Any]) -> Tuple[bool, List[str]]:
     hits = []
     for p in question.get("forbidden_points", []):
-        aliases = p.get("aliases") or [p.get("point", "")]
-        if has_any(answer, aliases):
-            hits.append(p.get("point", ""))
+        point = p.get("point", "")
+
+        # 先用更精确的正则规则处理“数值/日期/star/源码”等类型。
+        if regex_forbidden_hit(answer, point):
+            hits.append(point)
+            continue
+
+        aliases = p.get("aliases") or [point]
+        if any(alias_forbidden_hit(answer, str(a)) for a in aliases):
+            hits.append(point)
     return bool(hits), hits
 
 
