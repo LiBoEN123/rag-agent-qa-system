@@ -1,25 +1,4 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Chunk-level RAG evaluation script.
-
-Typical usage:
-    python evaluate_rag_results.py \
-        --eval-file rag_eval_questions_v2.json \
-        --pred-file predictions.csv \
-        --chunks-file chunks.json \
-        --out-dir eval_report
-
-Prediction file can be CSV, JSON, or JSONL.
-
-Required prediction fields:
-    qid
-    answer  (or generated_answer / actual_answer / response)
-
-Optional prediction fields:
-    retrieved_chunk_ids  e.g. "1,3,5" or "[1,3,5]"
-    retrieved_doc_ids    e.g. "application.md|computed.md"
-"""
+# 启动命令：python scripts/evaluate_rag_results_semantic_fixed.py --eval-file data/eval/rag_eval_questions_v2_semantic_fixed.json --pred-file outputs/predictions.csv --chunks-file data/manifest/chunks.json --out-dir outputs/rag_baseline --k 5
 
 from __future__ import annotations
 
@@ -51,7 +30,7 @@ REFUSAL_PATTERNS = [
 
 NEGATION_CUES = [
     "未提供", "没有提供", "未说明", "没有说明", "未提到", "没有提到", "未提及", "没有提及",
-    "无法确认", "不能确认", "无法确定", "不能确定", "无", "不包含", "不在文档", "文档中没有",
+    "无法确认", "不能确认", "无法确定", "不能确定", "不包含", "不在文档", "文档中没有",
     "参考资料中没有", "参考资料中未", "当前资料中没有", "当前资料中未",
 ]
 
@@ -101,6 +80,43 @@ def has_any(text: str, aliases: Iterable[str]) -> bool:
         # 对中文短语做宽松匹配，避免“可以多个应用实例”与“可以创建多个 Vue 应用实例”这种同义表述漏判
         if len(na) >= 5 and is_subsequence(na, norm):
             return True
+    return False
+
+
+def has_all_terms(text: str, terms: Iterable[str]) -> bool:
+    """一个语义关键点可由若干词共同表达，例如：导入 + 模板 + 直接 + 使用。"""
+    norm = normalize_text(text)
+    for term in terms:
+        nt = normalize_text(term)
+        if not nt:
+            continue
+        if nt not in norm and not (len(nt) >= 5 and is_subsequence(nt, norm)):
+            return False
+    return True
+
+
+def match_point(answer: str, point: Dict[str, Any]) -> bool:
+    """
+    判断一个 gold_key_point 是否被答案覆盖。
+
+    支持三层匹配：
+    1. aliases：原有的短语/同义词包含匹配；
+    2. match_any：若干“词组共同出现”规则，适合自然表达、代码示例、换说法；
+       例：["导入", "模板", "直接", "使用"]；
+    3. regex：少量需要正则的情况。
+    """
+    aliases = point.get("aliases") or [point.get("point", "")]
+    if has_any(answer, aliases):
+        return True
+
+    for group in point.get("match_any", []) or []:
+        if has_all_terms(answer, group):
+            return True
+
+    for pattern in point.get("regex", []) or []:
+        if re.search(pattern, answer, flags=re.I):
+            return True
+
     return False
 
 
@@ -246,8 +262,7 @@ def score_key_points(answer: str, question: Dict[str, Any]) -> Tuple[float, List
     for p in points:
         weight = float(p.get("weight", 1.0))
         total += weight
-        aliases = p.get("aliases") or [p.get("point", "")]
-        if has_any(answer, aliases):
+        if match_point(answer, p):
             hit += weight
             matched.append(p.get("point", ""))
         else:
@@ -255,7 +270,7 @@ def score_key_points(answer: str, question: Dict[str, Any]) -> Tuple[float, List
     return (hit / total if total else 1.0), missing, matched
 
 
-def has_negation_near(answer: str, start: int, end: int, window: int = 18) -> bool:
+def has_negation_near(answer: str, start: int, end: int, window: int = 36) -> bool:
     """If the model says '文档没有提供 X', X should not be counted as hallucination."""
     left = max(0, start - window)
     right = min(len(answer), end + window)
@@ -307,14 +322,29 @@ def alias_forbidden_hit(answer: str, alias: str) -> bool:
     return False
 
 
+def is_regex_only_forbidden(point: str) -> bool:
+    """这些 forbidden 类型只能按精确正则判定，不能再用 alias 模糊匹配，否则会误报。"""
+    p = point.lower()
+    return (
+        "百分比" in p
+        or "发布日期" in p
+        or "star" in p
+        or "星标" in p
+        or "源码" in p
+        or "行号" in p
+    )
+
+
 def score_forbidden(answer: str, question: Dict[str, Any]) -> Tuple[bool, List[str]]:
     hits = []
     for p in question.get("forbidden_points", []):
         point = p.get("point", "")
 
-        # 先用更精确的正则规则处理“数值/日期/star/源码”等类型。
+        # 数值/日期/star/源码等类型必须用精确规则，不能因为答案里出现“star/发布日期”等词就判幻觉。
         if regex_forbidden_hit(answer, point):
             hits.append(point)
+            continue
+        if is_regex_only_forbidden(point):
             continue
 
         aliases = p.get("aliases") or [point]
@@ -324,21 +354,40 @@ def score_forbidden(answer: str, question: Dict[str, Any]) -> Tuple[bool, List[s
 
 
 def score_retrieval(pred: Dict[str, Any], question: Dict[str, Any], chunk_doc_map: Dict[int, str], k: int) -> Dict[str, Any]:
+    """
+    Retrieval metrics at top-k.
+
+    chunk_hit_at_k:
+        Whether at least one gold chunk is included in top-k retrieved chunks.
+        This is a loose metric.
+
+    gold_chunk_recall_at_k:
+        matched gold chunks / all gold chunks.
+        This measures how complete the retrieved evidence is.
+
+    all_gold_hit_at_k:
+        Whether all gold chunks are included in top-k retrieved chunks.
+        This is strict and especially useful for cross-doc / multi-evidence questions.
+    """
     retrieved = parse_chunk_ids(pred)
     retrieved_at_k = retrieved[:k] if k and k > 0 else retrieved
+
     gold_chunks = [int(x) for x in question.get("gold_chunk_ids", [])]
     gold_set = set(gold_chunks)
-    hit_chunks = [cid for cid in retrieved_at_k if cid in gold_set]
+    retrieved_set_at_k = set(retrieved_at_k)
 
-    if gold_chunks and retrieved_at_k:
-        chunk_hit = 1.0 if hit_chunks else 0.0
-        chunk_recall = len(set(hit_chunks)) / len(gold_set)
-    elif gold_chunks:
-        chunk_hit = 0.0
-        chunk_recall = 0.0
+    matched_gold_chunks = sorted(gold_set & retrieved_set_at_k)
+    missing_gold_chunks = sorted(gold_set - retrieved_set_at_k)
+
+    if gold_set:
+        chunk_hit = 1.0 if matched_gold_chunks else 0.0
+        gold_chunk_recall = len(matched_gold_chunks) / len(gold_set)
+        all_gold_hit = 1.0 if gold_set.issubset(retrieved_set_at_k) else 0.0
     else:
+        # 如果评测题没有 gold_chunk_ids，就不惩罚检索。
         chunk_hit = 1.0
-        chunk_recall = 1.0
+        gold_chunk_recall = 1.0
+        all_gold_hit = 1.0
 
     retrieved_docs = parse_doc_ids(pred)
     if not retrieved_docs and chunk_doc_map:
@@ -353,9 +402,18 @@ def score_retrieval(pred: Dict[str, Any], question: Dict[str, Any], chunk_doc_ma
         "retrieved_chunk_ids_at_k": retrieved_at_k,
         "retrieved_doc_ids": retrieved_docs,
         "chunk_hit_at_k": chunk_hit,
-        "chunk_recall_at_k": chunk_recall,
+
+        # 旧字段保留，兼容已有输出；它和 gold_chunk_recall_at_k 含义一致。
+        "chunk_recall_at_k": gold_chunk_recall,
+
+        # 新增两个更有解释力的指标。
+        "gold_chunk_recall_at_k": gold_chunk_recall,
+        "all_gold_hit_at_k": all_gold_hit,
+
         "doc_hit_at_k": doc_hit,
-        "hit_chunk_ids": sorted(set(hit_chunks)),
+        "hit_chunk_ids": matched_gold_chunks,
+        "matched_gold_chunk_ids": matched_gold_chunks,
+        "missing_gold_chunk_ids": missing_gold_chunks,
     }
 
 
@@ -384,9 +442,13 @@ def behavior_score(answer: str, expected: str, key_recall: float, forbidden_hit:
         return 0.0, "poor_partial"
 
     # expected == answer
+    # 注意：trap 题里“文档没有说明 X / 不能确认 X”经常是正确答案的一部分，
+    # 不能把所有 refusal pattern 都视为拒答。关键点覆盖足够高时，视为“有依据的限制性回答”。
     if refused:
-        if key_recall >= 0.70:
-            return 0.6, "answered_but_over_refused"
+        if key_recall >= 0.70 and not forbidden_hit:
+            return 1.0, "answered_with_supported_limitation"
+        if key_recall >= 0.45 and not forbidden_hit:
+            return 0.6, "partly_answered_with_limitation"
         return 0.0, "should_answer_but_refused"
     if forbidden_hit:
         return 0.5, "answered_with_forbidden_detail"
@@ -412,7 +474,9 @@ def evaluate(eval_items: List[Dict[str, Any]], preds: Dict[str, Dict[str, Any]],
         forbidden_hit, forbidden_items = score_forbidden(answer, q)
         retrieval = score_retrieval(pred, q, chunk_doc_map, k)
         behavior, behavior_label = behavior_score(answer, q.get("expected_behavior", "answer"), key_recall, forbidden_hit)
-        fscore = final_score(q.get("expected_behavior", "answer"), behavior, key_recall, retrieval["chunk_hit_at_k"], forbidden_hit)
+        # final_score 使用 gold_chunk_recall_at_k，而不是 loose 的 chunk_hit_at_k。
+        # 否则只命中一个证据 chunk 的 cross-doc 问题会被高估。
+        fscore = final_score(q.get("expected_behavior", "answer"), behavior, key_recall, retrieval["gold_chunk_recall_at_k"], forbidden_hit)
 
         rows.append({
             "qid": qid,
@@ -425,7 +489,12 @@ def evaluate(eval_items: List[Dict[str, Any]], preds: Dict[str, Dict[str, Any]],
             "behavior_label": behavior_label,
             "key_point_recall": round(key_recall, 4),
             "retrieval_chunk_hit_at_k": round(retrieval["chunk_hit_at_k"], 4),
+            # 旧字段保留：等价于 gold_chunk_recall_at_k。
             "retrieval_chunk_recall_at_k": round(retrieval["chunk_recall_at_k"], 4),
+            # 新增：标准证据 chunk 召回比例。
+            "retrieval_gold_chunk_recall_at_k": round(retrieval["gold_chunk_recall_at_k"], 4),
+            # 新增：是否召回全部标准证据 chunk。
+            "retrieval_all_gold_hit_at_k": round(retrieval["all_gold_hit_at_k"], 4),
             "retrieval_doc_hit_at_k": round(retrieval["doc_hit_at_k"], 4),
             "forbidden_hit": forbidden_hit,
             "final_score": round(fscore, 4),
@@ -434,6 +503,8 @@ def evaluate(eval_items: List[Dict[str, Any]], preds: Dict[str, Dict[str, Any]],
             "forbidden_points_hit": " | ".join(forbidden_items),
             "gold_chunk_ids": json.dumps(q.get("gold_chunk_ids", []), ensure_ascii=False),
             "hit_chunk_ids": json.dumps(retrieval["hit_chunk_ids"], ensure_ascii=False),
+            "matched_gold_chunk_ids": json.dumps(retrieval["matched_gold_chunk_ids"], ensure_ascii=False),
+            "missing_gold_chunk_ids": json.dumps(retrieval["missing_gold_chunk_ids"], ensure_ascii=False),
             "retrieved_chunk_ids": json.dumps(retrieval["retrieved_chunk_ids"], ensure_ascii=False),
             "question": q.get("question", ""),
             "gold_answer": q.get("gold_answer", ""),
@@ -467,6 +538,8 @@ def summarize(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "avg_behavior_score": round(mean([float(r["behavior_score"]) for r in vals]), 4),
             "avg_key_point_recall": round(mean([float(r["key_point_recall"]) for r in vals]), 4),
             "chunk_hit_at_k": round(mean([float(r["retrieval_chunk_hit_at_k"]) for r in vals]), 4),
+            "gold_chunk_recall_at_k": round(mean([float(r["retrieval_gold_chunk_recall_at_k"]) for r in vals]), 4),
+            "all_gold_hit_at_k": round(mean([float(r["retrieval_all_gold_hit_at_k"]) for r in vals]), 4),
             "doc_hit_at_k": round(mean([float(r["retrieval_doc_hit_at_k"]) for r in vals]), 4),
             "forbidden_rate": round(mean([1.0 if r["forbidden_hit"] else 0.0 for r in vals]), 4),
         }
@@ -520,6 +593,8 @@ def main() -> None:
     print(f"Average behavior score: {overall['avg_behavior_score']:.2%}")
     print(f"Average key-point recall: {overall['avg_key_point_recall']:.2%}")
     print(f"Chunk hit@{args.k}: {overall['chunk_hit_at_k']:.2%}")
+    print(f"Gold chunk recall@{args.k}: {overall['gold_chunk_recall_at_k']:.2%}")
+    print(f"All gold hit@{args.k}: {overall['all_gold_hit_at_k']:.2%}")
     print(f"Doc hit@{args.k}: {overall['doc_hit_at_k']:.2%}")
     print(f"Forbidden/hallucination rate: {overall['forbidden_rate']:.2%}")
     print(f"\nReports written to: {args.out_dir}")
