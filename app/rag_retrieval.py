@@ -134,6 +134,8 @@ def retrieve(
 
     deduped_results = dedupe_results(raw_results, prefix_len=80)
 
+    logger.info(f"[retrieve] rough_retrieved_ids={[raw_results[i]["chunk_id"] for i in range(len(raw_results))]}")
+
     rerank_chunks = rerank(rerank_model, deduped_results, question)
 
     final_results = rerank_chunks[:top_k]
