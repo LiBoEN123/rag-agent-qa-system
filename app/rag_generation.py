@@ -88,7 +88,7 @@ def call_llm(question: str, context: str, trace_id : str = ""):
         "temperature": temperature,
         "max_tokens": max_tokens,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT_A},
+            {"role": "system", "content": SYSTEM_PROMPT_B},
             {
                 "role": "user",
                 "content": USER_PROMPT.format(

@@ -277,6 +277,9 @@ def retrieve_with_sub_queries(
         if len(final) >= final_top_k:
             break
 
+    for rank, item in enumerate(final, start=1):
+        item["reference_id"] = f"Reference {rank}"
+
     return final
 
 
@@ -291,10 +294,7 @@ def search_relevant_chunks(
     return retrieve(question, chunks, bm25, doc_embeddings, model, top_k)
 
 
-def should_refuse(
-    retrieved_chunks,
-    vector_threshold: float = None,
-):
+def should_refuse(retrieved_chunks, vector_threshold: float = None):
     vector_threshold = (
         vector_threshold
         if vector_threshold is not None
@@ -304,9 +304,12 @@ def should_refuse(
     if not retrieved_chunks:
         return True
 
-    top1_vector = retrieved_chunks[0].get("vector_score", 0.0)
+    max_vector = max(
+        float(item.get("vector_score", 0.0))
+        for item in retrieved_chunks
+    )
 
-    if top1_vector < vector_threshold:
+    if max_vector < vector_threshold:
         return True
 
     return False
