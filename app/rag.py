@@ -20,8 +20,11 @@ from app.rag_retrieval import (
     build_clarification_question,
     is_ambiguous_question,
     retrieve as retrieve_impl,
+    rerank as rerank_impl,
     search_relevant_chunks as search_relevant_chunks_impl,
     should_refuse,
+    decompose_query_with_llm,
+    retrieve_with_sub_queries
 )
 from app.rag_store import (
     build_current_manifest,
@@ -215,8 +218,14 @@ def retrieve(question: str, top_k: int = 3):
         bm25=bm25,
         doc_embeddings=doc_embeddings,
         model=model,
-        rerank_model=rerank_model,
         top_k=top_k
+    )
+
+def rerank(candidates: list[dict], question: str="", top_k: int=5):
+    return rerank_impl(
+        rerank_model=rerank_model,
+        candidates=candidates,
+        question=question,
     )
 
 
@@ -227,7 +236,6 @@ def search_relevant_chunks(question: str, top_k: int = 3) -> List[Dict[str, Any]
         bm25=bm25,
         doc_embeddings=doc_embeddings,
         model=model,
-        rerank_model=rerank_model,
         top_k=top_k
     )
 
@@ -243,32 +251,51 @@ def ask(
 ):
     logger.info(f"[trace_id={trace_id}] [rag] 开始问答流程 top_k={top_k}")
 
+    decompose_result = decompose_query_with_llm(question)
+
     if retrieved_chunks is None:
         retrieved_chunks = retrieve(question, top_k)
+
+    if not decompose_result["need_decompose"]:
+        candidates = retrieved_chunks
+        reranked = rerank(candidates, question, top_k)
+        final_chunks = reranked[:top_k]
+    else:
+        final_chunks = retrieve_with_sub_queries(
+            question=question,
+            sub_queries=decompose_result["sub_queries"],
+            chunks=chunks,
+            bm25=bm25,
+            doc_embeddings=doc_embeddings,
+            model=model,
+            rerank_model=rerank_model
+        )
 
     if is_ambiguous_question(question):
         return {
             "status": "NEED_CLARIFICATION",
             "answer": "",
             "references": [],
+            "final_chunks": [],
             "confidence": 0.0,
             "need_clarification": True,
             "clarification_question": build_clarification_question(question),
             "reason": "问题存在指代不明或缺少关键限定信息"
         }
 
-    if should_refuse(retrieved_chunks):
+    if should_refuse(final_chunks):
         return {
             "status": "NO_RELEVANT_INFO",
             "answer": NO_ANSWER_FALLBACK,
             "references": [],
+            "final_chunks": [],
             "confidence": 0.0,
             "need_clarification": False,
             "clarification_question": "",
             "reason": "检索结果为空或 top1 分数低于阈值"
         }
 
-    context = build_context(retrieved_chunks, Settings.MAX_CONTEXT_CHARS)
+    context = build_context(final_chunks, Settings.MAX_CONTEXT_CHARS)
 
     logger.info(
         f"[trace_id={trace_id}] [rag] context 构造完成 context_len={len(context)}"
@@ -292,19 +319,21 @@ def ask(
             "status": "MODEL_BAD_OUTPUT",
             "answer": NO_ANSWER_FALLBACK,
             "references": [],
+            "final_chunks": [],
             "confidence": 0.0,
             "need_clarification": False,
             "clarification_question": "",
             "reason": "模型未按约定 JSON 格式返回"
         }
 
-    final_references = format_reference(retrieved_chunks, parsed["references"])
+    final_references = format_reference(final_chunks, parsed["references"])
 
     if not final_references or STOP_WORD in parsed["answer"]:
         return {
             "status": "NO_RELEVANT_INFO",
             "answer": parsed["answer"],
             "references": final_references,
+            "final_chunks": final_chunks,
             "confidence": 0.0,
             "need_clarification": False,
             "clarification_question": "",
@@ -321,6 +350,7 @@ def ask(
         "status": "OK",
         "answer": parsed["answer"],
         "references": final_references,
+        "final_chunks": final_chunks,
         "confidence": confidence,
         "need_clarification": False,
         "clarification_question": "",

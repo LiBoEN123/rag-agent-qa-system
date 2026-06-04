@@ -128,7 +128,6 @@ def split_txt_doc(
             "doc_id": doc["doc_id"],
             "chunk_id": None,
             "position": idx,
-            "rerank_score": None,
         })
         result.append({
             "text": item.page_content,
@@ -181,7 +180,6 @@ def split_md_doc(
                 "doc_id": doc["doc_id"],
                 "chunk_id": None,
                 "position": idx,
-                "rerank_score": None,
                 "title_path": title_path,
                 **item.metadata
             }

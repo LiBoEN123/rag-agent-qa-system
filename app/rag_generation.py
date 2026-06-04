@@ -235,7 +235,7 @@ def format_reference(retrieved_chunks, selected_reference: list):
                 "position": item.get("position"),
                 "snippet": make_snippet(item["text"]),
                 "score": round(float(item.get("hybrid_score", 0.0)), 4),
-                "rerank_score":round(float(item["metadata"].get("rerank_score", 0.0)), 4)
+                "rerank_score":round(float(item.get("rerank_score", 0.0)), 4)
             })
 
     return final_refs

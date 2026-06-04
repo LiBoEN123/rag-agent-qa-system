@@ -9,7 +9,7 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.rag import retrieve, ask, init_rag
+from app.rag import retrieve, ask, init_rag, retrieve_with_sub_queries
 from app.config import Settings
 
 init_rag(data_dir=str(Settings.RAG_FILE_PATH),
@@ -32,11 +32,12 @@ def load_eval_questions(eval_file):
 def run_rag_once(question: str, top_k: int):
     retrieved_chunks = retrieve(question, top_k)
     result = ask(question, top_k, retrieved_chunks)
+    final_chunks = result.get("final_chunks")
     answer = result["answer"]
 
     retrieved_chunk_ids = [
         chunk["metadata"]["chunk_id"]
-        for chunk in retrieved_chunks
+        for chunk in final_chunks
     ]
 
     return answer, retrieved_chunk_ids
