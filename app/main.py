@@ -18,7 +18,6 @@ from app.rag import (
 )
 from app.config import Settings
 from app.untils import get_logger
-from app.extract_refund_policy import extract_refund_policy
 from app.agent import route_agent_action, run_agent_once
 from app.observability import create_trace_id
 
@@ -1097,70 +1096,6 @@ def search_api(req:ChatRequest, response:Response):
                 status="error",
                 reason="search 接口处理异常",
                 results=[]
-            )
-        )
-
-
-@app.post("/extract_refund_policy", response_model=ExtractResponse)
-def extract_api(req:ExtractRequest, response:Response):
-    try:
-        text = (req.text or "").strip()
-        if not text:
-            logger.warning("[extract] 空文本请求")
-            response.status_code=400
-            return ExtractResponse(
-                code="EMPTY_TEXT",
-                message="文本不能为空",
-                data=ExtractData(
-                    is_refundable=None,
-                    refund_window_days=None,
-                    exceptions=[],
-                    evidence=[]
-                )
-            )
-
-        data = extract_refund_policy(text)
-
-        if data["status"] == "MODEL_BAD_OUTPUT":
-            logger.warning("[extract] 模型输出格式异常")
-            response.status_code = 200
-            return ExtractResponse(
-                code="MODEL_BAD_OUTPUT",
-                message="模型输出格式异常，请稍后重试",
-                data=ExtractData(
-                    is_refundable=None,
-                    refund_window_days=None,
-                    exceptions=[],
-                    evidence=[]
-                )
-            )
-
-        logger.info("[extract] 请求处理完成")
-        response.status_code = 200
-        return ExtractResponse(
-                code=0,
-                message="success",
-                data=ExtractData(
-                    is_refundable=data.get("is_refundable", None),
-                    refund_window_days=data.get("refund_window_days", None),
-                    exceptions=data.get("exceptions", []),
-                    evidence=data.get("evidence", [])
-                )
-            )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception(f"[extract] 未知异常 error={e}")
-        response.status_code = 500
-        return ExtractResponse(
-            code="INTERNAL_ERROR",
-            message="服务器内部错误",
-            data=ExtractData(
-                is_refundable=None,
-                refund_window_days=None,
-                exceptions=[],
-                evidence=[]
             )
         )
 

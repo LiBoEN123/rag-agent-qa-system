@@ -9,15 +9,6 @@ import unicodedata
 
 logger = get_logger('chat_service')
 
-OUT_OF_SCOPE_KEYWORDS = [
-    "天气", "气温", "下雨",
-    "写诗", "作诗", "故事", "笑话",
-    "股票", "基金", "彩票",
-    "电影", "明星", "八卦",
-    "数学题", "微积分", "量子力学",
-    "python教程", "java教程", "怎么写代码"
-]
-
 def get_route_decision(decision:dict) -> str:
     action = decision.get("action", "")
 
@@ -27,7 +18,7 @@ def get_route_decision(decision:dict) -> str:
     if action in ["simple_calculator", "list_documents", "get_chunk_text"]:
         return action
 
-    if action in ["clarify", "refuse", "direct_answer"]:
+    if action in ["clarify", "direct_answer"]:
         return action
 
     return "unknown"
@@ -98,16 +89,6 @@ def route_agent_action(question: str, top_k:int) -> dict:
                 "expression": expression
             },
             "reason": "用户问题是简单四则运算"
-        }
-
-    # 6. 明显超出知识库范围：拒答
-    if is_out_of_scope(q):
-        return {
-            "decision": "refuse",
-            "action": "refuse",
-            "tool_name": "",
-            "tool_args": {},
-            "reason": "问题主题超出当前知识库范围"
         }
 
     # 7. 指代太模糊：澄清
@@ -241,32 +222,6 @@ def run_agent_once(
             "reason": decision.get("reason", "直接回答系统能力问题"),
             "action": action,
             "tool_result_summary": "未调用工具，直接回答",
-            "tool_trace": tool_trace
-        }
-
-    # =========================
-    # 4. 拒答：超出知识库范围
-    # =========================
-    if decision_type == "refuse":
-        answer = "这个问题不属于当前知识库覆盖范围，我目前只能根据已收录资料回答相关问题。"
-
-        tool_trace.append({
-            "step": "final_answer",
-            "tool_status": "skipped",
-            "final_status": "out_of_scope",
-            "answer_preview": answer[:80]
-        })
-
-        return {
-            "status": "OUT_OF_SCOPE",
-            "answer": answer,
-            "references": [],
-            "confidence": 0.0,
-            "need_clarification": False,
-            "clarification_question": "",
-            "reason": decision.get("reason", "问题超出知识库范围"),
-            "action": action,
-            "tool_result_summary": "未调用工具，直接拒答",
             "tool_trace": tool_trace
         }
 
@@ -703,13 +658,6 @@ def extract_chunk_id(q: str) -> int | None:
             return int(match.group(1))
 
     return None
-
-
-def is_out_of_scope(question:str) -> bool:
-    q = (question or "").strip().lower()
-    if not q:
-        return False
-    return any(keyword in q for keyword in OUT_OF_SCOPE_KEYWORDS)
 
 # =========================
 # 判断问题是否走 simple_calculator 路由
