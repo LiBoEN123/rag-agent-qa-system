@@ -249,7 +249,6 @@ def ask(
     retrieved_chunks: List[Dict[str, Any]] | None = None,
     trace_id : str = ""
 ):
-    logger.info(f"[trace_id={trace_id}] [rag] 开始问答流程 top_k={top_k}")
 
     decompose_result = decompose_query_with_llm(question)
 
@@ -271,6 +270,29 @@ def ask(
             rerank_model=rerank_model
         )
 
+    hit_brief = [
+        {
+            "chunk_id": chunk.get("chunk_id"),
+            "rerank": round(chunk.get("rerank_score", 0), 4),
+            "score": round(chunk.get("hybrid_score", 0), 4),
+            "bm25": round(chunk.get("bm25_score", 0), 4),
+            "vector": round(chunk.get("vector_score", 0), 4),
+            "file_name": chunk.get("file_name"),
+        }
+        for chunk in final_chunks
+    ]
+
+    final_chunk_count = len(final_chunks)
+    top_chunk_ids = [chunk.get("chunk_id") for chunk in final_chunks]
+    top_scores = [
+        round(chunk.get("hybrid_score", 0), 4)
+        for chunk in final_chunks]
+
+    logger.info(
+        f"[trace_id={trace_id}] [retrieve] final_chunk_count={final_chunk_count} "
+        f"top_chunk_ids={top_chunk_ids} top_scores={top_scores} hits={hit_brief}"
+    )
+
     if is_ambiguous_question(question):
         return {
             "status": "NEED_CLARIFICATION",
@@ -282,6 +304,8 @@ def ask(
             "clarification_question": build_clarification_question(question),
             "reason": "问题存在指代不明或缺少关键限定信息"
         }
+
+    logger.info(f"[trace_id={trace_id}] [rag] 开始问答流程 top_k={top_k}")
 
     if should_refuse(final_chunks):
         return {

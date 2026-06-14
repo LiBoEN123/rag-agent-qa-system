@@ -417,27 +417,34 @@ def run_agent_once(
                 "tool_trace": tool_trace
             }
 
+        retrieved_count = len(retrieved_chunks)
+        retrieved_chunk_ids = [chunk.get("chunk_id") for chunk in retrieved_chunks]
+
+        logger.info(
+            f"[trace_id={trace_id}] [retrieve] retrieved_count={retrieved_count} "
+            f"top_chunk_ids={retrieved_chunk_ids}"
+        )
+
+        rag_result = ask(question, top_k=top_k, retrieved_chunks=retrieved_chunks, trace_id=trace_id)
+
+        final_chunks = rag_result.get("final_chunks", [])
+        final_chunk_count = len(final_chunks)
+        top_chunk_ids = [chunk.get("chunk_id") for chunk in final_chunks]
+        top_scores = [
+            round(chunk.get("hybrid_score", 0), 4)
+            for chunk in final_chunks]
+
         hit_brief = [
             {
                 "chunk_id": chunk.get("chunk_id"),
+                "rerank": round(chunk.get("rerank_score", 0), 4),
                 "score": round(chunk.get("hybrid_score", 0), 4),
                 "bm25": round(chunk.get("bm25_score", 0), 4),
                 "vector": round(chunk.get("vector_score", 0), 4),
                 "file_name": chunk.get("file_name"),
             }
-            for chunk in retrieved_chunks
+            for chunk in final_chunks
         ]
-
-        retrieved_count = len(retrieved_chunks)
-        top_chunk_ids = [chunk.get("chunk_id") for chunk in retrieved_chunks]
-        top_scores = [
-            round(chunk.get("hybrid_score", 0), 4)
-            for chunk in retrieved_chunks]
-
-        logger.info(
-            f"[trace_id={trace_id}] [retrieve] retrieved_count={retrieved_count} "
-            f"top_chunk_ids={top_chunk_ids} top_scores={top_scores} hits={hit_brief}"
-        )
 
         tool_trace.append({
             "step": "call_tool",
@@ -448,7 +455,7 @@ def run_agent_once(
             },
             "tool_status": "success",
             "success": True,
-            "retrieved_count": retrieved_count,
+            "final_chunk_count": final_chunk_count,
             "top_chunk_ids": top_chunk_ids,
             "top_scores": top_scores,
             "result_summary": f"检索到 {len(retrieved_chunks)} 个候选 chunk",
@@ -459,8 +466,6 @@ def run_agent_once(
             "step": "format_context",
             "summary": f"将 {len(retrieved_chunks)} 个 chunk 交给 RAG 回答逻辑"
         })
-
-        rag_result = ask(question, top_k=top_k, retrieved_chunks=retrieved_chunks, trace_id=trace_id)
 
         rag_answer_cost = int((time.perf_counter() - rag_answer_start) * 1000)
 
