@@ -34,6 +34,10 @@ class Settings:
     LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", 2))
     LLM_RETRY_SLEEP = int(os.getenv("LLM_RETRY_SLEEP", 1))
 
+    DECOMPOSE_API_KEY = os.getenv("DECOMPOSE_API_KEY")
+    DECOMPOSE_MODEL_NAME = os.getenv("DECOMPOSE_MODEL_NAME", "qwen2.5:7b")
+    DECOMPOSE_API_URL = os.getenv("DECOMPOSE_API_URL", "http://localhost:11434/v1")
+
     MARGIN_THRESHOLD = float(os.getenv("MARGIN_THRESHOLD", "0.03"))
     VECTOR_THRESHOLD = float(os.getenv("VECTOR_THRESHOLD", "0.35"))
 

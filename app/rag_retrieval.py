@@ -85,8 +85,8 @@ def rerank(rerank_model, candidates: list[dict], question: str=""):
 
 
 def decompose_query_with_llm(question: str):
-    model_name = Settings.MODEL_NAME
-    api_url = Settings.LLM_API_URL
+    model_name = Settings.DECOMPOSE_MODEL_NAME
+    api_url = Settings.DECOMPOSE_API_URL
 
     pay_load = {
         "model": model_name,
@@ -102,7 +102,7 @@ def decompose_query_with_llm(question: str):
 
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {Settings.LLM_API_KEY}"
+        "Authorization": f"Bearer {Settings.DECOMPOSE_API_KEY}"
     }
 
     response = requests.post(
