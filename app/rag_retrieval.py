@@ -29,22 +29,22 @@ def minmax_score(x: np.ndarray):
     return (x - x.min()) / (x.max() - x.min())
 
 
-def normalize_text(text: str):
-    return "".join((text or "").split()).lower()
-
-
-def dedupe_results(items: list[dict], prefix_len: int = 80) -> list[dict]:
-    seen = set() # seen 是一个集合，用来记录已经见过的文本特征。
-    result = []
-
-    for item in items:
-        key = normalize_text(item.get("text", "")[:prefix_len])
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(item)
-
-    return result
+# def normalize_text(text: str):
+#     return "".join((text or "").split()).lower()
+#
+#
+# def dedupe_results(items: list[dict]) -> list[dict]:
+#     seen = set() # seen 是一个集合，用来记录已经见过的文本特征。
+#     result = []
+#
+#     for item in items:
+#         key = item.get("text", "")
+#         if key in seen:
+#             continue
+#         seen.add(key)
+#         result.append(item)
+#
+#     return result
 
 
 def clamp01(value: float) -> float:
@@ -90,16 +90,19 @@ def decompose_query_with_llm(question: str):
 
     pay_load = {
         "model": model_name,
-        "temperature": 0.1,
         "messages": [
             {"role": "system", "content": DECOMPOSE_PROMPT},
-            {
-                "role": "user",
-                "content": question
-            }
-        ]
+            {"role": "user", "content": question}
+        ],
+        "stream": False,
+        "keep_alive": "30m",
+        "format": "json",
+        "options": {
+            "temperature": 0,
+            "num_predict": 128,
+            "num_ctx": 1024
+        }
     }
-
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {Settings.DECOMPOSE_API_KEY}"
@@ -182,9 +185,7 @@ def retrieve(
             "metadata": metadata,
         })
 
-    deduped_results = dedupe_results(raw_results, prefix_len=80)
-
-    final_results = deduped_results
+    final_results = raw_results
 
     for rank, item in enumerate(final_results, start=1):
         item["reference_id"] = f"Reference {rank}"

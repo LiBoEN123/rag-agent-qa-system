@@ -1,4 +1,4 @@
-# 启动命令：python scripts/evaluate_rag_results_semantic_fixed.py --eval-file data/eval/rag_eval_questions_v2_semantic_fixed.json --pred-file outputs/predictions.csv --chunks-file data/manifest/chunks.json --out-dir outputs/rag_baseline --k 5
+# 启动命令：python scripts/evaluate_rag_results_semantic_fixed.py --eval-file data/eval/rag_eval_questions_v2_semantic_fixed.json --pred-file outputs/predictions.csv --chunks-file data/manifest/chunks.json --out-dir outputs/rag_baseline1 --k 5
 
 from __future__ import annotations
 

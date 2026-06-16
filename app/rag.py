@@ -1,4 +1,5 @@
 from typing import Any, Dict, List
+import time
 
 from app.untils import get_logger
 from app.config import Settings
@@ -249,11 +250,18 @@ def ask(
     retrieved_chunks: List[Dict[str, Any]] | None = None,
     trace_id : str = ""
 ):
+    strat_decompose = time.perf_counter()
 
     decompose_result = decompose_query_with_llm(question)
 
+    decompose_cost_ms = int((time.perf_counter() - strat_decompose) * 1000)
+
+    logger.info(f"[trace_id={trace_id}] [retrieve] decompose_cost_ms={decompose_cost_ms}")
+
     if retrieved_chunks is None:
         retrieved_chunks = retrieve(question, top_k)
+
+    start_rerank = time.perf_counter()
 
     if not decompose_result["need_decompose"]:
         candidates = retrieved_chunks
@@ -269,6 +277,10 @@ def ask(
             model=model,
             rerank_model=rerank_model
         )
+
+    rerank_cost_ms = int((time.perf_counter() - start_rerank) * 1000)
+
+    logger.info(f"[trace_id={trace_id}] [retrieve] rerank_cost_ms={rerank_cost_ms}")
 
     hit_brief = [
         {
