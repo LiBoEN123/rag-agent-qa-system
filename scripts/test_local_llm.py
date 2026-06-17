@@ -5,7 +5,7 @@ def chat_once(question: str) -> str:
     url = "http://127.0.0.1:11434/v1/chat/completions"
 
     payload = {
-        "model": "qwen2:7b",
+        "model": "qwen2.5:7b",
         "messages": [
             {
                 "role": "system",

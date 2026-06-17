@@ -156,7 +156,7 @@ def collect_trace_metrics(result: dict) -> dict:
         current_tool_name = step.get("tool_name", "")
 
         if current_tool_name == "search_knowledge_base":
-            retrieved_count = step.get("retrieved_count", retrieved_count)
+            retrieved_count = step.get("final_chunk_count", retrieved_count)
 
         if current_tool_name in real_tools:
             tool_name = current_tool_name

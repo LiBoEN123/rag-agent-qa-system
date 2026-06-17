@@ -458,13 +458,13 @@ def run_agent_once(
             "final_chunk_count": final_chunk_count,
             "top_chunk_ids": top_chunk_ids,
             "top_scores": top_scores,
-            "result_summary": f"检索到 {len(retrieved_chunks)} 个候选 chunk",
+            "result_summary": f"检索到 {len(final_chunks)} 个候选 chunk",
             "hits": hit_brief
         })
 
         tool_trace.append({
             "step": "format_context",
-            "summary": f"将 {len(retrieved_chunks)} 个 chunk 交给 RAG 回答逻辑"
+            "summary": f"将 {len(final_chunks)} 个 chunk 交给 RAG 回答逻辑"
         })
 
         rag_answer_cost = int((time.perf_counter() - rag_answer_start) * 1000)
@@ -546,7 +546,7 @@ def run_agent_once(
         })
 
         rag_result["action"] = action
-        rag_result["tool_result_summary"] = f"知识库检索完成，召回 {len(retrieved_chunks)} 个 chunk"
+        rag_result["tool_result_summary"] = f"知识库检索完成，召回 {len(final_chunks)} 个 chunk"
         rag_result["tool_trace"] = tool_trace
 
         return rag_result
