@@ -1,7 +1,7 @@
 # DEPLOY
 
 ## 1.项目简介
-这是一个基于Docker运行的RAG项目，提供中文问答服务
+这是一个基于Docker运行的RAG/Agent项目，提供中文问答服务
 
 ## 2.环境要求
 - Docker已安装

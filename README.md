@@ -40,6 +40,8 @@
 - 使用 BM25 做关键词检索；
 - 使用 Embedding 做语义检索；
 - 融合 BM25 分数和向量相似度进行混合排序；
+- 判断问题是否为多子问题，然后觉得是否将问题拆分；
+- 若非多子问题直接对原问题进行rerank重排序，若为多子问题则采用：子问题独立召回—证据合并；
 - 将召回片段拼接为上下文；
 - 调用大模型生成答案；
 - 返回答案、引用来源、置信度和状态信息。
@@ -135,7 +137,11 @@ RAG 问答 / 工具调用 / 澄清 / 拒答
   ↓
 BM25 + 向量混合检索
   ↓
-相关性阈值判断
+llm判断问题是否为多子问题
+  ↓                     ↓
+非多子问题rerank       多子问题：子问题独立召回—证据合并
+  ↓                     ↓
+相关性阈值判断          同左
   ↓
 构建上下文 context
   ↓
@@ -245,20 +251,23 @@ cp .env.example .env
 
 `.env` 中需要配置以下内容：
 
-| 配置项 | 是否必填 | 说明 |
-|---|---|---|
-| `RAG_FILE_PATH` | 是 | 知识库目录，例如 `./data/kb` |
-| `TOP_K` | 否 | 默认召回 chunk 数量 |
-| `CHUNK_SIZE` | 否 | chunk 最大长度 |
-| `CHUNK_OVERLAP` | 否 | 相邻 chunk 重叠长度 |
-| `EMBEDDING_MODEL_NAME` | 是 | Embedding 模型名称 |
-| `LLM_API_KEY` 或 `DEEPSEEK_API_KEY` | 是 | 大模型 API Key，按你的代码配置保持一致 |
-| `MODEL_NAME` | 否 | 大模型名称，例如 `deepseek-chat` |
-| `LLM_API_URL` | 否 | 大模型接口地址 |
-| `VECTOR_THRESHOLD` | 否 | 向量分数过低时拒答 |
-| `MARGIN_THRESHOLD` | 否 | Top1 与 Top2 分数差距阈值 |
-| `MAX_CONTEXT_CHARS` | 否 | 拼接给大模型的最大上下文长度 |
-| `AUTO_REBUILD_ON_STARTUP` | 否 | 是否启动时强制重建索引 |
+| 配置项                                | 是否必填 | 说明                       |
+| ---------------------------------- | ---- | ------------------------ |
+| `RAG_FILE_PATH`                    | 是    | 知识库目录，例如 `./data/kb`     |
+| `TOP_K`                            | 否    | 默认召回 chunk 数量            |
+| `CHUNK_SIZE`                       | 否    | chunk 最大长度               |
+| `CHUNK_OVERLAP`                    | 否    | 相邻 chunk 重叠长度            |
+| `EMBEDDING_MODEL_NAME`             | 是    | Embedding 模型名称           |
+| `LLM_API_KEY` 或 `DEEPSEEK_API_KEY` | 是    | 大模型 API Key，按你的代码配置保持一致  |
+| `MODEL_NAME`                       | 否    | 大模型名称，例如 `deepseek-chat` |
+| `LLM_API_URL`                      | 否    | 大模型接口地址                  |
+| `VECTOR_THRESHOLD`                 | 否    | 向量分数过低时拒答                |
+| `MARGIN_THRESHOLD`                 | 否    | Top1 与 Top2 分数差距阈值       |
+| `MAX_CONTEXT_CHARS`                | 否    | 拼接给大模型的最大上下文长度           |
+| `AUTO_REBUILD_ON_STARTUP`          | 否    | 是否启动时强制重建索引              |
+| `DECOMPOSE_API_KEY`                | 是    | 问题拆分大模型 API Key          |
+| `DECOMPOSE_MODEL_NAME`             | 否    | 问题拆分大模型名称                |
+| `DECOMPOSE_API_URL`                | 否    | 问题拆分大模型接口地址              |
 
 ---
 
@@ -362,7 +371,6 @@ needs_rebuild()
 | `tool_result_summary` | 工具或 RAG 路径结果摘要 |
 | `tool_trace` | Agent 决策和执行过程追踪 |
 
-其中 `action` 和 `tool_trace` 是第 8 周展示 Agent 效果的重点。
 
 ---
 
@@ -681,11 +689,6 @@ Agent → refuse → 返回超出知识库范围
     "question": "这个怎么弄？",
     "expected_action": "clarify"
   },
-  {
-    "id": "case_006",
-    "question": "今天天气怎么样？",
-    "expected_action": "refuse"
-  }
 ]
 ```
 
@@ -748,26 +751,7 @@ Action Accuracy：90.00%
 
 ---
 
-### 17.3 拒答是否正常
-
-测试问题：
-
-```json
-{
-  "question": "今天天气怎么样？",
-  "top_k": 5
-}
-```
-
-检查点：
-
-- `action` 是否为 `refuse`；
-- `status` 是否为 `out_of_scope`；
-- 是否没有返回伪造答案。
-
----
-
-### 17.4 澄清是否正常
+### 17.3 澄清是否正常
 
 测试问题：
 
@@ -806,7 +790,7 @@ Agent 决策
 
 当前实现的优点：
 
-- 结构清晰，适合初学者理解 RAG 与 Agent；
+- 结构清晰，适合理解 RAG 与 Agent；
 - 接口返回包含 action 和 trace，便于展示路径差异；
 - RAG 与工具调用共用 `/chat` 入口；
 - 提供 `/decide` 接口，可以单独观察 Agent 决策；
@@ -822,7 +806,6 @@ Agent 决策
 - Agent 决策主要依赖规则判断，不是大模型自主规划；
 - 工具数量较少，只覆盖计算、文档列表和 chunk 查看；
 - `simple_calculator` 只适合简单四则运算；
-- 超出知识库范围的判断主要依赖关键词规则；
 - RAG 的回答质量依赖检索结果和大模型输出稳定性；
 - 暂不支持 PDF、DOCX、图片等复杂文档格式。
 
@@ -842,28 +825,7 @@ Agent 决策
 - 完善 Docker Compose 部署方式。
 
 ---
-
-## 21. 项目展示讲稿
-
-可以用下面这段话介绍项目：
-
-> 我做的是一个基于 FastAPI 的中文 RAG 知识库问答系统，并在第 8 周将它升级成了一个最小 Agent。  
-> 原来的 RAG 流程是用户提问后直接检索知识库，再调用大模型生成答案。这样虽然能回答文档问题，但所有问题都会走同一条路径。  
-> 现在系统会先通过 Agent 决策模块判断问题类型。如果是知识库问题，就走 RAG 检索问答；如果是简单计算问题，就调用计算工具；如果是查看文档列表或 chunk 内容，就调用对应工具；如果问题指代不清，就返回澄清提示；如果明显超出知识库范围，就拒答。  
-> 为了方便展示和验证，我在返回结果中加入了 action、tool_result_summary 和 tool_trace，可以看到系统本次到底选择了哪条路径。这样项目不只是一个普通问答接口，而是具备了基础任务分流能力的最小 Agent 系统。
-
----
-
-## 22. 简历描述参考
-
-- 基于 FastAPI 实现中文 RAG + 最小 Agent 问答系统，支持本地 `.txt` / `.md` 文档加载、chunk 切分、BM25 + 向量混合检索和大模型答案生成。
-- 设计 Agent 路由模块，根据用户问题选择 RAG 问答、简单计算、文档列表查询、chunk 内容查询、澄清或拒答路径。
-- 在 `/chat` 接口中返回 `action`、`tool_result_summary` 和 `tool_trace`，提升系统执行过程的可解释性。
-- 实现索引缓存与 manifest 判断机制，减少重复构建索引的成本。
-- 设计基础评测样例，通过 expected_action 与 actual_action 对比验证 Agent 路由准确率。
-
----
-## 23. 优化记录
+## 21. 优化记录
 ### 1. simple_calculator决策优化
 - 问题现象：Agent针对`simple_calculator`的决策路由设计的比较简单，只针对部分提问词，问题稍做改变就会转向其它路由。
 - 日志证据：用户提问`1+2+3的结果是什么`，结果走的是rag的路由。
@@ -872,11 +834,11 @@ Agent 决策
 
 ---
 
-## 24.可观测性与监控
+## 22.可观测性与监控
 
 本小节将对`trace_id、日志字段、失败案例集、日志汇总脚本`进行说明
 
-### 24.1 trace_id
+### 22.1 trace_id
 `trace_id`置于`\chat`接口中，用于追踪一次请求流程，每次请求都会生成不同的`trace_id`以区分
 
 一次请求的主要流程包括
@@ -889,7 +851,7 @@ Agent 决策
 7. 校验回答可靠性
 8. 返回最终结果
 
-### 24.2 日志字段
+### 22.2 日志字段
 
 | 文件                    | 作用              |     |
 | --------------------- | --------------- | --- |
@@ -900,7 +862,7 @@ Agent 决策
 bad_cases.jsonl 不记录正常拒答、空问题、模糊问题等预期行为。  
 它主要记录系统“本应答好但没有答好”的情况，例如检索失败、引用不可靠、模型输出格式异常等。
 
-### 24.3 失败案例集
+### 22.3 失败案例集
 
 会被记录为失败案例的情况
 
@@ -917,7 +879,7 @@ bad_cases.jsonl 不记录正常拒答、空问题、模糊问题等预期行为�
 3. 检索结果不足以回答问题，系统正常拒答
 4. 用户问题超出知识库范围
 
-### 24.4 日志汇总脚本
+### 22.4 日志汇总脚本
 
 日志汇总脚本位置为`mini-rag\scripts\summarize_logs.py`，其用于接收位于``mini-rag\logs`中的系统运行日志`metrics.jsonl`和失败案例日志`bad_cases.jsonl`，输出日志汇总记录`mini-rag\outputs/week9_summary.md`。
 
@@ -932,9 +894,9 @@ bad_cases.jsonl 不记录正常拒答、空问题、模糊问题等预期行为�
 8. 日志格式问题: 统计有格式问题的日志
 9. 统计口径说明：对脚本的运行流程进行说明
 
-## 25. 模型来源配置说明
+## 23. 模型来源配置说明
 
-### 25.1 使用 DeepSeek 云端 API
+### 23.1 使用 DeepSeek 云端 API
 `.env`示例
 ```
 TOP_K=5  
@@ -969,10 +931,9 @@ LLM_MAX_TOKENS=1024
 # =========================  
 # 召回chunk的拒绝阈值  
 # =========================  
-MARGIN_THRESHOLD=0.01  
 VECTOR_THRESHOLD=0.35
 ```
-### 25.2 使用本地 Ollama 模型
+### 23.2 使用本地 Ollama 模型
 `.env`示例
 ```
 TOP_K=5  
@@ -1011,11 +972,11 @@ MARGIN_THRESHOLD=0.01
 VECTOR_THRESHOLD=0.35
 ```
 
-## 26. 部署到 Kubernetes，组件如何拆分
+## 24. 部署到 Kubernetes，组件如何拆分
 
 当前项目可以按照 Kubernetes 的对象职责拆成以下几类：  
   
-### 26.1. FastAPI 后端服务  
+### 24.1. FastAPI 后端服务  
   
 FastAPI 是主要的业务入口，负责接收用户问题、调用检索逻辑、访问向量数据库、调用模型服务并返回结果。  
   
@@ -1026,13 +987,13 @@ FastAPI 是主要的业务入口，负责接收用户问题、调用检索逻辑
 - ConfigMap：保存普通配置，例如模型名称、向量库地址、top_k、chunk_size 等。  
 - Secret：保存敏感信息，例如 LLM API Key、数据库密码、JWT Secret 等。  
   
-### 26.2. 模型服务  
+### 24.2. 模型服务  
   
 如果项目调用的是外部大模型 API，例如 OpenAI、Claude、DeepSeek 或通义千问，则模型服务本身不需要部署在 Kubernetes 内部。项目只需要通过 ConfigMap 配置模型名称、API 地址，通过 Secret 保存 API Key。  
   
 如果后续改为自托管模型服务，例如 embedding 服务、reranker 服务或本地 LLM 服务，则可以使用 Deployment + Service 部署。但这类服务需要额外考虑 GPU、模型权重、显存、冷启动时间和资源限制。  
   
-### 26.3. 数据库  
+### 24.3. 数据库  
   
 数据库属于有状态组件，不适合像普通无状态 API 一样简单用 Deployment 管理。  
   
@@ -1040,13 +1001,13 @@ FastAPI 是主要的业务入口，负责接收用户问题、调用检索逻辑
   
 如果必须部署到 Kubernetes 内部，则应考虑 StatefulSet、PersistentVolume、PersistentVolumeClaim、备份恢复和数据一致性。  
   
-### 26.4. 向量数据库  
+### 24.4. 向量数据库  
   
 向量数据库保存文档 chunk、embedding 向量、metadata 和索引，属于有状态组件。  
   
 如果使用外部向量数据库，FastAPI 只需要通过配置连接它。如果在 Kubernetes 内部自建向量数据库，则需要考虑持久化存储、备份、恢复和服务稳定性，不建议简单地按普通 Deployment 处理。  
   
-### 26.5. 配置与密钥  
+### 24.5. 配置与密钥  
   
 普通配置放入 ConfigMap，例如：  
   
