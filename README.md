@@ -931,7 +931,6 @@ LLM_MAX_TOKENS=1024
 # =========================  
 # 召回chunk的拒绝阈值  
 # =========================  
-MARGIN_THRESHOLD=0.01  
 VECTOR_THRESHOLD=0.35
 ```
 
