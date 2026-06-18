@@ -659,7 +659,7 @@ Agent → clarify → 要求用户补充说明
     "id": "case_005",
     "question": "这个怎么弄？",
     "expected_action": "clarify"
-  },
+  }
 ]
 ```
 

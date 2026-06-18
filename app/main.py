@@ -410,20 +410,6 @@ class SearchResponse(BaseModel):
         }
     )
 
-class ExtractRequest(BaseModel):
-    text: str = Field(..., description="待抽取文本")
-
-class ExtractData(BaseModel):
-    is_refundable: bool | None = None
-    refund_window_days: int | None = None
-    exceptions: list[str] = Field(default_factory=list)
-    evidence: list[str] = Field(default_factory=list)
-
-class ExtractResponse(BaseModel):
-    code: int | str
-    message: str
-    data: ExtractData
-
 # chat接口回复结构定义
 def build_chat_response(code:int|str,
                         message:str,
