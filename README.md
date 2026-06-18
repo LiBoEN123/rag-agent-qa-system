@@ -117,9 +117,9 @@ RAG 问答 / 工具调用 / 澄清 / 拒答
                        ↓
         ┌──────────────┼──────────────┐
         ↓              ↓              ↓
-   RAG 问答路径      工具调用路径      澄清 / 拒答
+   RAG 问答路径      工具调用路径      澄清
         ↓              ↓              ↓
- search_knowledge   calculator     clarify / refuse
+ search_knowledge   calculator     clarify
         ↓          list_documents
   检索相关 chunk    get_chunk_text
         ↓              ↓
@@ -396,13 +396,10 @@ needs_rebuild()
 5. 问题是简单四则运算表达式
    → simple_calculator
 
-6. 问题明显超出知识库范围
-   → refuse
-
-7. 问题指代不明
+6. 问题指代不明
    → clarify
 
-8. 其他情况
+7. 其他情况
    → search_knowledge_base
 ```
 
@@ -552,33 +549,6 @@ Agent → clarify → 要求用户补充说明
 }
 ```
 
----
-
-### 13.6 超出知识库范围问题
-
-请求：
-
-```json
-{
-  "question": "今天天气怎么样？",
-  "top_k": 5
-}
-```
-
-预期路径：
-
-```text
-Agent → refuse → 返回超出知识库范围
-```
-
-预期状态：
-
-```json
-{
-  "status": "out_of_scope",
-  "action": "refuse"
-}
-```
 
 ---
 
@@ -629,6 +599,7 @@ Agent → refuse → 返回超出知识库范围
 - 哪些 chunk 被召回；
 - 每个 chunk 的 BM25 分数；
 - 每个 chunk 的 vector 分数；
+- 每个 chunk 的 rerank 分数；
 - hybrid score 排序是否合理。
 
 请求：
@@ -825,20 +796,12 @@ Agent 决策
 - 完善 Docker Compose 部署方式。
 
 ---
-## 21. 优化记录
-### 1. simple_calculator决策优化
-- 问题现象：Agent针对`simple_calculator`的决策路由设计的比较简单，只针对部分提问词，问题稍做改变就会转向其它路由。
-- 日志证据：用户提问`1+2+3的结果是什么`，结果走的是rag的路由。
-- 修改内容：在`agent.py`中新增`normalize_math_text`和`is_safe_math_expression`，二者分别将提问中的计算表达式规范化并判断表达式是否为正常简单计算，并修改`extract_simple_math_expression`，变为提取提问中的表达式，利用新增函数进行规范和判断，最终返回可计算的标准表达式。
-- 复测结果：对于任意含计算的提问（提问的表达式需为阿拉伯数字），都能正常走`simple_calculator`的路由并计算出正确结果。
 
----
-
-## 22.可观测性与监控
+## 21.可观测性与监控
 
 本小节将对`trace_id、日志字段、失败案例集、日志汇总脚本`进行说明
 
-### 22.1 trace_id
+### 21.1 trace_id
 `trace_id`置于`\chat`接口中，用于追踪一次请求流程，每次请求都会生成不同的`trace_id`以区分
 
 一次请求的主要流程包括
@@ -851,7 +814,7 @@ Agent 决策
 7. 校验回答可靠性
 8. 返回最终结果
 
-### 22.2 日志字段
+### 21.2 日志字段
 
 | 文件                    | 作用              |     |
 | --------------------- | --------------- | --- |
@@ -862,7 +825,7 @@ Agent 决策
 bad_cases.jsonl 不记录正常拒答、空问题、模糊问题等预期行为。  
 它主要记录系统“本应答好但没有答好”的情况，例如检索失败、引用不可靠、模型输出格式异常等。
 
-### 22.3 失败案例集
+### 21.3 失败案例集
 
 会被记录为失败案例的情况
 
@@ -879,7 +842,7 @@ bad_cases.jsonl 不记录正常拒答、空问题、模糊问题等预期行为�
 3. 检索结果不足以回答问题，系统正常拒答
 4. 用户问题超出知识库范围
 
-### 22.4 日志汇总脚本
+### 21.4 日志汇总脚本
 
 日志汇总脚本位置为`mini-rag\scripts\summarize_logs.py`，其用于接收位于``mini-rag\logs`中的系统运行日志`metrics.jsonl`和失败案例日志`bad_cases.jsonl`，输出日志汇总记录`mini-rag\outputs/week9_summary.md`。
 
@@ -894,9 +857,9 @@ bad_cases.jsonl 不记录正常拒答、空问题、模糊问题等预期行为�
 8. 日志格式问题: 统计有格式问题的日志
 9. 统计口径说明：对脚本的运行流程进行说明
 
-## 23. 模型来源配置说明
+## 22. 模型来源配置说明
 
-### 23.1 使用 DeepSeek 云端 API
+### 22.1 使用 DeepSeek 云端 API
 `.env`示例
 ```
 TOP_K=5  
@@ -933,7 +896,7 @@ LLM_MAX_TOKENS=1024
 # =========================  
 VECTOR_THRESHOLD=0.35
 ```
-### 23.2 使用本地 Ollama 模型
+### 22.2 使用本地 Ollama 模型
 `.env`示例
 ```
 TOP_K=5  
@@ -972,11 +935,11 @@ MARGIN_THRESHOLD=0.01
 VECTOR_THRESHOLD=0.35
 ```
 
-## 24. 部署到 Kubernetes，组件如何拆分
+## 23. 部署到 Kubernetes，组件如何拆分
 
 当前项目可以按照 Kubernetes 的对象职责拆成以下几类：  
   
-### 24.1. FastAPI 后端服务  
+### 23.1. FastAPI 后端服务  
   
 FastAPI 是主要的业务入口，负责接收用户问题、调用检索逻辑、访问向量数据库、调用模型服务并返回结果。  
   
@@ -987,13 +950,13 @@ FastAPI 是主要的业务入口，负责接收用户问题、调用检索逻辑
 - ConfigMap：保存普通配置，例如模型名称、向量库地址、top_k、chunk_size 等。  
 - Secret：保存敏感信息，例如 LLM API Key、数据库密码、JWT Secret 等。  
   
-### 24.2. 模型服务  
+### 23.2. 模型服务  
   
 如果项目调用的是外部大模型 API，例如 OpenAI、Claude、DeepSeek 或通义千问，则模型服务本身不需要部署在 Kubernetes 内部。项目只需要通过 ConfigMap 配置模型名称、API 地址，通过 Secret 保存 API Key。  
   
 如果后续改为自托管模型服务，例如 embedding 服务、reranker 服务或本地 LLM 服务，则可以使用 Deployment + Service 部署。但这类服务需要额外考虑 GPU、模型权重、显存、冷启动时间和资源限制。  
   
-### 24.3. 数据库  
+### 23.3. 数据库  
   
 数据库属于有状态组件，不适合像普通无状态 API 一样简单用 Deployment 管理。  
   
@@ -1001,13 +964,13 @@ FastAPI 是主要的业务入口，负责接收用户问题、调用检索逻辑
   
 如果必须部署到 Kubernetes 内部，则应考虑 StatefulSet、PersistentVolume、PersistentVolumeClaim、备份恢复和数据一致性。  
   
-### 24.4. 向量数据库  
+### 23.4. 向量数据库  
   
 向量数据库保存文档 chunk、embedding 向量、metadata 和索引，属于有状态组件。  
   
 如果使用外部向量数据库，FastAPI 只需要通过配置连接它。如果在 Kubernetes 内部自建向量数据库，则需要考虑持久化存储、备份、恢复和服务稳定性，不建议简单地按普通 Deployment 处理。  
   
-### 24.5. 配置与密钥  
+### 23.5. 配置与密钥  
   
 普通配置放入 ConfigMap，例如：  
   
