@@ -8,6 +8,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 import os
+from app.main import write_bad_cases
 
 
 # =========================
@@ -275,7 +276,7 @@ def evaluate_one_case(case: dict, top_k: int) -> dict:
     started_at = time.time()
 
     try:
-        result = run_agent_once(question=question, top_k=top_k)
+        result = run_agent_once(write_bad_cases=write_bad_cases, question=question, top_k=top_k)
         elapsed_ms = round((time.time() - started_at) * 1000, 2)
 
         actual = extract_actual_fields(result)
