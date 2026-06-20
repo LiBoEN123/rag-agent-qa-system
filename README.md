@@ -54,15 +54,15 @@
 
 当前支持的 action 包括：
 
-| action | 说明 |
-|---|---|
-| `search_knowledge_base` | 默认知识库问答路径，走 RAG 检索与生成 |
-| `simple_calculator` | 处理简单四则运算 |
-| `list_documents` | 查看当前知识库文档数量和列表 |
-| `get_chunk_text` | 根据 chunk_id 查看指定 chunk 内容 |
-| `direct_answer` | 回答系统能力类问题 |
-| `clarify` | 问题不完整或指代不明时要求用户补充 |
-| `refuse` | 明显超出知识库范围时拒答 |
+| action                  | 说明                        |
+| ----------------------- | ------------------------- |
+| `search_knowledge_base` | 默认知识库问答路径，走 RAG 检索与生成     |
+| `simple_calculator`     | 处理简单四则运算                  |
+| `list_documents`        | 查看当前知识库文档数量和列表            |
+| `get_chunk_text`        | 根据 chunk_id 查看指定 chunk 内容 |
+| `direct_answer`         | 回答系统能力类问题                 |
+| `clarify`               | 问题不完整或指代不明时要求用户补充         |
+
 
 ---
 
@@ -332,16 +332,15 @@ needs_rebuild()
 
 ## 10. API 接口说明
 
-| 接口 | 方法 | 作用 |
-|---|---|---|
-| `/health` | GET | 健康检查 |
-| `/docs-preview` | GET | 查看已加载文档 |
-| `/chunks-preview` | GET | 查看切分后的 chunk |
-| `/search` | POST | 只检索，不调用大模型 |
-| `/chat` | POST | 完整 Agent + RAG 问答入口 |
-| `/extract_refund_policy` | POST | 退款政策结构化抽取示例 |
-| `/kb_summary` | POST | 查看知识库统计信息 |
-| `/decide` | POST | 只查看 Agent 决策结果，不执行最终问答 |
+| 接口                       | 方法   | 作用                     |
+| ------------------------ | ---- | ---------------------- |
+| `/health`                | GET  | 健康检查                   |
+| `/docs-preview`          | GET  | 查看已加载文档                |
+| `/chunks-preview`        | GET  | 查看切分后的 chunk           |
+| `/search`                | POST | 只检索，不调用大模型             |
+| `/chat`                  | POST | 完整 Agent + RAG 问答入口    |
+| `/kb_summary`            | POST | 查看知识库统计信息              |
+| `/decide`                | POST | 只查看 Agent 决策结果，不执行最终问答 |
 
 ---
 
