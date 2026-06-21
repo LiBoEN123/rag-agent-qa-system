@@ -767,6 +767,25 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
                 reason="工具调用或模型调用异常"
             )
 
+        if result["status"] == "MODEL_ERROR":
+            response.status_code = 200
+            return build_chat_response(
+                code="MODEL_ERROR",
+                message="模型调用失败",
+                trace_id=trace_id,
+                question=question,
+                answer=result.get("answer", ""),
+                references=[],
+                confidence=0.0,
+                need_clarification=False,
+                status="error",
+                clarification_question="",
+                reason=result.get("reason", "模型调用失败"),
+                action=result.get("action", ""),
+                tool_result_summary=result.get("tool_result_summary", ""),
+                tool_trace=result.get("tool_trace", [])
+            )
+
         if result["status"] == "NEED_CLARIFICATION":
             logger.warning(
                 f"[trace_id={trace_id}] [chat] final_status=need_clarification reason=问题信息不足"

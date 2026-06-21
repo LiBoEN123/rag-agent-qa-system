@@ -15,7 +15,8 @@ def test_health(monkeypatch):
         resp = client.get("/health")
 
     assert resp.status_code == 200
-    assert resp.json() == {"status":"ok"}
+    assert resp.json()["code"] == 0
+    assert resp.json()["data"]["status"] == "ok"
 
 def test_chat_basic(monkeypatch):
     fake_chunks = [
@@ -45,18 +46,18 @@ def test_chat_basic(monkeypatch):
 
     monkeypatch.setattr(
         main,
-        "ask",
-        lambda question, top_k, retrieved_chunks:{
-            'status': "OK",
-            "answer": "DevHub 最低要求 macOS 14.0，并且 v2.0.0 版本添加了对 macOS 26 的支持。",
-            "references": [
-      {
-        "reference_id": "Reference 1",
-        "source_file": "CHANGELOG.zh.md",
-        "chunk_id": "CHANGELOG.zh_chunk_5",
-        "text": "[标题路径] [v2.0.0](https://github.com/jaywcjlove/DevHub/releases/tag/v2.0.0)\n\n1. feat: 添加对 macOS 26 的支持\n2. fix: 修复一些已知问题"
-      }
-            ]
+        "run_agent_once",
+        lambda *args, **kwargs: {
+            "status": "OK",
+            "answer": "测试回答",
+            "references": [],
+            "confidence": 0.9,
+            "need_clarification": False,
+            "clarification_question": "",
+            "reason": "测试通过",
+            "action": "search_knowledge_base",
+            "tool_result_summary": "测试",
+            "tool_trace": []
         }
     )
 

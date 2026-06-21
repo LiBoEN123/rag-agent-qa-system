@@ -15,6 +15,7 @@ from app.rag_generation import (
     estimate_confidence,
     format_reference,
     parse_llm_output,
+    LLMCallError
 )
 from app.rag_ingest import clean_documents, load_files, split_chunks
 from app.rag_retrieval import (
@@ -222,7 +223,7 @@ def retrieve(question: str, top_k: int = 3):
         top_k=top_k
     )
 
-def rerank(candidates: list[dict], question: str="", top_k: int=5):
+def rerank(candidates: list[dict], question: str=""):
     return rerank_impl(
         rerank_model=rerank_model,
         candidates=candidates,
@@ -252,7 +253,17 @@ def ask(
 ):
     strat_decompose = time.perf_counter()
 
-    decompose_result = decompose_query_with_llm(question)
+    try:
+        decompose_result = decompose_query_with_llm(question)
+    except Exception as e:
+        logger.warning(
+            f"[trace_id={trace_id}] [retrieve] decompose_failed fallback_to_single_query error={e}"
+        )
+        decompose_result = {
+            "need_decompose": False,
+            "reason": "decompose failed, fallback to original question",
+            "sub_queries": []
+        }
 
     decompose_cost_ms = int((time.perf_counter() - strat_decompose) * 1000)
 
@@ -265,7 +276,7 @@ def ask(
 
     if not decompose_result["need_decompose"]:
         candidates = retrieved_chunks
-        reranked = rerank(candidates, question, top_k)
+        reranked = rerank(candidates, question)
         final_chunks = reranked[:top_k]
     else:
         final_chunks = retrieve_with_sub_queries(
@@ -338,7 +349,19 @@ def ask(
     )
     logger.info(f"[trace_id={trace_id}] [llm] 开始调用模型")
 
-    llm_out = call_llm(question, context, trace_id)
+    try:
+        llm_out = call_llm(question, context, trace_id)
+    except LLMCallError as e:
+        return {
+            "status": "MODEL_ERROR",
+            "answer": e.user_message,
+            "references": [],
+            "final_chunks": final_chunks,
+            "confidence": 0.0,
+            "need_clarification": False,
+            "clarification_question": "",
+            "reason": e.user_message
+        }
 
     logger.info(
         f"[trace_id={trace_id}] [llm] 模型调用完成 output_len={len(llm_out or '')}"
