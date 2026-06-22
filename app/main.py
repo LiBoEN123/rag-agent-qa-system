@@ -12,6 +12,7 @@ from app.rag import (
     search_relevant_chunks,
     rerank,
     get_rag_status,
+    init_rag,
     needs_rebuild,
     load_index_cache,
     index_cache_exists,
@@ -36,6 +37,178 @@ logger = get_logger('chat_service')
 METRICS_PATH = Path("logs") / "metrics.jsonl"
 BAD_CASES_PATH = Path("logs") / "bad_cases.jsonl"
 
+
+# =========================
+# API 数据模型
+# =========================
+
+class ChatRequest(BaseModel):
+    question:str = Field(..., description='用户问题')
+    top_k:int | None=Field(None, ge=1, le=10, description='召回条数')
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example":{
+              "question": "每个 Vue 应用都是通过什么函数创建应用实例的？",
+              "top_k": 5
+            }
+        }
+    )
+
+class ChatReferences(BaseModel):
+    reference_id:str
+    file_name:str
+    source_path:str
+    chunk_id:str | int
+    position: int | None = None
+    snippet: str
+    score: float
+    rerank_score: float
+
+class ChatData(BaseModel):
+    question:str
+    answer:str
+    references:list[ChatReferences]=Field(default_factory=list)
+    confidence:float = Field(..., ge=0.0, le=1.0, description="回答置信度，0~1")
+    need_clarification:bool = Field(..., description="是否建议用户补充问题")
+    status: PublicStatus
+    clarification_question:str = Field(..., description="补充提示")
+    reason:str = Field(..., description="理由")
+    action:str = Field(default="", description="本次Agent选择的动作")
+    tool_result_summary:str = Field(default="", description="工具结果摘要")
+    tool_trace:list[dict] = Field(default_factory=list, description="工具调用或路径追踪")
+
+class ChatResponse(BaseModel):
+    code:int|str
+    message:str
+    trace_id:str = Field(default="", description="本次请求追踪的id")
+    data:ChatData
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example":{
+              "code": 0,
+              "message": "success",
+              "data": {
+                "answer": "每个 Vue 应用都是通过 `createApp` 函数创建一个新的应用实例。",
+                "references": [
+                  {
+                    "reference_id": "Reference 1",
+                    "file_name": "application.md",
+                    "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
+                    "chunk_id": 1,
+                    "position": 1,
+                    "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>应用实例{#the-application-instance}每个Vue应用都是通过[`createApp`]",
+                    "score": 1
+                  }
+                ],
+                "confidence": 0.519,
+                "need_clarification": False,
+                "answer_status": "answered",
+                "clarification_question": "",
+                "reason": "检索命中有效证据，且答案成功绑定引用"
+              }
+            }
+        }
+    )
+
+class SearchResult(BaseModel):
+    reference_id:str
+    source_path:str
+    file_name:str
+    chunk_id:str | int
+    position:int | None=None
+    snippet: str
+    score:float
+    bm25_score:float
+    vector_score:float
+    rerank_score:float
+
+class SearchData(BaseModel):
+    question:str
+    status:PublicStatus
+    reason:str=""
+    results:list[SearchResult]=Field(default_factory=list)
+
+class SearchResponse(BaseModel):
+    code:int | str
+    message:str
+    data:SearchData
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example":{
+                  "code": 0,
+                  "message": "success",
+                  "data": {
+                    "question": "每个 Vue 应用都是通过什么函数创建应用实例的？",
+                    "references": [
+                      {
+                        "reference_id": "Reference 1",
+                        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
+                        "file_name": "application.md",
+                        "chunk_id": 1,
+                        "position": 1,
+                        "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>应用实例{#the-application-instance}每个Vue应用都是通过[`createApp`]",
+                        "score": 1,
+                        "bm25_score": 34.055355137731354,
+                        "vector_score": 0.741374135017395
+                      },
+                      {
+                        "reference_id": "Reference 2",
+                        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
+                        "file_name": "application.md",
+                        "chunk_id": 10,
+                        "position": 10,
+                        "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>多个应用实例{#multiple-application-instances}应用实例并不只限于一个。`cre",
+                        "score": 0.9164628982543945,
+                        "bm25_score": 30.0893694535201,
+                        "vector_score": 0.7052635550498962
+                      },
+                      {
+                        "reference_id": "Reference 3",
+                        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
+                        "file_name": "application.md",
+                        "chunk_id": 9,
+                        "position": 9,
+                        "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>应用配置{#app-configurations}app.component('TodoDeleteButto",
+                        "score": 0.7920963764190674,
+                        "bm25_score": 26.642277059679156,
+                        "vector_score": 0.6124808192253113
+                      },
+                      {
+                        "reference_id": "Reference 4",
+                        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
+                        "file_name": "application.md",
+                        "chunk_id": 8,
+                        "position": 8,
+                        "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>应用配置{#app-configurations}应用实例会暴露一个`.config`对象允许我们配置一些应用",
+                        "score": 0.7547773122787476,
+                        "bm25_score": 22.68307872610552,
+                        "vector_score": 0.6310862302780151
+                      },
+                      {
+                        "reference_id": "Reference 5",
+                        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\introduction.md",
+                        "file_name": "introduction.md",
+                        "chunk_id": 198,
+                        "position": 6,
+                        "snippet": "[标题路径]简介{#introduction}>什么是Vue？{#what-is-vue}Vue(发音为/vjuː/，类似**view**)是一款用于构建用户界面的JavaScript框架。它基于标准",
+                        "score": 0.7235828638076782,
+                        "bm25_score": 18.788527818590843,
+                        "vector_score": 0.6559301614761353
+                      }
+                    ]
+                  }
+                }
+        }
+    )
+
+
+
+# =========================
+# bad case 分类
+# =========================
 # 真正应该进入 bad_cases.jsonl 的错误类型
 
 REAL_BAD_CASE = {
@@ -254,174 +427,9 @@ def log_and_write_metrics(record: dict) -> None:
 
     write_metrics(record)
 
-
 # =========================
-# 接口变量定义
+# 响应构造与状态转换
 # =========================
-
-class ChatRequest(BaseModel):
-    question:str = Field(..., description='用户问题')
-    top_k:int | None=Field(None, ge=1, le=10, description='召回条数')
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example":{
-              "question": "每个 Vue 应用都是通过什么函数创建应用实例的？",
-              "top_k": 5
-            }
-        }
-    )
-
-class ChatReferences(BaseModel):
-    reference_id:str
-    file_name:str
-    source_path:str
-    chunk_id:str | int
-    position: int | None = None
-    snippet: str
-    score: float
-    rerank_score: float
-
-class ChatData(BaseModel):
-    question:str
-    answer:str
-    references:list[ChatReferences]=Field(default_factory=list)
-    confidence:float = Field(..., ge=0.0, le=1.0, description="回答置信度，0~1")
-    need_clarification:bool = Field(..., description="是否建议用户补充问题")
-    status: PublicStatus
-    clarification_question:str = Field(..., description="补充提示")
-    reason:str = Field(..., description="理由")
-    action:str = Field(default="", description="本次Agent选择的动作")
-    tool_result_summary:str = Field(default="", description="工具结果摘要")
-    tool_trace:list[dict] = Field(default_factory=list, description="工具调用或路径追踪")
-
-class ChatResponse(BaseModel):
-    code:int|str
-    message:str
-    trace_id:str = Field(default="", description="本次请求追踪的id")
-    data:ChatData
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example":{
-              "code": 0,
-              "message": "success",
-              "data": {
-                "answer": "每个 Vue 应用都是通过 `createApp` 函数创建一个新的应用实例。",
-                "references": [
-                  {
-                    "reference_id": "Reference 1",
-                    "file_name": "application.md",
-                    "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
-                    "chunk_id": 1,
-                    "position": 1,
-                    "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>应用实例{#the-application-instance}每个Vue应用都是通过[`createApp`]",
-                    "score": 1
-                  }
-                ],
-                "confidence": 0.519,
-                "need_clarification": False,
-                "answer_status": "answered",
-                "clarification_question": "",
-                "reason": "检索命中有效证据，且答案成功绑定引用"
-              }
-            }
-        }
-    )
-
-class SearchResult(BaseModel):
-    reference_id:str
-    source_path:str
-    file_name:str
-    chunk_id:str | int
-    position:int | None=None
-    snippet: str
-    score:float
-    bm25_score:float
-    vector_score:float
-    rerank_score:float
-
-class SearchData(BaseModel):
-    question:str
-    status:PublicStatus
-    reason:str=""
-    results:list[SearchResult]=Field(default_factory=list)
-
-class SearchResponse(BaseModel):
-    code:int | str
-    message:str
-    data:SearchData
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example":{
-                  "code": 0,
-                  "message": "success",
-                  "data": {
-                    "question": "每个 Vue 应用都是通过什么函数创建应用实例的？",
-                    "references": [
-                      {
-                        "reference_id": "Reference 1",
-                        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
-                        "file_name": "application.md",
-                        "chunk_id": 1,
-                        "position": 1,
-                        "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>应用实例{#the-application-instance}每个Vue应用都是通过[`createApp`]",
-                        "score": 1,
-                        "bm25_score": 34.055355137731354,
-                        "vector_score": 0.741374135017395
-                      },
-                      {
-                        "reference_id": "Reference 2",
-                        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
-                        "file_name": "application.md",
-                        "chunk_id": 10,
-                        "position": 10,
-                        "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>多个应用实例{#multiple-application-instances}应用实例并不只限于一个。`cre",
-                        "score": 0.9164628982543945,
-                        "bm25_score": 30.0893694535201,
-                        "vector_score": 0.7052635550498962
-                      },
-                      {
-                        "reference_id": "Reference 3",
-                        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
-                        "file_name": "application.md",
-                        "chunk_id": 9,
-                        "position": 9,
-                        "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>应用配置{#app-configurations}app.component('TodoDeleteButto",
-                        "score": 0.7920963764190674,
-                        "bm25_score": 26.642277059679156,
-                        "vector_score": 0.6124808192253113
-                      },
-                      {
-                        "reference_id": "Reference 4",
-                        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
-                        "file_name": "application.md",
-                        "chunk_id": 8,
-                        "position": 8,
-                        "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>应用配置{#app-configurations}应用实例会暴露一个`.config`对象允许我们配置一些应用",
-                        "score": 0.7547773122787476,
-                        "bm25_score": 22.68307872610552,
-                        "vector_score": 0.6310862302780151
-                      },
-                      {
-                        "reference_id": "Reference 5",
-                        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\introduction.md",
-                        "file_name": "introduction.md",
-                        "chunk_id": 198,
-                        "position": 6,
-                        "snippet": "[标题路径]简介{#introduction}>什么是Vue？{#what-is-vue}Vue(发音为/vjuː/，类似**view**)是一款用于构建用户界面的JavaScript框架。它基于标准",
-                        "score": 0.7235828638076782,
-                        "bm25_score": 18.788527818590843,
-                        "vector_score": 0.6559301614761353
-                      }
-                    ]
-                  }
-                }
-        }
-    )
-
-# chat接口回复结构定义
 def build_chat_response(code:int|str,
                         message:str,
                         trace_id:str,
@@ -500,7 +508,7 @@ def read_recent_metrics(limit: int = 20) -> list[dict]:
 
 
 # =========================
-# 可调用接口
+# FastAPI 路由
 # =========================
 
 @app.on_event("startup")
@@ -1244,24 +1252,3 @@ def metrics_summary(limit: int = Query(20, ge=1, le=200)):
             "avg_latency_ms": avg_latency_ms,
         }
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -64,6 +64,7 @@ STOP_WORD = "我无法根据提供的文档确定答案"
 # 状态函数
 # =========================
 def get_rag_status():
+    """返回当前内存索引是否可用，以及文档和 chunk 数量。"""
     return {
         "ready": RAG_READY,
         "message": RAG_INIT_MESSAGE,
@@ -80,6 +81,7 @@ def rebuild_index(
     chunk_size: int = Settings.CHUNK_SIZE,
     chunk_overlap: int = Settings.CHUNK_OVERLAP
 ):
+    """从 data 目录重新加载文档、切分 chunk，并重建内存索引。"""
     global chunks, texts, docs_registry, bm25, model, rerank_model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE
 
     chunks = []
@@ -252,7 +254,9 @@ def ask(
     retrieved_chunks: List[Dict[str, Any]] | None = None,
     trace_id : str = ""
 ):
+    """执行完整 RAG 问答流程：澄清判断、可选拆分、重排、生成和引用绑定。"""
     question = (question or "").strip()
+    # timings 只用于日志和性能观测，不参与业务判断。
     timings = {
         "decompose_cost_ms": 0,
         "rerank_cost_ms": 0,

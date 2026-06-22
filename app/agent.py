@@ -1,14 +1,18 @@
-import time
-from app.untils import get_logger
-from app.tools import dispatch_tool
-from app.rag import ask, search_relevant_chunks
-import re
 import ast
+import re
+import time
 import unicodedata
+
+from app.rag import ask, search_relevant_chunks
+from app.tools import dispatch_tool
+from app.untils import get_logger
 
 
 logger = get_logger('chat_service')
 
+# =========================
+# 路由通用工具
+# =========================
 def get_route_decision(decision:dict) -> str:
     action = decision.get("action", "")
 
@@ -23,6 +27,7 @@ def get_route_decision(decision:dict) -> str:
 
     return "unknown"
 
+
 def normalize_question(question: str) -> str:
     q = (question or "").strip()
     q = q.replace("？", "?")
@@ -33,7 +38,276 @@ def normalize_question(question: str) -> str:
 
 
 # Agent决策层：判断走哪个动作
+
+
+# =========================
+# 工具路由识别
+# =========================
+def extract_chunk_id(q: str) -> int | None:
+    patterns = [
+        r"chunk[_\s-]?id\s*[:=]?\s*(\d+)",
+        r"chunk\s*(\d+)",
+        r"第\s*(\d+)\s*个\s*chunk",
+        r"查看\s*(\d+)\s*号\s*chunk",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, q, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+
+    return None
+
+
+def normalize_math_text(text: str) -> str:
+    # 全角字符转半角，例如：１＋２ -> 1+2
+    text = unicodedata.normalize("NFKC", text or "")
+
+    # 中文运算词转成符号，例如：加 -> +
+    replacements = [
+        (r"加上|加", "+"),
+        (r"减去|减掉|减", "-"),
+        (r"乘以|乘上|乘", "*"),
+        (r"除以|除", "/"),
+        (r"×|x|X", "*"),
+        (r"÷", "/"),
+        (r"负\s*(?=\d|\()", "-"),
+    ]
+
+    for pattern, repl in replacements:
+        text = re.sub(pattern, repl, text)
+
+    # 处理千分位：1,000 + 2,000 -> 1000 + 2000
+    text = re.sub(r"(?<=\d),(?=\d{3}\b)", "", text)
+
+    return text
+
+def is_safe_math_expression(expr: str) -> bool:
+
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except SyntaxError:
+        return False
+
+    allowed_nodes = (
+        ast.Expression,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.Constant,
+        ast.Add,
+        ast.Sub,
+        ast.Div,
+        ast.Mult,
+        ast.UAdd,
+        ast.USub
+    )
+
+    has_binary_operator = False
+
+    for node in ast.walk(tree):
+        if not isinstance(node, allowed_nodes):
+            return False
+
+        if isinstance(node, ast.BinOp):
+            has_binary_operator = True
+
+        if isinstance(node, ast.Constant):
+            if not isinstance(node.value, (int, float)):
+                return False
+
+    return has_binary_operator
+
+
+def extract_simple_math_expression(question:str) -> str | None:
+    text = normalize_math_text(question)
+
+    # 从整句话中提取由数字、运算符、小数点、括号、空格组成的片段
+    candidates = re.findall(r"[0-9+\-*/().\s]+", text)
+
+    # 优先尝试更长的候选表达式
+    candidates = sorted(
+        (c.strip() for c in candidates if c.strip()),
+        key=len,
+        reverse=True
+    )
+
+    for expr in candidates:
+        if is_safe_math_expression(expr):
+            return expr
+
+    return None
+
+
+# =========================
+# 工具结果格式化
+# =========================
+def format_tool_answer(tool_name: str, output: dict) -> str:
+    if tool_name == "simple_calculator":
+        return f"计算结果是：{output.get('result')}"
+    if tool_name == "list_documents":
+        docs = output.get("documents", [])
+        count = output.get("count", 0)
+
+        doc_names = []
+        for d in docs[:10]:
+            doc_names.append(
+                d.get("source_file")
+                or d.get("file_name")
+                or d.get("title")
+                or d.get("doc_name")
+                or d.get("doc_id")
+                or "未命名文档"
+            )
+
+        answer = f"当前系统中共有 {count} 个文档。"
+        if doc_names:
+            answer += " 文档包括：" + "、".join(doc_names)
+
+        return answer
+
+    if tool_name == "get_chunk_text":
+        chunk_id = output.get("chunk_id")
+        chunk = output.get("chunk", {})
+
+        text = (
+            chunk.get("text")
+            or chunk.get("content")
+            or chunk.get("chunk_text")
+            or str(chunk)
+        )
+
+        return f"chunk_{chunk_id} 内容如下：\n{text}"
+
+    return str(output)
+
+
+def summarize_tool_result(tool_name: str, tool_result: dict) -> str:
+    if tool_result["status"] != "success":
+        return f"{tool_name} 工具执行失败：{tool_result.get('error', '')}"
+
+    output = tool_result.get("output", {})
+
+    if tool_name == "simple_calculator":
+        return f"simple_calculator 执行成功，结果为 {output.get('result')}"
+
+    if tool_name == "list_documents":
+        return f"list_documents 执行成功，共找到 {output.get('count', 0)} 个文档"
+
+    if tool_name == "get_chunk_text":
+        return f"get_chunk_text 执行成功，返回 chunk_id={output.get('chunk_id')} 的内容"
+
+    return f"{tool_name} 执行成功"
+
+
+# =========================
+# 引用质量检查
+# =========================
+REFERENCE_STOPWORDS = {
+    "这个", "那个", "什么", "怎么", "如何", "为什么", "是否", "可以", "需要",
+    "用户", "问题", "回答", "根据", "文档", "内容", "相关", "说明",
+    "的是", "一个", "以及", "进行", "通过", "如果", "时候", "没有",
+    "the", "and", "for", "with", "from", "this", "that", "what", "how"
+}
+
+
+def extract_reference_keywords(text: str) -> set[str]:
+    text = (text or "").lower()
+
+    keywords = set()
+
+    # 英文、数字、函数名，例如 createapp、mount、v-model、computed。
+    english_tokens = re.findall(r"[a-zA-Z_][a-zA-Z0-9_\-]{1,}|\d+(?:\.\d+)?", text)
+    for token in english_tokens:
+        token = (token or "").strip().lower()
+        if token and token not in REFERENCE_STOPWORDS:
+            keywords.add(token)
+
+    # 中文连续片段用二字滑窗做粗粒度匹配，足够用于 bad case 兜底判断。
+    chinese_blocks = re.findall(r"[\u4e00-\u9fff]{2,}", text)
+    for block in chinese_blocks:
+        for i in range(len(block) - 1):
+            word = block[i: i+2]
+            if word and word not in REFERENCE_STOPWORDS:
+                keywords.add(word)
+
+    return keywords
+
+
+def check_reference_reliability(
+        question: str,
+        answer: str,
+        references: list[dict],
+        min_overlap_ratio: float = 0.2
+) -> tuple[bool, str]:
+
+    if not question:
+        return False, ""
+
+    if not references:
+        return True, "答案非空，但reference为空，无法验证答案依据"
+
+    evidence_text = "\n".join(
+        str(ref.get("snippet") or ref.get("text") or ref.get("content") or "")
+        for ref in references
+    )
+
+    if not evidence_text.strip():
+        return True, "references 存在，但 snippet/text 为空，无法验证答案依据"
+
+    expected_keywords = extract_reference_keywords(question + "\n" + answer)
+    evidence_keywords = extract_reference_keywords(evidence_text)
+
+    if not expected_keywords:
+        return False, ""
+
+    overlap_keywords = expected_keywords & evidence_keywords
+    overlap_ratio = len(overlap_keywords) / max(len(expected_keywords), 1)
+
+    if overlap_ratio < min_overlap_ratio:
+        return True, (
+            f"答案与引用片段关键词重合度过低，"
+            f"overlap_ratio={overlap_ratio:.2f}，"
+            f"matched_keywords={sorted(list(overlap_keywords))[:10]}"
+        )
+
+    return False, ""
+
+
+def should_record_reference_bad_case(
+        question: str,
+        answer: str,
+        references: list[dict],
+        reason: str
+) -> tuple[bool, str]:
+
+    answer = (answer or "").strip()
+    reason = (reason or "").strip()
+
+    if not question:
+        return False, ""
+
+    if "我无法根据提供的文档确定答案" in answer:
+        return False, ""
+
+    if "检索结果为空" in reason or "top1 分数低于阈值" in reason:
+        return False, ""
+
+    if "模型给出的答案没有足够的引用支撑" in reason:
+        return check_reference_reliability(
+            question,
+            answer,
+            references
+        )
+
+    return False, ""
+
+
+# =========================
+# Agent 路由决策
+# =========================
+
 def route_agent_action(question: str, top_k:int) -> dict:
+    """根据问题内容决定走澄清、工具调用还是知识库 RAG。"""
     q = normalize_question(question)
 
     # 1. 空问题：需要澄清
@@ -91,7 +365,7 @@ def route_agent_action(question: str, top_k:int) -> dict:
             "reason": "用户问题是简单四则运算"
         }
 
-    # 7. 指代太模糊：澄清
+    # 6. 指代太模糊：澄清
     if q in ["这个怎么弄", "这个怎么配置", "这个是什么意思", "这个怎么解决"]:
         return {
             "decision": "clarify",
@@ -102,7 +376,7 @@ def route_agent_action(question: str, top_k:int) -> dict:
             "clarification_question": "你说的“这个”具体指哪个功能、哪份文档或哪段报错？请补充一下对象。"
         }
 
-    # 8. 默认：当成知识库问题，走 RAG
+    # 7. 默认：当成知识库问题，走 RAG
     return {
         "decision": "use_knowledge_base",
         "action": "search_knowledge_base",
@@ -114,6 +388,10 @@ def route_agent_action(question: str, top_k:int) -> dict:
         "reason": "默认作为知识库问答问题处理"
     }
 
+
+# =========================
+# Agent 执行主流程
+# =========================
 def run_agent_once(
         write_bad_cases,
         question: str, top_k: int,
@@ -226,7 +504,7 @@ def run_agent_once(
         }
 
     # =========================
-    # 5. 调用工具
+    # 4. 调用工具
     # =========================
     if decision_type == "use_tool":
         tool_trace.append({
@@ -370,7 +648,7 @@ def run_agent_once(
         }
 
     # =========================
-    # 6. 走知识库 RAG
+    # 5. 走知识库 RAG
     # =========================
     if action == "search_knowledge_base":
         logger.info(f"[trace_id={trace_id}] [retrieve] 开始检索 top_k={top_k}")
@@ -563,7 +841,7 @@ def run_agent_once(
         return rag_result
 
     # =========================
-    # 7. 防御分支：理论上不应该走到这里
+    # 6. 防御分支：理论上不应该走到这里
     # =========================
     tool_trace.append({
         "step": "final_answer",
@@ -591,266 +869,3 @@ def run_agent_once(
         "tool_result_summary": "未知 Agent action",
         "tool_trace": tool_trace
     }
-
-# =========================
-# 规范工具输出回答
-# =========================
-
-def format_tool_answer(tool_name: str, output: dict) -> str:
-    if tool_name == "simple_calculator":
-        return f"计算结果是：{output.get('result')}"
-    if tool_name == "list_documents":
-        docs = output.get("documents", [])
-        count = output.get("count", 0)
-
-        doc_names = []
-        for d in docs[:10]:
-            doc_names.append(
-                d.get("source_file")
-                or d.get("file_name")
-                or d.get("title")
-                or d.get("doc_name")
-                or d.get("doc_id")
-                or "未命名文档"
-            )
-
-        answer = f"当前系统中共有 {count} 个文档。"
-        if doc_names:
-            answer += " 文档包括：" + "、".join(doc_names)
-
-        return answer
-
-    if tool_name == "get_chunk_text":
-        chunk_id = output.get("chunk_id")
-        chunk = output.get("chunk", {})
-
-        text = (
-            chunk.get("text")
-            or chunk.get("content")
-            or chunk.get("chunk_text")
-            or str(chunk)
-        )
-
-        return f"chunk_{chunk_id} 内容如下：\n{text}"
-
-    return str(output)
-
-# =========================
-# tool_result_summary 调用函数
-# =========================
-
-def summarize_tool_result(tool_name: str, tool_result: dict) -> str:
-    if tool_result["status"] != "success":
-        return f"{tool_name} 工具执行失败：{tool_result.get('error', '')}"
-
-    output = tool_result.get("output", {})
-
-    if tool_name == "simple_calculator":
-        return f"simple_calculator 执行成功，结果为 {output.get('result')}"
-
-    if tool_name == "list_documents":
-        return f"list_documents 执行成功，共找到 {output.get('count', 0)} 个文档"
-
-    if tool_name == "get_chunk_text":
-        return f"get_chunk_text 执行成功，返回 chunk_id={output.get('chunk_id')} 的内容"
-
-    return f"{tool_name} 执行成功"
-
-# =========================
-# 判断问题是否走 get_chunk_text 路由
-# =========================
-
-def extract_chunk_id(q: str) -> int | None:
-    patterns = [
-        r"chunk[_\s-]?id\s*[:=]?\s*(\d+)",
-        r"chunk\s*(\d+)",
-        r"第\s*(\d+)\s*个\s*chunk",
-        r"查看\s*(\d+)\s*号\s*chunk",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, q, re.IGNORECASE)
-        if match:
-            return int(match.group(1))
-
-    return None
-
-# =========================
-# 判断问题是否走 simple_calculator 路由
-# =========================
-
-def normalize_math_text(text: str) -> str:
-    # 全角字符转半角，例如：１＋２ -> 1+2
-    text = unicodedata.normalize("NFKC", text or "")
-
-    # 中文运算词转成符号，例如：加 -> +
-    replacements = [
-        (r"加上|加", "+"),
-        (r"减去|减掉|减", "-"),
-        (r"乘以|乘上|乘", "*"),
-        (r"除以|除", "/"),
-        (r"×|x|X", "*"),
-        (r"÷", "/"),
-        (r"负\s*(?=\d|\()", "-"),
-    ]
-
-    for pattern, repl in replacements:
-        text = re.sub(pattern, repl, text)
-
-    # 处理千分位：1,000 + 2,000 -> 1000 + 2000
-    text = re.sub(r"(?<=\d),(?=\d{3}\b)", "", text)
-
-    return text
-
-def is_safe_math_expression(expr: str) -> bool:
-
-    try:
-        tree = ast.parse(expr, mode="eval")
-    except SyntaxError:
-        return False
-
-    allowed_nodes = (
-        ast.Expression,
-        ast.BinOp,
-        ast.UnaryOp,
-        ast.Constant,
-        ast.Add,
-        ast.Sub,
-        ast.Div,
-        ast.Mult,
-        ast.UAdd,
-        ast.USub
-    )
-
-    has_binary_operator = False
-
-    for node in ast.walk(tree):
-        if not isinstance(node, allowed_nodes):
-            return False
-
-        if isinstance(node, ast.BinOp):
-            has_binary_operator = True
-
-        if isinstance(node, ast.Constant):
-            if not isinstance(node.value, (int, float)):
-                return False
-
-    return has_binary_operator
-
-
-def extract_simple_math_expression(question:str) -> str | None:
-    text = normalize_math_text(question)
-
-    # 从整句话中提取由数字、运算符、小数点、括号、空格组成的片段
-    candidates = re.findall(r"[0-9+\-*/().\s]+", text)
-
-    # 优先尝试更长的候选表达式
-    candidates = sorted(
-        (c.strip() for c in candidates if c.strip()),
-        key=len,
-        reverse=True
-    )
-
-    for expr in candidates:
-        if is_safe_math_expression(expr):
-            return expr
-
-    return None
-
-REFERENCE_STOPWORDS = {
-    "这个", "那个", "什么", "怎么", "如何", "为什么", "是否", "可以", "需要",
-    "用户", "问题", "回答", "根据", "文档", "内容", "相关", "说明",
-    "的是", "一个", "以及", "进行", "通过", "如果", "时候", "没有",
-    "the", "and", "for", "with", "from", "this", "that", "what", "how"
-}
-
-# =========================
-# 判断引用是否支撑回答
-# =========================
-
-def extract_reference_keywords(text: str) -> set[str]:
-    text = (text or "").lower()
-
-    keywords = set()
-
-    # 英文、数字、函数名，例如 createapp、mount、v-model、computed
-    english_tokens = re.findall(r"[a-zA-Z_][a-zA-Z0-9_\-]{1,}|\d+(?:\.\d+)?", text)
-    for token in english_tokens:
-        token = (token or "").strip().lower()
-        if token and token not in REFERENCE_STOPWORDS:
-            keywords.add(token)
-
-    # 中文连续片段
-    chinese_blocks = re.findall(r"[\u4e00-\u9fff]{2,}", text)
-    for block in chinese_blocks:
-        for i in range(len(block) - 1):
-            word = block[i: i+2]
-            if word and word not in REFERENCE_STOPWORDS:
-                keywords.add(word)
-
-    return keywords
-
-def check_reference_reliability(
-        question: str,
-        answer: str,
-        references: list[dict],
-        min_overlap_ratio: float = 0.2
-) -> tuple[bool, str]:
-
-    if not question:
-        return False, ""
-
-    if not references:
-        return True, "答案非空，但reference为空，无法验证答案依据"
-
-    evidence_text = "\n".join(
-        str(ref.get("snippet") or ref.get("text") or ref.get("content") or "")
-        for ref in references
-    )
-
-    if not evidence_text.strip():
-        return True, "references 存在，但 snippet/text 为空，无法验证答案依据"
-
-    expected_keywords = extract_reference_keywords(question + "\n" + answer)
-    evidence_kewords = extract_reference_keywords(evidence_text)
-
-    if not expected_keywords:
-        return False, ""
-
-    overlap_keywords = expected_keywords & evidence_kewords
-    overlap_ratio = len(overlap_keywords) / max(len(expected_keywords), 1)
-
-    if overlap_ratio < min_overlap_ratio:
-        return True, (
-            f"答案与引用片段关键词重合度过低，"
-            f"overlap_ratio={overlap_ratio:.2f}，"
-            f"matched_keywords={sorted(list(overlap_keywords))[:10]}"
-        )
-
-    return False, ""
-
-def should_record_reference_bad_case(
-        question: str,
-        answer: str,
-        references: list[dict],
-        reason: str
-) -> tuple[bool, str]:
-
-    answer = (answer or "").strip()
-    reason = (reason or "").strip()
-
-    if not question:
-        return False, ""
-
-    if "我无法根据提供的文档确定答案" in answer:
-        return False, ""
-
-    if "检索结果为空" in reason or "top1 分数低于阈值" in reason:
-        return False, ""
-
-    if "模型给出的答案没有足够的引用支撑" in reason:
-        return check_reference_reliability(question,
-                                           answer,
-                                           references)
-
-    return False, ""

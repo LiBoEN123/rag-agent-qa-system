@@ -12,7 +12,22 @@ from app.untils import get_logger
 logger = get_logger('chat_service')
 
 
+# =========================
+# 异常定义
+# =========================
+class LLMCallError(Exception):
+    """模型调用失败时使用的统一异常。"""
+    def __init__(self, user_message: str, detail: str=""):
+        super().__init__(user_message)
+        self.user_message = user_message
+        self.detail = detail
+
+
+# =========================
+# 上下文构造
+# =========================
 def build_context(retrieved_chunks, max_chars: int | None=None):
+    """把检索结果整理成 LLM 提示词中的 evidence context。"""
     if max_chars is None:
         max_chars = Settings.MAX_CONTEXT_CHARS
 
@@ -37,13 +52,10 @@ def build_context(retrieved_chunks, max_chars: int | None=None):
 
     return "\n".join(parts)
 
-class LLMCallError(Exception):
-    """模型调用失败时使用的统一异常。"""
-    def __init__(self, user_message: str, detail: str=""):
-        super().__init__(user_message)
-        self.user_message = user_message
-        self.detail = detail
 
+# =========================
+# 模型调用
+# =========================
 def build_llm_header() -> dict:
     headers = {
         "Content-Type": "application/json"
@@ -54,7 +66,8 @@ def build_llm_header() -> dict:
 
     return headers
 
-def  get_http_error_message(status_code: int) -> str:
+
+def get_http_error_message(status_code: int) -> str:
     """把 HTTP 状态码转换成用户能看懂的提示。"""
 
     if status_code == 400:
@@ -76,6 +89,7 @@ def  get_http_error_message(status_code: int) -> str:
         return "模型服务端异常，可能是模型服务暂时不可用。"
 
     return f"模型服务返回异常状态码：{status_code}"
+
 
 def call_llm(question: str, context: str, trace_id : str = ""):
     model_name = Settings.MODEL_NAME
@@ -193,7 +207,9 @@ def call_llm(question: str, context: str, trace_id : str = ""):
         )
 
 
-
+# =========================
+# 模型输出处理
+# =========================
 def parse_llm_output(llm_output: str):
     llm_output = llm_output.strip()
 
@@ -239,7 +255,6 @@ def format_reference(retrieved_chunks, selected_reference: list):
             })
 
     return final_refs
-
 
 def estimate_confidence(
     retrieved_chunks: List[dict],

@@ -74,9 +74,9 @@ def test_chat_basic(monkeypatch):
     body = resp.json()
     assert body["code"] == 0
     assert body["message"] == "success"
-    assert body["data"]["answer"] == "DevHub 最低要求 macOS 14.0，并且 v2.0.0 版本添加了对 macOS 26 的支持。"
-    assert len(body["data"]["references"]) == 1
-    assert body["data"]["references"][0]["reference_id"] == "Reference 1"
+    assert body["data"]["answer"] == "测试回答"
+    assert body["data"]["references"] == []
+    assert body["data"]["confidence"] == 0.9
 
 
 

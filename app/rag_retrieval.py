@@ -1,13 +1,14 @@
+import json
+import re
 from typing import Any, Dict, List
+
 import jieba
 import numpy as np
 import requests
-import re
-import json
 
 from app.config import Settings
-from app.untils import get_logger
 from app.prompts import DECOMPOSE_PROMPT
+from app.untils import get_logger
 
 logger = get_logger('chat_service')
 
@@ -18,6 +19,9 @@ AMBIGUOUS_WORDS = [
 ]
 
 
+# =========================
+# 通用文本与分数工具
+# =========================
 def tokenize(text: str):
     return list(jieba.cut(text))
 
@@ -27,24 +31,6 @@ def minmax_score(x: np.ndarray):
     if np.allclose(x.min(), x.max()):
         return np.zeros_like(x)
     return (x - x.min()) / (x.max() - x.min())
-
-
-# def normalize_text(text: str):
-#     return "".join((text or "").split()).lower()
-#
-#
-# def dedupe_results(items: list[dict]) -> list[dict]:
-#     seen = set() # seen 是一个集合，用来记录已经见过的文本特征。
-#     result = []
-#
-#     for item in items:
-#         key = item.get("text", "")
-#         if key in seen:
-#             continue
-#         seen.add(key)
-#         result.append(item)
-#
-#     return result
 
 
 def clamp01(value: float) -> float:
@@ -60,6 +46,10 @@ def make_snippet(text: str, max_len: int = 300) -> str:
     text = "".join((text or "").split())
     return text[:max_len]
 
+
+# =========================
+# 重排
+# =========================
 def rerank(rerank_model, candidates: list[dict], question: str=""):
 
     if not candidates:
@@ -83,7 +73,11 @@ def rerank(rerank_model, candidates: list[dict], question: str=""):
     return candidates
 
 
+# =========================
+# 问题拆分
+# =========================
 def default_decompose_result(reason: str = "query decomposition skipped") -> dict:
+    """问题拆分关闭或失败时使用的统一兜底结构。"""
     return {
         "need_decompose": False,
         "reason": reason,
@@ -100,6 +94,7 @@ def parse_decompose_bool(value) -> bool:
 
 
 def normalize_decompose_result(result: dict) -> dict:
+    """校验并规整问题拆分模型的返回值，避免下游分支处理脏数据。"""
     if not isinstance(result, dict):
         raise ValueError(f"拆分模型返回值必须是 dict，实际为 {type(result)}")
 
@@ -142,6 +137,7 @@ def normalize_decompose_result(result: dict) -> dict:
 
 
 def decompose_query_with_llm(question: str):
+    """调用拆分模型，把复杂问题转换为可单独检索的子问题。"""
     model_name = Settings.DECOMPOSE_MODEL_NAME
     api_url = Settings.DECOMPOSE_API_URL
 
@@ -178,7 +174,7 @@ def decompose_query_with_llm(question: str):
     data = response.json()
     content = data["choices"][0]["message"]["content"]
 
-    # 去掉可能出现的 ```json ... ```
+    # 去掉可能出现的 ```json ... ``` 包裹。
     content = content.strip()
     content = re.sub(r"^```json\s*", "", content)
     content = re.sub(r"^```\s*", "", content)
@@ -192,7 +188,9 @@ def decompose_query_with_llm(question: str):
     return normalize_decompose_result(result)
 
 
-
+# =========================
+# 检索
+# =========================
 def retrieve(
     question: str,
     chunks: list[dict],
@@ -250,6 +248,7 @@ def retrieve(
 
     return final_results
 
+
 def retrieve_with_sub_queries(
     question,
     sub_queries,
@@ -262,10 +261,11 @@ def retrieve_with_sub_queries(
     per_query_keep=2,
     final_top_k=10
 ):
+    """多子问题召回时，保护每个子问题的高质量命中，再做全局补足。"""
     protected_chunks = {}
     all_candidates = {}
 
-    # 1. 原问题整体召回一次，保留全局语义
+    # 原问题整体召回一次，保留全局语义。
     global_candidates = retrieve(
         question=question,
         chunks=chunks,
@@ -278,12 +278,11 @@ def retrieve_with_sub_queries(
     for item in global_candidates:
         all_candidates[item["chunk_id"]] = item
 
-    # 2. 每个子查询单独召回、单独 rerank
+    # 每个子查询单独召回、单独 rerank。
     for sub in sub_queries:
         sub_question = sub["sub_question"]
         search_query = sub["search_query"]
 
-        # 检索时用 search_query
         candidates = retrieve(
             question=search_query,
             chunks=chunks,
@@ -296,20 +295,18 @@ def retrieve_with_sub_queries(
         for item in candidates:
             all_candidates[item["chunk_id"]] = item
 
-        # rerank 时建议用 sub_question
         reranked = rerank(
             candidates=candidates,
             question=sub_question,
             rerank_model=rerank_model
         )
 
-        # 每个子问题保护 topN
+        # 每个子问题至少保留 topN，避免某个子问题被全局排序完全挤掉。
         for item in reranked[:per_query_keep]:
             item["matched_sub_question"] = sub_question
             item["protected"] = True
             protected_chunks[item["chunk_id"]] = item
 
-    # 3. 对所有候选再用原问题整体 rerank
     merged_candidates = list(all_candidates.values())
 
     global_reranked = rerank(
@@ -318,7 +315,6 @@ def retrieve_with_sub_queries(
         rerank_model=rerank_model
     )
 
-    # 4. 先放 protected chunks
     final = []
     used_ids = set()
 
@@ -326,7 +322,6 @@ def retrieve_with_sub_queries(
         final.append(item)
         used_ids.add(item["chunk_id"])
 
-    # 5. 再用全局 rerank 结果补足
     for item in global_reranked:
         if item["chunk_id"] not in used_ids:
             item["protected"] = False
@@ -353,6 +348,9 @@ def search_relevant_chunks(
     return retrieve(question, chunks, bm25, doc_embeddings, model, top_k)
 
 
+# =========================
+# 结果判定与澄清
+# =========================
 def should_refuse(retrieved_chunks, vector_threshold: float = None):
     vector_threshold = (
         vector_threshold
