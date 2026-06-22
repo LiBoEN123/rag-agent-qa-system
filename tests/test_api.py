@@ -6,7 +6,6 @@ def make_client(monkeypatch):
     monkeypatch.setattr(main.Settings, "RAG_FILE_PATH", "data", raising=False)
     monkeypatch.setattr(main.Settings, "CHUNK_SIZE", 800, raising=False)
     monkeypatch.setattr(main.Settings, "CHUNK_OVERLAP", 120, raising=False)
-    monkeypatch.setattr(main, "init_rag", lambda *args, **kwargs:None)
 
     return TestClient(main.app)
 

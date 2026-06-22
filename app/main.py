@@ -12,7 +12,6 @@ from app.rag import (
     search_relevant_chunks,
     rerank,
     get_rag_status,
-    init_rag,
     needs_rebuild,
     load_index_cache,
     index_cache_exists,
