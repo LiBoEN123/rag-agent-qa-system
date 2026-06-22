@@ -44,6 +44,8 @@ BAD_CASES_PATH = Path("logs") / "bad_cases.jsonl"
 class ChatRequest(BaseModel):
     question:str = Field(..., description='用户问题')
     top_k:int | None=Field(None, ge=1, le=10, description='召回条数')
+    decompose_top_k:int | None=Field(None, ge=1, le=10, description='召回条数')
+
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -664,6 +666,7 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
             )
 
         final_top_k = req.top_k if req.top_k is not None else Settings.TOP_K
+        decompose_top_k = req.decompose_top_k if req.decompose_top_k is not None else Settings.DECOMPOSE_TOP_K
 
         route_start = time.perf_counter()
 
@@ -737,6 +740,7 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
                 write_bad_cases,
                 question,
                 final_top_k,
+                decompose_top_k,
                 decision,
                 trace_id,
                 bad_case

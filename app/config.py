@@ -13,7 +13,8 @@ class Settings:
     RAG_FILE_PATH=Path(os.getenv("RAG_FILE_PATH", str(BASE_DIR / 'data')))
     INDEX_STORE_DIR = Path(os.getenv("INDEX_STORE_DIR", str(BASE_DIR / "data" / "manifest"))) # 索引缓存存哪里
 
-    TOP_K = int(os.getenv("TOP_K", "3"))
+    TOP_K = int(os.getenv("TOP_K", "5"))
+    DECOMPOSE_TOP_K = int(os.getenv("DECOMPOSE_TOP_K", "10"))
     CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "800"))
     CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "120"))
     TEMPERATURE = float(os.getenv("TEMPERATURE", "0.0"))  # 发散程度参数，越低模型回答越稳，越保守；越高模型越发散，越创造。
@@ -37,7 +38,9 @@ class Settings:
     DECOMPOSE_API_KEY = os.getenv("DECOMPOSE_API_KEY")
     DECOMPOSE_MODEL_NAME = os.getenv("DECOMPOSE_MODEL_NAME", "qwen2.5:7b")
     DECOMPOSE_API_URL = os.getenv("DECOMPOSE_API_URL", "http://localhost:11434/v1/chat/completions")
-    ENABLE_QUERY_DECOMPOSE = env_bool("ENABLE_QUERY_DECOMPOSE", "false")
+    # Enables automatic query decomposition. The decomposition model still decides
+    # whether a specific question needs sub-queries.
+    ENABLE_QUERY_DECOMPOSE = env_bool("ENABLE_QUERY_DECOMPOSE", "true")
     DECOMPOSE_TIMEOUT = int(os.getenv("DECOMPOSE_TIMEOUT", "5"))
 
     MARGIN_THRESHOLD = float(os.getenv("MARGIN_THRESHOLD", "0.03"))

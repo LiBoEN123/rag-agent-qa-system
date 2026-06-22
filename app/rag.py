@@ -250,7 +250,8 @@ def search_relevant_chunks(question: str, top_k: int = 3) -> List[Dict[str, Any]
 # =========================
 def ask(
     question: str,
-    top_k: int = 3,
+    top_k: int = 5,
+    decompose_top_k: int = 10,
     retrieved_chunks: List[Dict[str, Any]] | None = None,
     trace_id : str = ""
 ):
@@ -279,30 +280,30 @@ def ask(
             "timings": timings
         }
 
-    decompose_result = default_decompose_result("query decomposition disabled")
+    decompose_result = None
     decompose_cost_ms = 0
 
-    if Settings.ENABLE_QUERY_DECOMPOSE:
-        if not Settings.DECOMPOSE_MODEL_NAME or not Settings.DECOMPOSE_API_URL:
-            decompose_result = default_decompose_result("query decomposition not configured")
-            logger.info(
-                f"[trace_id={trace_id}] [retrieve] decompose_skipped reason=not_configured"
-            )
-        else:
-            strat_decompose = time.perf_counter()
-            try:
-                decompose_result = decompose_query_with_llm(question)
-            except Exception as e:
-                logger.warning(
-                    f"[trace_id={trace_id}] [retrieve] decompose_failed fallback_to_single_query error={e}"
-                )
-                decompose_result = default_decompose_result("decompose failed, fallback to original question")
-
-            decompose_cost_ms = int((time.perf_counter() - strat_decompose) * 1000)
-    else:
+    if not Settings.ENABLE_QUERY_DECOMPOSE:
+        decompose_result = default_decompose_result("query decomposition disabled")
         logger.info(
             f"[trace_id={trace_id}] [retrieve] decompose_skipped reason=disabled"
         )
+    elif not Settings.DECOMPOSE_MODEL_NAME or not Settings.DECOMPOSE_API_URL:
+        decompose_result = default_decompose_result("query decomposition not configured")
+        logger.info(
+            f"[trace_id={trace_id}] [retrieve] decompose_skipped reason=not_configured"
+        )
+    else:
+        strat_decompose = time.perf_counter()
+        try:
+            decompose_result = decompose_query_with_llm(question)
+        except Exception as e:
+            logger.warning(
+                f"[trace_id={trace_id}] [retrieve] decompose_failed fallback_to_single_query error={e}"
+            )
+            decompose_result = default_decompose_result("decompose failed, fallback to original question")
+
+        decompose_cost_ms = int((time.perf_counter() - strat_decompose) * 1000)
 
     logger.info(
         f"[trace_id={trace_id}] [retrieve] decompose_cost_ms={decompose_cost_ms} "
@@ -332,7 +333,7 @@ def ask(
             doc_embeddings=doc_embeddings,
             model=model,
             rerank_model=rerank_model,
-            final_top_k=top_k
+            final_top_k=decompose_top_k
         )
         retrieve_with_sub_queries_cost_ms = int((time.perf_counter() - start_rerank) * 1000)
         logger.info(f"[trace_id={trace_id}] [retrieve] retrieve_with_sub_queries_cost_ms={retrieve_with_sub_queries_cost_ms}")

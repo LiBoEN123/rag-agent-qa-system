@@ -276,7 +276,12 @@ def evaluate_one_case(case: dict, top_k: int) -> dict:
     started_at = time.time()
 
     try:
-        result = run_agent_once(write_bad_cases=write_bad_cases, question=question, top_k=top_k)
+        result = run_agent_once(
+            write_bad_cases=write_bad_cases,
+            question=question,
+            top_k=top_k,
+            decompose_top_k=Settings.DECOMPOSE_TOP_K,
+        )
         elapsed_ms = round((time.time() - started_at) * 1000, 2)
 
         actual = extract_actual_fields(result)

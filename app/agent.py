@@ -394,7 +394,7 @@ def route_agent_action(question: str, top_k:int) -> dict:
 # =========================
 def run_agent_once(
         write_bad_cases,
-        question: str, top_k: int,
+        question: str, top_k: int, decompose_top_k: int,
         decision: dict | None = None, trace_id : str = "",
         bad_case: dict | None = None) -> dict:
     """
@@ -707,7 +707,8 @@ def run_agent_once(
             f"top_chunk_ids={retrieved_chunk_ids}"
         )
 
-        rag_result = ask(question, top_k=top_k, retrieved_chunks=retrieved_chunks, trace_id=trace_id)
+        rag_result = ask(question, top_k=top_k, retrieved_chunks=retrieved_chunks,
+                         decompose_top_k=decompose_top_k,trace_id=trace_id)
 
         final_chunks = rag_result.get("final_chunks", [])
         final_chunk_count = len(final_chunks)
