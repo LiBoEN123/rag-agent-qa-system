@@ -10,6 +10,7 @@ from app.rag import (
     preview_docs,
     preview_chunks,
     search_relevant_chunks,
+    rerank,
     get_rag_status,
     needs_rebuild,
     load_index_cache,
@@ -1035,9 +1036,11 @@ def search_api(req:ChatRequest, response:Response):
                 )
             )
 
-        top1_vector_score = retrieved_chunks[0].get("vector_score", 0)
-        if top1_vector_score < Settings.VECTOR_THRESHOLD:
-            logger.warning(f"[search] top1_vector 分数过低 top1_vector_score={top1_vector_score}")
+        reranked_chunks = rerank(retrieved_chunks, question)
+        final_chunks = reranked_chunks[:final_top_k]
+
+        if not final_chunks:
+            logger.info("[search] final_status=no_evidence reason=重排后没有可用结果")
             response.status_code = 200
             return SearchResponse(
                 code=0,
@@ -1045,24 +1048,47 @@ def search_api(req:ChatRequest, response:Response):
                 data=SearchData(
                     question=question,
                     status="no_evidence",
-                    reason=f"top1_vector 分数过低：{top1_vector_score:.4f}",
+                    reason="重排后没有可用结果",
                     results=[]
                 )
             )
+
+        top_vector_score = max(
+            float(item.get("vector_score", 0.0))
+            for item in final_chunks
+        )
+
+        if top_vector_score < Settings.VECTOR_THRESHOLD:
+            logger.warning(f"[search] vector 分数过低 top_vector_score={top_vector_score}")
+            response.status_code = 200
+            return SearchResponse(
+                code=0,
+                message="success",
+                data=SearchData(
+                    question=question,
+                    status="no_evidence",
+                    reason=f"vector 分数过低：{top_vector_score:.4f}",
+                    results=[]
+                )
+            )
+
+        for rank, item in enumerate(final_chunks, start=1):
+            item["reference_id"] = f"Reference {rank}"
+
         results = [
             SearchResult(
                 reference_id=item["reference_id"],
                 source_path=item["source_path"],
                 file_name=item["file_name"],
                 chunk_id=item["chunk_id"],
-                position=item["position"],
+                position=item.get("position"),
                 snippet=item["snippet"],
                 score=item["hybrid_score"],
                 bm25_score=item["bm25_score"],
                 vector_score=item["vector_score"],
-                rerank_score=item["metadata"]["rerank_score"]
+                rerank_score=item.get("rerank_score", 0.0)
             )
-            for item in retrieved_chunks
+            for item in final_chunks
         ]
 
         score_brief = [
@@ -1071,9 +1097,9 @@ def search_api(req:ChatRequest, response:Response):
                 "score": round(item["hybrid_score"], 4),
                 "bm25": round(item["bm25_score"], 4),
                 "vector": round(item["vector_score"], 4),
-                "rerank": round(item["metadata"]["rerank_score"], 4),
+                "rerank": round(item.get("rerank_score", 0.0), 4),
             }
-            for item in retrieved_chunks
+            for item in final_chunks
         ]
         logger.info(f"[search] retrieve_hits={score_brief}")
 
