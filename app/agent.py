@@ -241,7 +241,7 @@ def run_agent_once(
                 f"[trace_id={trace_id}] [tool] tool_name={tool_name} "
                 f"tool_status=running tool_error="
             )
-            tool_result = dispatch_tool(tool_name, tool_args)
+            tool_result = dispatch_tool(tool_name, tool_args, trace_id=trace_id)
 
         except Exception as e:
             error_msg = str(e)
@@ -414,6 +414,10 @@ def run_agent_once(
                 "reason": "知识库检索结果为空",
                 "action": action,
                 "tool_result_summary": "知识库检索完成，但没有召回候选 chunk",
+                "timings": {
+                    "retrieve_cost_ms": retrieve_cost,
+                    "rag_answer_cost_ms": 0,
+                },
                 "tool_trace": tool_trace
             }
 
@@ -470,6 +474,13 @@ def run_agent_once(
         rag_answer_cost = int((time.perf_counter() - rag_answer_start) * 1000)
 
         logger.info(f"[trace_id={trace_id}] [rag] rag_answer_cost_ms={rag_answer_cost}")
+
+        timings = {
+            "retrieve_cost_ms": retrieve_cost,
+            "rag_answer_cost_ms": rag_answer_cost,
+        }
+        timings.update(rag_result.get("timings") or {})
+        rag_result["timings"] = timings
 
         rag_status = rag_result.get("status", "OK")
 

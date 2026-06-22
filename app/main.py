@@ -109,8 +109,8 @@ async def trace_and_timing_middleware(request: Request, call_next):
     except Exception as e:
         total_cost_ms = int((time.perf_counter() - request_enter_perf) * 1000)
         logger.info(
-            f"[trace_id={trace_id}] [http] request_error"
-            f"total_cost_ms={total_cost_ms}"
+            f"[trace_id={trace_id}] [http] request_error "
+            f"total_cost_ms={total_cost_ms} "
             f"error={repr(e)}"
         )
         raise
@@ -120,7 +120,7 @@ async def trace_and_timing_middleware(request: Request, call_next):
     logger.info(
         f"[trace_id={trace_id}] [http] response_end "
         f"status_code={response.status_code} "
-        f"total_cost_ms={total_cost_ms}"
+        f"total_cost_ms={total_cost_ms} "
     )
 
     response.headers["X-Trace-Id"] = trace_id
@@ -136,8 +136,9 @@ def normalize_metrics_status(result_status: str) -> str:
         "NO_RELEVANT_INFO": "no_relevant_info",
         "TOOL_ERROR": "tool_error",
         "MODEL_BAD_OUTPUT": "model_bad_output",
-        "NEED_CLARIFICATION": "no_relevant_info",
-        "OUT_OF_SCOPE": "no_relevant_info",
+        "NEED_CLARIFICATION": "clarify",
+        "OUT_OF_SCOPE": "out_of_scope",
+        "MODEL_ERROR": "model_error",
     }
 
     return status_map.get(result_status, "internal_error")
@@ -171,6 +172,7 @@ def collect_trace_metrics(result: dict) -> dict:
         "tool_called": tool_called,
         "tool_success": tool_success,
         "tool_name": tool_name,
+        "timings": result.get("timings") or {},
     }
 
 def write_metrics(record: dict) -> None:
@@ -232,6 +234,14 @@ def log_and_write_metrics(record: dict) -> None:
         f"route_cost_ms={record.get('route_cost_ms')} "
         f"rag_ready_check_cost_ms={record.get('rag_ready_check_cost_ms')} "
         f"agent_cost_ms={record.get('agent_cost_ms')} "
+        f"retrieve_cost_ms={record.get('retrieve_cost_ms')} "
+        f"decompose_cost_ms={record.get('decompose_cost_ms')} "
+        f"rerank_cost_ms={record.get('rerank_cost_ms')} "
+        f"retrieve_with_sub_queries_cost_ms={record.get('retrieve_with_sub_queries_cost_ms')} "
+        f"context_build_cost_ms={record.get('context_build_cost_ms')} "
+        f"llm_cost_ms={record.get('llm_cost_ms')} "
+        f"parse_cost_ms={record.get('parse_cost_ms')} "
+        f"rag_answer_cost_ms={record.get('rag_answer_cost_ms')} "
         f"status={record.get('status')} "
         f"reference_count={record.get('reference_count')} "
         f"retrieved_count={record.get('retrieved_count')} "
@@ -606,6 +616,14 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
         "route_cost_ms": 0,
         "rag_ready_check_cost_ms": 0,
         "agent_cost_ms": 0,
+        "retrieve_cost_ms": 0,
+        "decompose_cost_ms": 0,
+        "rerank_cost_ms": 0,
+        "retrieve_with_sub_queries_cost_ms": 0,
+        "context_build_cost_ms": 0,
+        "llm_cost_ms": 0,
+        "parse_cost_ms": 0,
+        "rag_answer_cost_ms": 0,
 
         "status": "internal_error",
         "question_len": len(question),
@@ -623,7 +641,7 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
             logger.warning(f"[trace_id={trace_id}] [chat] final_status=clarify reason=用户未输入问题")
             response.status_code = 400
 
-            metrics["status"] = "no_relevant_info"
+            metrics["status"] = "clarify"
             metrics["reason"] = "用户未输入问题"
 
             return build_chat_response(
@@ -684,7 +702,7 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
                 logger.warning(f"[trace_id={trace_id}] [chat] final_status=empty_index reason=知识库未准备完成")
                 response.status_code = 503
 
-                metrics["status"] = "internal_error"
+                metrics["status"] = "empty_index"
                 metrics["action"] = action or ""
                 metrics["reason"] = "知识库未准备完成"
 
@@ -736,6 +754,17 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
             metrics["tool_called"] = trace_metrics["tool_called"]
             metrics["tool_success"] = trace_metrics["tool_success"]
             metrics["tool_name"] = trace_metrics["tool_name"]
+            for timing_key in [
+                "retrieve_cost_ms",
+                "decompose_cost_ms",
+                "rerank_cost_ms",
+                "retrieve_with_sub_queries_cost_ms",
+                "context_build_cost_ms",
+                "llm_cost_ms",
+                "parse_cost_ms",
+                "rag_answer_cost_ms",
+            ]:
+                metrics[timing_key] = int((trace_metrics["timings"].get(timing_key, 0) or 0))
             metrics["action"] = result.get("action", action or "")
             metrics["reason"] = result.get("reason", "")
 
@@ -965,7 +994,11 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
             f"total_cost_ms={metrics.get('total_cost_ms')} "
             f"route_cost_ms={metrics.get('route_cost_ms')} "
             f"rag_ready_check_cost_ms={metrics.get('rag_ready_check_cost_ms')} "
-            f"agent_cost_ms={metrics.get('agent_cost_ms')}"
+            f"agent_cost_ms={metrics.get('agent_cost_ms')} "
+            f"retrieve_cost_ms={metrics.get('retrieve_cost_ms')} "
+            f"decompose_cost_ms={metrics.get('decompose_cost_ms')} "
+            f"rerank_cost_ms={metrics.get('rerank_cost_ms')} "
+            f"llm_cost_ms={metrics.get('llm_cost_ms')}"
         )
 
         log_and_write_metrics(metrics)
@@ -1203,6 +1236,10 @@ def metrics_summary(limit: int = Query(20, ge=1, le=200)):
             "no_relevant_info_count": status_counter.get("no_relevant_info", 0),
             "tool_error_count": status_counter.get("tool_error", 0),
             "model_bad_output_count": status_counter.get("model_bad_output", 0),
+            "model_error_count": status_counter.get("model_error", 0),
+            "clarify_count": status_counter.get("clarify", 0),
+            "out_of_scope_count": status_counter.get("out_of_scope", 0),
+            "empty_index_count": status_counter.get("empty_index", 0),
             "internal_error_count": status_counter.get("internal_error", 0),
             "avg_latency_ms": avg_latency_ms,
         }

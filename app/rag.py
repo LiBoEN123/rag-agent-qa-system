@@ -253,6 +253,14 @@ def ask(
     trace_id : str = ""
 ):
     question = (question or "").strip()
+    timings = {
+        "decompose_cost_ms": 0,
+        "rerank_cost_ms": 0,
+        "retrieve_with_sub_queries_cost_ms": 0,
+        "context_build_cost_ms": 0,
+        "llm_cost_ms": 0,
+        "parse_cost_ms": 0,
+    }
 
     if is_ambiguous_question(question):
         return {
@@ -263,7 +271,8 @@ def ask(
             "confidence": 0.0,
             "need_clarification": True,
             "clarification_question": build_clarification_question(question),
-            "reason": "问题存在指代不明或缺少关键限定信息"
+            "reason": "问题存在指代不明或缺少关键限定信息",
+            "timings": timings
         }
 
     decompose_result = default_decompose_result("query decomposition disabled")
@@ -296,6 +305,7 @@ def ask(
         f"need_decompose={decompose_result.get('need_decompose')} "
         f"reason={decompose_result.get('reason', '')}"
     )
+    timings["decompose_cost_ms"] = decompose_cost_ms
 
     if retrieved_chunks is None:
         retrieved_chunks = retrieve(question, top_k)
@@ -308,6 +318,7 @@ def ask(
         final_chunks = reranked[:top_k]
         rerank_cost_ms = int((time.perf_counter() - start_rerank) * 1000)
         logger.info(f"[trace_id={trace_id}] [retrieve] rerank_cost_ms={rerank_cost_ms}")
+        timings["rerank_cost_ms"] = rerank_cost_ms
     else:
         final_chunks = retrieve_with_sub_queries(
             question=question,
@@ -321,6 +332,7 @@ def ask(
         )
         retrieve_with_sub_queries_cost_ms = int((time.perf_counter() - start_rerank) * 1000)
         logger.info(f"[trace_id={trace_id}] [retrieve] retrieve_with_sub_queries_cost_ms={retrieve_with_sub_queries_cost_ms}")
+        timings["retrieve_with_sub_queries_cost_ms"] = retrieve_with_sub_queries_cost_ms
 
     hit_brief = [
         {
@@ -356,19 +368,26 @@ def ask(
             "confidence": 0.0,
             "need_clarification": False,
             "clarification_question": "",
-            "reason": "检索结果为空或 top1 分数低于阈值"
+            "reason": "检索结果为空或 top1 分数低于阈值",
+            "timings": timings
         }
 
+    context_start = time.perf_counter()
     context = build_context(final_chunks, Settings.MAX_CONTEXT_CHARS)
+    context_build_cost_ms = int((time.perf_counter() - context_start) * 1000)
+    timings["context_build_cost_ms"] = context_build_cost_ms
 
     logger.info(
-        f"[trace_id={trace_id}] [rag] context 构造完成 context_len={len(context)}"
+        f"[trace_id={trace_id}] [rag] context 构造完成 context_len={len(context)} "
+        f"context_build_cost_ms={context_build_cost_ms}"
     )
     logger.info(f"[trace_id={trace_id}] [llm] 开始调用模型")
 
+    llm_start = time.perf_counter()
     try:
         llm_out = call_llm(question, context, trace_id)
     except LLMCallError as e:
+        timings["llm_cost_ms"] = int((time.perf_counter() - llm_start) * 1000)
         return {
             "status": "MODEL_ERROR",
             "answer": e.user_message,
@@ -377,17 +396,24 @@ def ask(
             "confidence": 0.0,
             "need_clarification": False,
             "clarification_question": "",
-            "reason": e.user_message
+            "reason": e.user_message,
+            "timings": timings
         }
+
+    timings["llm_cost_ms"] = int((time.perf_counter() - llm_start) * 1000)
 
     logger.info(
         f"[trace_id={trace_id}] [llm] 模型调用完成 output_len={len(llm_out or '')}"
     )
 
+    parse_start = time.perf_counter()
     parsed = parse_llm_output(llm_out)
+    parse_cost_ms = int((time.perf_counter() - parse_start) * 1000)
+    timings["parse_cost_ms"] = parse_cost_ms
 
     logger.info(
-        f"[trace_id={trace_id}] [parse] 模型输出解析完成 ok={parsed.get('ok')}"
+        f"[trace_id={trace_id}] [parse] 模型输出解析完成 ok={parsed.get('ok')} "
+        f"parse_cost_ms={parse_cost_ms}"
     )
 
     if not parsed["ok"]:
@@ -399,7 +425,8 @@ def ask(
             "confidence": 0.0,
             "need_clarification": False,
             "clarification_question": "",
-            "reason": "模型未按约定 JSON 格式返回"
+            "reason": "模型未按约定 JSON 格式返回",
+            "timings": timings
         }
 
     final_references = format_reference(final_chunks, parsed["references"])
@@ -413,7 +440,8 @@ def ask(
             "confidence": 0.0,
             "need_clarification": False,
             "clarification_question": "",
-            "reason": "模型给出的答案没有足够的引用支撑"
+            "reason": "模型给出的答案没有足够的引用支撑",
+            "timings": timings
         }
 
     confidence = estimate_confidence(
@@ -430,7 +458,8 @@ def ask(
         "confidence": confidence,
         "need_clarification": False,
         "clarification_question": "",
-        "reason": "检索命中有效证据，且答案成功绑定引用"
+        "reason": "检索命中有效证据，且答案成功绑定引用",
+        "timings": timings
     }
 
 
