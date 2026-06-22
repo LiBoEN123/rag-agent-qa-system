@@ -25,6 +25,7 @@ from app.rag_retrieval import (
     rerank as rerank_impl,
     search_relevant_chunks as search_relevant_chunks_impl,
     should_refuse,
+    default_decompose_result,
     decompose_query_with_llm,
     retrieve_with_sub_queries
 )
@@ -251,23 +252,50 @@ def ask(
     retrieved_chunks: List[Dict[str, Any]] | None = None,
     trace_id : str = ""
 ):
-    strat_decompose = time.perf_counter()
+    question = (question or "").strip()
 
-    try:
-        decompose_result = decompose_query_with_llm(question)
-    except Exception as e:
-        logger.warning(
-            f"[trace_id={trace_id}] [retrieve] decompose_failed fallback_to_single_query error={e}"
-        )
-        decompose_result = {
-            "need_decompose": False,
-            "reason": "decompose failed, fallback to original question",
-            "sub_queries": []
+    if is_ambiguous_question(question):
+        return {
+            "status": "NEED_CLARIFICATION",
+            "answer": "",
+            "references": [],
+            "final_chunks": [],
+            "confidence": 0.0,
+            "need_clarification": True,
+            "clarification_question": build_clarification_question(question),
+            "reason": "问题存在指代不明或缺少关键限定信息"
         }
 
-    decompose_cost_ms = int((time.perf_counter() - strat_decompose) * 1000)
+    decompose_result = default_decompose_result("query decomposition disabled")
+    decompose_cost_ms = 0
 
-    logger.info(f"[trace_id={trace_id}] [retrieve] decompose_cost_ms={decompose_cost_ms}")
+    if Settings.ENABLE_QUERY_DECOMPOSE:
+        if not Settings.DECOMPOSE_MODEL_NAME or not Settings.DECOMPOSE_API_URL:
+            decompose_result = default_decompose_result("query decomposition not configured")
+            logger.info(
+                f"[trace_id={trace_id}] [retrieve] decompose_skipped reason=not_configured"
+            )
+        else:
+            strat_decompose = time.perf_counter()
+            try:
+                decompose_result = decompose_query_with_llm(question)
+            except Exception as e:
+                logger.warning(
+                    f"[trace_id={trace_id}] [retrieve] decompose_failed fallback_to_single_query error={e}"
+                )
+                decompose_result = default_decompose_result("decompose failed, fallback to original question")
+
+            decompose_cost_ms = int((time.perf_counter() - strat_decompose) * 1000)
+    else:
+        logger.info(
+            f"[trace_id={trace_id}] [retrieve] decompose_skipped reason=disabled"
+        )
+
+    logger.info(
+        f"[trace_id={trace_id}] [retrieve] decompose_cost_ms={decompose_cost_ms} "
+        f"need_decompose={decompose_result.get('need_decompose')} "
+        f"reason={decompose_result.get('reason', '')}"
+    )
 
     if retrieved_chunks is None:
         retrieved_chunks = retrieve(question, top_k)
@@ -278,6 +306,8 @@ def ask(
         candidates = retrieved_chunks
         reranked = rerank(candidates, question)
         final_chunks = reranked[:top_k]
+        rerank_cost_ms = int((time.perf_counter() - start_rerank) * 1000)
+        logger.info(f"[trace_id={trace_id}] [retrieve] rerank_cost_ms={rerank_cost_ms}")
     else:
         final_chunks = retrieve_with_sub_queries(
             question=question,
@@ -286,12 +316,11 @@ def ask(
             bm25=bm25,
             doc_embeddings=doc_embeddings,
             model=model,
-            rerank_model=rerank_model
+            rerank_model=rerank_model,
+            final_top_k=top_k
         )
-
-    rerank_cost_ms = int((time.perf_counter() - start_rerank) * 1000)
-
-    logger.info(f"[trace_id={trace_id}] [retrieve] rerank_cost_ms={rerank_cost_ms}")
+        retrieve_with_sub_queries_cost_ms = int((time.perf_counter() - start_rerank) * 1000)
+        logger.info(f"[trace_id={trace_id}] [retrieve] retrieve_with_sub_queries_cost_ms={retrieve_with_sub_queries_cost_ms}")
 
     hit_brief = [
         {
@@ -315,18 +344,6 @@ def ask(
         f"[trace_id={trace_id}] [retrieve] final_chunk_count={final_chunk_count} "
         f"top_chunk_ids={top_chunk_ids} top_scores={top_scores} hits={hit_brief}"
     )
-
-    if is_ambiguous_question(question):
-        return {
-            "status": "NEED_CLARIFICATION",
-            "answer": "",
-            "references": [],
-            "final_chunks": [],
-            "confidence": 0.0,
-            "need_clarification": True,
-            "clarification_question": build_clarification_question(question),
-            "reason": "问题存在指代不明或缺少关键限定信息"
-        }
 
     logger.info(f"[trace_id={trace_id}] [rag] 开始问答流程 top_k={top_k}")
 

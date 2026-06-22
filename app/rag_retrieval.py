@@ -83,6 +83,63 @@ def rerank(rerank_model, candidates: list[dict], question: str=""):
     return candidates
 
 
+def default_decompose_result(reason: str = "query decomposition skipped") -> dict:
+    return {
+        "need_decompose": False,
+        "reason": reason,
+        "sub_queries": []
+    }
+
+
+def parse_decompose_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def normalize_decompose_result(result: dict) -> dict:
+    if not isinstance(result, dict):
+        raise ValueError(f"拆分模型返回值必须是 dict，实际为 {type(result)}")
+
+    need_decompose = parse_decompose_bool(result.get("need_decompose", False))
+    reason = str(result.get("reason", "") or "").strip()
+
+    if not need_decompose:
+        return default_decompose_result(reason or "decompose model decided single query")
+
+    raw_sub_queries = result.get("sub_queries", [])
+    if not isinstance(raw_sub_queries, list):
+        raise ValueError("拆分模型返回的 sub_queries 必须是 list")
+
+    sub_queries = []
+    for item in raw_sub_queries[:5]:
+        if not isinstance(item, dict):
+            continue
+
+        sub_question = str(item.get("sub_question", "") or "").strip()
+        search_query = str(item.get("search_query", "") or "").strip()
+
+        if not sub_question or not search_query:
+            continue
+
+        sub_queries.append({
+            "id": item.get("id", len(sub_queries) + 1),
+            "sub_question": sub_question,
+            "search_query": search_query,
+            "must_answer": parse_decompose_bool(item.get("must_answer", True))
+        })
+
+    if not sub_queries:
+        return default_decompose_result("decompose model returned no valid sub_queries")
+
+    return {
+        "need_decompose": True,
+        "reason": reason or "decompose model decided multi-query retrieval",
+        "sub_queries": sub_queries
+    }
+
 
 def decompose_query_with_llm(question: str):
     model_name = Settings.DECOMPOSE_MODEL_NAME
@@ -104,15 +161,16 @@ def decompose_query_with_llm(question: str):
         }
     }
     headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {Settings.DECOMPOSE_API_KEY}"
+        "Content-Type": "application/json"
     }
+    if Settings.DECOMPOSE_API_KEY:
+        headers["Authorization"] = f"Bearer {Settings.DECOMPOSE_API_KEY}"
 
     response = requests.post(
         api_url,
         headers=headers,
         json=pay_load,
-        timeout=Settings.LLM_TIMEOUT
+        timeout=Settings.DECOMPOSE_TIMEOUT
     )
 
     response.raise_for_status()
@@ -131,7 +189,7 @@ def decompose_query_with_llm(question: str):
     except json.JSONDecodeError as e:
         raise ValueError(f"LLM 返回的不是合法 JSON: {content}") from e
 
-    return result
+    return normalize_decompose_result(result)
 
 
 

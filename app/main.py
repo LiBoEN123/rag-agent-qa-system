@@ -618,7 +618,6 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
         "reason": "",
     }
 
-    logger.info(f"[trace_id={trace_id}] [chat] 收到请求 question_len={len(question)}，preview={question[:50]}")
     try:
         if not question:
             logger.warning(f"[trace_id={trace_id}] [chat] final_status=clarify reason=用户未输入问题")

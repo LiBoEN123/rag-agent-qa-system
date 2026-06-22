@@ -37,6 +37,8 @@ class Settings:
     DECOMPOSE_API_KEY = os.getenv("DECOMPOSE_API_KEY")
     DECOMPOSE_MODEL_NAME = os.getenv("DECOMPOSE_MODEL_NAME", "qwen2.5:7b")
     DECOMPOSE_API_URL = os.getenv("DECOMPOSE_API_URL", "http://localhost:11434/v1/chat/completions")
+    ENABLE_QUERY_DECOMPOSE = env_bool("ENABLE_QUERY_DECOMPOSE", "false")
+    DECOMPOSE_TIMEOUT = int(os.getenv("DECOMPOSE_TIMEOUT", "5"))
 
     MARGIN_THRESHOLD = float(os.getenv("MARGIN_THRESHOLD", "0.03"))
     VECTOR_THRESHOLD = float(os.getenv("VECTOR_THRESHOLD", "0.35"))
