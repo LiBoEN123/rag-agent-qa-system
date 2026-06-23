@@ -1,14 +1,64 @@
 import ast
+import json
 import re
 import time
 import unicodedata
 
+import requests
+
+from app.config import Settings
+from app.prompts import ROUTER_SYSTEM_PROMPT, ROUTER_USER_PROMPT
 from app.rag import ask, search_relevant_chunks
 from app.tools import dispatch_tool
 from app.untils import get_logger
 
 
 logger = get_logger('chat_service')
+
+ROUTER_ALLOWED_ACTIONS = {
+    "search_knowledge_base",
+    "simple_calculator",
+    "list_documents",
+    "get_chunk_text",
+    "clarify",
+    "direct_answer",
+}
+
+ROUTER_ALLOWED_TOOLS = {
+    "simple_calculator",
+    "list_documents",
+    "get_chunk_text",
+}
+
+ROUTER_ACTION_TO_DECISION = {
+    "search_knowledge_base": "use_knowledge_base",
+    "simple_calculator": "use_tool",
+    "list_documents": "use_tool",
+    "get_chunk_text": "use_tool",
+    "clarify": "clarify",
+    "direct_answer": "direct_answer",
+}
+
+ROUTER_TOOL_SPECS = [
+    {
+        "name": "simple_calculator",
+        "description": "执行简单数字四则运算",
+        "args_schema": {"expression": "string, 必填，例如 '1 + 2 * 3'"},
+    },
+    {
+        "name": "list_documents",
+        "description": "列出知识库文档及数量",
+        "args_schema": {},
+    },
+    {
+        "name": "get_chunk_text",
+        "description": "查看指定 chunk_id 的完整原文",
+        "args_schema": {"chunk_id": "integer|string, 必填"},
+    },
+]
+
+DEFAULT_CLARIFICATION_QUESTION = "请补充你想查询的具体对象、文档、功能或报错信息。"
+
 
 # =========================
 # 路由通用工具
@@ -306,8 +356,289 @@ def should_record_reference_bad_case(
 # Agent 路由决策
 # =========================
 
-def route_agent_action(question: str, top_k:int) -> dict:
-    """根据问题内容决定走澄清、工具调用还是知识库 RAG。"""
+def add_router_metadata(
+        decision: dict,
+        source: str,
+        confidence: float | None = None,
+        fallback_reason: str = ""
+) -> dict:
+    decision = dict(decision or {})
+    decision["router_source"] = source
+
+    if confidence is not None:
+        decision["router_confidence"] = confidence
+
+    if fallback_reason:
+        decision["router_fallback_reason"] = fallback_reason[:300]
+
+    return decision
+
+
+def build_router_headers() -> dict:
+    headers = {"Content-Type": "application/json"}
+
+    if Settings.ROUTER_API_KEY:
+        headers["Authorization"] = f"Bearer {Settings.ROUTER_API_KEY}"
+
+    return headers
+
+
+def parse_router_json_output(llm_output: str) -> dict:
+    output = (llm_output or "").strip()
+
+    if output.startswith("```"):
+        output = output.replace("```json", "").replace("```", "").strip()
+
+    try:
+        data = json.loads(output)
+    except json.JSONDecodeError:
+        start = output.find("{")
+        end = output.rfind("}")
+
+        if start < 0 or end <= start:
+            raise ValueError("路由模型未返回 JSON 对象")
+
+        data = json.loads(output[start:end + 1])
+
+    if not isinstance(data, dict):
+        raise ValueError("路由模型返回值不是 JSON 对象")
+
+    return data
+
+
+def call_router_llm(question: str, top_k: int, trace_id: str = "") -> str:
+    payload = {
+        "model": Settings.ROUTER_MODEL_NAME,
+        "temperature": Settings.ROUTER_TEMPERATURE,
+        "max_tokens": Settings.ROUTER_MAX_TOKENS,
+        "messages": [
+            {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": ROUTER_USER_PROMPT.format(
+                    question=question,
+                    top_k=top_k,
+                    available_actions=json.dumps(
+                        sorted(ROUTER_ALLOWED_ACTIONS),
+                        ensure_ascii=False
+                    ),
+                    tool_specs=json.dumps(
+                        ROUTER_TOOL_SPECS,
+                        ensure_ascii=False,
+                        indent=2
+                    )
+                )
+            }
+        ]
+    }
+
+    headers = build_router_headers()
+    total_attempts = Settings.ROUTER_MAX_RETRIES + 1
+    last_error = ""
+
+    for attempt in range(total_attempts):
+        try:
+            logger.info(
+                f"[trace_id={trace_id}] [router_llm] attempt={attempt + 1}/{total_attempts} "
+                f"url={Settings.ROUTER_API_URL} model={Settings.ROUTER_MODEL_NAME} "
+                f"timeout={Settings.ROUTER_TIMEOUT}"
+            )
+
+            response = requests.post(
+                Settings.ROUTER_API_URL,
+                headers=headers,
+                json=payload,
+                timeout=Settings.ROUTER_TIMEOUT
+            )
+
+            if response.status_code != 200:
+                last_error = (
+                    f"HTTP {response.status_code}: "
+                    f"{response.text[:300]}"
+                )
+                raise RuntimeError(last_error)
+
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
+
+        except Exception as e:
+            last_error = str(e)
+
+            if attempt < Settings.ROUTER_MAX_RETRIES:
+                logger.warning(
+                    f"[trace_id={trace_id}] [router_llm] 调用失败，准备重试 "
+                    f"attempt={attempt + 1}/{total_attempts} error={last_error}"
+                )
+                time.sleep(Settings.LLM_RETRY_SLEEP)
+                continue
+
+    raise RuntimeError(f"路由模型调用失败：{last_error}")
+
+
+def route_agent_action_by_llm(question: str, top_k: int, trace_id: str = "") -> dict:
+    llm_output = call_router_llm(question, top_k, trace_id=trace_id)
+    return parse_router_json_output(llm_output)
+
+
+def normalize_router_confidence(value) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+    return max(0.0, min(1.0, confidence))
+
+
+def normalize_router_reason(raw_decision: dict) -> str:
+    reason = str(raw_decision.get("reason") or "LLM 路由决策").strip()
+    return reason[:200]
+
+
+def normalize_chunk_id_value(chunk_id):
+    if chunk_id is None:
+        return None
+
+    if isinstance(chunk_id, int):
+        return chunk_id
+
+    chunk_id_text = str(chunk_id).strip()
+    if not chunk_id_text:
+        return None
+
+    return int(chunk_id_text) if chunk_id_text.isdigit() else chunk_id_text
+
+
+def validate_route_decision(raw_decision: dict, question: str, top_k: int) -> dict:
+    if not isinstance(raw_decision, dict):
+        raise ValueError("路由模型返回值不是 dict")
+
+    q = normalize_question(question)
+    if not q:
+        return add_router_metadata(
+            route_agent_action_rule_based(question, top_k),
+            source="rule_based_guardrail"
+        )
+
+    raw_action = str(raw_decision.get("action") or "").strip()
+    raw_decision_type = str(raw_decision.get("decision") or "").strip()
+
+    if not raw_action:
+        if raw_decision_type == "use_knowledge_base":
+            raw_action = "search_knowledge_base"
+        elif raw_decision_type in {"clarify", "direct_answer"}:
+            raw_action = raw_decision_type
+        elif raw_decision_type == "use_tool":
+            raw_action = str(raw_decision.get("tool_name") or "").strip()
+
+    if raw_action not in ROUTER_ALLOWED_ACTIONS:
+        raise ValueError(f"未知路由 action: {raw_action}")
+
+    decision_type = ROUTER_ACTION_TO_DECISION[raw_action]
+    reason = normalize_router_reason(raw_decision)
+    confidence = normalize_router_confidence(raw_decision.get("confidence"))
+    tool_args = raw_decision.get("tool_args")
+    if not isinstance(tool_args, dict):
+        tool_args = {}
+
+    if raw_action == "search_knowledge_base":
+        return add_router_metadata(
+            {
+                "decision": decision_type,
+                "action": "search_knowledge_base",
+                "tool_name": "",
+                "tool_args": {
+                    "query": q,
+                    "top_k": top_k,
+                },
+                "reason": reason,
+                "clarification_question": "",
+            },
+            source="llm",
+            confidence=confidence
+        )
+
+    if raw_action == "clarify":
+        clarification_question = str(
+            raw_decision.get("clarification_question")
+            or DEFAULT_CLARIFICATION_QUESTION
+        ).strip()
+
+        return add_router_metadata(
+            {
+                "decision": decision_type,
+                "action": "clarify",
+                "tool_name": "",
+                "tool_args": {},
+                "reason": reason,
+                "clarification_question": clarification_question,
+            },
+            source="llm",
+            confidence=confidence
+        )
+
+    if raw_action == "direct_answer":
+        return add_router_metadata(
+            {
+                "decision": decision_type,
+                "action": "direct_answer",
+                "tool_name": "",
+                "tool_args": {},
+                "reason": reason,
+                "clarification_question": "",
+            },
+            source="llm",
+            confidence=confidence
+        )
+
+    tool_name = str(raw_decision.get("tool_name") or raw_action).strip()
+    if tool_name != raw_action or tool_name not in ROUTER_ALLOWED_TOOLS:
+        raise ValueError(f"非法工具选择: action={raw_action}, tool_name={tool_name}")
+
+    if raw_action == "list_documents":
+        checked_args = {}
+
+    elif raw_action == "simple_calculator":
+        expression = str(tool_args.get("expression") or "").strip()
+        expression = normalize_math_text(expression)
+
+        if not expression or not is_safe_math_expression(expression):
+            expression = extract_simple_math_expression(question) or ""
+
+        if not expression:
+            raise ValueError("simple_calculator 缺少合法 expression")
+
+        checked_args = {"expression": expression}
+
+    elif raw_action == "get_chunk_text":
+        chunk_id = normalize_chunk_id_value(tool_args.get("chunk_id"))
+
+        if chunk_id is None:
+            chunk_id = extract_chunk_id(q)
+
+        if chunk_id is None:
+            raise ValueError("get_chunk_text 缺少 chunk_id")
+
+        checked_args = {"chunk_id": chunk_id}
+
+    else:
+        raise ValueError(f"未处理的工具 action: {raw_action}")
+
+    return add_router_metadata(
+        {
+            "decision": decision_type,
+            "action": raw_action,
+            "tool_name": tool_name,
+            "tool_args": checked_args,
+            "reason": reason,
+            "clarification_question": "",
+        },
+        source="llm",
+        confidence=confidence
+    )
+
+
+def route_agent_action_rule_based(question: str, top_k:int) -> dict:
+    """旧版规则路由：作为 LLM 路由不可用或输出非法时的 fallback。"""
     q = normalize_question(question)
 
     # 1. 空问题：需要澄清
@@ -389,6 +720,38 @@ def route_agent_action(question: str, top_k:int) -> dict:
     }
 
 
+def route_agent_action(question: str, top_k:int, trace_id: str = "") -> dict:
+    """根据问题内容决定走澄清、工具调用还是知识库 RAG。"""
+    q = normalize_question(question)
+
+    if not q:
+        return add_router_metadata(
+            route_agent_action_rule_based(question, top_k),
+            source="rule_based_guardrail"
+        )
+
+    if not Settings.ENABLE_LLM_ROUTER:
+        return add_router_metadata(
+            route_agent_action_rule_based(question, top_k),
+            source="rule_based"
+        )
+
+    try:
+        raw_decision = route_agent_action_by_llm(question, top_k, trace_id=trace_id)
+        return validate_route_decision(raw_decision, question, top_k)
+
+    except Exception as e:
+        fallback = route_agent_action_rule_based(question, top_k)
+        logger.warning(
+            f"[trace_id={trace_id}] [router_llm] fallback_to_rule_based "
+            f"error={str(e)[:300]}"
+        )
+        return add_router_metadata(
+            fallback,
+            source="rule_based_fallback",
+            fallback_reason=str(e)
+        )
+
 # =========================
 # Agent 执行主流程
 # =========================
@@ -422,7 +785,7 @@ def run_agent_once(
     # 1. 先做路由决策
     # =========================
     if decision is None:
-        decision = route_agent_action(question, top_k)
+        decision = route_agent_action(question, top_k, trace_id=trace_id)
 
     decision_type = decision.get("decision")
     route_decision = get_route_decision(decision)
@@ -438,15 +801,18 @@ def run_agent_once(
             "action": action,
             "tool_name": tool_name,
             "tool_args": tool_args,
-            "reason": decision.get("reason", "")
+            "reason": decision.get("reason", ""),
+            "router_source": decision.get("router_source", ""),
+            "router_confidence": decision.get("router_confidence"),
+            "router_fallback_reason": decision.get("router_fallback_reason", "")
         }
     ]
 
     logger.info(
         f"[trace_id={trace_id}] [agent] route_decision={route_decision} "
         f"decision={decision_type} action={action} "
-        f"tool_name={tool_name} reason={decision.get('reason')} "
-        f"question={(question or '')[:50]}"
+        f"tool_name={tool_name} router_source={decision.get('router_source', '')} "
+        f"reason={decision.get('reason')} question={(question or '')[:50]}"
     )
 
     # =========================

@@ -35,6 +35,15 @@ class Settings:
     LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", 2))
     LLM_RETRY_SLEEP = int(os.getenv("LLM_RETRY_SLEEP", 1))
 
+    ENABLE_LLM_ROUTER = env_bool("ENABLE_LLM_ROUTER", "false")
+    ROUTER_API_KEY = os.getenv("ROUTER_API_KEY") or LLM_API_KEY
+    ROUTER_MODEL_NAME = os.getenv("ROUTER_MODEL_NAME", MODEL_NAME)
+    ROUTER_API_URL = os.getenv("ROUTER_API_URL", LLM_API_URL)
+    ROUTER_TIMEOUT = int(os.getenv("ROUTER_TIMEOUT", "10"))
+    ROUTER_MAX_RETRIES = int(os.getenv("ROUTER_MAX_RETRIES", "1"))
+    ROUTER_MAX_TOKENS = int(os.getenv("ROUTER_MAX_TOKENS", "512"))
+    ROUTER_TEMPERATURE = float(os.getenv("ROUTER_TEMPERATURE", "0.0"))
+
     DECOMPOSE_API_KEY = os.getenv("DECOMPOSE_API_KEY")
     DECOMPOSE_MODEL_NAME = os.getenv("DECOMPOSE_MODEL_NAME", "qwen2.5:7b")
     DECOMPOSE_API_URL = os.getenv("DECOMPOSE_API_URL", "http://localhost:11434/v1/chat/completions")
@@ -54,26 +63,3 @@ class Settings:
             raise ValueError("缺少 LLM_API_KEY，请检查 .env")
         if not cls.RAG_FILE_PATH.exists():
             raise ValueError(f"RAG_FILE_PATH 不存在: {cls.RAG_FILE_PATH}")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

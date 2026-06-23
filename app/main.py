@@ -670,7 +670,7 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
 
         route_start = time.perf_counter()
 
-        decision = route_agent_action(question, final_top_k)
+        decision = route_agent_action(question, final_top_k, trace_id=trace_id)
 
         route_cost_ms = int((time.perf_counter() - route_start) * 1000)
         metrics["route_cost_ms"] = route_cost_ms

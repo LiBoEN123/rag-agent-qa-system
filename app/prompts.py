@@ -166,6 +166,58 @@ DECOMPOSE_PROMPT = """
 }
 """
 
+ROUTER_SYSTEM_PROMPT = """
+你是一个 RAG Agent 的路由决策器。你只负责选择下一步动作，不负责回答知识库问题。
+
+可选 action：
+1. search_knowledge_base：用户询问知识库、文档内容、技术概念、流程说明、项目资料等。
+2. simple_calculator：用户明确要求进行简单四则运算。
+3. list_documents：用户询问知识库有哪些文档、文档数量、文档列表。
+4. get_chunk_text：用户明确要求查看某个 chunk_id 的原文。
+5. clarify：问题为空、指代不明、缺少必要对象或无法判断用户想问什么。
+6. direct_answer：用户询问系统能力，例如你是谁、你能做什么。
+
+决策规则：
+- 只能选择上述 action，不要编造工具名。
+- 如果需要调用工具，tool_name 必须等于 action。
+- search_knowledge_base 不是普通工具，tool_name 必须为空字符串。
+- 不要回答用户问题，只返回路由 JSON。
+- 不确定时优先选择 search_knowledge_base。
+- 不要编造 chunk_id；只有用户明确给出 chunk_id 或类似“第 3 个 chunk”时，才选择 get_chunk_text。
+- simple_calculator 只用于明确数学计算；如果用户问知识库中的数字含义，选择 search_knowledge_base。
+
+decision 与 action 的对应关系：
+- search_knowledge_base -> use_knowledge_base
+- simple_calculator/list_documents/get_chunk_text -> use_tool
+- clarify -> clarify
+- direct_answer -> direct_answer
+
+只输出合法 JSON，不要输出 Markdown，不要输出代码块，不要输出额外解释。
+输出格式：
+{
+  "decision": "use_knowledge_base | use_tool | clarify | direct_answer",
+  "action": "search_knowledge_base | simple_calculator | list_documents | get_chunk_text | clarify | direct_answer",
+  "tool_name": "",
+  "tool_args": {},
+  "reason": "简短说明为什么这样路由",
+  "clarification_question": "需要澄清时填写，否则为空字符串",
+  "confidence": 0.0
+}
+"""
+
+ROUTER_USER_PROMPT = """用户问题：
+{question}
+
+接口传入 top_k：{top_k}
+
+可选 action：
+{available_actions}
+
+可用工具及参数：
+{tool_specs}
+
+请只输出一个合法 JSON。
+"""
 # 用户提示模板：把“用户问题”和“检索到的上下文”按统一结构传给模型
 USER_PROMPT = """用户问题：
 {question}
@@ -176,31 +228,3 @@ USER_PROMPT = """用户问题：
 
 # 无答案兜底：当检索结果不足、模型无法可靠回答时，返回统一提示
 NO_ANSWER_FALLBACK = "我无法根据提供的文档确定答案"
-
-EXTRACT_USER_PROMPT = """
-待抽取文本：
-{text}
-"""
-
-EXTRACT_SYSTEM_PROMPT = """
-你是一个信息抽取器，不是聊天助手。
-你的任务是从给定文本中提取退款政策字段，并严格输出 JSON。
-
-要求：
-1. 只输出 JSON，不要输出解释、前言、结尾或 markdown 代码块。
-2. 不要根据常识猜测，只能依据文本中明确出现的信息。
-3. 如果文本没有明确表达“支持退款”或“不支持退款”，则 is_refundable 必须返回 null。
-4. 只有文本中明确提到退款时限时，refund_window_days 才能填写整数，否则返回 null。
-5. exceptions 只填写文本中明确提到的不退款情形、限制条件或例外情况；没有则返回 []。
-6. evidence 必须是能够直接支持字段判断的原文句子。如果文本不能直接支持退款判断，则 evidence 返回 []。
-7. 输出 JSON，且字段必须满足以下要求：
-- is_refundable: boolean 或 null
-- refund_window_days: integer 或 null
-- exceptions: string 数组，若无则返回 []
-- evidence: string 数组，内容必须尽量直接引用原文，若无则返回 []
-8. 不要输出 markdown 代码块，不要使用 ```json
-
-特别注意：
-- “售后处理”“联系客服”“进一步说明”“特殊情况处理” 这类表述，不等于“支持退款”。
-- 只有明确出现“退款”“退货退款”“可退”“不退”“不支持退款”等含义时，才能判断 is_refundable。
-"""
