@@ -64,6 +64,7 @@ DEFAULT_CLARIFICATION_QUESTION = "请补充你想查询的具体对象、文档�
 # 路由通用工具
 # =========================
 def get_route_decision(decision:dict) -> str:
+    """根据决策中的 action 返回主流程使用的路由标识。"""
     action = decision.get("action", "")
 
     if action == "search_knowledge_base":
@@ -79,6 +80,7 @@ def get_route_decision(decision:dict) -> str:
 
 
 def normalize_question(question: str) -> str:
+    """清理用户问题的首尾空白，并把常见中文标点统一成英文标点。"""
     q = (question or "").strip()
     q = q.replace("？", "?")
     q = q.replace("：", ":")
@@ -94,6 +96,7 @@ def normalize_question(question: str) -> str:
 # 工具路由识别
 # =========================
 def extract_chunk_id(q: str) -> int | None:
+    """从用户问题中识别显式提到的 chunk_id。"""
     patterns = [
         r"chunk[_\s-]?id\s*[:=]?\s*(\d+)",
         r"chunk\s*(\d+)",
@@ -111,6 +114,7 @@ def extract_chunk_id(q: str) -> int | None:
 
 def normalize_math_text(text: str) -> str:
     # 全角字符转半角，例如：１＋２ -> 1+2
+    """将全角数字、中文运算词和千分位格式标准化为可解析的算式。"""
     text = unicodedata.normalize("NFKC", text or "")
 
     # 中文运算词转成符号，例如：加 -> +
@@ -134,6 +138,7 @@ def normalize_math_text(text: str) -> str:
 
 def is_safe_math_expression(expr: str) -> bool:
 
+    """使用 AST 检查表达式是否只包含数字和允许的四则运算。"""
     try:
         tree = ast.parse(expr, mode="eval")
     except SyntaxError:
@@ -169,6 +174,7 @@ def is_safe_math_expression(expr: str) -> bool:
 
 
 def extract_simple_math_expression(question:str) -> str | None:
+    """从自然语言问题中提取可安全计算的简单数学表达式。"""
     text = normalize_math_text(question)
 
     # 从整句话中提取由数字、运算符、小数点、括号、空格组成的片段
@@ -192,6 +198,7 @@ def extract_simple_math_expression(question:str) -> str | None:
 # 工具结果格式化
 # =========================
 def format_tool_answer(tool_name: str, output: dict) -> str:
+    """将工具输出转换成可以直接返回给用户的自然语言答案。"""
     if tool_name == "simple_calculator":
         return f"计算结果是：{output.get('result')}"
     if tool_name == "list_documents":
@@ -232,6 +239,7 @@ def format_tool_answer(tool_name: str, output: dict) -> str:
 
 
 def summarize_tool_result(tool_name: str, tool_result: dict) -> str:
+    """为工具调用结果生成简短摘要，便于响应和日志展示。"""
     if tool_result["status"] != "success":
         return f"{tool_name} 工具执行失败：{tool_result.get('error', '')}"
 
@@ -261,6 +269,7 @@ REFERENCE_STOPWORDS = {
 
 
 def extract_reference_keywords(text: str) -> set[str]:
+    """从问题、答案或引用文本中提取用于粗略匹配的关键词集合。"""
     text = (text or "").lower()
 
     keywords = set()
@@ -290,6 +299,7 @@ def check_reference_reliability(
         min_overlap_ratio: float = 0.2
 ) -> tuple[bool, str]:
 
+    """检查答案关键词与引用片段是否有足够重合，判断引用是否可信。"""
     if not question:
         return False, ""
 
@@ -330,6 +340,7 @@ def should_record_reference_bad_case(
         reason: str
 ) -> tuple[bool, str]:
 
+    """判断引用不足的回答是否应该记录为 bad case。"""
     answer = (answer or "").strip()
     reason = (reason or "").strip()
 
@@ -362,6 +373,7 @@ def add_router_metadata(
         confidence: float | None = None,
         fallback_reason: str = ""
 ) -> dict:
+    """给路由决策补充来源、置信度和回退原因等元数据。"""
     decision = dict(decision or {})
     decision["router_source"] = source
 
@@ -375,6 +387,7 @@ def add_router_metadata(
 
 
 def build_router_headers() -> dict:
+    """构造调用路由模型时使用的 HTTP 请求头。"""
     headers = {"Content-Type": "application/json"}
 
     if Settings.ROUTER_API_KEY:
@@ -384,6 +397,7 @@ def build_router_headers() -> dict:
 
 
 def parse_router_json_output(llm_output: str) -> dict:
+    """从路由模型输出中解析出 JSON 决策对象。"""
     output = (llm_output or "").strip()
 
     if output.startswith("```"):
@@ -407,6 +421,7 @@ def parse_router_json_output(llm_output: str) -> dict:
 
 
 def call_router_llm(question: str, top_k: int, trace_id: str = "") -> str:
+    """调用路由模型生成 Agent 动作决策，并处理重试和错误。"""
     payload = {
         "model": Settings.ROUTER_MODEL_NAME,
         "temperature": Settings.ROUTER_TEMPERATURE,
@@ -476,11 +491,13 @@ def call_router_llm(question: str, top_k: int, trace_id: str = "") -> str:
 
 
 def route_agent_action_by_llm(question: str, top_k: int, trace_id: str = "") -> dict:
+    """使用 LLM 路由并解析模型返回的决策。"""
     llm_output = call_router_llm(question, top_k, trace_id=trace_id)
     return parse_router_json_output(llm_output)
 
 
 def normalize_router_confidence(value) -> float:
+    """将路由置信度安全转换并限制在 0 到 1 之间。"""
     try:
         confidence = float(value)
     except (TypeError, ValueError):
@@ -490,11 +507,13 @@ def normalize_router_confidence(value) -> float:
 
 
 def normalize_router_reason(raw_decision: dict) -> str:
+    """提取并截断路由模型给出的决策理由。"""
     reason = str(raw_decision.get("reason") or "LLM 路由决策").strip()
     return reason[:200]
 
 
 def normalize_chunk_id_value(chunk_id):
+    """将工具参数里的 chunk_id 规整为整数或可查询字符串。"""
     if chunk_id is None:
         return None
 
@@ -509,6 +528,7 @@ def normalize_chunk_id_value(chunk_id):
 
 
 def validate_route_decision(raw_decision: dict, question: str, top_k: int) -> dict:
+    """校验并规整 LLM 路由输出，保证下游只收到合法动作和参数。"""
     if not isinstance(raw_decision, dict):
         raise ValueError("路由模型返回值不是 dict")
 

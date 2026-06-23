@@ -3,6 +3,7 @@ from app.rag import rebuild_and_persist_index
 
 
 def main():
+    """命令行重建知识库索引并在失败时退出非零状态。"""
     Settings.validate()
     ok, msg = rebuild_and_persist_index(
         data_dir=str(Settings.RAG_FILE_PATH),

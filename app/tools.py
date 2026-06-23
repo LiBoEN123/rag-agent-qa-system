@@ -55,6 +55,7 @@ def safe_eval_expr(expression: str) -> int | float:
 
     def _eval(node):
 
+        """递归计算表达式 AST 节点，只允许白名单运算。"""
         if isinstance(node, ast.Expression):
             return _eval(node.body)
 
@@ -77,6 +78,7 @@ def safe_eval_expr(expression: str) -> int | float:
 
 
 def simple_calculator(expression: str) -> dict:
+    """执行安全的简单四则运算并返回统一工具结果。"""
     tool_name = "simple_calculator"
     tool_input = {"expression": expression}
 
@@ -103,6 +105,7 @@ def simple_calculator(expression: str) -> dict:
 
 
 def list_documents() -> dict:
+    """读取知识库文档列表并包装成统一工具结果。"""
     tool_name = "list_documents"
     tool_input = {}
 
@@ -127,6 +130,7 @@ def list_documents() -> dict:
 
 
 def get_chunk_text(chunk_id: int | str) -> dict:
+    """根据 chunk_id 获取完整 chunk 文本并包装成统一工具结果。"""
     tool_name = "get_chunk_text"
     tool_input = {"chunk_id": chunk_id}
 
@@ -225,6 +229,7 @@ def dispatch_tool(tool_name: str, tool_args: dict | None=None, trace_id: str = "
 # 本地手动验证
 # =========================
 def run_manual_examples():
+    """运行一组本地工具调用示例，便于手动验证。"""
     examples = [
         {
             "tool_name": "simple_calculator",

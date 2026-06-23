@@ -18,6 +18,7 @@ logger = get_logger('chat_service')
 class LLMCallError(Exception):
     """模型调用失败时使用的统一异常。"""
     def __init__(self, user_message: str, detail: str=""):
+        """保存面向用户的错误提示和调试细节。"""
         super().__init__(user_message)
         self.user_message = user_message
         self.detail = detail
@@ -57,6 +58,7 @@ def build_context(retrieved_chunks, max_chars: int | None=None):
 # 模型调用
 # =========================
 def build_llm_header() -> dict:
+    """构造调用回答模型所需的 HTTP 请求头。"""
     headers = {
         "Content-Type": "application/json"
     }
@@ -92,6 +94,7 @@ def get_http_error_message(status_code: int) -> str:
 
 
 def call_llm(question: str, context: str, trace_id : str = ""):
+    """调用回答模型生成原始回复，并把网络或格式错误转换为可读异常。"""
     model_name = Settings.MODEL_NAME
     api_url = Settings.LLM_API_URL
     temperature = Settings.TEMPERATURE
@@ -211,6 +214,7 @@ def call_llm(question: str, context: str, trace_id : str = ""):
 # 模型输出处理
 # =========================
 def parse_llm_output(llm_output: str):
+    """解析模型返回的 JSON，提取 answer 和 references。"""
     llm_output = llm_output.strip()
 
     if llm_output.startswith("```"):
@@ -237,6 +241,7 @@ def parse_llm_output(llm_output: str):
 
 
 def format_reference(retrieved_chunks, selected_reference: list):
+    """将模型选择的引用编号映射回真实 chunk 元数据。"""
     ref_map = {item["reference_id"]: item for item in retrieved_chunks}
 
     final_refs = []
@@ -261,6 +266,7 @@ def estimate_confidence(
     final_references: List[dict],
     status: str
 ) -> float:
+    """根据召回分数、分数差距和引用数量估算回答置信度。"""
     if status != "OK" or not retrieved_chunks:
         return 0.0
 

@@ -134,6 +134,7 @@ def init_rag(
     chunk_size: int = Settings.CHUNK_SIZE,
     chunk_overlap: int = Settings.CHUNK_OVERLAP
 ):
+    """对外暴露的 RAG 初始化入口，内部复用重建索引流程。"""
     rebuild_index(data_dir, chunk_size, chunk_overlap)
 
 
@@ -142,6 +143,7 @@ def rebuild_and_persist_index(
     chunk_size: int = Settings.CHUNK_SIZE,
     chunk_overlap: int = Settings.CHUNK_OVERLAP
 ) -> tuple[bool, str]:
+    """重建内存索引并在成功后保存缓存和 manifest。"""
     rebuild_index(
         data_dir=data_dir,
         chunk_size=chunk_size,
@@ -165,6 +167,7 @@ def needs_rebuild(
     chunk_size: int = Settings.CHUNK_SIZE,
     chunk_overlap: int = Settings.CHUNK_OVERLAP
 ):
+    """代理底层 manifest 检查，判断当前知识库是否需要重建。"""
     return needs_rebuild_impl(
         data_dir=data_dir,
         chunk_size=chunk_size,
@@ -173,10 +176,12 @@ def needs_rebuild(
 
 
 def index_cache_exists():
+    """检查本地索引缓存文件是否齐全。"""
     return index_cache_exists_impl()
 
 
 def save_index_cache():
+    """将当前内存中的索引数据保存到磁盘缓存。"""
     save_index_cache_impl(
         chunks=chunks,
         texts=texts,
@@ -186,6 +191,7 @@ def save_index_cache():
 
 
 def load_index_cache() -> tuple[bool, str]:
+    """从磁盘缓存加载索引并恢复全局 RAG 状态。"""
     global chunks, texts, docs_registry, bm25, model, rerank_model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE
 
     result = load_index_cache_impl(model=model)
@@ -217,6 +223,7 @@ def load_index_cache() -> tuple[bool, str]:
 # 查询阶段：检索包装
 # =========================
 def retrieve(question: str, top_k: int = 3):
+    """使用当前全局索引执行一次基础召回。"""
     return retrieve_impl(
         question=question,
         chunks=chunks,
@@ -227,6 +234,7 @@ def retrieve(question: str, top_k: int = 3):
     )
 
 def rerank(candidates: list[dict], question: str=""):
+    """使用当前全局重排模型对候选 chunk 重新排序。"""
     return rerank_impl(
         rerank_model=rerank_model,
         candidates=candidates,
@@ -235,6 +243,7 @@ def rerank(candidates: list[dict], question: str=""):
 
 
 def search_relevant_chunks(question: str, top_k: int = 3) -> List[Dict[str, Any]]:
+    """使用当前全局索引检索与问题相关的 chunk。"""
     return search_relevant_chunks_impl(
         question=question,
         chunks=chunks,
@@ -472,12 +481,15 @@ def ask(
 # 调试接口包装
 # =========================
 def preview_docs():
+    """返回当前知识库文档注册表的调试预览。"""
     return preview_docs_impl(docs_registry)
 
 
 def preview_chunks(max_len:int, limit: int = 70, file_name: str | None = None):
+    """返回当前知识库 chunk 的调试预览。"""
     return preview_chunks_impl(chunks, max_len=max_len, limit=limit, file_name=file_name)
 
 
 def get_chunk_full_text(chunk_id: int | str):
+    """根据 chunk_id 返回对应 chunk 的完整文本。"""
     return get_chunk_full_text_impl(chunks, chunk_id)

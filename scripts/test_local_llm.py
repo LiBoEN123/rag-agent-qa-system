@@ -2,6 +2,7 @@ import requests
 
 
 def chat_once(question: str) -> str:
+    """调用本地 Ollama OpenAI 兼容接口并返回模型回答。"""
     url = "http://127.0.0.1:11434/v1/chat/completions"
 
     payload = {

@@ -7,6 +7,7 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 def env_bool(name: str, default: str = "false") -> bool:
+    """从环境变量读取布尔配置，支持常见真值字符串。"""
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 class Settings:
@@ -59,6 +60,7 @@ class Settings:
 
     @classmethod
     def validate(cls):
+        """校验关键配置是否存在并可访问。"""
         if not cls.LLM_API_KEY:
             raise ValueError("缺少 LLM_API_KEY，请检查 .env")
         if not cls.RAG_FILE_PATH.exists():

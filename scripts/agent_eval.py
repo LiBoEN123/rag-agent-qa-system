@@ -44,10 +44,12 @@ DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs" / "agent_eval"
 # 3. 通用小工具函数
 # =========================
 def ensure_output_dir(output_dir: Path) -> None:
+    """确保评测输出目录存在。"""
     output_dir.mkdir(parents=True, exist_ok=True)
 
 
 def read_json(path: Path) -> Any:
+    """读取 JSON 文件并在不存在时抛出清晰错误。"""
     if not path.exists():
         raise FileNotFoundError(f"找不到评测集文件：{path}")
 
@@ -56,11 +58,13 @@ def read_json(path: Path) -> Any:
 
 
 def write_json(path: Path, data: Any) -> None:
+    """将对象以 UTF-8 JSON 格式写入文件。"""
     with path.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 def shorten(text: Any, max_len: int = 120) -> str:
+    """将任意值转换成单行短文本，超长时截断。"""
     text = "" if text is None else str(text)
     text = text.replace("\n", " ").replace("\r", " ")
     if len(text) <= max_len:
@@ -69,6 +73,7 @@ def shorten(text: Any, max_len: int = 120) -> str:
 
 
 def safe_lower(text: Any) -> str:
+    """安全地把任意值转换成 casefold 后的小写文本。"""
     return "" if text is None else str(text).casefold()
 
 
@@ -125,6 +130,7 @@ def init_rag_for_eval(force_rebuild: bool = False) -> None:
 # 5. 从 Agent 结果中提取实际行为
 # =========================
 def get_first_trace(result: dict) -> dict:
+    """从 Agent 结果中取出第一条 tool_trace。"""
     trace = result.get("tool_trace") or []
     if isinstance(trace, list) and trace:
         first = trace[0]
@@ -177,6 +183,7 @@ def build_search_text(result: dict) -> str:
 
 
 def check_keywords(case: dict, result: dict) -> dict:
+    """检查结果文本是否命中评测用例要求的关键词。"""
     expected_keywords = case.get("expected_keywords", []) or []
 
     if not expected_keywords:
@@ -217,6 +224,7 @@ def check_keywords(case: dict, result: dict) -> dict:
 
 
 def extract_reference_sources(result: dict) -> list[str]:
+    """从引用列表中提取可用于来源匹配的文件或路径。"""
     references = result.get("references", []) or []
 
     sources = []
@@ -234,6 +242,7 @@ def extract_reference_sources(result: dict) -> list[str]:
 
 
 def check_sources(case: dict, result: dict) -> dict:
+    """检查实际引用来源是否命中评测用例要求的来源。"""
     expected_sources = case.get("expected_sources", []) or []
 
     if not expected_sources:
@@ -270,6 +279,7 @@ def check_sources(case: dict, result: dict) -> dict:
 # 7. 单条 case 判分
 # =========================
 def evaluate_one_case(case: dict, top_k: int) -> dict:
+    """运行单条 Agent 评测用例并返回完整判分结果。"""
     case_id = case.get("id", "")
     question = case.get("question", "")
 
@@ -441,6 +451,7 @@ def diagnose_error(
     keyword_check: dict,
     source_check: dict,
 ) -> tuple[str, str]:
+    """根据各项检查结果定位评测失败类型和原因。"""
     if not decision_pass:
         return (
             "decision_error",
@@ -484,6 +495,7 @@ def diagnose_error(
 # 8. 汇总指标
 # =========================
 def calc_metrics(rows: list[dict]) -> dict:
+    """汇总所有评测行，计算通过率和核心分类指标。"""
     total = len(rows)
     passed = sum(1 for r in rows if r["passed"])
 
@@ -519,6 +531,7 @@ def calc_metrics(rows: list[dict]) -> dict:
     )
 
     def rate(n: int, d: int) -> float:
+        """安全计算比率，避免分母为零。"""
         if d == 0:
             return 0.0
         return round(n / d, 4)
@@ -549,6 +562,7 @@ def calc_metrics(rows: list[dict]) -> dict:
 # 9. 输出 CSV
 # =========================
 def write_csv(path: Path, rows: list[dict]) -> None:
+    """将评测明细写入 CSV 报告。"""
     fieldnames = [
         "id",
         "category",
@@ -625,6 +639,7 @@ def write_csv(path: Path, rows: list[dict]) -> None:
 # 10. 控制台打印
 # =========================
 def print_summary(metrics: dict, rows: list[dict]) -> None:
+    """在控制台打印评测总览和失败样例。"""
     print("\n==============================")
     print("Agent 评测结果")
     print("==============================")
@@ -676,6 +691,7 @@ def print_summary(metrics: dict, rows: list[dict]) -> None:
 # 11. main
 # =========================
 def main() -> None:
+    """解析命令行参数并执行完整 Agent 评测流程。"""
     parser = argparse.ArgumentParser(description="最小 Agent 评测脚本")
 
     parser.add_argument(

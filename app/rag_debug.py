@@ -2,10 +2,12 @@ from app.rag_retrieval import make_snippet
 
 
 def preview_docs(docs_registry):
+    """原样返回文档注册信息，用于调试接口展示。"""
     return docs_registry
 
 
 def preview_chunks(chunks, max_len:int, limit: int = 70, file_name: str | None = None):
+    """生成 chunk 预览数据，可按文件名过滤并限制长度。"""
     result = []
 
     for item in chunks:
@@ -28,6 +30,7 @@ def preview_chunks(chunks, max_len:int, limit: int = 70, file_name: str | None =
 
 
 def get_chunk_full_text(chunks, chunk_id: int | str):
+    """在 chunk 列表中按 chunk_id 查找完整文本和元信息。"""
     for item in chunks:
         if str(item["metadata"].get("chunk_id")) == str(chunk_id):
             return {

@@ -32,10 +32,12 @@ QUESTIONS = [
 
 
 def now_str() -> str:
+    """生成带毫秒精度的当前时间字符串。"""
     return datetime.now().isoformat(timespec="milliseconds")
 
 
 def percentile(values, p: float) -> float:
+    """计算延迟列表的指定百分位数。"""
     if not values:
         return 0.0
 
@@ -56,6 +58,7 @@ async def send_one_request(
     request_index: int,
     question: str,
 ):
+    """异步发送一次 /chat 请求并记录客户端侧结果。"""
     trace_id = f"perf_c{concurrency}_r{request_index}_{int(time.time() * 1000)}"
 
     payload = {
@@ -133,6 +136,7 @@ async def send_one_request(
 
 
 async def run_one_concurrency_level(concurrency: int):
+    """按指定并发数并发请求 /chat 并汇总延迟。"""
     print(f"\n[perf] 开始测试并发数: {concurrency}")
 
     limits = httpx.Limits(
@@ -195,6 +199,7 @@ async def run_one_concurrency_level(concurrency: int):
 
 
 async def warm_up():
+    """发送一次预热请求，减少冷启动对压测结果的影响。"""
     print("[perf] warm-up 请求开始，不计入最终结果")
 
     async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
@@ -213,6 +218,7 @@ async def warm_up():
 
 
 async def main():
+    """执行完整并发压测流程并写入 JSONL 结果。"""
     if RESULT_FILE.exists():
         RESULT_FILE.unlink()
 

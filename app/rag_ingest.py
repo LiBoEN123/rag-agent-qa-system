@@ -14,6 +14,7 @@ SUPPORTED_SUFFIXES = {".txt", ".md"}
 
 
 def read_txt_auto(file_path: str) -> str:
+    """自动识别文本编码并读取文件内容。"""
     raw = Path(file_path).read_bytes()
     result = from_bytes(raw).best()
     if result is None:
@@ -22,6 +23,7 @@ def read_txt_auto(file_path: str) -> str:
 
 
 def collect_supported_files(data_dir: str):
+    """收集 data 目录中支持的 txt 和 md 文件。"""
     root = Path(data_dir)
 
     if not root.exists():
@@ -38,6 +40,7 @@ def collect_supported_files(data_dir: str):
 
 
 def load_files(data_dir: str):
+    """读取支持的文档并生成原始文档列表和文档注册表。"""
     files = collect_supported_files(data_dir)
     if not files:
         return [], []
@@ -69,6 +72,7 @@ def load_files(data_dir: str):
 
 
 def clean_text(text: str) -> str:
+    """统一换行和空白，得到更稳定的纯文本。"""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
@@ -76,12 +80,14 @@ def clean_text(text: str) -> str:
 
 
 def clean_markdown_text(text: str) -> str:
+    """在通用清洗基础上移除 Markdown 注释。"""
     text = clean_text(text)
     text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
     return text.strip()
 
 
 def clean_documents(raw_docs: list[dict]):
+    """按文件类型清洗原始文档内容。"""
     cleaned_docs = []
 
     for doc in raw_docs:
@@ -105,6 +111,7 @@ def split_txt_doc(
     chunk_size: int = Settings.CHUNK_SIZE,
     chunk_overlap: int = Settings.CHUNK_OVERLAP
 ):
+    """将 txt 文档切分成带元数据的 chunk。"""
     text = doc["text"]
 
     splitter = RecursiveCharacterTextSplitter(
@@ -142,6 +149,7 @@ def split_md_doc(
     chunk_size: int = Settings.CHUNK_SIZE,
     chunk_overlap: int = Settings.CHUNK_OVERLAP
 ):
+    """按 Markdown 标题层级和长度切分文档。"""
     text = doc["text"]
 
     md_splitter = MarkdownHeaderTextSplitter(
@@ -193,6 +201,7 @@ def split_doc(
     chunk_size: int = Settings.CHUNK_SIZE,
     chunk_overlap: int = Settings.CHUNK_OVERLAP
 ):
+    """按文件类型选择合适的切分逻辑。"""
     if doc["file_type"] == "txt":
         return split_txt_doc(doc, chunk_size, chunk_overlap)
     if doc["file_type"] == "md":
@@ -205,6 +214,7 @@ def split_chunks(
     chunk_size: int = Settings.CHUNK_SIZE,
     chunk_overlap: int = Settings.CHUNK_OVERLAP
 ):
+    """批量切分文档并分配全局 chunk_id。"""
     all_chunks = []
     chunk_count_map = {}
 

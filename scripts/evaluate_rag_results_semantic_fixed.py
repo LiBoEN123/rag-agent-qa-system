@@ -48,7 +48,7 @@ CANONICAL_REPLACEMENTS = [
 
 
 def normalize_text(s: Any) -> str:
-    """Normalize Chinese/English text for loose matching."""
+    """标准化中英文文本，便于宽松匹配。"""
     if s is None:
         return ""
     s = str(s).lower()
@@ -61,7 +61,7 @@ def normalize_text(s: Any) -> str:
 
 
 def is_subsequence(short: str, long: str) -> bool:
-    """Allow small insertions between Chinese key-point words, e.g. 可以多个应用实例 -> 可以创建多个Vue应用实例."""
+    """判断短文本是否按顺序出现在长文本中，允许中间插入字符。"""
     if not short or len(short) < 4:
         return False
     it = iter(long)
@@ -69,6 +69,7 @@ def is_subsequence(short: str, long: str) -> bool:
 
 
 def has_any(text: str, aliases: Iterable[str]) -> bool:
+    """判断文本是否命中任一同义表达或宽松子序列。"""
     norm = normalize_text(text)
     for a in aliases:
         na = normalize_text(a)
@@ -120,11 +121,12 @@ def match_point(answer: str, point: Dict[str, Any]) -> bool:
 
 
 def is_refusal(answer: str) -> bool:
+    """判断答案是否属于拒答或无法回答。"""
     return has_any(answer, REFUSAL_PATTERNS)
 
 
 def parse_listish(value: Any) -> List[Any]:
-    """Parse JSON list, pipe/comma/space separated strings, or list of dicts."""
+    """将 JSON 列表、分隔字符串或字典列表统一解析为列表。"""
     if value is None or value == "":
         return []
     if isinstance(value, list):
@@ -159,6 +161,7 @@ def parse_listish(value: Any) -> List[Any]:
 
 
 def parse_chunk_ids(pred: Dict[str, Any]) -> List[int]:
+    """从预测记录中提取检索到的 chunk_id 列表。"""
     value = None
     for k in CHUNK_FIELDS:
         if k in pred:
@@ -177,6 +180,7 @@ def parse_chunk_ids(pred: Dict[str, Any]) -> List[int]:
 
 
 def parse_doc_ids(pred: Dict[str, Any]) -> List[str]:
+    """从预测记录中提取检索到的文档标识列表。"""
     value = None
     for k in DOC_FIELDS:
         if k in pred:
@@ -186,6 +190,7 @@ def parse_doc_ids(pred: Dict[str, Any]) -> List[str]:
 
 
 def get_answer(pred: Dict[str, Any]) -> str:
+    """从预测记录的常见答案字段中取出答案文本。"""
     for k in ANSWER_FIELDS:
         if k in pred:
             return "" if pred[k] is None else str(pred[k])
@@ -193,6 +198,7 @@ def get_answer(pred: Dict[str, Any]) -> str:
 
 
 def load_eval(path: Path) -> List[Dict[str, Any]]:
+    """读取评测集文件并兼容 list 或带 items 的对象。"""
     obj = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(obj, dict) and "items" in obj:
         return obj["items"]
@@ -202,6 +208,7 @@ def load_eval(path: Path) -> List[Dict[str, Any]]:
 
 
 def load_predictions(path: Path) -> Dict[str, Dict[str, Any]]:
+    """读取 CSV、JSONL 或 JSON 预测结果并按 qid 建索引。"""
     suffix = path.suffix.lower()
     rows: List[Dict[str, Any]] = []
     if suffix == ".csv":
@@ -239,6 +246,7 @@ def load_predictions(path: Path) -> Dict[str, Dict[str, Any]]:
 
 
 def load_chunk_doc_map(chunks_file: Path | None) -> Dict[int, str]:
+    """从 chunks.json 中构建 chunk_id 到文档名的映射。"""
     if not chunks_file:
         return {}
     data = json.loads(chunks_file.read_text(encoding="utf-8"))
@@ -251,6 +259,7 @@ def load_chunk_doc_map(chunks_file: Path | None) -> Dict[int, str]:
 
 
 def score_key_points(answer: str, question: Dict[str, Any]) -> Tuple[float, List[str], List[str]]:
+    """计算答案对标准关键点的加权召回率。"""
     points = question.get("gold_key_points", [])
     if not points:
         return 1.0, [], []
@@ -270,7 +279,7 @@ def score_key_points(answer: str, question: Dict[str, Any]) -> Tuple[float, List
 
 
 def has_negation_near(answer: str, start: int, end: int, window: int = 36) -> bool:
-    """If the model says '文档没有提供 X', X should not be counted as hallucination."""
+    """判断命中片段附近是否存在否定语境，避免把拒答当幻觉。"""
     left = max(0, start - window)
     right = min(len(answer), end + window)
     ctx = answer[left:right]
@@ -278,7 +287,7 @@ def has_negation_near(answer: str, start: int, end: int, window: int = 36) -> bo
 
 
 def regex_forbidden_hit(answer: str, point: str) -> bool:
-    """Precise rules for common forbidden types to avoid false positives."""
+    """用精确正则识别常见禁止信息，降低误报。"""
     # 只有真的给出百分比数值，才算“百分比数值”幻觉；“没有提供百分比”不算。
     if "百分比" in point:
         return bool(re.search(r"\d+(?:\.\d+)?\s*%|百分之[一二三四五六七八九十百千万零点\d]+", answer))
@@ -299,7 +308,7 @@ def regex_forbidden_hit(answer: str, point: str) -> bool:
 
 
 def alias_forbidden_hit(answer: str, alias: str) -> bool:
-    """Forbidden matching with context negation and safer English token boundaries."""
+    """结合否定语境和英文边界判断 forbidden alias 是否命中。"""
     if not alias:
         return False
     # 单字符 forbidden 太容易误报，比如 k、行，直接跳过。
@@ -335,6 +344,7 @@ def is_regex_only_forbidden(point: str) -> bool:
 
 
 def score_forbidden(answer: str, question: Dict[str, Any]) -> Tuple[bool, List[str]]:
+    """检查答案是否命中不应出现的禁止信息。"""
     hits = []
     for p in question.get("forbidden_points", []):
         point = p.get("point", "")
@@ -353,21 +363,7 @@ def score_forbidden(answer: str, question: Dict[str, Any]) -> Tuple[bool, List[s
 
 
 def score_retrieval(pred: Dict[str, Any], question: Dict[str, Any], chunk_doc_map: Dict[int, str], k: int) -> Dict[str, Any]:
-    """
-    Retrieval metrics at top-k.
-
-    chunk_hit_at_k:
-        Whether at least one gold chunk is included in top-k retrieved chunks.
-        This is a loose metric.
-
-    gold_chunk_recall_at_k:
-        matched gold chunks / all gold chunks.
-        This measures how complete the retrieved evidence is.
-
-    all_gold_hit_at_k:
-        Whether all gold chunks are included in top-k retrieved chunks.
-        This is strict and especially useful for cross-doc / multi-evidence questions.
-    """
+    """基于预测召回结果计算 top-k 检索命中和召回指标。"""
     retrieved = parse_chunk_ids(pred)
     retrieved_at_k = retrieved[:k] if k and k > 0 else retrieved
 
@@ -417,6 +413,7 @@ def score_retrieval(pred: Dict[str, Any], question: Dict[str, Any], chunk_doc_ma
 
 
 def behavior_score(answer: str, expected: str, key_recall: float, forbidden_hit: bool) -> Tuple[float, str]:
+    """按期望行为、关键点覆盖和禁用信息给答案行为打分。"""
     refused = is_refusal(answer)
     if not answer.strip():
         return 0.0, "empty_answer"
@@ -455,6 +452,7 @@ def behavior_score(answer: str, expected: str, key_recall: float, forbidden_hit:
 
 
 def final_score(expected: str, behavior: float, key_recall: float, retrieval_hit: float, forbidden_hit: bool) -> float:
+    """综合行为、关键点、检索和禁用命中计算最终分数。"""
     clean = 0.0 if forbidden_hit else 1.0
     if expected == "abstain":
         return 0.70 * behavior + 0.20 * key_recall + 0.10 * clean
@@ -464,6 +462,7 @@ def final_score(expected: str, behavior: float, key_recall: float, retrieval_hit
 
 
 def evaluate(eval_items: List[Dict[str, Any]], preds: Dict[str, Dict[str, Any]], chunk_doc_map: Dict[int, str], k: int) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """对所有评测题逐条判分并生成汇总。"""
     rows = []
     for q in eval_items:
         qid = str(q["qid"])
@@ -514,10 +513,12 @@ def evaluate(eval_items: List[Dict[str, Any]], preds: Dict[str, Dict[str, Any]],
 
 
 def mean(values: List[float]) -> float:
+    """安全计算均值，空列表返回 0。"""
     return sum(values) / len(values) if values else 0.0
 
 
 def summarize(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """按整体、类别、难度和期望行为汇总评测指标。"""
     groups = {
         "overall": rows,
     }
@@ -546,6 +547,7 @@ def summarize(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
+    """将逐题评测结果写入 CSV。"""
     if not rows:
         return
     with path.open("w", encoding="utf-8-sig", newline="") as f:
@@ -555,6 +557,7 @@ def write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
 
 
 def write_summary_csv(path: Path, summary: Dict[str, Any]) -> None:
+    """将汇总指标写入 CSV。"""
     rows = []
     for group, metrics in summary.items():
         rows.append({"group": group, **metrics})
@@ -565,6 +568,7 @@ def write_summary_csv(path: Path, summary: Dict[str, Any]) -> None:
 
 
 def main() -> None:
+    """解析参数、运行语义评测并输出报告文件。"""
     ap = argparse.ArgumentParser()
     ap.add_argument("--eval-file", required=True, type=Path)
     ap.add_argument("--pred-file", required=True, type=Path)

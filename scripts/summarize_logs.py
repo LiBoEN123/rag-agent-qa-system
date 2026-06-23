@@ -469,6 +469,7 @@ def render_report(
 
 
 def main() -> None:
+    """解析日志汇总参数，读取 JSONL 日志并生成 Markdown 报告。"""
     parser = argparse.ArgumentParser(
         description="统计 RAG/Agent 日志，生成第九周运行报告。"
     )

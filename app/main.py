@@ -241,6 +241,7 @@ EXPECTED_NON_BAD_CASE_TYPES = {
 
 def should_write_bad_case(record: dict) -> bool:
     # 判断是否真的要写入 bad_cases.jsonl。
+    """根据 error_type 判断记录是否应该写入 bad_cases.jsonl。"""
     error_type = str(record.get("error_type", "") or "").strip()
 
     if error_type in REAL_BAD_CASE:
@@ -255,10 +256,12 @@ def should_write_bad_case(record: dict) -> bool:
     return False
 
 def now_iso() -> str:
+    """生成带毫秒精度的当前时间字符串。"""
     return datetime.now().isoformat(timespec="milliseconds")
 
 @app.middleware("http")
 async def trace_and_timing_middleware(request: Request, call_next):
+    """为 /chat 请求注入 trace_id 并记录请求总耗时。"""
     if request.url.path != "/chat":
         return await call_next(request)
 
@@ -305,6 +308,7 @@ async def trace_and_timing_middleware(request: Request, call_next):
 
 def normalize_metrics_status(result_status: str) -> str:
 
+    """将内部大写状态转换成 metrics.jsonl 使用的统计状态。"""
     status_map = {
         "OK": "success",
         "NO_RELEVANT_INFO": "no_relevant_info",
@@ -319,6 +323,7 @@ def normalize_metrics_status(result_status: str) -> str:
 
 def collect_trace_metrics(result: dict) -> dict:
 
+    """从 Agent 的 tool_trace 中提取检索、工具调用和耗时信息。"""
     tool_trace = result.get("tool_trace") or []
 
     retrieved_count = 0
@@ -351,6 +356,7 @@ def collect_trace_metrics(result: dict) -> dict:
 
 def write_metrics(record: dict) -> None:
 
+    """将一条指标记录追加写入 metrics.jsonl。"""
     METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     with METRICS_PATH.open("a", encoding="utf-8") as f:
@@ -399,6 +405,7 @@ def write_bad_cases(record: dict) -> None:
 
 def log_and_write_metrics(record: dict) -> None:
 
+    """打印指标日志并持久化到 metrics.jsonl。"""
     logger.info(
         f"[trace_id={record.get('trace_id')}] "
         "[metrics] "
@@ -446,6 +453,7 @@ def build_chat_response(code:int|str,
                         tool_result_summary:str = "",
                         tool_trace:list | None = None,
                         ) -> ChatResponse:
+    """按统一响应模型组装 /chat 返回数据。"""
     return ChatResponse(code=code,
                         message=message,
                         trace_id=trace_id,
@@ -465,6 +473,7 @@ def build_chat_response(code:int|str,
                         )
 
 def get_normalize_status(result: dict) -> str:
+    """将 Agent 结果状态映射为对外公开的响应状态。"""
     status = result.get("status", "")
 
     status_map = {
@@ -479,6 +488,7 @@ def get_normalize_status(result: dict) -> str:
     return status_map.get(status, "unknown")
 
 def log_final_status(trace_id: str, result: dict):
+    """记录最终回答状态、引用数量和是否需要澄清。"""
     answer_status = get_normalize_status(result)
     reference_count = len(result.get("references") or [])
     need_clarification = result.get("need_clarification", False)
@@ -490,6 +500,7 @@ def log_final_status(trace_id: str, result: dict):
 
 def read_recent_metrics(limit: int = 20) -> list[dict]:
 
+    """读取最近若干条 metrics.jsonl 记录供汇总接口使用。"""
     if not METRICS_PATH.exists():
         return []
 
@@ -514,6 +525,7 @@ def read_recent_metrics(limit: int = 20) -> list[dict]:
 
 @app.on_event("startup")
 def start_on_event():
+    """FastAPI 启动时校验配置并加载或重建 RAG 索引。"""
     Settings.validate()
 
     data_dir = str(Settings.RAG_FILE_PATH)
@@ -552,6 +564,7 @@ def start_on_event():
 
 @app.get("/health")
 def health():
+    """返回服务健康检查结果。"""
     return {
   "code": 0,
   "message": "success",
@@ -562,6 +575,7 @@ def health():
 
 @app.post("/chat", response_model=ChatResponse)
 def ask_api(req: ChatRequest, request: Request, response: Response):
+    """处理 /chat 请求，串联校验、路由、Agent 执行、指标和响应构造。"""
     process_start_perf = time.perf_counter()
     process_start_time = now_iso()
 
@@ -1016,6 +1030,7 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
 
 @app.get("/docs-preview")
 def docs_preview():
+    """返回知识库文档注册表预览。"""
     docs = preview_docs()
     return {"count":len(docs), "data":docs}
 
@@ -1024,11 +1039,13 @@ def chunks_preview(
         max_len:int = Query(default=300, ge=1, le=1000),
         limit:int = Query(70, ge=1, le=1000),
         file_name:str | None=Query(None)):
+    """返回知识库 chunk 的简短预览列表。"""
     data = preview_chunks(max_len,limit, file_name)
     return {"count":len(data), "data":data}
 
 @app.post("/search", response_model=SearchResponse)
 def search_api(req:ChatRequest, response:Response):
+    """处理 /search 请求，只执行检索和重排并返回候选片段。"""
     question = (req.question or "").strip()
     logger.info(f"[search] 收到请求，question_len={len(question)}，question_preview={question[:50]}")
 
@@ -1175,6 +1192,7 @@ def search_api(req:ChatRequest, response:Response):
 
 @app.post("/kb_summary")
 def kb_summary():
+    """返回知识库就绪状态、文档数量和文档列表。"""
     status = get_rag_status()
     docs = preview_docs()
 
@@ -1193,6 +1211,7 @@ def kb_summary():
 
 @app.post("/decide")
 def decide_api(req:ChatRequest, response:Response):
+    """返回给定问题的 Agent 路由决策，便于调试。"""
     question = (req.question or "").strip()
 
     if not question:
@@ -1224,6 +1243,7 @@ def decide_api(req:ChatRequest, response:Response):
 
 @app.get("/metrics-summary")
 def metrics_summary(limit: int = Query(20, ge=1, le=200)):
+    """汇总最近的指标记录，返回状态分布和平均延迟。"""
     records = read_recent_metrics(limit)
 
     status_counter = Counter(record.get("status", "unknown") for record in records)

@@ -20,6 +20,7 @@ EMBEDDINGS_CACHE_PATH = INDEX_STORE_DIR / "doc_embeddings.npy"
 
 
 def build_index(all_chunks: list[dict], model=None, rerank_model=None):
+    """基于 chunk 文本构建 BM25、向量嵌入和重排模型。"""
     if not all_chunks:
         return {
             "texts": [],
@@ -56,6 +57,7 @@ def build_index(all_chunks: list[dict], model=None, rerank_model=None):
 
 
 def build_file_snapshot(data_dir: str):
+    """记录知识库文件的路径、大小和修改时间快照。"""
     files = collect_supported_files(data_dir)
     snapshot = []
 
@@ -76,6 +78,7 @@ def build_current_manifest(
     chunk_size: int = Settings.CHUNK_SIZE,
     chunk_overlap: int = Settings.CHUNK_OVERLAP
 ):
+    """生成当前索引构建配置和文件快照的 manifest。"""
     return {
         "pipeline_version": 1,
         "embedding_model": Settings.EMBEDDING_MODEL_NAME,
@@ -89,6 +92,7 @@ def build_current_manifest(
 
 
 def load_manifest():
+    """从磁盘读取历史索引 manifest。"""
     if not MANIFEST_PATH.exists():
         return None
 
@@ -99,6 +103,7 @@ def load_manifest():
 
 
 def save_manifest(manifest: dict):
+    """将当前 manifest 写入磁盘。"""
     MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
     MANIFEST_PATH.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2),
@@ -111,6 +116,7 @@ def needs_rebuild(
     chunk_size: int = Settings.CHUNK_SIZE,
     chunk_overlap: int = Settings.CHUNK_OVERLAP
 ) -> tuple[bool, str]:
+    """对比历史 manifest 与当前状态判断是否需要重建索引。"""
     old_manifest = load_manifest()
     current_manifest = build_current_manifest(data_dir, chunk_size, chunk_overlap)
 
@@ -136,6 +142,7 @@ def needs_rebuild(
 
 
 def index_cache_exists() -> bool:
+    """检查索引缓存所需文件是否都存在。"""
     return all([
         CHUNKS_CACHE_PATH.exists(),
         TEXTS_CACHE_PATH.exists(),
@@ -150,6 +157,7 @@ def save_index_cache(
     docs_registry: list[dict],
     doc_embeddings
 ):
+    """将 chunks、texts、文档注册表和向量矩阵保存到缓存。"""
     INDEX_STORE_DIR.mkdir(parents=True, exist_ok=True)
 
     CHUNKS_CACHE_PATH.write_text(
@@ -171,6 +179,7 @@ def save_index_cache(
 
 
 def load_index_cache(model=None, rerank_model=None):
+    """从缓存恢复索引数据、BM25 和模型实例。"""
     if not index_cache_exists():
         return {
             "ok": False,

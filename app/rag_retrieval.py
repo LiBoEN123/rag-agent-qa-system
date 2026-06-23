@@ -23,10 +23,12 @@ AMBIGUOUS_WORDS = [
 # 通用文本与分数工具
 # =========================
 def tokenize(text: str):
+    """使用 jieba 对文本分词，供 BM25 检索使用。"""
     return list(jieba.cut(text))
 
 
 def minmax_score(x: np.ndarray):
+    """将一组分数归一化到 0 到 1 区间。"""
     x = x.astype(np.float32)
     if np.allclose(x.min(), x.max()):
         return np.zeros_like(x)
@@ -34,6 +36,7 @@ def minmax_score(x: np.ndarray):
 
 
 def clamp01(value: float) -> float:
+    """将数值限制在 0 到 1 区间。"""
     value = float(value)
     if value < 0:
         return 0.0
@@ -43,6 +46,7 @@ def clamp01(value: float) -> float:
 
 
 def make_snippet(text: str, max_len: int = 300) -> str:
+    """去除文本空白并截取指定长度的预览片段。"""
     text = "".join((text or "").split())
     return text[:max_len]
 
@@ -52,6 +56,7 @@ def make_snippet(text: str, max_len: int = 300) -> str:
 # =========================
 def rerank(rerank_model, candidates: list[dict], question: str=""):
 
+    """使用交叉编码器对候选 chunk 按相关性重排。"""
     if not candidates:
         return []
 
@@ -86,6 +91,7 @@ def default_decompose_result(reason: str = "query decomposition skipped") -> dic
 
 
 def parse_decompose_bool(value) -> bool:
+    """将拆分模型返回的布尔样值转换为 bool。"""
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
@@ -199,6 +205,7 @@ def retrieve(
     model,
     top_k: int = 5
 ):
+    """综合 BM25 和向量相似度召回候选 chunk。"""
     if bm25 is None or doc_embeddings is None or model is None:
         return []
 
@@ -345,6 +352,7 @@ def search_relevant_chunks(
     model,
     top_k: int = 5
 ) -> List[Dict[str, Any]]:
+    """对基础 retrieve 做薄封装，返回相关 chunk 列表。"""
     return retrieve(question, chunks, bm25, doc_embeddings, model, top_k)
 
 
@@ -352,6 +360,7 @@ def search_relevant_chunks(
 # 结果判定与澄清
 # =========================
 def should_refuse(retrieved_chunks, vector_threshold: float = None):
+    """根据召回结果和向量阈值判断是否应该拒答。"""
     vector_threshold = (
         vector_threshold
         if vector_threshold is not None
@@ -373,6 +382,7 @@ def should_refuse(retrieved_chunks, vector_threshold: float = None):
 
 
 def is_ambiguous_question(question: str) -> bool:
+    """判断问题是否过短或存在明显指代不明。"""
     q = (question or "").strip()
     if not q:
         return True
@@ -384,6 +394,7 @@ def is_ambiguous_question(question: str) -> bool:
 
 
 def build_clarification_question(question: str) -> str:
+    """根据问题关键词生成澄清追问。"""
     q = (question or "").strip()
 
     if "退款" in q:

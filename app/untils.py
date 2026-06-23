@@ -2,6 +2,7 @@ import logging
 import sys
 
 def get_logger(name:str = "app"):
+    """创建或复用统一格式的 stdout 日志记录器。"""
     logger = logging.getLogger(name)
 
     if logger.handlers:

@@ -17,6 +17,7 @@ init_rag(data_dir=str(Settings.RAG_FILE_PATH),
          chunk_overlap=Settings.CHUNK_OVERLAP)
 
 def load_eval_questions(eval_file):
+    """读取评测题列表，兼容 list 和带 items 的 JSON 对象。"""
     with open(eval_file, "r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -30,6 +31,7 @@ def load_eval_questions(eval_file):
 
 
 def run_rag_once(question: str, top_k: int):
+    """对单个问题运行 RAG 并返回答案及召回 chunk_id。"""
     retrieved_chunks = retrieve(question, top_k)
     result = ask(question, top_k, retrieved_chunks)
     final_chunks = result.get("final_chunks")
@@ -44,6 +46,7 @@ def run_rag_once(question: str, top_k: int):
 
 
 def main():
+    """批量生成预测结果并写入 CSV。"""
     parser = argparse.ArgumentParser()
     parser.add_argument("--eval-file", required=True)
     parser.add_argument("--out-file", required=True)

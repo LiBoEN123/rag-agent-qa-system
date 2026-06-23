@@ -145,6 +145,7 @@ def run_one_request(case: dict, round_index: int) -> dict:
 # =========================
 
 def save_results(rows: list[dict]):
+    """将压测明细写入 CSV 文件。"""
     if not rows:
         print("[perf] 没有结果可保存")
         return
@@ -177,6 +178,7 @@ def save_results(rows: list[dict]):
 # =========================
 
 def print_summary(rows: list[dict]):
+    """按 case 打印压测成功次数和延迟统计。"""
     print("\n========== 压测汇总 ==========")
 
     case_names = sorted(set(row["case_name"] for row in rows))
@@ -212,6 +214,7 @@ def print_summary(rows: list[dict]):
 # =========================
 
 def main():
+    """执行同步 /chat 压测并保存结果。"""
     print("[perf] 开始压测 /chat")
     print(f"[perf] 请求地址: {CHAT_URL}")
     print(f"[perf] 每个 case 重复次数: {REPEAT_TIMES}")

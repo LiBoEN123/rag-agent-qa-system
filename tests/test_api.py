@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 import app.main as main
 
 def make_client(monkeypatch):
+    """构造带配置 monkeypatch 的 FastAPI 测试客户端。"""
     monkeypatch.setattr(main.Settings, "validate", lambda : None, raising=False)
     monkeypatch.setattr(main.Settings, "RAG_FILE_PATH", "data", raising=False)
     monkeypatch.setattr(main.Settings, "CHUNK_SIZE", 800, raising=False)
@@ -10,6 +11,7 @@ def make_client(monkeypatch):
     return TestClient(main.app)
 
 def test_health(monkeypatch):
+    """验证 /health 接口返回成功状态。"""
     with make_client(monkeypatch) as client:
         resp = client.get("/health")
 
@@ -18,6 +20,7 @@ def test_health(monkeypatch):
     assert resp.json()["data"]["status"] == "ok"
 
 def test_chat_basic(monkeypatch):
+    """验证 /chat 在 mock Agent 结果下返回标准成功响应。"""
     fake_chunks = [
         {
         "reference_id": "Reference 1",
