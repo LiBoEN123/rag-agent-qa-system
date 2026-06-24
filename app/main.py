@@ -1204,6 +1204,7 @@ def kb_summary():
             "message":status.get("message"),
             "doc_count":status.get("doc_count"),
             "chunk_count":status.get("chunk_count"),
+            "index_source": status.get("index_source", "unknown"),
             "file_names":[doc["file_name"] for doc in docs],
             "documents":docs
         }

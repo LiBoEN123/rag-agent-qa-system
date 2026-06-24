@@ -7,6 +7,7 @@ import numpy as np
 import requests
 
 from app.config import Settings
+from app.chroma_store import ChromaUnavailableError, query_chroma
 from app.prompts import DECOMPOSE_PROMPT
 from app.untils import get_logger
 
@@ -197,7 +198,33 @@ def decompose_query_with_llm(question: str):
 # =========================
 # 检索
 # =========================
-def retrieve(
+def _make_retrieve_result(
+    chunk: dict,
+    rank: int,
+    bm25_score: float,
+    vector_score: float,
+    hybrid_score: float,
+):
+    """将 chunk 和分数组装成统一检索结果结构。"""
+    metadata = chunk.get("metadata") or {}
+    text = chunk.get("text", "") or ""
+
+    return {
+        "reference_id": f"Reference {rank}",
+        "file_name": metadata.get("file_name", "unknown"),
+        "source_path": metadata.get("source_path", "unknown"),
+        "chunk_id": metadata.get("chunk_id", f"chunk_{rank}"),
+        "position": metadata.get("position"),
+        "text": text,
+        "snippet": make_snippet(text),
+        "bm25_score": float(bm25_score),
+        "vector_score": float(vector_score),
+        "hybrid_score": float(hybrid_score),
+        "metadata": metadata,
+    }
+
+
+def _retrieve_with_local_embeddings(
     question: str,
     chunks: list[dict],
     bm25,
@@ -205,12 +232,8 @@ def retrieve(
     model,
     top_k: int = 5
 ):
-    """综合 BM25 和向量相似度召回候选 chunk。"""
-    if bm25 is None or doc_embeddings is None or model is None:
-        return []
-
-    question = (question or "").strip()
-    if not question:
+    """使用本地 numpy embedding 矩阵执行旧版混合召回。"""
+    if doc_embeddings is None:
         return []
 
     tokenized_question = tokenize(question)
@@ -233,28 +256,151 @@ def retrieve(
 
     raw_results = []
     for rank, idx in enumerate(top_indices, start=1):
-        metadata = chunks[idx]["metadata"]
-        raw_results.append({
-            "reference_id": f"Reference {rank}",
-            "file_name": metadata.get("file_name", "unknown"),
-            "source_path": metadata.get("source_path", "unknown"),
-            "chunk_id": metadata.get("chunk_id", f"chunk_{idx}"),
-            "position": metadata.get("position"),
-            "text": chunks[idx]["text"],
-            "snippet": make_snippet(chunks[idx]["text"]),
-            "bm25_score": float(bm25_score[idx]),
-            "vector_score": float(vector_score[idx]),
-            "hybrid_score": float(hybrid_score[idx]),
-            "metadata": metadata,
-        })
+        raw_results.append(
+            _make_retrieve_result(
+                chunk=chunks[idx],
+                rank=rank,
+                bm25_score=float(bm25_score[idx]),
+                vector_score=float(vector_score[idx]),
+                hybrid_score=float(hybrid_score[idx]),
+            )
+        )
 
-    final_results = raw_results
+    return raw_results
 
-    for rank, item in enumerate(final_results, start=1):
-        item["reference_id"] = f"Reference {rank}"
 
-    return final_results
+def _retrieve_with_chroma(
+    question: str,
+    chunks: list[dict],
+    bm25,
+    model,
+    top_k: int = 5
+):
+    """使用 ChromaDB 做向量召回，并与 BM25 候选合并。"""
+    candidate_k = max(top_k * 5, top_k)
 
+    question_embedding = model.encode(
+        [question],
+        normalize_embeddings=True,
+        convert_to_numpy=True
+    )[0]
+
+    chroma_hits = query_chroma(question_embedding, n_results=candidate_k)
+    if not chroma_hits:
+        return []
+
+    tokenized_question = tokenize(question)
+    bm25_scores = bm25.get_scores(tokenized_question)
+    bm25_top_indices = np.argsort(bm25_scores)[::-1][:candidate_k]
+
+    chunk_by_id = {}
+    for idx, chunk in enumerate(chunks):
+        chunk_id = str((chunk.get("metadata") or {}).get("chunk_id", ""))
+        if chunk_id:
+            chunk_by_id[chunk_id] = (idx, chunk)
+
+    candidates = {}
+
+    for hit in chroma_hits:
+        metadata = hit.get("metadata") or {}
+        chunk_id = str(metadata.get("chunk_id", ""))
+        idx, chunk = chunk_by_id.get(chunk_id, (None, None))
+
+        if chunk is None:
+            chunk = {
+                "text": hit.get("text", "") or "",
+                "metadata": metadata,
+            }
+
+        candidate_key = chunk_id or str(hit.get("record_id", ""))
+        candidates[candidate_key] = {
+            "chunk": chunk,
+            "bm25_score": float(bm25_scores[idx]) if idx is not None else 0.0,
+            "vector_score": float(hit.get("vector_score", 0.0)),
+        }
+
+    for idx in bm25_top_indices:
+        idx = int(idx)
+        chunk = chunks[idx]
+        metadata = chunk.get("metadata") or {}
+        chunk_id = str(metadata.get("chunk_id", idx))
+
+        if chunk_id not in candidates:
+            candidates[chunk_id] = {
+                "chunk": chunk,
+                "bm25_score": float(bm25_scores[idx]),
+                "vector_score": 0.0,
+            }
+
+    if not candidates:
+        return []
+
+    candidate_items = list(candidates.values())
+    bm25_values = np.array([item["bm25_score"] for item in candidate_items], dtype=np.float32)
+    vector_values = np.array([item["vector_score"] for item in candidate_items], dtype=np.float32)
+
+    bm25_norm = minmax_score(bm25_values)
+    vector_norm = minmax_score(vector_values)
+
+    for item, bm25_part, vector_part in zip(candidate_items, bm25_norm, vector_norm):
+        item["hybrid_score"] = float(0.4 * bm25_part + 0.6 * vector_part)
+
+    candidate_items.sort(key=lambda item: item["hybrid_score"], reverse=True)
+
+    raw_results = []
+    for rank, item in enumerate(candidate_items[:candidate_k], start=1):
+        raw_results.append(
+            _make_retrieve_result(
+                chunk=item["chunk"],
+                rank=rank,
+                bm25_score=item["bm25_score"],
+                vector_score=item["vector_score"],
+                hybrid_score=item["hybrid_score"],
+            )
+        )
+
+    return raw_results
+
+
+def retrieve(
+    question: str,
+    chunks: list[dict],
+    bm25,
+    doc_embeddings,
+    model,
+    top_k: int = 5
+):
+    """综合 BM25 和向量相似度召回候选 chunk，优先使用 ChromaDB 向量库。"""
+    if bm25 is None or model is None:
+        return []
+
+    question = (question or "").strip()
+    if not question:
+        return []
+
+    try:
+        chroma_results = _retrieve_with_chroma(
+            question=question,
+            chunks=chunks,
+            bm25=bm25,
+            model=model,
+            top_k=top_k,
+        )
+        if chroma_results:
+            return chroma_results
+    except ChromaUnavailableError as e:
+        logger.info(f"[retrieve] ChromaDB unavailable, fallback to local embeddings: {e}")
+    except Exception as e:
+        logger.warning(f"[retrieve] ChromaDB query failed, fallback to local embeddings: {e}")
+
+    return _retrieve_with_local_embeddings(
+        question=question,
+        chunks=chunks,
+        bm25=bm25,
+        doc_embeddings=doc_embeddings,
+        model=model,
+        top_k=top_k,
+    )
 
 def retrieve_with_sub_queries(
     question,

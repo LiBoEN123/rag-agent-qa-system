@@ -32,6 +32,7 @@ from app.rag_retrieval import (
 from app.rag_store import (
     build_current_manifest,
     build_index,
+    get_index_cache_source as get_index_cache_source_impl,
     index_cache_exists as index_cache_exists_impl,
     load_index_cache as load_index_cache_impl,
     needs_rebuild as needs_rebuild_impl,
@@ -56,6 +57,7 @@ doc_embeddings = None
 
 RAG_READY = False
 RAG_INIT_MESSAGE = "RAG 尚未初始化"
+INDEX_SOURCE = "none"
 NO_DOCUMENTS_MESSAGE = "当前知识库为空，请先在 data 目录中放入文档后再提问"
 STOP_WORD = "我无法根据提供的文档确定答案"
 
@@ -69,7 +71,8 @@ def get_rag_status():
         "ready": RAG_READY,
         "message": RAG_INIT_MESSAGE,
         "doc_count": len(docs_registry),
-        "chunk_count": len(chunks)
+        "chunk_count": len(chunks),
+        "index_source": INDEX_SOURCE
     }
 
 
@@ -82,7 +85,7 @@ def rebuild_index(
     chunk_overlap: int = Settings.CHUNK_OVERLAP
 ):
     """从 data 目录重新加载文档、切分 chunk，并重建内存索引。"""
-    global chunks, texts, docs_registry, bm25, model, rerank_model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE
+    global chunks, texts, docs_registry, bm25, model, rerank_model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE, INDEX_SOURCE
 
     chunks = []
     texts = []
@@ -93,6 +96,7 @@ def rebuild_index(
     rerank_model = None
     RAG_READY = False
     RAG_INIT_MESSAGE = "RAG 尚未初始化"
+    INDEX_SOURCE = "none"
 
     raw_docs, docs_registry_local = load_files(data_dir)
     if not raw_docs:
@@ -127,6 +131,7 @@ def rebuild_index(
 
     RAG_READY = True
     RAG_INIT_MESSAGE = "OK"
+    INDEX_SOURCE = "memory"
 
 
 def init_rag(
@@ -144,6 +149,7 @@ def rebuild_and_persist_index(
     chunk_overlap: int = Settings.CHUNK_OVERLAP
 ) -> tuple[bool, str]:
     """重建内存索引并在成功后保存缓存和 manifest。"""
+    global INDEX_SOURCE
     rebuild_index(
         data_dir=data_dir,
         chunk_size=chunk_size,
@@ -155,6 +161,7 @@ def rebuild_and_persist_index(
 
     save_index_cache()
     save_manifest(build_current_manifest(data_dir, chunk_size, chunk_overlap))
+    INDEX_SOURCE = get_index_cache_source_impl()
 
     return True, "索引已重建，并已保存到磁盘"
 
@@ -192,13 +199,14 @@ def save_index_cache():
 
 def load_index_cache() -> tuple[bool, str]:
     """从磁盘缓存加载索引并恢复全局 RAG 状态。"""
-    global chunks, texts, docs_registry, bm25, model, rerank_model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE
+    global chunks, texts, docs_registry, bm25, model, rerank_model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE, INDEX_SOURCE
 
     result = load_index_cache_impl(model=model)
 
     if not result["ok"]:
         RAG_READY = False
         RAG_INIT_MESSAGE = result["message"]
+        INDEX_SOURCE = result.get("source", "none")
         return False, RAG_INIT_MESSAGE
 
     chunks = result["chunks"]
@@ -212,10 +220,12 @@ def load_index_cache() -> tuple[bool, str]:
     if not chunks:
         RAG_READY = False
         RAG_INIT_MESSAGE = "索引缓存为空"
+        INDEX_SOURCE = result.get("source", "none")
         return False, RAG_INIT_MESSAGE
 
     RAG_READY = True
     RAG_INIT_MESSAGE = "OK"
+    INDEX_SOURCE = result.get("source", get_index_cache_source_impl())
     return True, result["message"]
 
 

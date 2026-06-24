@@ -1,4 +1,4 @@
-﻿# Mini RAG Agent
+# Mini RAG Agent
 
 一个基于 FastAPI 的中文 RAG 知识库问答项目，并在 RAG 外层加了一层最小 Agent 路由。
 
@@ -92,6 +92,9 @@ Health:  http://127.0.0.1:8000/health
 | --- |---------------------------------------|
 | `RAG_FILE_PATH` | 知识库目录，示例：`./data/kb`                  |
 | `INDEX_STORE_DIR` | 索引缓存目录，示例：`./data/manifest`           |
+| `CHROMA_PERSIST_DIR` | ChromaDB 本地持久化目录，示例：`./data/chroma` |
+| `CHROMA_COLLECTION_NAME` | ChromaDB collection 名称，默认 `mini_rag_chunks` |
+| `ENABLE_CHROMA` | 是否启用 ChromaDB 向量存储；默认 `true`，未安装 chromadb 时会回退到旧缓存 |
 | `TOP_K` | `/chat` 和 `/search` 默认召回条数            |
 | `DECOMPOSE_TOP_K` | 多子问题召回合并后的候选上限                        |
 | `CHUNK_SIZE` | chunk 最大长度                            |
@@ -129,6 +132,9 @@ Health:  http://127.0.0.1:8000/health
 ```env
 RAG_FILE_PATH=./data/kb
 INDEX_STORE_DIR=./data/manifest
+CHROMA_PERSIST_DIR=./data/chroma
+CHROMA_COLLECTION_NAME=mini_rag_chunks
+ENABLE_CHROMA=true
 
 TOP_K=5
 DECOMPOSE_TOP_K=10
@@ -178,7 +184,7 @@ DECOMPOSE_API_URL=http://127.0.0.1:11434/v1/chat/completions
   -> 无变化：从本地缓存加载索引
 ```
 
-缓存文件默认在 `data/manifest/`：
+缓存文件默认在 `data/manifest/`，ChromaDB 向量库默认在 `data/chroma/`。`data/manifest/` 仍保留 manifest、文档注册表和 legacy 缓存，方便兼容和调试：
 
 - `index_manifest.json`
 - `chunks.json`
@@ -187,6 +193,9 @@ DECOMPOSE_API_URL=http://127.0.0.1:11434/v1/chat/completions
 - `doc_embeddings.npy`
 
 以下变化会触发重建：新增/删除/修改知识库文件、修改 `CHUNK_SIZE`、修改 `CHUNK_OVERLAP`、修改 embedding 模型、修改 rerank 模型、pipeline 版本变化。修改 `TOP_K`、Prompt、回答模型名称、温度等通常不需要重建索引。
+
+/kb_summary 会返回 index_source 字段：chroma 表示当前从 ChromaDB collection 加载，legacy 表示使用旧的 JSON/NPY 缓存，memory 表示刚重建完成但尚未重新加载持久化缓存，
+one 表示没有可用索引缓存。
 
 ## API
 
