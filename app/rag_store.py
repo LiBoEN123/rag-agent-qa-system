@@ -1,6 +1,5 @@
 import json
 
-import numpy as np
 import torch
 from rank_bm25 import BM25Okapi
 from sentence_transformers import CrossEncoder, SentenceTransformer
@@ -8,7 +7,6 @@ from sentence_transformers import CrossEncoder, SentenceTransformer
 from app.chroma_store import (
     ChromaUnavailableError,
     chroma_collection_has_chunks,
-    is_chroma_available,
     load_chunks_from_chroma,
     persist_chunks_to_chroma,
 )
@@ -24,10 +22,7 @@ logger = get_logger('chat_service')
 INDEX_STORE_DIR = Settings.INDEX_STORE_DIR
 
 MANIFEST_PATH = INDEX_STORE_DIR / "index_manifest.json"
-CHUNKS_CACHE_PATH = INDEX_STORE_DIR / "chunks.json"
-TEXTS_CACHE_PATH = INDEX_STORE_DIR / "texts.json"
 DOCS_REGISTRY_CACHE_PATH = INDEX_STORE_DIR / "docs_registry.json"
-EMBEDDINGS_CACHE_PATH = INDEX_STORE_DIR / "doc_embeddings.npy"
 
 
 def build_index(all_chunks: list[dict], model=None, rerank_model=None):
@@ -149,38 +144,23 @@ def needs_rebuild(
     if old_manifest.get("files") != current_manifest.get("files"):
         return True, "data 目录文件变化，需要重建"
 
-    if Settings.ENABLE_CHROMA and is_chroma_available() and not chroma_collection_has_chunks():
+    if not chroma_collection_has_chunks():
         return True, "ChromaDB collection 中未找到 chunk，需要重建"
 
     return False, "目录和参数都没有变化，无需重建"
 
 
-def legacy_index_cache_exists() -> bool:
-    """检查旧版 JSON/NPY 索引缓存文件是否齐全。"""
-    return all([
-        CHUNKS_CACHE_PATH.exists(),
-        TEXTS_CACHE_PATH.exists(),
-        DOCS_REGISTRY_CACHE_PATH.exists(),
-        EMBEDDINGS_CACHE_PATH.exists(),
-    ])
-
-
 def index_cache_exists() -> bool:
-    """检查当前可用索引缓存是否存在，优先识别 ChromaDB。"""
-    if DOCS_REGISTRY_CACHE_PATH.exists() and chroma_collection_has_chunks():
-        return True
-    return legacy_index_cache_exists()
-
-
+    """检查 ChromaDB 索引和文档注册表是否都存在。"""
+    return DOCS_REGISTRY_CACHE_PATH.exists() and chroma_collection_has_chunks()
 
 
 def get_index_cache_source() -> str:
-    """Return the currently usable persisted index source."""
-    if DOCS_REGISTRY_CACHE_PATH.exists() and chroma_collection_has_chunks():
+    """返回当前可用的持久化索引来源。"""
+    if index_cache_exists():
         return "chroma"
-    if legacy_index_cache_exists():
-        return "legacy"
     return "none"
+
 
 def save_index_cache(
     chunks: list[dict],
@@ -188,29 +168,16 @@ def save_index_cache(
     docs_registry: list[dict],
     doc_embeddings
 ):
-    """将 chunks、文本、文档注册表和向量保存到 ChromaDB，并保留旧缓存兜底。"""
+    """将文档注册表保存到 manifest 目录，并将 chunk、元数据和向量写入 ChromaDB。"""
     INDEX_STORE_DIR.mkdir(parents=True, exist_ok=True)
-
-    CHUNKS_CACHE_PATH.write_text(
-        json.dumps(chunks, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
-
-    TEXTS_CACHE_PATH.write_text(
-        json.dumps(texts, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
 
     DOCS_REGISTRY_CACHE_PATH.write_text(
         json.dumps(docs_registry, ensure_ascii=False, indent=2),
         encoding="utf-8"
     )
 
-    np.save(EMBEDDINGS_CACHE_PATH, doc_embeddings)
-
     if not Settings.ENABLE_CHROMA:
-        logger.info("[index] ChromaDB disabled, saved legacy index cache only")
-        return
+        raise ChromaUnavailableError("已移除本地 JSON/NPY 缓存，ENABLE_CHROMA=false 时无法保存索引")
 
     try:
         saved_count = persist_chunks_to_chroma(
@@ -219,15 +186,13 @@ def save_index_cache(
             reset=True,
         )
         logger.info(f"[index] saved chunks to ChromaDB count={saved_count}")
-    except ChromaUnavailableError as e:
-        logger.warning(f"[index] ChromaDB unavailable, legacy cache saved only: {e}")
     except Exception:
         logger.exception("[index] failed to save chunks to ChromaDB")
         raise
 
 
 def _load_models(model=None, rerank_model=None):
-    """Load embedding and rerank models when cache data is available."""
+    """在索引缓存可用时加载 embedding 和 rerank 模型。"""
     if model is None:
         model = SentenceTransformer(Settings.EMBEDDING_MODEL_NAME, device=devcie)
 
@@ -238,41 +203,17 @@ def _load_models(model=None, rerank_model=None):
 
 
 def _build_bm25(texts: list[str]):
+    """基于 ChromaDB 中恢复出的 chunk 文本重建 BM25 索引。"""
     tokenized_chunks = [tokenize(text) for text in texts]
     return BM25Okapi(tokenized_chunks) if tokenized_chunks else None
 
 
-def _load_index_cache_from_chroma(model=None, rerank_model=None):
-    """从 ChromaDB 恢复 chunk 和 BM25，向量检索阶段继续查询 ChromaDB。"""
-    if not (DOCS_REGISTRY_CACHE_PATH.exists() and chroma_collection_has_chunks()):
-        return None
-
-    chunks = load_chunks_from_chroma()
-    texts = [chunk["text"] for chunk in chunks]
-    docs_registry = json.loads(DOCS_REGISTRY_CACHE_PATH.read_text(encoding="utf-8"))
-    bm25 = _build_bm25(texts)
-    model, rerank_model = _load_models(model=model, rerank_model=rerank_model)
-
-    return {
-        "ok": True,
-        "message": "已从 ChromaDB 加载索引",
-        "source": "chroma",
-        "chunks": chunks,
-        "texts": texts,
-        "docs_registry": docs_registry,
-        "doc_embeddings": None,
-        "bm25": bm25,
-        "model": model,
-        "rerank_model": rerank_model
-    }
-
-
-def _load_legacy_index_cache(model=None, rerank_model=None):
-    """从旧版 JSON/NPY 缓存恢复索引数据、BM25 和模型实例。"""
-    if not legacy_index_cache_exists():
+def load_index_cache(model=None, rerank_model=None):
+    """从 ChromaDB 恢复索引数据、BM25 和模型实例。"""
+    if not index_cache_exists():
         return {
             "ok": False,
-            "message": "未找到本地索引缓存",
+            "message": "未找到 ChromaDB 索引缓存",
             "source": "none",
             "chunks": [],
             "texts": [],
@@ -283,44 +224,29 @@ def _load_legacy_index_cache(model=None, rerank_model=None):
             "rerank_model": rerank_model
         }
 
-    chunks = json.loads(CHUNKS_CACHE_PATH.read_text(encoding="utf-8"))
-    texts = json.loads(TEXTS_CACHE_PATH.read_text(encoding="utf-8"))
-    docs_registry = json.loads(DOCS_REGISTRY_CACHE_PATH.read_text(encoding="utf-8"))
-    doc_embeddings = np.load(EMBEDDINGS_CACHE_PATH, allow_pickle=False)
-    bm25 = _build_bm25(texts)
-    model, rerank_model = _load_models(model=model, rerank_model=rerank_model)
-
-    return {
-        "ok": True,
-        "message": "已从本地 legacy 缓存加载索引",
-        "source": "legacy",
-        "chunks": chunks,
-        "texts": texts,
-        "docs_registry": docs_registry,
-        "doc_embeddings": doc_embeddings,
-        "bm25": bm25,
-        "model": model,
-        "rerank_model": rerank_model
-    }
-
-
-def load_index_cache(model=None, rerank_model=None):
-    """从缓存恢复索引数据、BM25 和模型实例，优先使用 ChromaDB。"""
     try:
-        chroma_result = _load_index_cache_from_chroma(model=model, rerank_model=rerank_model)
-        if chroma_result is not None:
-            return chroma_result
-    except ChromaUnavailableError as e:
-        logger.warning(f"[index] ChromaDB unavailable while loading cache: {e}")
-    except Exception as e:
-        logger.warning(f"[index] 加载 ChromaDB 索引失败，尝试 legacy 缓存：{e}")
+        chunks = load_chunks_from_chroma()
+        texts = [chunk["text"] for chunk in chunks]
+        docs_registry = json.loads(DOCS_REGISTRY_CACHE_PATH.read_text(encoding="utf-8"))
+        bm25 = _build_bm25(texts)
+        model, rerank_model = _load_models(model=model, rerank_model=rerank_model)
 
-    try:
-        return _load_legacy_index_cache(model=model, rerank_model=rerank_model)
+        return {
+            "ok": True,
+            "message": "已从 ChromaDB 加载索引",
+            "source": "chroma",
+            "chunks": chunks,
+            "texts": texts,
+            "docs_registry": docs_registry,
+            "doc_embeddings": None,
+            "bm25": bm25,
+            "model": model,
+            "rerank_model": rerank_model
+        }
     except Exception as e:
         return {
             "ok": False,
-            "message": f"加载索引缓存失败：{e}",
+            "message": f"加载 ChromaDB 索引缓存失败：{e}",
             "source": "none",
             "chunks": [],
             "texts": [],
