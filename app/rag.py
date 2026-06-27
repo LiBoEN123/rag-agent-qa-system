@@ -191,8 +191,6 @@ def save_index_cache():
     """将当前内存中的索引数据保存到磁盘缓存。"""
     save_index_cache_impl(
         chunks=chunks,
-        texts=texts,
-        docs_registry=docs_registry,
         doc_embeddings=doc_embeddings
     )
 

@@ -22,7 +22,6 @@ logger = get_logger('chat_service')
 INDEX_STORE_DIR = Settings.INDEX_STORE_DIR
 
 MANIFEST_PATH = INDEX_STORE_DIR / "index_manifest.json"
-DOCS_REGISTRY_CACHE_PATH = INDEX_STORE_DIR / "docs_registry.json"
 
 
 def build_index(all_chunks: list[dict], model=None, rerank_model=None):
@@ -151,8 +150,8 @@ def needs_rebuild(
 
 
 def index_cache_exists() -> bool:
-    """检查 ChromaDB 索引和文档注册表是否都存在。"""
-    return DOCS_REGISTRY_CACHE_PATH.exists() and chroma_collection_has_chunks()
+    """Return whether the ChromaDB index cache is available."""
+    return chroma_collection_has_chunks()
 
 
 def get_index_cache_source() -> str:
@@ -164,18 +163,9 @@ def get_index_cache_source() -> str:
 
 def save_index_cache(
     chunks: list[dict],
-    texts: list[str],
-    docs_registry: list[dict],
     doc_embeddings
 ):
-    """将文档注册表保存到 manifest 目录，并将 chunk、元数据和向量写入 ChromaDB。"""
-    INDEX_STORE_DIR.mkdir(parents=True, exist_ok=True)
-
-    DOCS_REGISTRY_CACHE_PATH.write_text(
-        json.dumps(docs_registry, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
-
+    """Persist chunk text, metadata, and embeddings to ChromaDB."""
     if not Settings.ENABLE_CHROMA:
         raise ChromaUnavailableError("已移除本地 JSON/NPY 缓存，ENABLE_CHROMA=false 时无法保存索引")
 
@@ -208,6 +198,33 @@ def _build_bm25(texts: list[str]):
     return BM25Okapi(tokenized_chunks) if tokenized_chunks else None
 
 
+def build_docs_registry_from_chunks(chunks: list[dict]) -> list[dict]:
+    """Rebuild the document registry from ChromaDB chunk metadata."""
+    docs_by_source: dict[str, dict] = {}
+    docs_registry: list[dict] = []
+
+    for chunk in chunks:
+        metadata = chunk.get("metadata") or {}
+        source_path = str(metadata.get("source_path") or "")
+        if not source_path:
+            continue
+
+        if source_path not in docs_by_source:
+            doc = {
+                "doc_id": metadata.get("doc_id") or f"doc_{len(docs_registry) + 1}",
+                "file_name": metadata.get("file_name") or "",
+                "source_path": source_path,
+                "file_type": metadata.get("file_type") or "",
+                "chunk_count": 0,
+            }
+            docs_by_source[source_path] = doc
+            docs_registry.append(doc)
+
+        docs_by_source[source_path]["chunk_count"] += 1
+
+    return docs_registry
+
+
 def load_index_cache(model=None, rerank_model=None):
     """从 ChromaDB 恢复索引数据、BM25 和模型实例。"""
     if not index_cache_exists():
@@ -227,7 +244,7 @@ def load_index_cache(model=None, rerank_model=None):
     try:
         chunks = load_chunks_from_chroma()
         texts = [chunk["text"] for chunk in chunks]
-        docs_registry = json.loads(DOCS_REGISTRY_CACHE_PATH.read_text(encoding="utf-8"))
+        docs_registry = build_docs_registry_from_chunks(chunks)
         bm25 = _build_bm25(texts)
         model, rerank_model = _load_models(model=model, rerank_model=rerank_model)
 

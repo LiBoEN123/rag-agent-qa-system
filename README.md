@@ -16,7 +16,7 @@
 - 最小 Agent：支持规则路由，也可以开启 LLM 路由；失败时会回退到规则路由。
 - 工具调用：支持简单四则运算、列出知识库文档、查看指定 chunk 原文。
 - 可观测性：`trace_id`、请求耗时、工具调用日志、失败案例日志和 metrics 汇总接口。
-- 索引缓存：构建后的 chunk、文本、embedding、文档注册表和 manifest 会保存到本地。
+- 索引缓存：chunk 文本、metadata 和 embedding 保存到 ChromaDB，索引构建 manifest 保存到本地。
 
 ## 项目结构
 
@@ -39,7 +39,7 @@ mini-rag/
 ├── data/
 │   ├── kb/                      # 默认知识库文档目录
 │   ├── eval/                    # 评测数据
-│   └── manifest/                # 索引缓存和 manifest
+│   └── manifest/                # 索引构建 manifest
 ├── scripts/
 │   ├── eval.py                  # RAG 离线评测
 │   ├── agent_eval.py            # Agent 路由评测
@@ -91,7 +91,7 @@ Health:  http://127.0.0.1:8000/health
 | 配置项 | 说明                                    |
 | --- |---------------------------------------|
 | `RAG_FILE_PATH` | 知识库目录，示例：`./data/kb`                  |
-| `INDEX_STORE_DIR` | 索引缓存目录，示例：`./data/manifest`           |
+| `INDEX_STORE_DIR` | 索引构建 manifest 目录，示例：`./data/manifest` |
 | `CHROMA_PERSIST_DIR` | ChromaDB 本地持久化目录，示例：`./data/chroma` |
 | `CHROMA_COLLECTION_NAME` | ChromaDB collection 名称，默认 `mini_rag_chunks` |
 | `ENABLE_CHROMA` | 是否启用 ChromaDB 向量存储；默认 `true`，关闭后无法保存或加载向量索引 |
@@ -184,12 +184,11 @@ DECOMPOSE_API_URL=http://127.0.0.1:11434/v1/chat/completions
   -> 无变化：从本地缓存加载索引
 ```
 
-缓存文件分为两部分：ChromaDB 向量库默认在 `data/chroma/`，`data/manifest/` 只保留索引构建账本和文档注册表：
+缓存文件分为两部分：ChromaDB 向量库默认在 `data/chroma/`，`data/manifest/` 只保留索引构建账本：
 
 - `index_manifest.json`
-- `docs_registry.json`
 
-chunk 文本、chunk metadata 和 embedding 向量都存入 ChromaDB，不再写入 `chunks.json`、`texts.json` 和 `doc_embeddings.npy`。
+chunk 文本、chunk metadata、embedding 向量，以及用于恢复文档注册表的文档元数据都存入 ChromaDB，不再写入 `docs_registry.json`、`chunks.json`、`texts.json` 和 `doc_embeddings.npy`。
 
 以下变化会触发重建：新增/删除/修改知识库文件、修改 `CHUNK_SIZE`、修改 `CHUNK_OVERLAP`、修改 embedding 模型、修改 rerank 模型、pipeline 版本变化。修改 `TOP_K`、Prompt、回答模型名称、温度等通常不需要重建索引。
 
