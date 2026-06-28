@@ -11,7 +11,7 @@
 ## 3.构建镜像
 先在终端尝试命令
 ```bash
-docker build -t rag-demo:latest .
+docker build -t agent-rag-demo:latest .
 ```
 若出现错误则先执行以下命令，再执行上述命令
 ```bash
@@ -51,7 +51,7 @@ LLM_API_KEY=你的真实 key
 ## 5.启动服务
 由于配置文件.env未传入镜像，故在常规启动代码上添加`--env-file .env`
 ```bash
-docker run --rm -p 8000:8000 --env-file .env rag-demo:latest
+docker run --rm -p 8000:8000 --env-file .env agent-rag-demo:latest
 ```
 
 ## 6.验证服务
