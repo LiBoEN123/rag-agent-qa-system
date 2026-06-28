@@ -102,7 +102,7 @@ Health:  http://127.0.0.1:8000/health
 | `EMBEDDING_MODEL_NAME` | SentenceTransformer embedding 模型      |
 | `RERANK_MODEL_NAME` | CrossEncoder rerank 模型                |
 | `MAX_CONTEXT_CHARS` | 拼给回答模型的最大上下文长度                        |
-| `DEEPSEEK_API_KEY` | 回答模型 API Key；本地 Ollama 可填占位值          |
+| `LLM_API_KEY` | 回答模型 API Key；也兼容旧变量 `DEEPSEEK_API_KEY` |
 | `MODEL_NAME` | 回答模型名称                                |
 | `LLM_API_URL` | OpenAI-compatible Chat Completions 地址 |
 | `TEMPERATURE` | 回答模型温度                                |
@@ -145,7 +145,7 @@ EMBEDDING_MODEL_NAME=Qwen/Qwen3-Embedding-0.6B
 RERANK_MODEL_NAME=BAAI/bge-reranker-v2-m3
 MAX_CONTEXT_CHARS=4000
 
-DEEPSEEK_API_KEY=your-api-key
+LLM_API_KEY=your-api-key
 MODEL_NAME=deepseek-chat
 LLM_API_URL=https://api.deepseek.com/v1/chat/completions
 TEMPERATURE=0.1
@@ -163,7 +163,7 @@ VECTOR_THRESHOLD=0.1
 ### Ollama 示例
 
 ```env
-DEEPSEEK_API_KEY=ollama
+LLM_API_KEY=ollama
 MODEL_NAME=qwen2.5:7b
 LLM_API_URL=http://127.0.0.1:11434/v1/chat/completions
 
@@ -383,16 +383,34 @@ python scripts/test_local_llm.py
 构建镜像：
 
 ```bash
-docker build -t mini-rag .
+docker build -t agent-rag-demo:latest .
 ```
 
-运行：
+推荐运行方式：
 
 ```bash
-docker run --env-file .env -p 8000:8000 mini-rag
+docker compose up -d
 ```
 
-注意：首次启动可能会下载 embedding / rerank 模型权重，耗时取决于网络和模型大小。生产环境建议把模型缓存和知识库目录挂载为 volume。
+如果不用 compose，至少挂载知识库、索引和模型缓存目录：
+
+```bash
+docker run --rm -p 8000:8000 --env-file .env \
+  -e RAG_FILE_PATH=/app/data/kb \
+  -e INDEX_STORE_DIR=/app/data/manifest \
+  -e CHROMA_PERSIST_DIR=/app/data/chroma \
+  -e HF_HOME=/cache/huggingface \
+  -e SENTENCE_TRANSFORMERS_HOME=/cache/sentence-transformers \
+  -v "$(pwd)/data/kb:/app/data/kb:ro" \
+  -v "$(pwd)/data/chroma:/app/data/chroma" \
+  -v "$(pwd)/data/manifest:/app/data/manifest" \
+  -v "$(pwd)/logs:/app/logs" \
+  -v agent-rag-model-cache:/cache \
+  --add-host=host.docker.internal:host-gateway \
+  agent-rag-demo:latest
+```
+
+注意：首次启动可能会下载 embedding / rerank 模型权重并构建索引。后续重启如果没有修改知识库文件或索引参数，会复用挂载目录中的 ChromaDB 索引和模型缓存。
 
 ## 常见问题
 

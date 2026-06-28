@@ -32,7 +32,7 @@ class Settings:
     MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", 2500))
     LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", 1024))
 
-    LLM_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+    LLM_API_KEY = os.getenv("LLM_API_KEY") or os.getenv("DEEPSEEK_API_KEY")
     MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-chat")
     LLM_API_URL = os.getenv("LLM_API_URL", "https://api.deepseek.com/v1/chat/completions")
 
@@ -66,6 +66,6 @@ class Settings:
     def validate(cls):
         """校验关键配置是否存在并可访问。"""
         if not cls.LLM_API_KEY:
-            raise ValueError("缺少 LLM_API_KEY，请检查 .env")
+            raise ValueError("缺少 LLM_API_KEY 或 DEEPSEEK_API_KEY，请检查 .env")
         if not cls.RAG_FILE_PATH.exists():
             raise ValueError(f"RAG_FILE_PATH 不存在: {cls.RAG_FILE_PATH}")
