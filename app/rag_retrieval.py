@@ -155,13 +155,8 @@ def decompose_query_with_llm(question: str):
             {"role": "user", "content": question}
         ],
         "stream": False,
-        "keep_alive": "30m",
-        "format": "json",
-        "options": {
-            "temperature": 0,
-            "num_predict": 128,
-            "num_ctx": 1024
-        }
+        "temperature": 0,
+        "max_tokens": 128
     }
     headers = {
         "Content-Type": "application/json"
