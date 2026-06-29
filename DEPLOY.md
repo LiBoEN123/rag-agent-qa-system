@@ -5,6 +5,7 @@
 
 ## 2.环境要求
 - Docker已安装
+- 如果要使用 GPU：宿主机已安装 NVIDIA 驱动和 NVIDIA Container Toolkit，并且 `docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi` 能正常输出显卡信息
 - 需要有可用的大模型API-key
 - 准备好要查询的知识库文档目录
 
@@ -12,6 +13,13 @@
 代码或依赖变化时才需要重新构建镜像：
 ```bash
 docker build -t agent-rag-demo:latest .
+```
+
+默认会安装 CUDA 12.1 版 PyTorch，供 embedding/rerank 在容器内使用 GPU。若宿主机驱动不支持对应 CUDA 运行时，可在构建时指定其他 PyTorch CUDA wheel 源：
+```bash
+docker build \
+  --build-arg TORCH_CUDA_INDEX_URL=https://download.pytorch.org/whl/cu121 \
+  -t agent-rag-demo:latest .
 ```
 
 若基础镜像拉取失败，可先执行以下命令，再重新 build：
@@ -87,12 +95,14 @@ docker compose down
 
 如果不用 compose，至少要把运行时数据挂载出来：
 ```bash
-docker run --rm -p 8000:8000 --env-file .env \
+docker run --rm --gpus all -p 8000:8000 --env-file .env \
   -e RAG_FILE_PATH=/app/data/kb \
   -e INDEX_STORE_DIR=/app/data/manifest \
   -e CHROMA_PERSIST_DIR=/app/data/chroma \
   -e HF_HOME=/cache/huggingface \
   -e SENTENCE_TRANSFORMERS_HOME=/cache/sentence-transformers \
+  -e NVIDIA_VISIBLE_DEVICES=all \
+  -e NVIDIA_DRIVER_CAPABILITIES=compute,utility \
   -v "$(pwd)/data/kb:/app/data/kb:ro" \
   -v "$(pwd)/data/chroma:/app/data/chroma" \
   -v "$(pwd)/data/manifest:/app/data/manifest" \
@@ -122,13 +132,19 @@ http://localhost:8000/docs
 ```
 查看结果是否能正常返回
 
+如果启用了 GPU，可以再验证容器内 PyTorch 是否能看到显卡：
+```bash
+docker compose exec rag-api python -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu')"
+```
+第一行应输出 `True`，第二行应输出显卡名称。若仍是 `False`，优先检查宿主机 NVIDIA 驱动、NVIDIA Container Toolkit 和 Docker Compose 版本。
+
 ## 7.常见问题
 - API Key不可用
 - 每次启动都重建索引：检查是否挂载了 `./data/chroma:/app/data/chroma` 和 `./data/manifest:/app/data/manifest`。
 - 每次启动都重新下载 embedding/rerank 模型：检查是否挂载了 `agent-rag-model-cache:/cache`，或使用 `docker compose up -d`。
+- 容器内 `torch.cuda.is_available()` 是 `False`：确认启动命令包含 GPU 配置，宿主机能运行 `docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi`，并重新构建镜像确保安装的是 CUDA 版 PyTorch。
 - 修改知识库 `.txt`/`.md`、`CHUNK_SIZE`、`CHUNK_OVERLAP`、`EMBEDDING_MODEL_NAME`、`RERANK_MODEL_NAME` 后会触发重建索引，这是预期行为。
 - 本地 Ollama 无法访问时，确认启动命令包含 `--add-host=host.docker.internal:host-gateway`，或使用 compose 配置。
-
 
 
 

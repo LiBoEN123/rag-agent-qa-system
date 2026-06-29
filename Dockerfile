@@ -1,5 +1,7 @@
 FROM python:3.11-slim
 
+ARG TORCH_CUDA_INDEX_URL=https://download.pytorch.org/whl/cu121
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HF_HOME=/cache/huggingface \
@@ -9,6 +11,7 @@ WORKDIR /app
 
 COPY requirements.txt .
 
+RUN pip install --no-cache-dir --index-url ${TORCH_CUDA_INDEX_URL} torch
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .

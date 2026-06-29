@@ -32,7 +32,7 @@ class Settings:
     MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", 2500))
     LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", 1024))
 
-    LLM_API_KEY = os.getenv("LLM_API_KEY")
+    LLM_API_KEY = os.getenv("LLM_API_KEY") or os.getenv("DEEPSEEK_API_KEY")
     MODEL_NAME = os.getenv("MODEL_NAME", "deepseek-chat")
     LLM_API_URL = os.getenv("LLM_API_URL", "https://api.deepseek.com/v1/chat/completions")
 
