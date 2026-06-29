@@ -10,7 +10,8 @@ from langchain_text_splitters import (
 from app.config import Settings
 
 
-SUPPORTED_SUFFIXES = {".txt", ".md"}
+SUPPORTED_SUFFIXES = {".txt", ".md", ".pdf", ".docx"}
+PLAIN_TEXT_FILE_TYPES = {"txt", "pdf", "docx"}
 
 
 def read_txt_auto(file_path: str) -> str:
@@ -22,8 +23,76 @@ def read_txt_auto(file_path: str) -> str:
     return str(result)
 
 
+def read_pdf_text(file_path: str) -> str:
+    """从 PDF 中提取文本内容。"""
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise ImportError(
+            "读取 PDF 需要安装 pypdf，请先运行 `pip install -r requirements.txt`。"
+        ) from exc
+
+    reader = PdfReader(file_path)
+    pages = []
+
+    for page_idx, page in enumerate(reader.pages, start=1):
+        text = page.extract_text() or ""
+        text = clean_text(text)
+        if text:
+            pages.append(f"[第 {page_idx} 页]\n{text}")
+
+    content = "\n\n".join(pages).strip()
+    if not content:
+        raise ValueError(f"PDF 未提取到可索引文本，可能是扫描件或图片型 PDF: {file_path}")
+    return content
+
+
+def read_docx_text(file_path: str) -> str:
+    """从 DOCX 段落和表格中提取文本内容。"""
+    try:
+        from docx import Document
+    except ImportError as exc:
+        raise ImportError(
+            "读取 DOCX 需要安装 python-docx，请先运行 `pip install -r requirements.txt`。"
+        ) from exc
+
+    document = Document(file_path)
+    parts = []
+
+    for paragraph in document.paragraphs:
+        text = clean_text(paragraph.text)
+        if text:
+            parts.append(text)
+
+    for table in document.tables:
+        for row in table.rows:
+            cells = [clean_text(cell.text) for cell in row.cells]
+            cells = [cell for cell in cells if cell]
+            if cells:
+                parts.append(" | ".join(cells))
+
+    content = "\n\n".join(parts).strip()
+    if not content:
+        raise ValueError(f"DOCX 未提取到可索引文本: {file_path}")
+    return content
+
+
+def read_file_text(file_path: str) -> str:
+    """按文件扩展名选择对应的文档解析器。"""
+    suffix = Path(file_path).suffix.lower()
+
+    if suffix in {".txt", ".md"}:
+        return read_txt_auto(file_path)
+    if suffix == ".pdf":
+        return read_pdf_text(file_path)
+    if suffix == ".docx":
+        return read_docx_text(file_path)
+
+    raise ValueError(f"不支持的文件类型: {suffix}")
+
+
 def collect_supported_files(data_dir: str):
-    """收集 data 目录中支持的 txt 和 md 文件。"""
+    """收集 data 目录中支持的知识库文件。"""
     root = Path(data_dir)
 
     if not root.exists():
@@ -50,7 +119,7 @@ def load_files(data_dir: str):
 
     for idx, file_path in enumerate(files, start=1):
         file_type = file_path.suffix.lower().lstrip(".")
-        text = read_txt_auto(str(file_path))
+        text = read_file_text(str(file_path))
 
         raw_docs.append({
             "doc_id": f"doc_{idx}",
@@ -111,7 +180,7 @@ def split_txt_doc(
     chunk_size: int = Settings.CHUNK_SIZE,
     chunk_overlap: int = Settings.CHUNK_OVERLAP
 ):
-    """将 txt 文档切分成带元数据的 chunk。"""
+    """将普通文本类文档切分成带元数据的 chunk。"""
     text = doc["text"]
 
     splitter = RecursiveCharacterTextSplitter(
@@ -122,7 +191,7 @@ def split_txt_doc(
 
     split_docs = splitter.create_documents(
         [text],
-        metadatas=[{"file_type": "txt"}]
+        metadatas=[{"file_type": doc["file_type"]}]
     )
 
     result = []
@@ -202,7 +271,7 @@ def split_doc(
     chunk_overlap: int = Settings.CHUNK_OVERLAP
 ):
     """按文件类型选择合适的切分逻辑。"""
-    if doc["file_type"] == "txt":
+    if doc["file_type"] in PLAIN_TEXT_FILE_TYPES:
         return split_txt_doc(doc, chunk_size, chunk_overlap)
     if doc["file_type"] == "md":
         return split_md_doc(doc, chunk_size, chunk_overlap)

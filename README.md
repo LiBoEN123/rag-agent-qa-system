@@ -2,11 +2,11 @@
 
 一个基于 FastAPI 的中文 RAG 知识库问答项目，并在 RAG 外层加了一层最小 Agent 路由。
 
-系统可以读取本地 `.txt` / `.md` 文档，构建 BM25 + 向量检索索引，通过 reranker 重排候选 chunk，再调用 OpenAI-compatible 的大模型生成带引用的答案。`/chat` 接口会先判断用户问题应该走知识库问答、工具调用、直接回答，还是澄清追问。
+系统可以读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，构建 BM25 + 向量检索索引，通过 reranker 重排候选 chunk，再调用 OpenAI-compatible 的大模型生成带引用的答案。`/chat` 接口会先判断用户问题应该走知识库问答、工具调用、直接回答，还是澄清追问。
 
 ## 当前能力
 
-- 文档读取：支持 `.txt`、`.md`，自动识别文本编码。
+- 文档读取：支持 `.txt`、`.md`、`.pdf`、`.docx`；文本类文件自动识别编码，PDF/DOCX 会提取可检索文本。
 - 文档切分：普通文本按段落和标点递归切分，Markdown 会先按标题层级切分并保留标题路径。
 - 混合检索：使用 jieba + BM25 做关键词召回，使用 SentenceTransformer embedding 做语义召回。
 - 重排：使用 CrossEncoder reranker 对候选 chunk 重新排序。
@@ -419,8 +419,9 @@ docker run --rm -p 8000:8000 --env-file .env \
 通常是知识库没有加载成功。检查：
 
 - `RAG_FILE_PATH` 是否指向存在的目录。
-- 目录下是否有 `.txt` 或 `.md` 文件。
+- 目录下是否有 `.txt`、`.md`、`.pdf` 或 `.docx` 文件。
 - 首次启动是否完成索引构建。
+- PDF 是否为可复制文本的 PDF；扫描件或图片型 PDF 需要先做 OCR。
 
 ### 2. 模型调用失败
 
@@ -448,7 +449,7 @@ docker run --rm -p 8000:8000 --env-file .env \
 
 ## 已知限制
 
-- 当前只支持 `.txt` 和 `.md`，暂不支持 PDF、DOCX、图片等复杂格式。
+- 当前支持 `.txt`、`.md`、`.pdf`、`.docx`；PDF 依赖可提取文本，暂不内置 OCR，旧版 `.doc` 和图片文件暂不支持。
 - 回答模型、路由模型和拆分模型都按 OpenAI-compatible Chat Completions 格式调用。
 - embedding 和 rerank 模型首次加载较慢，可能需要下载权重。
 - Agent 仍是单轮最小实现，没有长期记忆和复杂任务规划。
