@@ -75,6 +75,7 @@ class Settings:
     # whether a specific question needs sub-queries.
     ENABLE_QUERY_DECOMPOSE = env_bool("ENABLE_QUERY_DECOMPOSE", "true")
     DECOMPOSE_TIMEOUT = int(os.getenv("DECOMPOSE_TIMEOUT", "15"))
+    DECOMPOSE_MAX_TOKENS = int(os.getenv("DECOMPOSE_MAX_TOKENS", "512"))
 
     MARGIN_THRESHOLD = float(os.getenv("MARGIN_THRESHOLD", "0.03"))
     VECTOR_THRESHOLD = float(os.getenv("VECTOR_THRESHOLD", "0.35"))

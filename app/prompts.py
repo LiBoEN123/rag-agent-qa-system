@@ -149,21 +149,12 @@ DECOMPOSE_PROMPT = """
 7. 每个 sub_question 应该能独立回答。
 8. 每个 search_query 应该适合用于 BM25 + 向量混合检索，可以包含关键词、同义词、中英文术语。
 9. search_query 不要太长，一般 5 到 15 个关键词即可。
-10. 输出必须是合法 JSON，不要输出 Markdown，不要输出解释。
+10. reason 必须简短，不超过 30 个中文字符。
+11. sub_question 和 search_query 必须是单行字符串，不要包含换行符。
+12. 输出必须是紧凑合法 JSON，不要输出 Markdown，不要输出解释。
 
 输出格式：
-{
-  "need_decompose": true,
-  "reason": "为什么需要或不需要拆分",
-  "sub_queries": [
-    {
-      "id": 1,
-      "sub_question": "子问题",
-      "search_query": "检索查询关键词",
-      "must_answer": true
-    }
-  ]
-}
+{"need_decompose":true,"reason":"简短原因","sub_queries":[{"id":1,"sub_question":"子问题","search_query":"检索查询关键词","must_answer":true}]}
 """
 
 ROUTER_SYSTEM_PROMPT = """

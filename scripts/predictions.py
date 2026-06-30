@@ -33,7 +33,11 @@ def load_eval_questions(eval_file):
 def run_rag_once(question: str, top_k: int):
     """对单个问题运行 RAG 并返回答案及召回 chunk_id。"""
     retrieved_chunks = retrieve(question, top_k)
-    result = ask(question, top_k, retrieved_chunks)
+    result = ask(
+        question,
+        top_k=top_k,
+        retrieved_chunks=retrieved_chunks
+    )
     final_chunks = result.get("final_chunks")
     answer = result["answer"]
 

@@ -1,4 +1,4 @@
-# 启动命令：python scripts/evaluate_rag_results_semantic_fixed.py --eval-file data/eval/rag_eval_questions_v2_semantic_fixed.json --pred-file outputs/predictions.csv --chunks-file data/manifest/chunks.json --out-dir outputs/rag_baseline1 --k 5
+# 启动命令：python scripts/evaluate_rag_results_semantic_fixed.py --eval-file data/eval/rag_eval_questions_v2_semantic_fixed.json --pred-file outputs/predictions.csv --out-dir outputs/rag_baseline1 --k 5
 
 from __future__ import annotations
 
@@ -6,10 +6,16 @@ import argparse
 import csv
 import json
 import re
-from collections import Counter, defaultdict
+import sys
+from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 ANSWER_FIELDS = ["answer", "generated_answer", "actual_answer", "response", "model_answer"]
 CHUNK_FIELDS = ["retrieved_chunk_ids", "retrieved_chunks", "chunk_ids", "top_chunk_ids"]
@@ -45,6 +51,15 @@ CANONICAL_REPLACEMENTS = [
     ("当前资料", "文档"),
     ("提供的资料", "文档"),
 ]
+
+
+@dataclass(frozen=True)
+class ChunkIndex:
+    """评测所需的当前 chunk 索引视图。"""
+
+    chunk_doc_map: Dict[int, str]
+    chunk_text_map: Dict[int, str]
+    source: str
 
 
 def normalize_text(s: Any) -> str:
@@ -113,7 +128,11 @@ def match_point(answer: str, point: Dict[str, Any]) -> bool:
         if has_all_terms(answer, group):
             return True
 
-    for pattern in point.get("regex", []) or []:
+    regex_patterns = point.get("regex", []) or []
+    if isinstance(regex_patterns, str):
+        regex_patterns = [regex_patterns]
+
+    for pattern in regex_patterns:
         if re.search(pattern, answer, flags=re.I):
             return True
 
@@ -134,10 +153,24 @@ def parse_listish(value: Any) -> List[Any]:
         for x in value:
             if isinstance(x, dict):
                 # common retrieval result shapes
-                for key in ("chunk_id", "id", "doc_id", "file_name"):
+                for key in ("chunk_id",):
                     if key in x:
                         out.append(x[key])
                         break
+                else:
+                    metadata = x.get("metadata") or {}
+                    found = False
+                    if isinstance(metadata, dict):
+                        for key in ("chunk_id", "id", "doc_id", "file_name"):
+                            if key in metadata:
+                                out.append(metadata[key])
+                                found = True
+                                break
+                    if not found:
+                        for key in ("id", "doc_id", "file_name"):
+                            if key in x:
+                                out.append(x[key])
+                                break
             else:
                 out.append(x)
         return out
@@ -173,9 +206,15 @@ def parse_chunk_ids(pred: Dict[str, Any]) -> List[int]:
         if isinstance(x, int):
             ids.append(x)
             continue
-        m = re.search(r"\d+", str(x))
+        sx = str(x).strip()
+        if re.fullmatch(r"\d+", sx):
+            ids.append(int(sx))
+            continue
+        m = re.search(r"\b(?:chunk_id|chunk-id|cid|id)\D+(\d+)\b", sx, flags=re.I)
+        if not m:
+            m = re.search(r"\bchunk[_-]?(\d+)(?![A-Za-z0-9])", sx, flags=re.I)
         if m:
-            ids.append(int(m.group(0)))
+            ids.append(int(m.group(1)))
     return ids
 
 
@@ -245,17 +284,216 @@ def load_predictions(path: Path) -> Dict[str, Dict[str, Any]]:
     return out
 
 
-def load_chunk_doc_map(chunks_file: Path | None) -> Dict[int, str]:
-    """从 chunks.json 中构建 chunk_id 到文档名的映射。"""
+def warn(message: str) -> None:
+    """向命令行输出非致命评测提示。"""
+    print(f"[warn] {message}", file=sys.stderr)
+
+
+def coerce_int(value: Any) -> int | None:
+    """宽松转换整数，失败时返回 None。"""
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        m = re.search(r"\d+", str(value))
+        return int(m.group(0)) if m else None
+
+
+def normalize_doc_id(value: Any) -> str:
+    """统一文档标识，兼容 file_name、doc_id 和 source_path。"""
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    return Path(text).name if "/" in text or "\\" in text else text
+
+
+def doc_id_matches(candidate: str, gold_docs: Iterable[str]) -> bool:
+    """判断当前 chunk 文档名是否可视为命中 gold_doc_ids。"""
+    candidate_norm = normalize_doc_id(candidate)
+    if not candidate_norm:
+        return False
+    for gold_doc in gold_docs:
+        gold_norm = normalize_doc_id(gold_doc)
+        if not gold_norm:
+            continue
+        if candidate_norm == gold_norm:
+            return True
+        if candidate_norm.endswith(gold_norm) or gold_norm.endswith(candidate_norm):
+            return True
+    return False
+
+
+def doc_label_from_metadata(metadata: Dict[str, Any]) -> str:
+    """从 chunk metadata 中提取最稳定的文档标签。"""
+    return str(
+        metadata.get("file_name")
+        or normalize_doc_id(metadata.get("source_path"))
+        or metadata.get("doc_id")
+        or ""
+    )
+
+
+def chunks_to_index(chunks: List[Dict[str, Any]], source: str) -> ChunkIndex:
+    """将 ChromaDB 或 legacy chunks.json 统一成评测索引。"""
+    chunk_doc_map: Dict[int, str] = {}
+    chunk_text_map: Dict[int, str] = {}
+
+    for idx, item in enumerate(chunks):
+        metadata = item.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        chunk_id = coerce_int(metadata.get("chunk_id"))
+        if chunk_id is None:
+            chunk_id = coerce_int(item.get("chunk_id"))
+        if chunk_id is None:
+            # 评测预测使用 chunk_id，对缺少 id 的记录无法可靠对齐。
+            continue
+
+        text = item.get("text")
+        if text is None:
+            text = item.get("document")
+        if text is None:
+            text = item.get("content")
+
+        chunk_doc_map[chunk_id] = doc_label_from_metadata(metadata) or f"chunk_{idx}"
+        chunk_text_map[chunk_id] = "" if text is None else str(text)
+
+    return ChunkIndex(chunk_doc_map=chunk_doc_map, chunk_text_map=chunk_text_map, source=source)
+
+
+def load_chunks_file_index(chunks_file: Path | None) -> ChunkIndex:
+    """从旧 chunks.json 读取 chunk 文本和文档映射，作为兼容回退。"""
     if not chunks_file:
-        return {}
+        return ChunkIndex({}, {}, "none")
+    if not chunks_file.exists():
+        warn(f"chunks file not found: {chunks_file}; will try ChromaDB")
+        return ChunkIndex({}, {}, "none")
+
     data = json.loads(chunks_file.read_text(encoding="utf-8"))
-    mp = {}
-    for item in data:
-        md = item.get("metadata", {})
-        if "chunk_id" in md:
-            mp[int(md["chunk_id"])] = str(md.get("file_name") or md.get("doc_id") or "")
-    return mp
+    if isinstance(data, dict):
+        data = data.get("items") or data.get("chunks") or []
+    if not isinstance(data, list):
+        raise ValueError("chunks file must be a JSON list or an object with 'items'/'chunks'")
+
+    return chunks_to_index(data, source=f"chunks-file:{chunks_file}")
+
+
+def load_chroma_index(chroma_persist_dir: Path | None, chroma_collection_name: str | None) -> ChunkIndex:
+    """从当前 ChromaDB collection 读取 chunk 文本和 metadata。"""
+    try:
+        from app.config import Settings
+
+        if chroma_persist_dir is not None:
+            Settings.CHROMA_PERSIST_DIR = (
+                chroma_persist_dir
+                if chroma_persist_dir.is_absolute()
+                else PROJECT_ROOT / chroma_persist_dir
+            )
+        if chroma_collection_name:
+            Settings.CHROMA_COLLECTION_NAME = chroma_collection_name
+
+        from app.chroma_store import load_chunks_from_chroma
+
+        chunks = load_chunks_from_chroma()
+        return chunks_to_index(chunks, source="chroma")
+    except Exception as exc:
+        warn(f"failed to load chunks from ChromaDB: {exc}")
+        return ChunkIndex({}, {}, "none")
+
+
+def load_chunk_index(
+    chunks_file: Path | None,
+    index_source: str,
+    chroma_persist_dir: Path | None,
+    chroma_collection_name: str | None,
+) -> ChunkIndex:
+    """按参数加载评测索引；默认优先使用 ChromaDB，旧 chunks.json 仅作回退。"""
+    if index_source in {"auto", "chroma"}:
+        index = load_chroma_index(chroma_persist_dir, chroma_collection_name)
+        if index.chunk_text_map or index_source == "chroma":
+            return index
+
+    if index_source in {"auto", "chunks-file"}:
+        try:
+            index = load_chunks_file_index(chunks_file)
+            if index.chunk_text_map or index_source == "chunks-file":
+                return index
+        except Exception as exc:
+            warn(f"failed to load chunks file: {exc}")
+
+    return ChunkIndex({}, {}, "none")
+
+
+def evidence_texts(question: Dict[str, Any]) -> List[str]:
+    """提取 gold_evidence 中用于检索评估的证据片段。"""
+    out = []
+    for item in question.get("gold_evidence", []) or []:
+        if isinstance(item, dict):
+            text = item.get("text")
+        else:
+            text = item
+        text = "" if text is None else str(text).strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def evidence_matches_text(evidence: str, text: str) -> bool:
+    """判断当前 chunk 是否包含 gold evidence 片段。"""
+    ne = normalize_text(evidence)
+    nt = normalize_text(text)
+    if not ne or not nt:
+        return False
+    if ne in nt:
+        return True
+    # 知识库重切片后，证据片段可能被标题、空白或轻微格式差异打断。
+    return len(ne) >= 12 and is_subsequence(ne, nt)
+
+
+def find_gold_chunks_for_evidence(
+    evidence: str,
+    question: Dict[str, Any],
+    chunk_text_map: Dict[int, str],
+    chunk_doc_map: Dict[int, str],
+) -> List[int]:
+    """在当前索引中定位能承载某条 gold evidence 的 chunk_id。"""
+    gold_docs = [str(x) for x in question.get("gold_doc_ids", [])]
+
+    def scan(restrict_doc: bool) -> List[int]:
+        matches = []
+        for chunk_id, text in chunk_text_map.items():
+            if restrict_doc and gold_docs and not doc_id_matches(chunk_doc_map.get(chunk_id, ""), gold_docs):
+                continue
+            if evidence_matches_text(evidence, text):
+                matches.append(chunk_id)
+        return sorted(matches)
+
+    # 先在原 gold_doc_ids 中找，防止新增汇编类文档造成重复证据；找不到再全库兜底。
+    matches = scan(restrict_doc=True)
+    if not matches and gold_docs:
+        matches = scan(restrict_doc=False)
+    return matches
+
+
+def resolve_gold_chunk_ids(
+    question: Dict[str, Any],
+    chunk_text_map: Dict[int, str],
+    chunk_doc_map: Dict[int, str],
+) -> List[int]:
+    """根据当前 ChromaDB chunk 文本重定位旧评测集中的 gold evidence。"""
+    resolved = []
+    if chunk_text_map:
+        for evidence in evidence_texts(question):
+            resolved.extend(find_gold_chunks_for_evidence(evidence, question, chunk_text_map, chunk_doc_map))
+
+    if resolved:
+        return sorted(set(resolved))
+
+    return [int(x) for x in question.get("gold_chunk_ids", [])]
 
 
 def score_key_points(answer: str, question: Dict[str, Any]) -> Tuple[float, List[str], List[str]]:
@@ -347,7 +585,12 @@ def score_forbidden(answer: str, question: Dict[str, Any]) -> Tuple[bool, List[s
     """检查答案是否命中不应出现的禁止信息。"""
     hits = []
     for p in question.get("forbidden_points", []):
-        point = p.get("point", "")
+        if isinstance(p, dict):
+            point = str(p.get("point", ""))
+            aliases = p.get("aliases") or [point]
+        else:
+            point = str(p)
+            aliases = [point]
 
         # 数值/日期/star/源码等类型必须用精确规则，不能因为答案里出现“star/发布日期”等词就判幻觉。
         if regex_forbidden_hit(answer, point):
@@ -356,39 +599,73 @@ def score_forbidden(answer: str, question: Dict[str, Any]) -> Tuple[bool, List[s
         if is_regex_only_forbidden(point):
             continue
 
-        aliases = p.get("aliases") or [point]
         if any(alias_forbidden_hit(answer, str(a)) for a in aliases):
             hits.append(point)
     return bool(hits), hits
 
 
-def score_retrieval(pred: Dict[str, Any], question: Dict[str, Any], chunk_doc_map: Dict[int, str], k: int) -> Dict[str, Any]:
+def score_retrieval(
+    pred: Dict[str, Any],
+    question: Dict[str, Any],
+    chunk_doc_map: Dict[int, str],
+    chunk_text_map: Dict[int, str],
+    k: int,
+) -> Dict[str, Any]:
     """基于预测召回结果计算 top-k 检索命中和召回指标。"""
     retrieved = parse_chunk_ids(pred)
     retrieved_at_k = retrieved[:k] if k and k > 0 else retrieved
-
-    gold_chunks = [int(x) for x in question.get("gold_chunk_ids", [])]
-    gold_set = set(gold_chunks)
     retrieved_set_at_k = set(retrieved_at_k)
 
-    matched_gold_chunks = sorted(gold_set & retrieved_set_at_k)
-    missing_gold_chunks = sorted(gold_set - retrieved_set_at_k)
+    evidence_items = evidence_texts(question)
+    matched_evidence = []
+    missing_evidence = []
+    matched_gold_chunks = []
+    match_mode = "chunk_id"
 
-    if gold_set:
-        chunk_hit = 1.0 if matched_gold_chunks else 0.0
-        gold_chunk_recall = len(matched_gold_chunks) / len(gold_set)
-        all_gold_hit = 1.0 if gold_set.issubset(retrieved_set_at_k) else 0.0
+    if evidence_items and chunk_text_map:
+        match_mode = "gold_evidence"
+        for evidence in evidence_items:
+            matched_for_evidence = [
+                chunk_id
+                for chunk_id in retrieved_at_k
+                if evidence_matches_text(evidence, chunk_text_map.get(chunk_id, ""))
+            ]
+            if matched_for_evidence:
+                matched_evidence.append(evidence)
+                matched_gold_chunks.extend(matched_for_evidence)
+            else:
+                missing_evidence.append(evidence)
+
+        matched_gold_chunks = sorted(set(matched_gold_chunks))
+        gold_chunks = resolve_gold_chunk_ids(question, chunk_text_map, chunk_doc_map)
+        gold_set = set(gold_chunks)
+        missing_gold_chunks = sorted(gold_set - set(matched_gold_chunks)) if gold_set else []
+        chunk_hit = 1.0 if matched_evidence else 0.0
+        gold_chunk_recall = len(matched_evidence) / len(evidence_items)
+        all_gold_hit = 1.0 if len(matched_evidence) == len(evidence_items) else 0.0
     else:
-        # 如果评测题没有 gold_chunk_ids，就不惩罚检索。
-        chunk_hit = 1.0
-        gold_chunk_recall = 1.0
-        all_gold_hit = 1.0
+        gold_chunks = [int(x) for x in question.get("gold_chunk_ids", [])]
+        gold_set = set(gold_chunks)
+        matched_gold_chunks = sorted(gold_set & retrieved_set_at_k)
+        missing_gold_chunks = sorted(gold_set - retrieved_set_at_k)
+
+        if gold_set:
+            chunk_hit = 1.0 if matched_gold_chunks else 0.0
+            gold_chunk_recall = len(matched_gold_chunks) / len(gold_set)
+            all_gold_hit = 1.0 if gold_set.issubset(retrieved_set_at_k) else 0.0
+        else:
+            # 如果评测题没有 gold evidence / gold_chunk_ids，就不惩罚检索。
+            chunk_hit = 1.0
+            gold_chunk_recall = 1.0
+            all_gold_hit = 1.0
 
     retrieved_docs = parse_doc_ids(pred)
     if not retrieved_docs and chunk_doc_map:
         retrieved_docs = [chunk_doc_map.get(cid, "") for cid in retrieved_at_k if cid in chunk_doc_map]
     gold_docs = set(str(x) for x in question.get("gold_doc_ids", []))
-    doc_hit = 1.0 if (gold_docs and set(retrieved_docs) & gold_docs) else 0.0
+    doc_hit = 0.0
+    if gold_docs:
+        doc_hit = 1.0 if any(doc_id_matches(doc, gold_docs) for doc in retrieved_docs) else 0.0
     if not gold_docs:
         doc_hit = 1.0
 
@@ -409,6 +686,11 @@ def score_retrieval(pred: Dict[str, Any], question: Dict[str, Any], chunk_doc_ma
         "hit_chunk_ids": matched_gold_chunks,
         "matched_gold_chunk_ids": matched_gold_chunks,
         "missing_gold_chunk_ids": missing_gold_chunks,
+        "resolved_gold_chunk_ids": gold_chunks,
+        "retrieval_match_mode": match_mode,
+        "gold_evidence_count": len(evidence_items),
+        "matched_gold_evidence_count": len(matched_evidence),
+        "missing_gold_evidence": missing_evidence,
     }
 
 
@@ -461,7 +743,7 @@ def final_score(expected: str, behavior: float, key_recall: float, retrieval_hit
     return 0.20 * behavior + 0.50 * key_recall + 0.20 * retrieval_hit + 0.10 * clean
 
 
-def evaluate(eval_items: List[Dict[str, Any]], preds: Dict[str, Dict[str, Any]], chunk_doc_map: Dict[int, str], k: int) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def evaluate(eval_items: List[Dict[str, Any]], preds: Dict[str, Dict[str, Any]], chunk_index: ChunkIndex, k: int) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """对所有评测题逐条判分并生成汇总。"""
     rows = []
     for q in eval_items:
@@ -470,7 +752,7 @@ def evaluate(eval_items: List[Dict[str, Any]], preds: Dict[str, Dict[str, Any]],
         answer = get_answer(pred)
         key_recall, missing, matched = score_key_points(answer, q)
         forbidden_hit, forbidden_items = score_forbidden(answer, q)
-        retrieval = score_retrieval(pred, q, chunk_doc_map, k)
+        retrieval = score_retrieval(pred, q, chunk_index.chunk_doc_map, chunk_index.chunk_text_map, k)
         behavior, behavior_label = behavior_score(answer, q.get("expected_behavior", "answer"), key_recall, forbidden_hit)
         # final_score 使用 gold_chunk_recall_at_k，而不是 loose 的 chunk_hit_at_k。
         # 否则只命中一个证据 chunk 的 cross-doc 问题会被高估。
@@ -494,15 +776,20 @@ def evaluate(eval_items: List[Dict[str, Any]], preds: Dict[str, Dict[str, Any]],
             # 新增：是否召回全部标准证据 chunk。
             "retrieval_all_gold_hit_at_k": round(retrieval["all_gold_hit_at_k"], 4),
             "retrieval_doc_hit_at_k": round(retrieval["doc_hit_at_k"], 4),
+            "retrieval_match_mode": retrieval["retrieval_match_mode"],
             "forbidden_hit": forbidden_hit,
             "final_score": round(fscore, 4),
             "missing_key_points": " | ".join(missing),
             "matched_key_points": " | ".join(matched),
             "forbidden_points_hit": " | ".join(forbidden_items),
             "gold_chunk_ids": json.dumps(q.get("gold_chunk_ids", []), ensure_ascii=False),
+            "resolved_gold_chunk_ids": json.dumps(retrieval["resolved_gold_chunk_ids"], ensure_ascii=False),
             "hit_chunk_ids": json.dumps(retrieval["hit_chunk_ids"], ensure_ascii=False),
             "matched_gold_chunk_ids": json.dumps(retrieval["matched_gold_chunk_ids"], ensure_ascii=False),
             "missing_gold_chunk_ids": json.dumps(retrieval["missing_gold_chunk_ids"], ensure_ascii=False),
+            "gold_evidence_count": retrieval["gold_evidence_count"],
+            "matched_gold_evidence_count": retrieval["matched_gold_evidence_count"],
+            "missing_gold_evidence": " | ".join(retrieval["missing_gold_evidence"]),
             "retrieved_chunk_ids": json.dumps(retrieval["retrieved_chunk_ids"], ensure_ascii=False),
             "question": q.get("question", ""),
             "gold_answer": q.get("gold_answer", ""),
@@ -572,16 +859,45 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--eval-file", required=True, type=Path)
     ap.add_argument("--pred-file", required=True, type=Path)
-    ap.add_argument("--chunks-file", type=Path, default=None, help="Optional chunks.json, used to infer retrieved doc ids from chunk ids")
+    ap.add_argument(
+        "--chunks-file",
+        type=Path,
+        default=None,
+        help="Legacy chunks.json fallback. Auto mode prefers ChromaDB because manifest no longer stores chunks.",
+    )
+    ap.add_argument(
+        "--index-source",
+        choices=["auto", "chroma", "chunks-file", "none"],
+        default="auto",
+        help="Where to load current chunk text/metadata for retrieval scoring. Default: auto (ChromaDB first).",
+    )
+    ap.add_argument(
+        "--chroma-persist-dir",
+        type=Path,
+        default=None,
+        help="Override Settings.CHROMA_PERSIST_DIR for evaluation.",
+    )
+    ap.add_argument(
+        "--chroma-collection-name",
+        default=None,
+        help="Override Settings.CHROMA_COLLECTION_NAME for evaluation.",
+    )
     ap.add_argument("--out-dir", type=Path, default=Path("eval_report"))
     ap.add_argument("--k", type=int, default=5, help="Use top-k retrieved chunks for retrieval hit metrics")
     args = ap.parse_args()
 
     eval_items = load_eval(args.eval_file)
     preds = load_predictions(args.pred_file)
-    chunk_doc_map = load_chunk_doc_map(args.chunks_file)
+    chunk_index = load_chunk_index(
+        chunks_file=args.chunks_file,
+        index_source=args.index_source,
+        chroma_persist_dir=args.chroma_persist_dir,
+        chroma_collection_name=args.chroma_collection_name,
+    )
+    if args.index_source != "none" and not chunk_index.chunk_text_map:
+        warn("no chunk index loaded; doc-hit and evidence-based retrieval metrics may fall back or be unavailable")
 
-    rows, summary = evaluate(eval_items, preds, chunk_doc_map, args.k)
+    rows, summary = evaluate(eval_items, preds, chunk_index, args.k)
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     write_csv(args.out_dir / "per_question_report.csv", rows)
@@ -590,6 +906,7 @@ def main() -> None:
 
     overall = summary["overall"]
     print("=== RAG Evaluation Summary ===")
+    print(f"Chunk index source: {chunk_index.source} ({len(chunk_index.chunk_text_map)} chunks)")
     print(f"Questions: {overall['num_questions']}")
     print(f"Prediction coverage: {overall['prediction_coverage']:.2%}")
     print(f"Average final score: {overall['avg_final_score']:.2%}")

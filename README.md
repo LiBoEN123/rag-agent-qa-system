@@ -124,6 +124,7 @@ Health:  http://127.0.0.1:8000/health
 | `DECOMPOSE_MODEL_NAME` | 问题拆分模型名称                              |
 | `DECOMPOSE_API_URL` | 问题拆分模型接口地址                            |
 | `DECOMPOSE_TIMEOUT` | 问题拆分模型请求超时秒数                          |
+| `DECOMPOSE_MAX_TOKENS` | 问题拆分模型最大输出 token，默认 `512`             |
 | `VECTOR_THRESHOLD` | 召回证据不足时拒答的向量分数阈值                      |
 | `MARGIN_THRESHOLD` | 预留的分数差距阈值配置                           |
 | `AUTO_REBUILD_ON_STARTUP` | 是否启动时强制重建索引                           |
@@ -158,6 +159,7 @@ ENABLE_QUERY_DECOMPOSE=true
 DECOMPOSE_API_KEY=your-api-key
 DECOMPOSE_MODEL_NAME=qwen-plus
 DECOMPOSE_API_URL=https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
+DECOMPOSE_MAX_TOKENS=512
 
 VECTOR_THRESHOLD=0.1
 ```

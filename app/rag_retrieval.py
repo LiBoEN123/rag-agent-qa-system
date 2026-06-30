@@ -100,13 +100,18 @@ def parse_decompose_bool(value) -> bool:
     return bool(value)
 
 
+def compact_text(value) -> str:
+    """将模型字段规整为单行文本。"""
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
 def normalize_decompose_result(result: dict) -> dict:
     """校验并规整问题拆分模型的返回值，避免下游分支处理脏数据。"""
     if not isinstance(result, dict):
         raise ValueError(f"拆分模型返回值必须是 dict，实际为 {type(result)}")
 
     need_decompose = parse_decompose_bool(result.get("need_decompose", False))
-    reason = str(result.get("reason", "") or "").strip()
+    reason = compact_text(result.get("reason", ""))
 
     if not need_decompose:
         return default_decompose_result(reason or "decompose model decided single query")
@@ -120,8 +125,8 @@ def normalize_decompose_result(result: dict) -> dict:
         if not isinstance(item, dict):
             continue
 
-        sub_question = str(item.get("sub_question", "") or "").strip()
-        search_query = str(item.get("search_query", "") or "").strip()
+        sub_question = compact_text(item.get("sub_question", ""))
+        search_query = compact_text(item.get("search_query", ""))
 
         if not sub_question or not search_query:
             continue
@@ -143,6 +148,73 @@ def normalize_decompose_result(result: dict) -> dict:
     }
 
 
+def compact_error_preview(text: str, max_len: int = 500) -> str:
+    """将模型原始输出压成单行预览，避免异常日志被换行打断。"""
+    preview = re.sub(r"\s+", " ", (text or "")).strip()
+    if len(preview) > max_len:
+        return preview[:max_len] + "..."
+    return preview
+
+
+def strip_json_code_fence(content: str) -> str:
+    """去掉模型可能返回的 Markdown JSON 代码块。"""
+    content = (content or "").strip()
+    content = re.sub(r"^```(?:json)?\s*", "", content, flags=re.IGNORECASE)
+    content = re.sub(r"\s*```$", "", content)
+    return content.strip()
+
+
+def extract_first_json_object(content: str) -> str:
+    """从模型输出中截取第一个完整 JSON 对象字符串。"""
+    start = content.find("{")
+    if start < 0:
+        raise ValueError("拆分模型未返回 JSON 对象")
+
+    in_string = False
+    escaped = False
+    depth = 0
+
+    for index in range(start, len(content)):
+        char = content[index]
+
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return content[start:index + 1]
+
+    raise ValueError("拆分模型返回的 JSON 对象不完整，可能被 max_tokens 截断")
+
+
+def parse_decompose_llm_json(content: str) -> dict:
+    """解析拆分模型输出，兼容代码块和 JSON 前后夹杂文本。"""
+    content = strip_json_code_fence(content)
+
+    try:
+        result = json.loads(content, strict=False)
+    except json.JSONDecodeError:
+        json_object = extract_first_json_object(content)
+        try:
+            result = json.loads(json_object, strict=False)
+        except json.JSONDecodeError as e:
+            preview = compact_error_preview(content)
+            raise ValueError(f"LLM 返回的不是合法 JSON: {preview}") from e
+
+    return normalize_decompose_result(result)
+
+
 def decompose_query_with_llm(question: str):
     """调用拆分模型，把复杂问题转换为可单独检索的子问题。"""
     model_name = Settings.DECOMPOSE_MODEL_NAME
@@ -156,7 +228,7 @@ def decompose_query_with_llm(question: str):
         ],
         "stream": False,
         "temperature": 0,
-        "max_tokens": 128
+        "max_tokens": Settings.DECOMPOSE_MAX_TOKENS
     }
     headers = {
         "Content-Type": "application/json"
@@ -176,18 +248,7 @@ def decompose_query_with_llm(question: str):
     data = response.json()
     content = data["choices"][0]["message"]["content"]
 
-    # 去掉可能出现的 ```json ... ``` 包裹。
-    content = content.strip()
-    content = re.sub(r"^```json\s*", "", content)
-    content = re.sub(r"^```\s*", "", content)
-    content = re.sub(r"\s*```$", "", content)
-
-    try:
-        result = json.loads(content)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"LLM 返回的不是合法 JSON: {content}") from e
-
-    return normalize_decompose_result(result)
+    return parse_decompose_llm_json(content)
 
 
 # =========================
