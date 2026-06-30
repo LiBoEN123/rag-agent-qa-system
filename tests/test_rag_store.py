@@ -90,3 +90,36 @@ def test_load_index_cache_uses_chroma_metadata_for_docs_registry(monkeypatch):
             "chunk_count": 1,
         }
     ]
+
+
+def test_load_models_uses_configured_model_cache_dir(monkeypatch, tmp_path):
+    cache_dir = tmp_path / "models"
+    calls = {}
+
+    class FakeSentenceTransformer:
+        def __init__(self, model_name, device, cache_folder):
+            calls["embedding"] = {
+                "model_name": model_name,
+                "device": device,
+                "cache_folder": cache_folder,
+            }
+
+    class FakeCrossEncoder:
+        def __init__(self, model_name, device, cache_folder):
+            calls["rerank"] = {
+                "model_name": model_name,
+                "device": device,
+                "cache_folder": cache_folder,
+            }
+
+    monkeypatch.setattr(rag_store.Settings, "MODEL_CACHE_DIR", cache_dir)
+    monkeypatch.setattr(rag_store, "SentenceTransformer", FakeSentenceTransformer)
+    monkeypatch.setattr(rag_store, "CrossEncoder", FakeCrossEncoder)
+
+    rag_store._load_models()
+
+    assert cache_dir.is_dir()
+    assert calls["embedding"]["cache_folder"] == str(cache_dir)
+    assert calls["rerank"]["cache_folder"] == str(cache_dir)
+    assert calls["embedding"]["model_name"] == rag_store.Settings.EMBEDDING_MODEL_NAME
+    assert calls["rerank"]["model_name"] == rag_store.Settings.RERANK_MODEL_NAME

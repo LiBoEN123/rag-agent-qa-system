@@ -50,7 +50,7 @@ class ChatRequest(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example":{
-              "question": "每个 Vue 应用都是通过什么函数创建应用实例的？",
+              "question": "普通本科四年制专业学生现在最长学习年限是不是 8 年？",
               "top_k": 5
             }
         }
@@ -88,27 +88,137 @@ class ChatResponse(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example":{
-              "code": 0,
-              "message": "success",
-              "data": {
-                "answer": "每个 Vue 应用都是通过 `createApp` 函数创建一个新的应用实例。",
-                "references": [
-                  {
-                    "reference_id": "Reference 1",
-                    "file_name": "application.md",
-                    "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
-                    "chunk_id": 1,
-                    "position": 1,
-                    "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>应用实例{#the-application-instance}每个Vue应用都是通过[`createApp`]",
-                    "score": 1
-                  }
-                ],
-                "confidence": 0.519,
-                "need_clarification": False,
-                "answer_status": "answered",
-                "clarification_question": "",
-                "reason": "检索命中有效证据，且答案成功绑定引用"
-              }
+                "code": 0,
+                "message": "success",
+                "trace_id": "req_3b745087",
+                "data": {
+                    "question": "普通本科四年制专业学生现在最长学习年限是不是 8 年？",
+                    "answer": "根据参考资料，普通本科四年制专业学生的最长学习年限因学生类型而异：一般学生（非休学创业、非应征入伍）的学习年限为3～6年（见Reference 1和Reference 2），而休学创业学生的最长学习年限为8年（见Reference 1和Reference 2）。因此，对于普通本科四年制专业的一般学生，最长学习年限不是8年，而是6年；对于休学创业学生，最长学习年限是8年。",
+                    "references": [
+                    {
+                        "reference_id": "Reference 1",
+                        "file_name": "内蒙古工业大学教务处你问我答栏目整理.md",
+                        "source_path": "/home/wabce94123/projects/rag-agent-qa-system/data/kb/内蒙古工业大学教务处你问我答栏目整理.md",
+                        "chunk_id": 371,
+                        "position": 45,
+                        "snippet": "[标题路径]内蒙古工业大学教务处“你问我答”栏目整理>38.我们专业的修业年限是几年？**发布日期：**2024-08-31**原网页：**https://jwch.imut.edu.cn/info/1060/5796.htm答：从2023年入学的学生开始，普通本科四年制专业学生学习年限为3～6年；普通本科五年制专业学生学习年限为4～7年；休学创业学生最长学习年限为8年。应征入伍学生服役阶段不计入学习年限。---",
+                        "score": 0.9674,
+                        "rerank_score": 0.9892
+                    },
+                    {
+                        "reference_id": "Reference 2",
+                        "file_name": "内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知.md",
+                        "source_path": "/home/wabce94123/projects/rag-agent-qa-system/data/kb/内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知.md",
+                        "chunk_id": 7,
+                        "position": 2,
+                        "snippet": "[标题路径]内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知>一、调整修业年限对《内蒙古工业大学学籍管理办法》第四章第十三条调整如下：学生根据自身实际情况，可适当缩短或延长学习年限。普通本科四年制专业学生学习年限调整为3～6年；普通本科五年制专业学生学习年限调整为4～7年；休学创业学生最长学习年限调整为8年。应征入伍学生服役阶段不计入学习年限。",
+                        "score": 0.9426,
+                        "rerank_score": 0.9817
+                    }
+                    ],
+                    "confidence": 0.546,
+                    "need_clarification": False,
+                    "status": "ok",
+                    "clarification_question": "",
+                    "reason": "检索命中有效证据，且答案成功绑定引用",
+                    "action": "search_knowledge_base",
+                    "tool_result_summary": "知识库检索完成，召回 5 个 chunk",
+                    "tool_trace": [
+                    {
+                        "step": "decide",
+                        "route_decision": "rag",
+                        "decision_type": "use_knowledge_base",
+                        "action": "search_knowledge_base",
+                        "tool_name": "",
+                        "tool_args": {
+                        "query": "普通本科四年制专业学生现在最长学习年限是不是 8 年?",
+                        "top_k": 5
+                        },
+                        "reason": "用户询问学制年限，属于知识库内容，需要检索相关文档。",
+                        "router_source": "llm",
+                        "router_confidence": 0.95,
+                        "router_fallback_reason": ""
+                    },
+                    {
+                        "step": "call_tool",
+                        "tool_name": "search_knowledge_base",
+                        "tool_args": {
+                        "query": "普通本科四年制专业学生现在最长学习年限是不是 8 年？",
+                        "top_k": 5
+                        },
+                        "tool_status": "success",
+                        "success": True,
+                        "final_chunk_count": 5,
+                        "top_chunk_ids": [
+                        371,
+                        7,
+                        228,
+                        310,
+                        6
+                        ],
+                        "top_scores": [
+                        0.9674,
+                        0.9426,
+                        0.8981,
+                        0.8352,
+                        0.6181
+                        ],
+                        "result_summary": "检索到 5 个候选 chunk",
+                        "hits": [
+                        {
+                            "chunk_id": 371,
+                            "rerank": 0.9892,
+                            "score": 0.9674,
+                            "bm25": 40.8263,
+                            "vector": 0.737,
+                            "file_name": "内蒙古工业大学教务处你问我答栏目整理.md"
+                        },
+                        {
+                            "chunk_id": 7,
+                            "rerank": 0.9817,
+                            "score": 0.9426,
+                            "bm25": 40.9276,
+                            "vector": 0.7034,
+                            "file_name": "内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知.md"
+                        },
+                        {
+                            "chunk_id": 228,
+                            "rerank": 0.9816,
+                            "score": 0.8981,
+                            "bm25": 31.8092,
+                            "vector": 0.7778,
+                            "file_name": "内蒙古工业大学学生手册.md"
+                        },
+                        {
+                            "chunk_id": 310,
+                            "rerank": 0.9149,
+                            "score": 0.8352,
+                            "bm25": 31.0278,
+                            "vector": 0.7076,
+                            "file_name": "内蒙古工业大学学籍管理办法（2018年修订）.md"
+                        },
+                        {
+                            "chunk_id": 6,
+                            "rerank": 0.5652,
+                            "score": 0.6181,
+                            "bm25": 17.6933,
+                            "vector": 0.6194,
+                            "file_name": "内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知.md"
+                        }
+                        ]
+                    },
+                    {
+                        "step": "format_context",
+                        "summary": "将 5 个 chunk 交给 RAG 回答逻辑"
+                    },
+                    {
+                        "step": "final_answer",
+                        "tool_status": "skipped",
+                        "final_status": "ok",
+                        "answer_preview": "根据参考资料，普通本科四年制专业学生的最长学习年限因学生类型而异：一般学生（非休学创业、非应征入伍）的学习年限为3～6年（见Reference 1和Refere"
+                    }
+                    ]
+                }
             }
         }
     )
@@ -139,69 +249,76 @@ class SearchResponse(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example":{
-                  "code": 0,
-                  "message": "success",
-                  "data": {
-                    "question": "每个 Vue 应用都是通过什么函数创建应用实例的？",
-                    "references": [
-                      {
+                "code": 0,
+                "message": "success",
+                "data": {
+                    "question": "普通本科四年制专业学生现在最长学习年限是不是 8 年？",
+                    "status": "ok",
+                    "reason": "检索成功",
+                    "results": [
+                    {
                         "reference_id": "Reference 1",
-                        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
-                        "file_name": "application.md",
-                        "chunk_id": 1,
-                        "position": 1,
-                        "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>应用实例{#the-application-instance}每个Vue应用都是通过[`createApp`]",
-                        "score": 1,
-                        "bm25_score": 34.055355137731354,
-                        "vector_score": 0.741374135017395
-                      },
-                      {
+                        "source_path": "/home/wabce94123/projects/rag-agent-qa-system/data/kb/内蒙古工业大学教务处你问我答栏目整理.md",
+                        "file_name": "内蒙古工业大学教务处你问我答栏目整理.md",
+                        "chunk_id": 371,
+                        "position": 45,
+                        "snippet": "[标题路径]内蒙古工业大学教务处“你问我答”栏目整理>38.我们专业的修业年限是几年？**发布日期：**2024-08-31**原网页：**https://jwch.imut.edu.cn/info/1060/5796.htm答：从2023年入学的学生开始，普通本科四年制专业学生学习年限为3～6年；普通本科五年制专业学生学习年限为4～7年；休学创业学生最长学习年限为8年。应征入伍学生服役阶段不计入学习年限。---",
+                        "score": 0.9674021005630493,
+                        "bm25_score": 40.82631854778893,
+                        "vector_score": 0.7369934320449829,
+                        "rerank_score": 0.9891571998596191
+                    },
+                    {
                         "reference_id": "Reference 2",
-                        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
-                        "file_name": "application.md",
-                        "chunk_id": 10,
-                        "position": 10,
-                        "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>多个应用实例{#multiple-application-instances}应用实例并不只限于一个。`cre",
-                        "score": 0.9164628982543945,
-                        "bm25_score": 30.0893694535201,
-                        "vector_score": 0.7052635550498962
-                      },
-                      {
+                        "source_path": "/home/wabce94123/projects/rag-agent-qa-system/data/kb/内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知.md",
+                        "file_name": "内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知.md",
+                        "chunk_id": 7,
+                        "position": 2,
+                        "snippet": "[标题路径]内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知>一、调整修业年限对《内蒙古工业大学学籍管理办法》第四章第十三条调整如下：学生根据自身实际情况，可适当缩短或延长学习年限。普通本科四年制专业学生学习年限调整为3～6年；普通本科五年制专业学生学习年限调整为4～7年；休学创业学生最长学习年限调整为8年。应征入伍学生服役阶段不计入学习年限。",
+                        "score": 0.9426043033599854,
+                        "bm25_score": 40.927641430801266,
+                        "vector_score": 0.7033796310424805,
+                        "rerank_score": 0.9816882014274597
+                    },
+                    {
                         "reference_id": "Reference 3",
-                        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
-                        "file_name": "application.md",
-                        "chunk_id": 9,
-                        "position": 9,
-                        "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>应用配置{#app-configurations}app.component('TodoDeleteButto",
-                        "score": 0.7920963764190674,
-                        "bm25_score": 26.642277059679156,
-                        "vector_score": 0.6124808192253113
-                      },
-                      {
+                        "source_path": "/home/wabce94123/projects/rag-agent-qa-system/data/kb/内蒙古工业大学学生手册.md",
+                        "file_name": "内蒙古工业大学学生手册.md",
+                        "chunk_id": 228,
+                        "position": 219,
+                        "snippet": "[标题路径]学籍管理>第四章修业年限第十二条全日制普通本科专业基本学制为4年或5年，全日制高职高专学生基本学制为3年。第十三条学生根据自身实际情况，可适当缩短或延长修业年限。一般普通本科四年制专业学生修业年限为3～8年；普通本科五年制专业学生修业年限为4～10年；高职高专学生修业年限为2～6年。应征入伍学生修业年限为学制×2+服役年数。休学创业学生最长修业年限为10年。第十四条修业年限计算时间自学生正式获得我校学籍起，至学历证书颁发时间止。休学及保留学籍时间包含在修业年限内。第十五条学生可以分阶段完成学业，超过规定年限者，学校不予注册，不再保留其学籍。",
+                        "score": 0.8980649709701538,
+                        "bm25_score": 31.809159039335132,
+                        "vector_score": 0.7777819037437439,
+                        "rerank_score": 0.9815797209739685
+                    },
+                    {
                         "reference_id": "Reference 4",
-                        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\application.md",
-                        "file_name": "application.md",
-                        "chunk_id": 8,
-                        "position": 8,
-                        "snippet": "[标题路径]创建一个Vue应用{#creating-a-vue-application}>应用配置{#app-configurations}应用实例会暴露一个`.config`对象允许我们配置一些应用",
-                        "score": 0.7547773122787476,
-                        "bm25_score": 22.68307872610552,
-                        "vector_score": 0.6310862302780151
-                      },
-                      {
+                        "source_path": "/home/wabce94123/projects/rag-agent-qa-system/data/kb/内蒙古工业大学学籍管理办法（2018年修订）.md",
+                        "file_name": "内蒙古工业大学学籍管理办法（2018年修订）.md",
+                        "chunk_id": 310,
+                        "position": 7,
+                        "snippet": "[标题路径]内蒙古工业大学学籍管理办法>第四章修业年限**第十二条**全日制普通本科专业基本学制为4年或5年，全日制高职高专学生基本学制为3年。**第十三条**学生根据自身实际情况，可适当缩短或延长修业年限。一般普通本科四年制专业学生修业年限为3～8年；普通本科五年制专业学生修业年限为4～10年；高职高专学生修业年限为2～6年。应征入伍学生修业年限为学制×2+服役年数。休学创业学生最长修业年限为10年。**第十四条**修业年限计算时间自学生正式获得我校学籍起，至学历证书颁发时间止。休学及保留学籍时间包含在修业年限内。**第十五条**学生可以分阶段完成学业，超过规定年限者，学校不予注册，不再保留",
+                        "score": 0.8352251648902893,
+                        "bm25_score": 31.027838157205085,
+                        "vector_score": 0.7076448202133179,
+                        "rerank_score": 0.9148778915405273
+                    },
+                    {
                         "reference_id": "Reference 5",
-                        "source_path": "D:\\python-learn\\mini-rag\\data\\kb\\introduction.md",
-                        "file_name": "introduction.md",
-                        "chunk_id": 198,
-                        "position": 6,
-                        "snippet": "[标题路径]简介{#introduction}>什么是Vue？{#what-is-vue}Vue(发音为/vjuː/，类似**view**)是一款用于构建用户界面的JavaScript框架。它基于标准",
-                        "score": 0.7235828638076782,
-                        "bm25_score": 18.788527818590843,
-                        "vector_score": 0.6559301614761353
-                      }
+                        "source_path": "/home/wabce94123/projects/rag-agent-qa-system/data/kb/内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知.md",
+                        "file_name": "内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知.md",
+                        "chunk_id": 6,
+                        "position": 1,
+                        "snippet": "[标题路径]内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知为近一步提高人才培养质量，促进学生学习主动性，根据教育部《普通高等学校学生管理规定》（2017年教育部令第41号），经学校研究，决定对《内蒙古工业大学学籍管理办法》（内工大校发〔2018〕62号）中修业年限和成绩记载方式相关规定进行调整。",
+                        "score": 0.6181007623672485,
+                        "bm25_score": 17.69333164248942,
+                        "vector_score": 0.6194202899932861,
+                        "rerank_score": 0.5651710629463196
+                    }
                     ]
-                  }
                 }
+            }
         }
     )
 

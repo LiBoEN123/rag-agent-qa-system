@@ -12,6 +12,7 @@ services:
       CHROMA_PERSIST_DIR: /app/data/chroma
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-${LLM_API_KEY}}
       HF_HOME: /cache/huggingface
+      MODEL_CACHE_DIR: /cache/huggingface/hub
       SENTENCE_TRANSFORMERS_HOME: /cache/sentence-transformers
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility

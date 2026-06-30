@@ -24,6 +24,38 @@ INDEX_STORE_DIR = Settings.INDEX_STORE_DIR
 MANIFEST_PATH = INDEX_STORE_DIR / "index_manifest.json"
 
 
+def _model_cache_folder() -> str:
+    return str(Settings.ensure_model_cache_dir())
+
+
+def _load_embedding_model():
+    cache_folder = _model_cache_folder()
+    logger.info(
+        f"[models] loading embedding model={Settings.EMBEDDING_MODEL_NAME} "
+        f"device={devcie} cache_dir={cache_folder}"
+    )
+    return SentenceTransformer(
+        Settings.EMBEDDING_MODEL_NAME,
+        device=devcie,
+        cache_folder=cache_folder,
+        local_files_only=True
+    )
+
+
+def _load_rerank_model():
+    cache_folder = _model_cache_folder()
+    logger.info(
+        f"[models] loading rerank model={Settings.RERANK_MODEL_NAME} "
+        f"device={devcie} cache_dir={cache_folder}"
+    )
+    return CrossEncoder(
+        Settings.RERANK_MODEL_NAME,
+        device=devcie,
+        cache_folder=cache_folder,
+        local_files_only=True
+    )
+
+
 def build_index(all_chunks: list[dict], model=None, rerank_model=None):
     """基于 chunk 文本构建 BM25、向量嵌入和重排模型。"""
     if not all_chunks:
@@ -39,10 +71,10 @@ def build_index(all_chunks: list[dict], model=None, rerank_model=None):
     tokenized_texts = [tokenize(text) for text in local_texts]
 
     if model is None:
-        model = SentenceTransformer(Settings.EMBEDDING_MODEL_NAME, device=devcie)
+        model = _load_embedding_model()
 
     if rerank_model is None:
-        rerank_model = CrossEncoder(Settings.RERANK_MODEL_NAME, device=devcie)
+        rerank_model = _load_rerank_model()
 
     local_doc_embeddings = model.encode(
         local_texts,
@@ -184,10 +216,10 @@ def save_index_cache(
 def _load_models(model=None, rerank_model=None):
     """在索引缓存可用时加载 embedding 和 rerank 模型。"""
     if model is None:
-        model = SentenceTransformer(Settings.EMBEDDING_MODEL_NAME, device=devcie)
+        model = _load_embedding_model()
 
     if rerank_model is None:
-        rerank_model = CrossEncoder(Settings.RERANK_MODEL_NAME, device=devcie)
+        rerank_model = _load_rerank_model()
 
     return model, rerank_model
 

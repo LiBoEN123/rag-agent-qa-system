@@ -1,4 +1,4 @@
-# # 启动命令：python scripts/predictions.py --eval-file data/eval/rag_eval_questions_v2.json --out-file outputs/predictions.csv
+# # 启动命令：python scripts/predictions.py --eval-file data/eval/rag_eval_questions_nmgut_graduate_v1.json --out-file outputs/predictions.csv
 
 import json
 import csv

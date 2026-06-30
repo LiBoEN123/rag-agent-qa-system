@@ -5,6 +5,7 @@ ARG TORCH_CUDA_INDEX_URL=https://download.pytorch.org/whl/cu121
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HF_HOME=/cache/huggingface \
+    MODEL_CACHE_DIR=/cache/huggingface/hub \
     SENTENCE_TRANSFORMERS_HOME=/cache/sentence-transformers
 
 WORKDIR /app

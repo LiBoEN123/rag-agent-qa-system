@@ -101,6 +101,7 @@ Health:  http://127.0.0.1:8000/health
 | `CHUNK_OVERLAP` | 相邻 chunk 重叠长度                         |
 | `EMBEDDING_MODEL_NAME` | SentenceTransformer embedding 模型      |
 | `RERANK_MODEL_NAME` | CrossEncoder rerank 模型                |
+| `MODEL_CACHE_DIR` | embedding/rerank 模型权重本地缓存目录，默认 `./.cache/huggingface/hub` |
 | `MAX_CONTEXT_CHARS` | 拼给回答模型的最大上下文长度                        |
 | `LLM_API_KEY` | 回答模型 API Key；也兼容旧变量 `DEEPSEEK_API_KEY` |
 | `MODEL_NAME` | 回答模型名称                                |
@@ -143,6 +144,7 @@ CHUNK_OVERLAP=120
 
 EMBEDDING_MODEL_NAME=Qwen/Qwen3-Embedding-0.6B
 RERANK_MODEL_NAME=BAAI/bge-reranker-v2-m3
+MODEL_CACHE_DIR=./.cache/huggingface/hub
 MAX_CONTEXT_CHARS=4000
 
 LLM_API_KEY=your-api-key
@@ -189,6 +191,12 @@ DECOMPOSE_API_URL=http://127.0.0.1:11434/v1/chat/completions
 - `index_manifest.json`
 
 chunk 文本、chunk metadata、embedding 向量，以及用于恢复文档注册表的文档元数据都存入 ChromaDB，不再写入 `docs_registry.json`、`chunks.json`、`texts.json` 和 `doc_embeddings.npy`。
+
+embedding 和 rerank 模型权重会缓存到 `MODEL_CACHE_DIR`，本地默认是 `./.cache/huggingface/hub`。如果想在启动 API 前先下载模型，可以运行：
+
+```bash
+python scripts/cache_models.py
+```
 
 以下变化会触发重建：新增/删除/修改知识库文件、修改 `CHUNK_SIZE`、修改 `CHUNK_OVERLAP`、修改 embedding 模型、修改 rerank 模型、pipeline 版本变化。修改 `TOP_K`、Prompt、回答模型名称、温度等通常不需要重建索引。
 
@@ -400,6 +408,7 @@ docker run --rm -p 8000:8000 --env-file .env \
   -e INDEX_STORE_DIR=/app/data/manifest \
   -e CHROMA_PERSIST_DIR=/app/data/chroma \
   -e HF_HOME=/cache/huggingface \
+  -e MODEL_CACHE_DIR=/cache/huggingface/hub \
   -e SENTENCE_TRANSFORMERS_HOME=/cache/sentence-transformers \
   -v "$(pwd)/data/kb:/app/data/kb:ro" \
   -v "$(pwd)/data/chroma:/app/data/chroma" \

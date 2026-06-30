@@ -100,6 +100,7 @@ docker run --rm --gpus all -p 8000:8000 --env-file .env \
   -e INDEX_STORE_DIR=/app/data/manifest \
   -e CHROMA_PERSIST_DIR=/app/data/chroma \
   -e HF_HOME=/cache/huggingface \
+  -e MODEL_CACHE_DIR=/cache/huggingface/hub \
   -e SENTENCE_TRANSFORMERS_HOME=/cache/sentence-transformers \
   -e NVIDIA_VISIBLE_DEVICES=all \
   -e NVIDIA_DRIVER_CAPABILITIES=compute,utility \
@@ -141,11 +142,10 @@ docker compose exec rag-api python -c "import torch; print(torch.cuda.is_availab
 ## 7.常见问题
 - API Key不可用
 - 每次启动都重建索引：检查是否挂载了 `./data/chroma:/app/data/chroma` 和 `./data/manifest:/app/data/manifest`。
-- 每次启动都重新下载 embedding/rerank 模型：检查是否挂载了 `agent-rag-model-cache:/cache`，或使用 `docker compose up -d`。
+- 每次启动都重新下载 embedding/rerank 模型：检查是否挂载了 `agent-rag-model-cache:/cache`，并确认 `MODEL_CACHE_DIR=/cache/huggingface/hub`，或使用 `docker compose up -d`。
 - 容器内 `torch.cuda.is_available()` 是 `False`：确认启动命令包含 GPU 配置，宿主机能运行 `docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi`，并重新构建镜像确保安装的是 CUDA 版 PyTorch。
 - 修改知识库 `.txt`/`.md`、`CHUNK_SIZE`、`CHUNK_OVERLAP`、`EMBEDDING_MODEL_NAME`、`RERANK_MODEL_NAME` 后会触发重建索引，这是预期行为。
 - 本地 Ollama 无法访问时，确认启动命令包含 `--add-host=host.docker.internal:host-gateway`，或使用 compose 配置。
-
 
 
 

@@ -8,7 +8,6 @@ import traceback
 from pathlib import Path
 from typing import Any
 import os
-from app.main import write_bad_cases
 
 
 # =========================
@@ -22,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+from app.main import write_bad_cases
 from app.config import Settings
 from app.agent import run_agent_once
 from app.rag import (
@@ -36,7 +36,7 @@ from app.rag import (
 # =========================
 # 2. 路径配置
 # =========================
-DEFAULT_CASES_PATH = PROJECT_ROOT / "data" / "eval" / "agent_eval_cases.json"
+DEFAULT_CASES_PATH = PROJECT_ROOT / "data" / "eval" / "agent_eval_cases_nmgut_v1.json"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs" / "agent_eval"
 
 

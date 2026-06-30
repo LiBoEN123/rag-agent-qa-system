@@ -10,6 +10,24 @@ def env_bool(name: str, default: str = "false") -> bool:
     """从环境变量读取布尔配置，支持常见真值字符串。"""
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
+
+def project_path(path: Path) -> Path:
+    return path if path.is_absolute() else BASE_DIR / path
+
+
+def default_model_cache_dir() -> Path:
+    """返回模型权重的本地缓存目录，优先尊重显式环境变量。"""
+    if os.getenv("MODEL_CACHE_DIR"):
+        return project_path(Path(os.getenv("MODEL_CACHE_DIR")).expanduser())
+    if os.getenv("HF_HUB_CACHE"):
+        return project_path(Path(os.getenv("HF_HUB_CACHE")).expanduser())
+    if os.getenv("HF_HOME"):
+        return project_path(Path(os.getenv("HF_HOME")).expanduser()) / "hub"
+    if os.getenv("SENTENCE_TRANSFORMERS_HOME"):
+        return project_path(Path(os.getenv("SENTENCE_TRANSFORMERS_HOME")).expanduser())
+    return BASE_DIR / ".cache" / "huggingface" / "hub"
+
+
 class Settings:
     RAG_FILE_PATH=Path(os.getenv("RAG_FILE_PATH", str(BASE_DIR / 'data')))
     INDEX_STORE_DIR = Path(os.getenv("INDEX_STORE_DIR", str(BASE_DIR / "data" / "manifest"))) # index manifest directory
@@ -28,6 +46,7 @@ class Settings:
                                          "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
     RERANK_MODEL_NAME = os.getenv("RERANK_MODEL_NAME",
                                   "BAAI/bge-reranker-v2-m3")
+    MODEL_CACHE_DIR = default_model_cache_dir()
 
     MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", 2500))
     LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", 1024))
@@ -69,3 +88,9 @@ class Settings:
             raise ValueError("缺少 LLM_API_KEY 或 DEEPSEEK_API_KEY，请检查 .env")
         if not cls.RAG_FILE_PATH.exists():
             raise ValueError(f"RAG_FILE_PATH 不存在: {cls.RAG_FILE_PATH}")
+
+    @classmethod
+    def ensure_model_cache_dir(cls) -> Path:
+        """创建并返回 embedding/rerank 模型的本地缓存目录。"""
+        cls.MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        return cls.MODEL_CACHE_DIR
