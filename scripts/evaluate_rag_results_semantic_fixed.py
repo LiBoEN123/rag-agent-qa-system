@@ -618,12 +618,9 @@ def score_retrieval(
 
     evidence_items = evidence_texts(question)
     matched_evidence = []
-    missing_evidence = []
     matched_gold_chunks = []
-    match_mode = "chunk_id"
 
     if evidence_items and chunk_text_map:
-        match_mode = "gold_evidence"
         for evidence in evidence_items:
             matched_for_evidence = [
                 chunk_id
@@ -633,8 +630,6 @@ def score_retrieval(
             if matched_for_evidence:
                 matched_evidence.append(evidence)
                 matched_gold_chunks.extend(matched_for_evidence)
-            else:
-                missing_evidence.append(evidence)
 
         matched_gold_chunks = sorted(set(matched_gold_chunks))
         gold_chunks = resolve_gold_chunk_ids(question, chunk_text_map, chunk_doc_map)
@@ -686,11 +681,6 @@ def score_retrieval(
         "hit_chunk_ids": matched_gold_chunks,
         "matched_gold_chunk_ids": matched_gold_chunks,
         "missing_gold_chunk_ids": missing_gold_chunks,
-        "resolved_gold_chunk_ids": gold_chunks,
-        "retrieval_match_mode": match_mode,
-        "gold_evidence_count": len(evidence_items),
-        "matched_gold_evidence_count": len(matched_evidence),
-        "missing_gold_evidence": missing_evidence,
     }
 
 
@@ -776,20 +766,15 @@ def evaluate(eval_items: List[Dict[str, Any]], preds: Dict[str, Dict[str, Any]],
             # 新增：是否召回全部标准证据 chunk。
             "retrieval_all_gold_hit_at_k": round(retrieval["all_gold_hit_at_k"], 4),
             "retrieval_doc_hit_at_k": round(retrieval["doc_hit_at_k"], 4),
-            "retrieval_match_mode": retrieval["retrieval_match_mode"],
             "forbidden_hit": forbidden_hit,
             "final_score": round(fscore, 4),
             "missing_key_points": " | ".join(missing),
             "matched_key_points": " | ".join(matched),
             "forbidden_points_hit": " | ".join(forbidden_items),
             "gold_chunk_ids": json.dumps(q.get("gold_chunk_ids", []), ensure_ascii=False),
-            "resolved_gold_chunk_ids": json.dumps(retrieval["resolved_gold_chunk_ids"], ensure_ascii=False),
             "hit_chunk_ids": json.dumps(retrieval["hit_chunk_ids"], ensure_ascii=False),
             "matched_gold_chunk_ids": json.dumps(retrieval["matched_gold_chunk_ids"], ensure_ascii=False),
             "missing_gold_chunk_ids": json.dumps(retrieval["missing_gold_chunk_ids"], ensure_ascii=False),
-            "gold_evidence_count": retrieval["gold_evidence_count"],
-            "matched_gold_evidence_count": retrieval["matched_gold_evidence_count"],
-            "missing_gold_evidence": " | ".join(retrieval["missing_gold_evidence"]),
             "retrieved_chunk_ids": json.dumps(retrieval["retrieved_chunk_ids"], ensure_ascii=False),
             "question": q.get("question", ""),
             "gold_answer": q.get("gold_answer", ""),
