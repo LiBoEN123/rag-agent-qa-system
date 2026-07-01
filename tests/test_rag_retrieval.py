@@ -1,7 +1,82 @@
 import pytest
 
 import app.rag_retrieval as rag_retrieval
-from app.rag_retrieval import parse_decompose_llm_json
+from app.rag_retrieval import parse_decompose_llm_json, should_refuse
+
+
+def test_should_refuse_empty_results():
+    """验证没有召回结果时拒答。"""
+    assert should_refuse([], vector_threshold=0.35) is True
+
+
+def test_should_refuse_accepts_high_vector_score():
+    """验证向量分数达标时直接放行。"""
+    chunks = [
+        {
+            "vector_score": 0.42,
+            "bm25_score": 0.0,
+            "hybrid_score": 0.0,
+            "rerank_score": 0.0,
+        }
+    ]
+
+    assert should_refuse(chunks, vector_threshold=0.35) is False
+
+
+def test_should_refuse_rejects_weak_evidence():
+    """验证多路分数都弱时拒答。"""
+    chunks = [
+        {
+            "vector_score": 0.12,
+            "bm25_score": 0.0,
+            "hybrid_score": 0.1,
+            "rerank_score": 0.1,
+        }
+    ]
+
+    assert should_refuse(chunks, vector_threshold=0.35) is True
+
+
+def test_should_refuse_accepts_strong_rerank_with_near_vector_score():
+    """验证向量略低但重排和混合分数较强时放行。"""
+    chunks = [
+        {
+            "vector_score": 0.28,
+            "bm25_score": 0.0,
+            "hybrid_score": 0.38,
+            "rerank_score": 0.5,
+        }
+    ]
+
+    assert should_refuse(chunks, vector_threshold=0.35) is False
+
+
+def test_should_refuse_rejects_near_vector_with_weak_keyword_signal():
+    """验证向量略低时不会被很弱的关键词命中误放行。"""
+    chunks = [
+        {
+            "vector_score": 0.28,
+            "bm25_score": 0.1,
+            "hybrid_score": 0.05,
+            "rerank_score": 0.1,
+        }
+    ]
+
+    assert should_refuse(chunks, vector_threshold=0.35) is True
+
+
+def test_should_refuse_accepts_strong_keyword_and_rerank_signal():
+    """验证关键词命中和重排分数都强时不被向量阈值误拒。"""
+    chunks = [
+        {
+            "vector_score": 0.0,
+            "bm25_score": 8.2,
+            "hybrid_score": 0.24,
+            "rerank_score": 0.49,
+        }
+    ]
+
+    assert should_refuse(chunks, vector_threshold=0.35) is False
 
 
 def test_parse_decompose_llm_json_accepts_valid_compact_json():

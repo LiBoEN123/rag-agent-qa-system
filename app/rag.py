@@ -390,7 +390,7 @@ def ask(
             "confidence": 0.0,
             "need_clarification": False,
             "clarification_question": "",
-            "reason": "检索结果为空或 top1 分数低于阈值",
+            "reason": "检索结果为空或证据分数低于阈值",
             "timings": timings
         }
 

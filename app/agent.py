@@ -350,7 +350,11 @@ def should_record_reference_bad_case(
     if "我无法根据提供的文档确定答案" in answer:
         return False, ""
 
-    if "检索结果为空" in reason or "top1 分数低于阈值" in reason:
+    if (
+        "检索结果为空" in reason
+        or "top1 分数低于阈值" in reason
+        or "证据分数低于阈值" in reason
+    ):
         return False, ""
 
     if "模型给出的答案没有足够的引用支撑" in reason:

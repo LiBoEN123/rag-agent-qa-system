@@ -161,7 +161,11 @@ def infer_error_type_from_metric(row: dict[str, Any]) -> str:
     if action == "refuse" or "超出当前知识库范围" in reason:
         return "out_of_scope_error"
 
-    if "检索结果为空" in reason or "top1 分数低于阈值" in reason:
+    if (
+        "检索结果为空" in reason
+        or "top1 分数低于阈值" in reason
+        or "证据分数低于阈值" in reason
+    ):
         return "retrieval_error"
 
     if "引用" in reason or "支撑" in reason:

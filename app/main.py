@@ -21,6 +21,7 @@ from app.config import Settings
 from app.untils import get_logger
 from app.agent import route_agent_action, run_agent_once
 from app.observability import create_trace_id
+from app.rag_retrieval import safe_float, should_refuse
 
 PublicStatus: TypeAlias = Literal[
     "ok",
@@ -1230,13 +1231,12 @@ def search_api(req:ChatRequest, response:Response):
                 )
             )
 
-        top_vector_score = max(
-            float(item.get("vector_score", 0.0))
-            for item in final_chunks
-        )
-
-        if top_vector_score < Settings.VECTOR_THRESHOLD:
-            logger.warning(f"[search] vector 分数过低 top_vector_score={top_vector_score}")
+        if should_refuse(final_chunks):
+            max_vector_score = max(
+                safe_float(item.get("vector_score"))
+                for item in final_chunks
+            )
+            logger.warning(f"[search] 检索证据不足 max_vector_score={max_vector_score}")
             response.status_code = 200
             return SearchResponse(
                 code=0,
@@ -1244,7 +1244,7 @@ def search_api(req:ChatRequest, response:Response):
                 data=SearchData(
                     question=question,
                     status="no_evidence",
-                    reason=f"vector 分数过低：{top_vector_score:.4f}",
+                    reason=f"证据分数低于阈值：max_vector={max_vector_score:.4f}",
                     results=[]
                 )
             )

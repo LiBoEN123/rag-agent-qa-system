@@ -19,6 +19,12 @@ AMBIGUOUS_WORDS = [
     "上面", "前面", "后面", "这里", "那里"
 ]
 
+VECTOR_RELAX_RATIO = 0.70
+RERANK_STRONG_THRESHOLD = 0.45
+RERANK_VERY_STRONG_THRESHOLD = 0.55
+HYBRID_USABLE_THRESHOLD = 0.20
+HYBRID_STRONG_THRESHOLD = 0.35
+
 
 # =========================
 # 通用文本与分数工具
@@ -44,6 +50,17 @@ def clamp01(value: float) -> float:
     if value > 1:
         return 1.0
     return value
+
+
+def safe_float(value, default: float = 0.0) -> float:
+    """将分数字段转换为有限浮点数，脏数据统一按默认值处理。"""
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not np.isfinite(score):
+        return default
+    return score
 
 
 def make_snippet(text: str, max_len: int = 300) -> str:
@@ -562,25 +579,68 @@ def search_relevant_chunks(
 # 结果判定与澄清
 # =========================
 def should_refuse(retrieved_chunks, vector_threshold: float = None):
-    """根据召回结果和向量阈值判断是否应该拒答。"""
-    vector_threshold = (
+    """根据召回证据强度判断是否应该拒答。
+
+    向量分数是主信号；当向量分数略低于阈值，但 rerank、BM25 或
+    hybrid 分数显示出明确证据时，允许进入生成阶段，避免误拒关键词强命中。
+    """
+    vector_threshold = safe_float(
         vector_threshold
         if vector_threshold is not None
         else Settings.VECTOR_THRESHOLD
     )
+    vector_threshold = max(0.0, vector_threshold)
 
     if not retrieved_chunks:
         return True
 
-    max_vector = max(
-        float(item.get("vector_score", 0.0))
+    candidates = [
+        item
         for item in retrieved_chunks
-    )
-
-    if max_vector < vector_threshold:
+        if isinstance(item, dict)
+    ]
+    if not candidates:
         return True
 
-    return False
+    max_vector = max(
+        safe_float(item.get("vector_score"))
+        for item in candidates
+    )
+    if max_vector >= vector_threshold:
+        return False
+
+    relaxed_vector_threshold = vector_threshold * VECTOR_RELAX_RATIO
+
+    for item in candidates[:3]:
+        vector_score = safe_float(item.get("vector_score"))
+        rerank_score = safe_float(item.get("rerank_score"))
+        hybrid_score = safe_float(item.get("hybrid_score"))
+        bm25_score = safe_float(item.get("bm25_score"))
+
+        has_near_vector_match = vector_score >= relaxed_vector_threshold
+        has_strong_rerank = rerank_score >= RERANK_STRONG_THRESHOLD
+        has_very_strong_rerank = rerank_score >= RERANK_VERY_STRONG_THRESHOLD
+        has_lexical_hit = bm25_score > 0
+        has_usable_hybrid = hybrid_score >= HYBRID_USABLE_THRESHOLD
+        has_strong_hybrid = hybrid_score >= HYBRID_STRONG_THRESHOLD
+
+        if has_near_vector_match and (
+            has_strong_rerank
+            or has_strong_hybrid
+            or (has_lexical_hit and has_usable_hybrid)
+        ):
+            return False
+
+        if has_very_strong_rerank and has_strong_hybrid:
+            return False
+
+        if has_strong_rerank and has_lexical_hit and has_usable_hybrid:
+            return False
+
+        if item.get("protected") and (has_near_vector_match or has_strong_rerank):
+            return False
+
+    return True
 
 
 def is_ambiguous_question(question: str) -> bool:
