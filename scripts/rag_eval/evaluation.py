@@ -161,8 +161,8 @@ def evaluate(
             key_point_recall,
             forbidden_hit,
         )
-        # final_score 使用 gold_chunk_recall_at_k，而不是 loose 的 chunk_hit_at_k。
-        # 否则只命中一个证据 chunk 的 cross-doc 问题会被高估。
+        # final_score 使用严格 gold chunk-id recall，而不是 loose 的 evidence recall。
+        # 否则检索到非 gold 文档中的重复片段时，chunk-id 指标和综合分会被高估。
         fscore = final_score(
             q.get("expected_behavior", "answer"),
             behavior,
@@ -176,7 +176,6 @@ def evaluate(
             "qid": qid,
             "question": q.get("question", ""),
             "category": q.get("category", ""),
-            "skill_type": q.get("skill_type", ""),
             "difficulty": q.get("difficulty", ""),
             "expected_behavior": q.get("expected_behavior", ""),
             "has_prediction": bool(pred),
@@ -184,12 +183,8 @@ def evaluate(
             "behavior_score": round(behavior, 4),
             "behavior_label": behavior_label,
             "key_point_recall": round(key_point_recall, 4),
-            "retrieval_chunk_hit_at_k": round(retrieval["chunk_hit_at_k"], 4),
-            # 旧字段保留：等价于 gold_chunk_recall_at_k。
-            "retrieval_chunk_recall_at_k": round(retrieval["chunk_recall_at_k"], 4),
-            # 新增：标准证据 chunk 召回比例。
+            "retrieval_gold_chunk_hit_at_k": round(retrieval["gold_chunk_hit_at_k"], 4),
             "retrieval_gold_chunk_recall_at_k": round(retrieval["gold_chunk_recall_at_k"], 4),
-            # 新增：是否召回全部标准证据 chunk。
             "retrieval_all_gold_hit_at_k": round(retrieval["all_gold_hit_at_k"], 4),
             "retrieval_doc_hit_at_k": round(retrieval["doc_hit_at_k"], 4),
             "forbidden_hit": forbidden_hit,
@@ -207,9 +202,8 @@ def evaluate(
             "judge_error": judge_error,
             "key_point_judge_used": key_point_judge_used,
             "forbidden_judge_used": forbidden_judge_used,
-            "gold_chunk_ids": json.dumps(q.get("gold_chunk_ids", []), ensure_ascii=False),
+            "gold_chunk_ids": json.dumps(retrieval["scored_gold_chunk_ids"], ensure_ascii=False),
             "hit_chunk_ids": json.dumps(retrieval["hit_chunk_ids"], ensure_ascii=False),
-            "matched_gold_chunk_ids": json.dumps(retrieval["matched_gold_chunk_ids"], ensure_ascii=False),
             "missing_gold_chunk_ids": json.dumps(retrieval["missing_gold_chunk_ids"], ensure_ascii=False),
             "retrieved_chunk_ids": json.dumps(retrieval["retrieved_chunk_ids"], ensure_ascii=False),
             "gold_answer": q.get("gold_answer", ""),
@@ -263,7 +257,7 @@ def summarize(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "avg_final_score": round(mean([float(r["final_score"]) for r in vals]), 4),
             "avg_behavior_score": round(mean([float(r["behavior_score"]) for r in vals]), 4),
             "avg_key_point_recall": round(mean([float(r["key_point_recall"]) for r in vals]), 4),
-            "chunk_hit_at_k": round(mean([float(r["retrieval_chunk_hit_at_k"]) for r in vals]), 4),
+            "gold_chunk_hit_at_k": round(mean([float(r["retrieval_gold_chunk_hit_at_k"]) for r in vals]), 4),
             "gold_chunk_recall_at_k": round(mean([float(r["retrieval_gold_chunk_recall_at_k"]) for r in vals]), 4),
             "all_gold_hit_at_k": round(mean([float(r["retrieval_all_gold_hit_at_k"]) for r in vals]), 4),
             "doc_hit_at_k": round(mean([float(r["retrieval_doc_hit_at_k"]) for r in vals]), 4),

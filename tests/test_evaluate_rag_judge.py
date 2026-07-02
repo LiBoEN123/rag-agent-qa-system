@@ -238,11 +238,63 @@ def test_evaluate_uses_llm_judge_fields(monkeypatch):
     assert "old_key_point_recall" not in row
     assert "old_forbidden_hit" not in row
     assert "llm_key_point_recall" not in row
+    assert "skill_type" not in row
+    assert "retrieval_chunk_recall_at_k" not in row
+    assert "retrieval_evidence_recall_at_k" not in row
+    assert "matched_gold_chunk_ids" not in row
     assert row["key_point_recall"] == 1.0
     assert row["forbidden_hit"] is False
     assert row["key_point_judge_used"] is True
     assert row["judge_error"] == ""
     assert "avg_llm_key_point_recall" not in summary["overall"]
+    assert "evidence_recall_at_k" not in summary["overall"]
     assert summary["overall"]["avg_key_point_recall"] == 1.0
     assert details[0]["key_point_recall"] == 1.0
     assert details[0]["key_point_judgments"][0]["status"] == "covered"
+
+
+def test_cached_judge_evaluators_reuse_report_without_llm_calls(tmp_path):
+    cache_report = tmp_path / "per_question_report.csv"
+    cache_report.write_text(
+        "\ufeffqid,key_point_judgments_json,forbidden_judgments_json\n"
+        "\"q-cache\",\"[{\"\"key_point\"\":\"\"A\"\",\"\"status\"\":\"\"covered\"\",\"\"evidence_from_answer\"\":\"\"A\"\",\"\"reason\"\":\"\"cached\"\"}]\",\"[]\"\n",
+        encoding="utf-8",
+    )
+
+    cache = evaluator.load_judge_cache_report(cache_report)
+    key_point_evaluator, forbidden_evaluator = evaluator.make_cached_judge_evaluators(cache)
+
+    key_result = key_point_evaluator(
+        question="",
+        gold_answer="",
+        gold_key_points=["A"],
+        model_answer="A",
+        qid="q-cache",
+    )
+    forbidden_result = forbidden_evaluator(
+        question="",
+        model_answer="A",
+        forbidden_points=[],
+        qid="q-cache",
+    )
+
+    assert key_result["key_point_recall"] == 1.0
+    assert key_result["key_point_judgments"][0]["reason"] == "cached"
+    assert forbidden_result["forbidden_hit"] is False
+
+
+def test_cached_judge_evaluator_missing_qid_fails_fast():
+    key_point_evaluator, _ = evaluator.make_cached_judge_evaluators({})
+
+    try:
+        key_point_evaluator(
+            question="",
+            gold_answer="",
+            gold_key_points=["A"],
+            model_answer="A",
+            qid="missing",
+        )
+    except evaluator.LLMJudgeError as exc:
+        assert "missing from judge cache" in str(exc)
+    else:
+        raise AssertionError("missing qid should fail instead of calling LLM")

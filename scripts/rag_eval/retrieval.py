@@ -237,7 +237,15 @@ def score_retrieval(
 
     evidence_items = evidence_texts(question)
     matched_evidence = []
-    matched_gold_chunks = []
+    evidence_hit_chunks = []
+
+    if evidence_items and chunk_text_map:
+        gold_chunks = resolve_gold_chunk_ids(question, chunk_text_map, chunk_doc_map)
+    else:
+        gold_chunks = [int(x) for x in question.get("gold_chunk_ids", [])]
+    gold_set = set(gold_chunks)
+    matched_gold_chunks = sorted(gold_set & retrieved_set_at_k)
+    missing_gold_chunks = sorted(gold_set - retrieved_set_at_k)
 
     if evidence_items and chunk_text_map:
         for evidence in evidence_items:
@@ -248,30 +256,33 @@ def score_retrieval(
             ]
             if matched_for_evidence:
                 matched_evidence.append(evidence)
-                matched_gold_chunks.extend(matched_for_evidence)
+                evidence_hit_chunks.extend(matched_for_evidence)
 
-        matched_gold_chunks = sorted(set(matched_gold_chunks))
-        gold_chunks = resolve_gold_chunk_ids(question, chunk_text_map, chunk_doc_map)
-        gold_set = set(gold_chunks)
-        missing_gold_chunks = sorted(gold_set - set(matched_gold_chunks)) if gold_set else []
-        chunk_hit = 1.0 if matched_evidence else 0.0
-        gold_chunk_recall = len(matched_evidence) / len(evidence_items)
-        all_gold_hit = 1.0 if len(matched_evidence) == len(evidence_items) else 0.0
+        evidence_hit_chunks = sorted(set(evidence_hit_chunks))
+        evidence_hit = 1.0 if matched_evidence else 0.0
+        evidence_recall = len(matched_evidence) / len(evidence_items)
+        all_evidence_hit = 1.0 if len(matched_evidence) == len(evidence_items) else 0.0
     else:
-        gold_chunks = [int(x) for x in question.get("gold_chunk_ids", [])]
-        gold_set = set(gold_chunks)
-        matched_gold_chunks = sorted(gold_set & retrieved_set_at_k)
-        missing_gold_chunks = sorted(gold_set - retrieved_set_at_k)
+        evidence_hit_chunks = matched_gold_chunks
 
         if gold_set:
-            chunk_hit = 1.0 if matched_gold_chunks else 0.0
-            gold_chunk_recall = len(matched_gold_chunks) / len(gold_set)
-            all_gold_hit = 1.0 if gold_set.issubset(retrieved_set_at_k) else 0.0
+            evidence_hit = 1.0 if matched_gold_chunks else 0.0
+            evidence_recall = len(matched_gold_chunks) / len(gold_set)
+            all_evidence_hit = 1.0 if gold_set.issubset(retrieved_set_at_k) else 0.0
         else:
             # 如果评测题没有 gold evidence / gold_chunk_ids，就不惩罚检索。
-            chunk_hit = 1.0
-            gold_chunk_recall = 1.0
-            all_gold_hit = 1.0
+            evidence_hit = 1.0
+            evidence_recall = 1.0
+            all_evidence_hit = 1.0
+
+    if gold_set:
+        gold_chunk_hit = 1.0 if matched_gold_chunks else 0.0
+        gold_chunk_recall = len(matched_gold_chunks) / len(gold_set)
+        all_gold_hit = 1.0 if gold_set.issubset(retrieved_set_at_k) else 0.0
+    else:
+        gold_chunk_hit = evidence_hit
+        gold_chunk_recall = evidence_recall
+        all_gold_hit = all_evidence_hit
 
     retrieved_docs = parse_doc_ids(pred)
     if not retrieved_docs and chunk_doc_map:
@@ -287,17 +298,23 @@ def score_retrieval(
         "retrieved_chunk_ids": retrieved,
         "retrieved_chunk_ids_at_k": retrieved_at_k,
         "retrieved_doc_ids": retrieved_docs,
-        "chunk_hit_at_k": chunk_hit,
+        # Legacy loose metric: any retrieved chunk contains a gold evidence snippet.
+        "chunk_hit_at_k": evidence_hit,
 
-        # 旧字段保留，兼容已有输出；它和 gold_chunk_recall_at_k 含义一致。
-        "chunk_recall_at_k": gold_chunk_recall,
+        # Legacy loose metric: fraction of gold evidence snippets covered by retrieved chunks.
+        "chunk_recall_at_k": evidence_recall,
+        "evidence_recall_at_k": evidence_recall,
+        "all_evidence_hit_at_k": all_evidence_hit,
 
-        # 新增两个更有解释力的指标。
+        # Strict chunk-id metrics against gold chunks resolved in the current index.
+        "gold_chunk_hit_at_k": gold_chunk_hit,
         "gold_chunk_recall_at_k": gold_chunk_recall,
         "all_gold_hit_at_k": all_gold_hit,
 
         "doc_hit_at_k": doc_hit,
+        "scored_gold_chunk_ids": gold_chunks,
         "hit_chunk_ids": matched_gold_chunks,
+        "evidence_hit_chunk_ids": evidence_hit_chunks,
         "matched_gold_chunk_ids": matched_gold_chunks,
         "missing_gold_chunk_ids": missing_gold_chunks,
     }
