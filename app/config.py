@@ -59,6 +59,15 @@ class Settings:
     LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", 2))
     LLM_RETRY_SLEEP = int(os.getenv("LLM_RETRY_SLEEP", 1))
 
+    USE_LLM_JUDGE = env_bool("USE_LLM_JUDGE", "false")
+    JUDGE_API_KEY = os.getenv("JUDGE_API_KEY") or LLM_API_KEY
+    JUDGE_MODEL = os.getenv("JUDGE_MODEL", "")
+    JUDGE_API_URL = os.getenv("JUDGE_API_URL", LLM_API_URL)
+    JUDGE_TIMEOUT = int(os.getenv("JUDGE_TIMEOUT", os.getenv("LLM_TIMEOUT", "60")))
+    JUDGE_MAX_RETRIES = int(os.getenv("JUDGE_MAX_RETRIES", "1"))
+    JUDGE_RETRY_SLEEP = int(os.getenv("JUDGE_RETRY_SLEEP", os.getenv("LLM_RETRY_SLEEP", "1")))
+    JUDGE_MAX_TOKENS = int(os.getenv("JUDGE_MAX_TOKENS", "2048"))
+
     ENABLE_LLM_ROUTER = env_bool("ENABLE_LLM_ROUTER", "false")
     ROUTER_API_KEY = os.getenv("ROUTER_API_KEY") or LLM_API_KEY
     ROUTER_MODEL_NAME = os.getenv("ROUTER_MODEL_NAME", MODEL_NAME)
