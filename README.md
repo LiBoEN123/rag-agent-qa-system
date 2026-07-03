@@ -1,77 +1,137 @@
-# Mini RAG Agent
+# Agentic RAG 知识库问答系统
 
-一个基于 FastAPI 的中文 RAG 知识库问答项目，并在 RAG 外层加了一层最小 Agent 路由。
+一个面向中文制度类文档的 Agentic RAG 问答系统，支持文档解析、混合检索、重排、引用生成、Agent 路由、可观测性和离线评测。
 
-系统可以读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，构建 BM25 + 向量检索索引，通过 reranker 重排候选 chunk，再调用 OpenAI-compatible 的大模型生成带引用的答案。`/chat` 接口会先判断用户问题应该走知识库问答、工具调用、直接回答，还是澄清追问。
+本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。`/chat` 入口外层增加了最小 Agent Router，可以在知识库问答、工具调用、直接回答和澄清追问之间做路由。
 
-## 当前能力
+## 项目亮点
 
-- 文档读取：支持 `.txt`、`.md`、`.pdf`、`.docx`；文本类文件自动识别编码，PDF/DOCX 会提取可检索文本。
-- 文档切分：普通文本按段落和标点递归切分，Markdown 会先按标题层级切分并保留标题路径。
-- 混合检索：使用 jieba + BM25 做关键词召回，使用 SentenceTransformer embedding 做语义召回。
-- 重排：使用 CrossEncoder reranker 对候选 chunk 重新排序。
-- 可选问题拆分：复杂问题可由拆分模型生成子问题，多路召回后合并证据。
-- 答案生成：调用 OpenAI-compatible Chat Completions 接口，要求模型返回 JSON。
-- 引用绑定：模型返回的 `Reference N` 会映射回真实文件、chunk_id、snippet 和分数。
-- 最小 Agent：支持规则路由，也可以开启 LLM 路由；失败时会回退到规则路由。
+- 中文知识库问答：面向中文制度、校务、规范类文档，支持本地文档解析、检索、回答和引用溯源。
+- 混合检索：BM25 负责关键词精确匹配，SentenceTransformer Embedding 负责语义召回，提升中文问答召回稳定性。
+- CrossEncoder rerank：对候选 chunk 做二阶段重排，缓解初召回排序不准的问题。
+- ChromaDB 持久化：chunk 文本、metadata 和 embedding 持久化保存，服务重启可复用索引缓存。
+- LLM Router + 规则 fallback：可开启 LLM 路由，输出异常或参数非法时自动回退到规则路由。
 - 工具调用：支持简单四则运算、列出知识库文档、查看指定 chunk 原文。
-- 可观测性：`trace_id`、请求耗时、工具调用日志、失败案例日志和 metrics 汇总接口。
-- 索引缓存：chunk 文本、metadata 和 embedding 保存到 ChromaDB，索引构建 manifest 保存到本地。
+- 引用绑定和拒答机制：模型输出的 `Reference N` 会绑定回真实文件与 chunk；证据不足或引用支撑不足时拒答。
+- 可观测性：每次 `/chat` 请求记录 `trace_id`、阶段耗时、状态、工具调用和引用数量。
+- bad case 日志：对模型格式异常、引用异常、工具异常、索引未就绪等失败样例做结构化记录。
+- 离线评测闭环：支持批量生成预测结果，并从答案质量、检索命中和行为约束等维度评测。
 
-## 项目结构
+## 系统架构
 
-```text
-mini-rag/
-├── app/
-│   ├── main.py                  # FastAPI 入口、接口模型、指标记录
-│   ├── agent.py                 # Agent 路由、LLM router、工具/RAG 调度
-│   ├── tools.py                 # simple_calculator/list_documents/get_chunk_text
-│   ├── rag.py                   # RAG 总控、索引生命周期、问答流程
-│   ├── rag_ingest.py            # 文档读取、清洗、切分
-│   ├── rag_retrieval.py         # BM25 + 向量召回、rerank、问题拆分
-│   ├── rag_generation.py        # Prompt、模型调用、JSON 解析、引用绑定
-│   ├── rag_store.py             # 索引缓存、manifest、模型加载
-│   ├── rag_debug.py             # 文档/chunk 预览与 chunk 原文查询
-│   ├── observability.py         # trace_id 生成
-│   ├── prompts.py               # RAG、问题拆分、路由 Prompt
-│   ├── config.py                # 环境变量配置
-│   └── untils.py                # 日志工具
-├── data/
-│   ├── kb/                      # 默认知识库文档目录
-│   ├── eval/                    # 评测数据
-│   └── manifest/                # 索引构建 manifest
-├── scripts/
-│   ├── eval.py                  # RAG 离线评测
-│   ├── agent_eval.py            # Agent 路由评测
-│   ├── summarize_logs.py        # metrics/bad_cases 日志汇总
-│   ├── perf_test.py             # 简单串行压测
-│   ├── concurrent_perf_test.py  # 简单并发压测
-│   ├── decision.py              # 路由决策调试
-│   └── test_local_llm.py        # 本地模型接口测试
-├── tests/
-│   └── test_api.py              # FastAPI 接口测试
-├── logs/                        # metrics、bad_cases、tool_calls
-├── outputs/                     # 评测和日志汇总输出
-├── .env.example
-├── Dockerfile
-├── requirements.txt
-└── README.md
+```mermaid
+flowchart TD
+    U[用户问题] --> API[FastAPI /chat]
+    API --> Router[Agent Router]
+    Router -->|search_knowledge_base| RAG[RAG Pipeline]
+    Router -->|simple_calculator / list_documents / get_chunk_text| Tools[Tools]
+    Router -->|clarify| Clarify[澄清追问]
+    Router -->|direct_answer| Direct[直接回答]
+
+    RAG --> QD[Query Decompose 可选问题拆分]
+    QD --> HR[Hybrid Retrieval<br/>BM25 + Embedding]
+    HR --> RR[CrossEncoder Rerank]
+    RR --> CB[Context Build]
+    CB --> LLM[LLM Generation<br/>OpenAI-compatible Chat Completions]
+    LLM --> RB[Reference Binding]
+    RB --> Guard[Confidence / Refusal]
+    Guard --> Resp[统一 ChatResponse]
+
+    subgraph Indexing[索引构建流程]
+        DL[Document Loader<br/>txt / md / pdf / docx] --> CL[Clean Documents]
+        CL --> CS[Chunk Splitter<br/>Markdown 按标题层级切分]
+        CS --> EMB[Embedding]
+        EMB --> Chroma[(ChromaDB)]
+        CS --> BM25[BM25 Index]
+        Chroma --> Manifest[Manifest]
+        BM25 --> Manifest
+    end
+
+    Chroma --> HR
+    BM25 --> HR
+    Tools --> Resp
+    Clarify --> Resp
+    Direct --> Resp
 ```
 
-> 说明：当前代码里工具文件名是 `untils.py`，README 也按当前实现写这个名字。
+## 核心能力
 
-## 快速开始
+| 模块 | 已实现能力 |
+| --- | --- |
+| 文档读取 | 支持 `.txt`、`.md`、`.pdf`、`.docx`；文本类文件自动识别编码，PDF/DOCX 提取可检索文本 |
+| 文档切分 | 普通文本按段落和标点递归切分；Markdown 按标题层级切分并保留标题路径 |
+| 混合检索 | jieba + BM25 关键词召回，SentenceTransformer Embedding 语义召回 |
+| 重排 | CrossEncoder reranker 对候选 chunk 重新排序 |
+| 问题拆分 | 可选 Query Decompose，复杂问题可拆成子问题后多路召回并合并证据 |
+| 答案生成 | 调用 OpenAI-compatible Chat Completions，要求模型返回 JSON |
+| 引用绑定 | 将 `Reference N` 映射回真实文件、`chunk_id`、`snippet` 和分数 |
+| Agent 路由 | 支持规则路由和可选 LLM Router，失败时回退规则路由 |
+| 工具调用 | `simple_calculator`、`list_documents`、`get_chunk_text` |
+| 可观测性 | `trace_id`、请求耗时、阶段耗时、工具调用日志、metrics 汇总接口 |
+| 失败分析 | `logs/bad_cases.jsonl` 记录值得分析的失败样例 |
+| 索引缓存 | ChromaDB 持久化 chunk、metadata、embedding，manifest 记录索引构建状态 |
+
+## RAG 流程说明
+
+1. 文档加载：从 `RAG_FILE_PATH` 读取 `.txt` / `.md` / `.pdf` / `.docx` 文档。
+2. 文本清洗：统一清理不可见字符、空白和文档噪声。
+3. 文档切分：Markdown 先按标题层级切分并保留标题路径，普通文本按段落和标点递归切分。
+4. 建立索引：构建 BM25 关键词索引，并使用 SentenceTransformer 生成 embedding；向量、chunk 和 metadata 持久化到 ChromaDB。
+5. 查询路由：`/chat` 先经过 Agent Router，判断走 RAG、工具、澄清还是直接回答。
+6. 查询拆分：启用 `ENABLE_QUERY_DECOMPOSE` 后，复杂问题可由拆分模型生成子问题。
+7. 混合召回：查询时同时执行 BM25 和 embedding 召回，合并候选 chunk。
+8. 二阶段重排：使用 CrossEncoder reranker 对候选证据重新排序。
+9. 构造上下文：按 `MAX_CONTEXT_CHARS` 控制上下文长度，组装带 `Reference N` 的 evidence context。
+10. LLM 生成：调用 OpenAI-compatible Chat Completions，要求返回结构化 JSON。
+11. 引用绑定：解析模型返回的 references，并绑定到真实文件、chunk、snippet、score。
+12. 置信度与拒答：结合召回分数、引用数量和证据阈值估算置信度；证据不足、检索为空或引用支撑不足时返回拒答状态。
+
+## 评测结果
+
+| Metric              |  Score |
+| ------------------- | -----: |
+| Evaluation Cases    |     65 |
+| Final Score         | 0.9605 |
+| Key Point Recall    | 0.9353 |
+| Gold Chunk Hit@K    | 0.9846 |
+| Gold Chunk Recall@K | 0.9756 |
+| Gold Document Hit@K | 0.9846 |
+| Behavior Score      | 0.9846 |
+| Forbidden Hit       |      0 |
+
+评测集覆盖 `single_doc`、`cross_doc`、`partial_answer`、`not_in_doc`、`trap` 五类问题。系统在普通单文档问答、跨文档问答和无答案拒答场景中表现稳定；当前主要优化方向是 `partial_answer` 场景和新旧政策冲突类 `trap` 问题。
+
+## 工程化设计
+
+- 配置通过 `.env` 管理，`.env.example` 提供默认模板，回答模型、路由模型、拆分模型均使用 OpenAI-compatible Chat Completions 配置。
+- 支持 embedding / rerank 模型本地缓存，默认缓存目录为 `./.cache/huggingface/hub`，也可通过 `MODEL_CACHE_DIR`、`HF_HOME` 等环境变量调整。
+- 支持 ChromaDB 持久化，默认将向量、chunk 文本、metadata 和文档注册信息保存到 `data/chroma/`。
+- 启动时基于 manifest 判断是否需要重建索引；知识库文件、chunk 参数、embedding/rerank 模型或 pipeline 版本变化会触发重建。
+- `/chat` 请求支持继承或生成 `trace_id`，响应头返回 `X-Trace-Id` 和 `X-Total-Cost-Ms`。
+- metrics 记录路由、知识库就绪检查、检索、问题拆分、重排、上下文构造、LLM 调用、JSON 解析等阶段耗时。
+- bad case 日志用于定位失败样例，包括模型 JSON 解析失败、引用异常、工具异常、内部异常和索引未就绪。
+
+## 快速启动
 
 建议使用 Python 3.10+。
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+```
+
+Windows PowerShell 可使用：
+
+```powershell
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
 copy .env.example .env
 ```
 
-把知识库文档放到 `data/kb/`，然后编辑 `.env` 里的模型配置。启动服务：
+将知识库文档放到 `data/kb/`，然后编辑 `.env` 中的模型配置。启动服务：
 
 ```bash
 uvicorn app.main:app --reload
@@ -84,50 +144,63 @@ Swagger: http://127.0.0.1:8000/docs
 Health:  http://127.0.0.1:8000/health
 ```
 
+首次启动可能会下载 embedding / rerank 模型权重并构建索引；后续如果知识库文件和索引参数没有变化，会复用本地 ChromaDB 和 manifest 缓存。
+
+## Demo 页面
+
+项目提供了一个 Streamlit Demo 页面，用于通过浏览器体验问答、检索和路由调试。先启动 FastAPI 后端：
+
+```bash
+uvicorn app.main:app --reload
+```
+
+再启动 Demo 页面：
+
+```bash
+streamlit run demo/streamlit_app.py
+```
+
+页面默认连接 `http://127.0.0.1:8000`，也可以在侧边栏修改后端地址。
+
 ## 环境变量
 
-`.env.example` 已包含一份可用模板。常用配置如下：
+常用配置如下，完整示例见 `.env.example`。
 
-| 配置项 | 说明                                    |
-| --- |---------------------------------------|
-| `RAG_FILE_PATH` | 知识库目录，示例：`./data/kb`                  |
+| 配置项 | 说明 |
+| --- | --- |
+| `RAG_FILE_PATH` | 知识库目录，示例：`./data/kb` |
 | `INDEX_STORE_DIR` | 索引构建 manifest 目录，示例：`./data/manifest` |
 | `CHROMA_PERSIST_DIR` | ChromaDB 本地持久化目录，示例：`./data/chroma` |
 | `CHROMA_COLLECTION_NAME` | ChromaDB collection 名称，默认 `mini_rag_chunks` |
-| `ENABLE_CHROMA` | 是否启用 ChromaDB 向量存储；默认 `true`，关闭后无法保存或加载向量索引 |
-| `TOP_K` | `/chat` 和 `/search` 默认召回条数            |
-| `DECOMPOSE_TOP_K` | 多子问题召回合并后的候选上限                        |
-| `CHUNK_SIZE` | chunk 最大长度                            |
-| `CHUNK_OVERLAP` | 相邻 chunk 重叠长度                         |
-| `EMBEDDING_MODEL_NAME` | SentenceTransformer embedding 模型      |
-| `RERANK_MODEL_NAME` | CrossEncoder rerank 模型                |
-| `MODEL_CACHE_DIR` | embedding/rerank 模型权重本地缓存目录，默认 `./.cache/huggingface/hub` |
-| `MAX_CONTEXT_CHARS` | 拼给回答模型的最大上下文长度                        |
-| `LLM_API_KEY` | 回答模型 API Key；也兼容旧变量 `DEEPSEEK_API_KEY` |
-| `MODEL_NAME` | 回答模型名称                                |
+| `ENABLE_CHROMA` | 是否启用 ChromaDB 向量存储，默认 `true` |
+| `TOP_K` | `/chat` 和 `/search` 默认召回条数 |
+| `DECOMPOSE_TOP_K` | 多子问题召回合并后的候选上限 |
+| `CHUNK_SIZE` | chunk 最大长度 |
+| `CHUNK_OVERLAP` | 相邻 chunk 重叠长度 |
+| `EMBEDDING_MODEL_NAME` | SentenceTransformer embedding 模型 |
+| `RERANK_MODEL_NAME` | CrossEncoder rerank 模型 |
+| `MODEL_CACHE_DIR` | embedding/rerank 模型权重本地缓存目录 |
+| `MAX_CONTEXT_CHARS` | 拼给回答模型的最大上下文长度 |
+| `LLM_API_KEY` | 回答模型 API Key；兼容旧变量 `DEEPSEEK_API_KEY` |
+| `MODEL_NAME` | 回答模型名称 |
 | `LLM_API_URL` | OpenAI-compatible Chat Completions 地址 |
-| `TEMPERATURE` | 回答模型温度                                |
-| `LLM_MAX_TOKENS` | 回答模型最大输出 token                        |
-| `LLM_TIMEOUT` | 单次回答模型请求超时秒数                          |
-| `LLM_MAX_RETRIES` | 回答模型失败重试次数                            |
-| `LLM_RETRY_SLEEP` | 每次重试前等待秒数                             |
-| `ENABLE_LLM_ROUTER` | 是否启用 LLM Agent 路由；默认 `true`           |
-| `ROUTER_API_KEY` | 路由模型 API Key；为空时复用回答模型 Key            |
-| `ROUTER_MODEL_NAME` | 路由模型名称                                |
-| `ROUTER_API_URL` | 路由模型接口地址                              |
-| `ROUTER_TIMEOUT` | 路由模型请求超时秒数                            |
-| `ROUTER_MAX_RETRIES` | 路由模型失败重试次数                            |
-| `ROUTER_MAX_TOKENS` | 路由模型最大输出 token                        |
-| `ROUTER_TEMPERATURE` | 路由模型温度                                |
-| `ENABLE_QUERY_DECOMPOSE` | 是否启用问题拆分；默认 `true`                    |
-| `DECOMPOSE_API_KEY` | 问题拆分模型 API Key                        |
-| `DECOMPOSE_MODEL_NAME` | 问题拆分模型名称                              |
-| `DECOMPOSE_API_URL` | 问题拆分模型接口地址                            |
-| `DECOMPOSE_TIMEOUT` | 问题拆分模型请求超时秒数                          |
-| `DECOMPOSE_MAX_TOKENS` | 问题拆分模型最大输出 token，默认 `512`             |
-| `VECTOR_THRESHOLD` | 召回证据不足时拒答的向量分数阈值                      |
-| `MARGIN_THRESHOLD` | 预留的分数差距阈值配置                           |
-| `AUTO_REBUILD_ON_STARTUP` | 是否启动时强制重建索引                           |
+| `TEMPERATURE` | 回答模型温度 |
+| `LLM_MAX_TOKENS` | 回答模型最大输出 token |
+| `LLM_TIMEOUT` | 单次回答模型请求超时秒数 |
+| `LLM_MAX_RETRIES` | 回答模型失败重试次数 |
+| `ENABLE_LLM_ROUTER` | 是否启用 LLM Agent 路由，默认 `false` |
+| `ROUTER_API_KEY` | 路由模型 API Key；为空时复用回答模型 Key |
+| `ROUTER_MODEL_NAME` | 路由模型名称 |
+| `ROUTER_API_URL` | 路由模型接口地址 |
+| `ROUTER_TIMEOUT` | 路由模型请求超时秒数 |
+| `ENABLE_QUERY_DECOMPOSE` | 是否启用问题拆分，默认 `true` |
+| `DECOMPOSE_API_KEY` | 问题拆分模型 API Key |
+| `DECOMPOSE_MODEL_NAME` | 问题拆分模型名称 |
+| `DECOMPOSE_API_URL` | 问题拆分模型接口地址 |
+| `DECOMPOSE_TIMEOUT` | 问题拆分模型请求超时秒数 |
+| `VECTOR_THRESHOLD` | 召回证据不足时拒答的向量分数阈值 |
+| `MARGIN_THRESHOLD` | 预留的分数差距阈值配置 |
+| `AUTO_REBUILD_ON_STARTUP` | 是否启动时强制重建索引 |
 
 ### DeepSeek 示例
 
@@ -176,66 +249,39 @@ DECOMPOSE_MODEL_NAME=qwen2.5:7b
 DECOMPOSE_API_URL=http://127.0.0.1:11434/v1/chat/completions
 ```
 
-## 索引构建与缓存
-
-服务启动时会检查当前知识库目录和构建参数：
-
-```text
-启动服务
-  -> Settings.validate()
-  -> 检查 manifest 和缓存
-  -> 文档或配置变化：重建索引并保存缓存
-  -> 无变化：从本地缓存加载索引
-```
-
-缓存文件分为两部分：ChromaDB 向量库默认在 `data/chroma/`，`data/manifest/` 只保留索引构建账本：
-
-- `index_manifest.json`
-
-chunk 文本、chunk metadata、embedding 向量，以及用于恢复文档注册表的文档元数据都存入 ChromaDB，不再写入 `docs_registry.json`、`chunks.json`、`texts.json` 和 `doc_embeddings.npy`。
-
-embedding 和 rerank 模型权重会缓存到 `MODEL_CACHE_DIR`，本地默认是 `./.cache/huggingface/hub`。如果想在启动 API 前先下载模型，可以运行：
-
-```bash
-python scripts/cache_models.py
-```
-
-以下变化会触发重建：新增/删除/修改知识库文件、修改 `CHUNK_SIZE`、修改 `CHUNK_OVERLAP`、修改 embedding 模型、修改 rerank 模型、pipeline 版本变化。修改 `TOP_K`、Prompt、回答模型名称、温度等通常不需要重建索引。
-
-`/kb_summary` 会返回 `index_source` 字段：`chroma` 表示当前从 ChromaDB collection 加载，`memory` 表示刚重建完成但尚未重新加载持久化缓存，`none` 表示没有可用索引缓存。
-
-## API
+## API 示例
 
 | 接口 | 方法 | 作用 |
 | --- | --- | --- |
 | `/health` | GET | 健康检查 |
 | `/docs-preview` | GET | 查看已加载文档列表 |
 | `/chunks-preview` | GET | 查看 chunk 预览，支持 `max_len`、`limit`、`file_name` |
-| `/search` | POST | 只执行检索和 rerank，不调用回答模型 |
 | `/chat` | POST | 完整 Agent + RAG 问答入口 |
-| `/kb_summary` | POST | 返回知识库 ready 状态、文档数和 chunk 数 |
+| `/search` | POST | 只执行检索和 rerank，不调用回答模型 |
 | `/decide` | POST | 只返回 Agent 路由决策，不执行工具或 RAG |
-| `/metrics-summary` | GET | 汇总最近 N 条请求指标 |
+| `/kb_summary` | POST | 返回知识库 ready 状态、文档数、chunk 数和 `index_source` |
+| `/metrics-summary` | GET | 汇总最近 N 条 `/chat` 请求指标 |
 
-### `/chat`
+### `/chat` 请求示例
 
-请求：
-
-```json
-{
-  "question": "每个 Vue 应用都是通过什么函数创建应用实例的？",
-  "top_k": 5,
-  "decompose_top_k": 10
-}
+```bash
+curl -X POST "http://127.0.0.1:8000/chat" \
+  -H "Content-Type: application/json" \
+  -H "X-Trace-Id: demo-trace-001" \
+  -d '{
+    "question": "普通本科四年制专业学生现在最长学习年限是不是 8 年？",
+    "top_k": 5,
+    "decompose_top_k": 10
+  }'
 ```
 
 核心响应字段：
 
 | 字段 | 说明 |
 | --- | --- |
-| `trace_id` | 本次请求的追踪 ID，也会写入响应头 `X-Trace-Id` |
+| `trace_id` | 本次请求追踪 ID，也会写入响应头 `X-Trace-Id` |
 | `data.answer` | 最终回答 |
-| `data.references` | 引用来源列表 |
+| `data.references` | 引用来源列表，包含 `file_name`、`source_path`、`chunk_id`、`snippet`、`score`、`rerank_score` |
 | `data.confidence` | 0 到 1 的置信度估计 |
 | `data.status` | `ok`、`no_evidence`、`empty_index`、`error`、`clarify`、`out_of_scope` |
 | `data.need_clarification` | 是否需要用户补充问题 |
@@ -247,31 +293,20 @@ python scripts/cache_models.py
 
 ### `/search`
 
-`/search` 适合调试召回质量。它只检索，不调用回答模型。
+`/search` 适合调试召回质量。它只执行检索和 rerank，不调用回答模型。
 
 ```json
 {
-  "question": "每个 Vue 应用都是通过什么函数创建应用实例的？",
+  "question": "普通本科四年制专业学生现在最长学习年限是不是 8 年？",
   "top_k": 5
 }
 ```
 
-返回结果会包含：
-
-- `reference_id`
-- `file_name`
-- `source_path`
-- `chunk_id`
-- `position`
-- `snippet`
-- `score`
-- `bm25_score`
-- `vector_score`
-- `rerank_score`
+返回结果包含 `reference_id`、`file_name`、`source_path`、`chunk_id`、`position`、`snippet`、`score`、`bm25_score`、`vector_score`、`rerank_score`。
 
 ### `/decide`
 
-`/decide` 用来观察 Agent 路由结果。
+`/decide` 用于观察 Agent Router 对问题的路由结果。
 
 ```json
 {
@@ -280,21 +315,21 @@ python scripts/cache_models.py
 }
 ```
 
-可能返回：
+可能返回 `search_knowledge_base`、`simple_calculator`、`list_documents`、`get_chunk_text`、`clarify`、`direct_answer` 等动作。
 
-```json
-{
-  "decision": "use_tool",
-  "action": "simple_calculator",
-  "tool_name": "simple_calculator",
-  "tool_args": {
-    "expression": "1 + 2 * 3"
-  },
-  "router_source": "rule_based"
-}
+### `/kb_summary`
+
+返回当前知识库是否 ready、文档数量、chunk 数量、文件列表和 `index_source`。其中 `index_source=chroma` 表示当前索引来自 ChromaDB 缓存，`memory` 表示刚重建完成，`none` 表示没有可用索引。
+
+### `/metrics-summary`
+
+```text
+GET /metrics-summary?limit=20
 ```
 
-## Agent 路由
+用于查看最近请求的状态分布、成功数、拒答数、错误数和平均延迟。
+
+## Agent 路由与工具
 
 当前支持的 action：
 
@@ -303,42 +338,38 @@ python scripts/cache_models.py
 | `search_knowledge_base` | 走 RAG 检索、重排、生成、引用绑定 |
 | `simple_calculator` | 调用安全四则运算工具 |
 | `list_documents` | 返回当前知识库文档数量和列表 |
-| `get_chunk_text` | 根据 chunk_id 返回完整 chunk 文本 |
+| `get_chunk_text` | 根据 `chunk_id` 返回完整 chunk 文本 |
 | `direct_answer` | 直接回答系统能力类问题 |
 | `clarify` | 问题过短、为空或指代不明时追问 |
 
-默认使用规则路由。设置 `ENABLE_LLM_ROUTER=true` 后，系统会先调用路由模型生成 JSON 决策；如果模型调用失败、输出不是 JSON、action 非法或工具参数不合法，会自动回退到规则路由。
+设置 `ENABLE_LLM_ROUTER=true` 后，系统会先调用路由模型生成 JSON 决策；如果模型调用失败、输出不是 JSON、action 非法或工具参数不合法，会自动回退到规则路由。
 
-## RAG 流程
+## 索引构建与缓存
+
+服务启动时会检查当前知识库目录和构建参数：
 
 ```text
-用户问题
-  -> Agent 路由
-  -> 知识库路径 search_knowledge_base
-  -> BM25 + embedding 混合召回
-  -> 可选问题拆分
-  -> CrossEncoder rerank
-  -> 低相关度拒答判断
-  -> 构造 evidence context
-  -> 调用回答模型
-  -> 解析模型 JSON
-  -> 绑定 references
-  -> 估算 confidence
-  -> 返回统一 ChatResponse
+启动服务
+  -> Settings.validate()
+  -> 检查 manifest 和 ChromaDB 缓存
+  -> 文档或配置变化：重建索引并保存缓存
+  -> 无变化：从本地缓存加载索引
 ```
 
-回答模型应返回 JSON，例如：
+缓存分为两部分：
 
-```json
-{
-  "answer": "每个 Vue 应用都是通过 createApp 函数创建应用实例的。",
-  "references": ["Reference 1"]
-}
+- `data/chroma/`：ChromaDB 向量库，保存 chunk 文本、chunk metadata、embedding 向量和文档注册信息。
+- `data/manifest/index_manifest.json`：索引构建账本，用于判断知识库或索引参数是否变化。
+
+以下变化会触发重建：新增/删除/修改知识库文件、修改 `CHUNK_SIZE`、修改 `CHUNK_OVERLAP`、修改 embedding 模型、修改 rerank 模型、pipeline 版本变化。修改 `TOP_K`、Prompt、回答模型名称、温度等通常不需要重建索引。
+
+如需在启动 API 前先下载模型权重，可以运行：
+
+```bash
+python scripts/cache_models.py
 ```
 
-如果模型没有按 JSON 返回，接口会返回 `MODEL_BAD_OUTPUT`，并把失败案例写入日志。
-
-## 日志与观测
+## 日志与可观测性
 
 `/chat` 会为每次请求生成或继承 `trace_id`：
 
@@ -352,9 +383,7 @@ python scripts/cache_models.py
 | --- | --- |
 | `logs/metrics.jsonl` | 每次 `/chat` 的耗时、状态、action、引用数、工具信息 |
 | `logs/tool_calls.jsonl` | 每次工具调用的输入、输出、耗时和是否成功 |
-| `logs/bad_cases.jsonl` | 真正值得分析的失败案例，如模型 JSON 解析失败、引用异常、工具异常 |
-
-`/metrics-summary?limit=20` 可以查看最近请求的状态分布和平均耗时。
+| `logs/bad_cases.jsonl` | 模型 JSON 解析失败、引用异常、工具异常、内部异常、索引未就绪等失败样例 |
 
 日志汇总脚本：
 
@@ -362,31 +391,96 @@ python scripts/cache_models.py
 python scripts/summarize_logs.py
 ```
 
-默认会读取 `logs/metrics.jsonl` 和 `logs/bad_cases.jsonl`，并把汇总结果写到 `outputs/week9_summary.md`。
+默认读取 `logs/metrics.jsonl` 和 `logs/bad_cases.jsonl`，并将汇总结果写到 `outputs/week9_summary.md`。
 
-## 测试和评测
+## 测试与评测
 
-运行接口测试：
+运行测试：
 
 ```bash
 pytest
 ```
 
-运行 RAG 或 Agent 评测脚本：
+生成 RAG 预测结果：
 
 ```bash
-python scripts/eval.py
-python scripts/agent_eval.py
+python scripts/predictions.py \
+  --eval-file data/eval/rag_eval_questions_nmgut_graduate_v1.json \
+  --out-file outputs/predictions.csv
 ```
 
-压测和调试脚本：
+评测预测结果：
 
 ```bash
+python scripts/evaluate_rag_results_semantic_fixed.py \
+  --eval-file data/eval/rag_eval_questions_v2_semantic_fixed.json \
+  --pred-file outputs/predictions.csv \
+  --out-dir outputs/rag_baseline1 \
+  --k 10
+```
+
+Agent 路由评测、压测和本地模型接口检查：
+
+```bash
+python scripts/agent_eval.py
 python scripts/perf_test.py
 python scripts/concurrent_perf_test.py
-python scripts/decision.py
 python scripts/test_local_llm.py
 ```
+
+## 适合面试讲解的设计取舍
+
+- 为什么不用纯向量检索，而是 BM25 + Embedding：中文制度文档里经常出现政策名、条款号、年份、专业名称等精确关键词，BM25 对这些字面匹配更敏感；Embedding 能补足语义相近但表述不同的问题，两者混合比单一路径更稳。
+- 为什么引入 reranker：初召回阶段更关注“找全”，排序可能受关键词密度或向量相似度误差影响；CrossEncoder 可以基于 query-chunk 交互重新判断相关性，把更适合作答的证据排到前面。
+- 为什么需要引用绑定：RAG 问答不能只给自然语言答案，还需要能追溯到文件、chunk 和片段，便于用户核验，也便于排查模型是否引用了错误证据。
+- 为什么证据不足时拒答：制度类问答对准确性要求高，低相关度证据强行生成容易造成误导；系统通过阈值、引用绑定和模型输出检查，在证据不足时返回 `no_evidence`。
+- 为什么 Agent Router 要有规则 fallback：LLM Router 能提升灵活性，但可能出现格式错误、动作非法或参数缺失；规则 fallback 保证核心路径可控，避免路由失败影响主流程。
+- 为什么要做离线评测：RAG 优化不能只看单个 demo，需要用覆盖多场景的评测集持续观察召回、答案关键点、拒答行为和 forbidden 命中情况，形成可复现的优化闭环。
+
+## 项目结构
+
+```text
+.
+├── app/
+│   ├── main.py                  # FastAPI 入口、接口模型、指标记录
+│   ├── agent.py                 # Agent 路由、LLM Router、工具/RAG 调度
+│   ├── tools.py                 # simple_calculator / list_documents / get_chunk_text
+│   ├── rag.py                   # RAG 总控、索引生命周期、问答流程
+│   ├── rag_ingest.py            # 文档读取、清洗、切分
+│   ├── rag_retrieval.py         # BM25 + 向量召回、rerank、问题拆分
+│   ├── rag_generation.py        # Prompt、模型调用、JSON 解析、引用绑定
+│   ├── rag_store.py             # 索引缓存、manifest、模型加载
+│   ├── chroma_store.py          # ChromaDB 持久化存储
+│   ├── rag_debug.py             # 文档/chunk 预览与 chunk 原文查询
+│   ├── observability.py         # trace_id 生成
+│   ├── prompts.py               # RAG、问题拆分、路由 Prompt
+│   ├── config.py                # 环境变量配置
+│   └── untils.py                # 日志工具
+├── data/
+│   ├── kb/                      # 默认知识库文档目录
+│   ├── eval/                    # 评测数据
+│   ├── chroma/                  # ChromaDB 持久化目录
+│   └── manifest/                # 索引构建 manifest
+├── scripts/
+│   ├── predictions.py           # 批量生成 RAG 预测结果
+│   ├── evaluate_rag_results_semantic_fixed.py
+│   ├── agent_eval.py            # Agent 路由评测
+│   ├── summarize_logs.py        # metrics/bad_cases 日志汇总
+│   ├── cache_models.py          # 预下载 embedding/rerank 模型
+│   ├── perf_test.py             # 简单串行压测
+│   ├── concurrent_perf_test.py  # 简单并发压测
+│   └── test_local_llm.py        # 本地模型接口测试
+├── tests/                       # 单元测试和接口测试
+├── logs/                        # metrics、bad_cases、tool_calls
+├── outputs/                     # 评测和日志汇总输出
+├── .env.example
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+└── README.md
+```
+
+> 说明：当前代码里日志工具文件名是 `untils.py`，README 按当前实现保留该名称。
 
 ## Docker
 
@@ -421,42 +515,13 @@ docker run --rm -p 8000:8000 --env-file .env \
   agent-rag-demo:latest
 ```
 
-注意：首次启动可能会下载 embedding / rerank 模型权重并构建索引。后续重启如果没有修改知识库文件或索引参数，会复用挂载目录中的 ChromaDB 索引和模型缓存。
+## 后续优化方向
 
-## 常见问题
-
-### 1. `/chat` 返回 `EMPTY_INDEX`
-
-通常是知识库没有加载成功。检查：
-
-- `RAG_FILE_PATH` 是否指向存在的目录。
-- 目录下是否有 `.txt`、`.md`、`.pdf` 或 `.docx` 文件。
-- 首次启动是否完成索引构建。
-- PDF 是否为可复制文本的 PDF；扫描件或图片型 PDF 需要先做 OCR。
-
-### 2. 模型调用失败
-
-检查：
-
-- `DEEPSEEK_API_KEY` 是否正确。
-- `MODEL_NAME` 是否存在且账号有权限。
-- `LLM_API_URL` 是否是 OpenAI-compatible Chat Completions 地址。
-- 本地 Ollama 是否已经启动并拉取对应模型。
-
-### 3. 检索到了内容但回答拒答
-
-可能原因：
-
-- `VECTOR_THRESHOLD` 过高。
-- chunk 切分过碎或过长。
-- 问题和文档表述差异太大。
-- 模型返回的 references 没有正确引用检索结果。
-
-可以先用 `/search` 查看召回和分数，再调整文档、阈值或 chunk 参数。
-
-### 4. LLM router 输出不稳定
-
-保持 `ENABLE_LLM_ROUTER=false` 会使用规则路由，最稳定。开启 LLM router 后，系统已经做了校验和回退，但路由质量仍取决于路由模型输出。
+- 优化 `partial_answer` 场景的 prompt，让模型在只能回答部分问题时更清晰地说明已回答和未覆盖部分。
+- 强化新旧政策冲突判断，提升 `trap` 类问题中对时间、版本和政策优先级的识别能力。
+- 针对 hard query 做 query rewrite，提升复杂问法、隐含限定和跨文档查询的召回质量。
+- 增加更完整的 CI，覆盖格式检查、单元测试、接口测试和关键评测脚本。
+- 增加 Streamlit 或 Web Demo，降低招聘方和非技术用户的体验门槛。
 
 ## 已知限制
 
