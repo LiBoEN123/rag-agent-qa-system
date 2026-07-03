@@ -11,6 +11,7 @@ REQUEST_TIMEOUT_SECONDS = 120
 
 
 def normalize_backend_url(raw_url: str) -> str:
+    """规范化后端地址，去掉首尾空白和末尾斜杠，空值时使用默认地址。"""
     url = (raw_url or DEFAULT_BACKEND_URL).strip().rstrip("/")
     return url or DEFAULT_BACKEND_URL
 
@@ -21,6 +22,7 @@ def post_json(
     payload: dict[str, Any] | None = None,
     timeout: int = REQUEST_TIMEOUT_SECONDS,
 ) -> tuple[dict[str, Any] | None, int | None, str | None]:
+    """向指定后端接口发送 JSON POST 请求，并统一返回响应数据、状态码和错误信息。"""
     url = f"{normalize_backend_url(backend_url)}{endpoint}"
 
     try:
@@ -50,20 +52,24 @@ def post_json(
 
 
 def render_http_warning(endpoint: str, status_code: int | None) -> None:
+    """当接口返回 4xx/5xx 状态码时，在页面上提示 HTTP 警告。"""
     if status_code is not None and status_code >= 400:
         st.warning(f"{endpoint} 返回 HTTP {status_code}。下方仍会展示后端返回的结构化响应。")
 
 
 def pick(data: dict[str, Any], key: str, default: Any = "") -> Any:
+    """从字典中安全读取字段，缺失或值为 None 时返回默认值。"""
     value = data.get(key, default)
     return default if value is None else value
 
 
 def table_rows(items: list[dict[str, Any]], columns: list[str]) -> list[dict[str, Any]]:
+    """按指定列名整理列表数据，生成适合 st.dataframe 展示的行数据。"""
     return [{column: item.get(column, "") for column in columns} for item in items]
 
 
 def render_references(references: list[dict[str, Any]]) -> None:
+    """渲染回答引用的知识库片段，包含来源文件、分块编号和片段内容。"""
     st.subheader("references")
 
     if not references:
@@ -88,6 +94,7 @@ def render_references(references: list[dict[str, Any]]) -> None:
 
 
 def render_tool_trace(tool_trace: list[dict[str, Any]]) -> None:
+    """渲染工具调用链路，展示每一步的动作、状态和完整 JSON。"""
     st.subheader("tool_trace")
 
     if not tool_trace:
@@ -110,6 +117,7 @@ def render_tool_trace(tool_trace: list[dict[str, Any]]) -> None:
 
 
 def render_chat_result(response_json: dict[str, Any], status_code: int | None) -> None:
+    """渲染 /chat 接口的问答结果，包括答案、指标、引用和工具链路。"""
     render_http_warning("/chat", status_code)
 
     data = response_json.get("data") or {}
@@ -138,6 +146,7 @@ def render_chat_result(response_json: dict[str, Any], status_code: int | None) -
 
 
 def render_search_result(response_json: dict[str, Any], status_code: int | None) -> None:
+    """渲染 /search 接口的检索结果，包括匹配列表、分数和文本片段。"""
     render_http_warning("/search", status_code)
 
     data = response_json.get("data") or {}
@@ -174,11 +183,13 @@ def render_search_result(response_json: dict[str, Any], status_code: int | None)
 
 
 def render_decide_result(response_json: dict[str, Any], status_code: int | None) -> None:
+    """渲染 /decide 接口的路由判断结果，直接展示完整 JSON。"""
     render_http_warning("/decide", status_code)
     st.json(response_json)
 
 
 def render_kb_summary(backend_url: str) -> None:
+    """请求并渲染知识库状态信息，展示在 Streamlit 侧边栏中。"""
     st.sidebar.subheader("知识库状态")
 
     response_json, status_code, error = post_json(
@@ -223,6 +234,7 @@ def run_action(
     top_k: int,
     decompose_top_k: int,
 ) -> None:
+    """校验用户问题，调用指定接口，并将最新请求结果保存到会话状态。"""
     question = question.strip()
     if not question:
         st.warning("请输入 question 后再发起请求。")
@@ -246,6 +258,7 @@ def run_action(
 
 
 def render_last_result() -> None:
+    """读取会话中的最近一次请求结果，并根据接口类型选择对应渲染函数。"""
     result = st.session_state.get("last_result")
     if not result:
         return
@@ -275,6 +288,7 @@ def render_last_result() -> None:
 
 
 def main() -> None:
+    """组装 Streamlit Demo 页面，绑定侧边栏、输入区、操作按钮和结果展示。"""
     st.set_page_config(page_title="RAG Demo", layout="wide")
 
     st.title("FastAPI RAG Demo")
