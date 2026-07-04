@@ -71,7 +71,8 @@ class ChatData(BaseModel):
     question:str
     answer:str
     references:list[ChatReferences]=Field(default_factory=list)
-    confidence:float = Field(..., ge=0.0, le=1.0, description="回答置信度，0~1")
+    retrieval_confidence:float = Field(..., ge=0.0, le=1.0, description="检索证据置信度，0~1")
+    answer_confidence:float = Field(..., ge=0.0, le=1.0, description="最终回答置信度，0~1")
     need_clarification:bool = Field(..., description="是否建议用户补充问题")
     status: PublicStatus
     clarification_question:str = Field(..., description="补充提示")
@@ -117,7 +118,8 @@ class ChatResponse(BaseModel):
                         "rerank_score": 0.9817
                     }
                     ],
-                    "confidence": 0.546,
+                    "retrieval_confidence": 0.812,
+                    "answer_confidence": 0.546,
                     "need_clarification": False,
                     "status": "ok",
                     "clarification_question": "",
@@ -562,7 +564,8 @@ def build_chat_response(code:int|str,
                         question:str,
                         answer:str="",
                         references:list | None = None,
-                        confidence: float = 0.0,
+                        retrieval_confidence: float = 0.0,
+                        answer_confidence: float = 0.0,
                         need_clarification: bool = False,
                         status: PublicStatus = "ok",
                         clarification_question:str = "",
@@ -572,6 +575,9 @@ def build_chat_response(code:int|str,
                         tool_trace:list | None = None,
                         ) -> ChatResponse:
     """按统一响应模型组装 /chat 返回数据。"""
+    retrieval_confidence = max(0.0, min(1.0, safe_float(retrieval_confidence)))
+    answer_confidence = max(0.0, min(1.0, safe_float(answer_confidence)))
+
     return ChatResponse(code=code,
                         message=message,
                         trace_id=trace_id,
@@ -579,7 +585,8 @@ def build_chat_response(code:int|str,
                             question=question,
                             answer=answer,
                             references=references or [],
-                            confidence=confidence,
+                            retrieval_confidence=retrieval_confidence,
+                            answer_confidence=answer_confidence,
                             need_clarification=need_clarification,
                             status=status,
                             clarification_question=clarification_question,
@@ -790,7 +797,6 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
                 message="问题不能为空，请输入你想查询的内容",
                 trace_id=trace_id,
                 question=question,
-                confidence=0.0,
                 need_clarification=True,
                 status="clarify",
                 clarification_question="请直接输入你想查询的具体问题，例如：年假申请流程是什么？",
@@ -858,7 +864,6 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
                     message=rag_status["message"],
                     trace_id=trace_id,
                     question=question,
-                    confidence=0.0,
                     need_clarification=False,
                     status="empty_index",
                     clarification_question="",
@@ -932,7 +937,6 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
                 message="处理失败，请稍后重试",
                 trace_id=trace_id,
                 question=question,
-                confidence=0.0,
                 need_clarification=False,
                 status="error",
                 clarification_question="",
@@ -948,7 +952,8 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
                 question=question,
                 answer=result.get("answer", ""),
                 references=[],
-                confidence=0.0,
+                retrieval_confidence=result.get("retrieval_confidence", 0.0),
+                answer_confidence=result.get("answer_confidence", 0.0),
                 need_clarification=False,
                 status="error",
                 clarification_question="",
@@ -970,7 +975,8 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
                 question=question,
                 answer="",
                 references=[],
-                confidence=result.get("confidence", 0.0),
+                retrieval_confidence=result.get("retrieval_confidence", 0.0),
+                answer_confidence=result.get("answer_confidence", 0.0),
                 need_clarification=True,
                 status="clarify",
                 clarification_question=result.get("clarification_question", ""),
@@ -992,7 +998,8 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
                 question=question,
                 answer=result.get("answer", ""),
                 references=result.get("references", []),
-                confidence=result.get("confidence", 0.0),
+                retrieval_confidence=result.get("retrieval_confidence", 0.0),
+                answer_confidence=result.get("answer_confidence", 0.0),
                 need_clarification=result.get("need_clarification", False),
                 status="no_evidence",
                 clarification_question="",
@@ -1014,7 +1021,8 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
                 question=question,
                 answer=result.get("answer", ""),
                 references=[],
-                confidence=result.get("confidence", 0.0),
+                retrieval_confidence=result.get("retrieval_confidence", 0.0),
+                answer_confidence=result.get("answer_confidence", 0.0),
                 need_clarification=result.get("need_clarification", False),
                 status="error",
                 clarification_question=result.get("clarification_question", ""),
@@ -1036,7 +1044,8 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
                 question=question,
                 answer=result.get("answer", ""),
                 references=[],
-                confidence=result.get("confidence", 0.0),
+                retrieval_confidence=result.get("retrieval_confidence", 0.0),
+                answer_confidence=result.get("answer_confidence", 0.0),
                 need_clarification=False,
                 status="out_of_scope",
                 clarification_question="",
@@ -1058,7 +1067,8 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
                 question=question,
                 answer=result.get("answer", ""),
                 references=[],
-                confidence=result.get("confidence", 0.0),
+                retrieval_confidence=result.get("retrieval_confidence", 0.0),
+                answer_confidence=result.get("answer_confidence", 0.0),
                 need_clarification=result.get("need_clarification", False),
                 status="error",
                 clarification_question="",
@@ -1079,7 +1089,8 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
             question=question,
             answer=result["answer"],
             references=result.get("references", []),
-            confidence=result.get("confidence", 0.0),
+            retrieval_confidence=result.get("retrieval_confidence", 0.0),
+            answer_confidence=result.get("answer_confidence", 0.0),
             need_clarification=result.get("need_clarification", False),
             status="ok",
             clarification_question=result.get("clarification_question", ""),
@@ -1109,7 +1120,6 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
             message="服务器内部错误",
             trace_id=trace_id,
             question=question,
-            confidence=0.0,
             need_clarification=False
         )
 

@@ -383,7 +383,8 @@ def evaluate_one_case(case: dict, top_k: int) -> dict:
             "answer": result.get("answer", ""),
             "reason": result.get("reason", ""),
             "tool_result_summary": result.get("tool_result_summary", ""),
-            "confidence": result.get("confidence", 0.0),
+            "retrieval_confidence": result.get("retrieval_confidence", 0.0),
+            "answer_confidence": result.get("answer_confidence", 0.0),
             "need_clarification": result.get("need_clarification", False),
             "references": result.get("references", []),
             "tool_trace": result.get("tool_trace", []),
@@ -427,7 +428,8 @@ def evaluate_one_case(case: dict, top_k: int) -> dict:
             "answer": "",
             "reason": "",
             "tool_result_summary": "",
-            "confidence": 0.0,
+            "retrieval_confidence": 0.0,
+            "answer_confidence": 0.0,
             "need_clarification": False,
             "references": [],
             "tool_trace": [],
@@ -586,7 +588,8 @@ def write_csv(path: Path, rows: list[dict]) -> None:
         "source_hits",
         "source_missing",
 
-        "confidence",
+        "retrieval_confidence",
+        "answer_confidence",
         "need_clarification",
         "elapsed_ms",
 
@@ -624,7 +627,8 @@ def write_csv(path: Path, rows: list[dict]) -> None:
                 "source_hits": " | ".join(map(str, r.get("source_hits", []))),
                 "source_missing": " | ".join(map(str, r.get("source_missing", []))),
 
-                "confidence": r.get("confidence", 0.0),
+                "retrieval_confidence": r.get("retrieval_confidence", 0.0),
+                "answer_confidence": r.get("answer_confidence", 0.0),
                 "need_clarification": r.get("need_clarification", False),
                 "elapsed_ms": r.get("elapsed_ms", 0),
 

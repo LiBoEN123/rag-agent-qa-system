@@ -12,7 +12,8 @@ from app.rag_debug import (
 from app.rag_generation import (
     build_context,
     call_llm,
-    estimate_confidence,
+    estimate_answer_confidence,
+    estimate_retrieval_confidence,
     format_reference,
     parse_llm_output,
     LLMCallError
@@ -290,7 +291,8 @@ def ask(
             "answer": "",
             "references": [],
             "final_chunks": [],
-            "confidence": 0.0,
+            "retrieval_confidence": 0.0,
+            "answer_confidence": 0.0,
             "need_clarification": True,
             "clarification_question": build_clarification_question(question),
             "reason": "问题存在指代不明或缺少关键限定信息",
@@ -381,13 +383,16 @@ def ask(
 
     logger.info(f"[trace_id={trace_id}] [rag] 开始问答流程 top_k={top_k}")
 
+    retrieval_confidence = estimate_retrieval_confidence(final_chunks)
+
     if should_refuse(final_chunks):
         return {
             "status": "NO_RELEVANT_INFO",
             "answer": NO_ANSWER_FALLBACK,
             "references": [],
             "final_chunks": [],
-            "confidence": 0.0,
+            "retrieval_confidence": retrieval_confidence,
+            "answer_confidence": 0.0,
             "need_clarification": False,
             "clarification_question": "",
             "reason": "检索结果为空或证据分数低于阈值",
@@ -415,7 +420,8 @@ def ask(
             "answer": e.user_message,
             "references": [],
             "final_chunks": final_chunks,
-            "confidence": 0.0,
+            "retrieval_confidence": retrieval_confidence,
+            "answer_confidence": 0.0,
             "need_clarification": False,
             "clarification_question": "",
             "reason": e.user_message,
@@ -444,7 +450,8 @@ def ask(
             "answer": NO_ANSWER_FALLBACK,
             "references": [],
             "final_chunks": [],
-            "confidence": 0.0,
+            "retrieval_confidence": retrieval_confidence,
+            "answer_confidence": 0.0,
             "need_clarification": False,
             "clarification_question": "",
             "reason": "模型未按约定 JSON 格式返回",
@@ -459,17 +466,19 @@ def ask(
             "answer": parsed["answer"],
             "references": final_references,
             "final_chunks": final_chunks,
-            "confidence": 0.0,
+            "retrieval_confidence": retrieval_confidence,
+            "answer_confidence": 0.0,
             "need_clarification": False,
             "clarification_question": "",
             "reason": "模型给出的答案没有足够的引用支撑",
             "timings": timings
         }
 
-    confidence = estimate_confidence(
-        retrieved_chunks=retrieved_chunks,
+    answer_confidence = estimate_answer_confidence(
+        retrieved_chunks=final_chunks,
         final_references=final_references,
-        status="OK"
+        status="OK",
+        retrieval_confidence=retrieval_confidence
     )
 
     return {
@@ -477,7 +486,8 @@ def ask(
         "answer": parsed["answer"],
         "references": final_references,
         "final_chunks": final_chunks,
-        "confidence": confidence,
+        "retrieval_confidence": retrieval_confidence,
+        "answer_confidence": answer_confidence,
         "need_clarification": False,
         "clarification_question": "",
         "reason": "检索命中有效证据，且答案成功绑定引用",

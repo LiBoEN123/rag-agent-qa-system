@@ -1,38 +1,37 @@
-from fastapi.testclient import TestClient
 import app.main as main
 
-def make_client(monkeypatch):
-    """构造带配置 monkeypatch 的 FastAPI 测试客户端。"""
+
+def patch_app(monkeypatch):
+    """隔离索引、路由和指标依赖，让 API 测试只关注响应结构。"""
     monkeypatch.setattr(main.Settings, "validate", lambda : None, raising=False)
     monkeypatch.setattr(main.Settings, "RAG_FILE_PATH", "data", raising=False)
     monkeypatch.setattr(main.Settings, "CHUNK_SIZE", 800, raising=False)
     monkeypatch.setattr(main.Settings, "CHUNK_OVERLAP", 120, raising=False)
+    monkeypatch.setattr(main.Settings, "AUTO_REBUILD_ON_STARTUP", False, raising=False)
+    monkeypatch.setattr(main, "needs_rebuild", lambda data_dir: (False, "test"), raising=False)
+    monkeypatch.setattr(main, "index_cache_exists", lambda : True, raising=False)
+    monkeypatch.setattr(main, "load_index_cache", lambda : (True, "test"), raising=False)
+    monkeypatch.setattr(main, "log_and_write_metrics", lambda record: None, raising=False)
 
-    return TestClient(main.app)
+
+class DummyState:
+    pass
+
+
+class DummyRequest:
+    def __init__(self):
+        self.state = DummyState()
 
 def test_health(monkeypatch):
     """验证 /health 接口返回成功状态。"""
-    with make_client(monkeypatch) as client:
-        resp = client.get("/health")
+    patch_app(monkeypatch)
+    resp = main.health()
 
-    assert resp.status_code == 200
-    assert resp.json()["code"] == 0
-    assert resp.json()["data"]["status"] == "ok"
+    assert resp["code"] == 0
+    assert resp["data"]["status"] == "ok"
 
 def test_chat_basic(monkeypatch):
     """验证 /chat 在 mock Agent 结果下返回标准成功响应。"""
-    fake_chunks = [
-        {
-        "reference_id": "Reference 1",
-        "source_file": "CHANGELOG.zh.md",
-        "chunk_id": "CHANGELOG.zh_chunk_5",
-        "text": "[标题路径] [v2.0.0](https://github.com/jaywcjlove/DevHub/releases/tag/v2.0.0)\n\n1. feat: 添加对 macOS 26 的支持\n2. fix: 修复一些已知问题",
-        "score": 0.9693357944488525,
-        "bm25_score": 11.312523933418605,
-        "vector_score": 0.5419507026672363
-      }
-    ]
-
     monkeypatch.setattr(
         main,
         "get_rag_status",
@@ -44,7 +43,16 @@ def test_chat_basic(monkeypatch):
         }
     )
 
-    monkeypatch.setattr(main, "search_relevant_chunks", lambda question, top_k:fake_chunks)
+    monkeypatch.setattr(
+        main,
+        "route_agent_action",
+        lambda question, top_k, trace_id="": {
+            "decision": "use_tool",
+            "action": "search_knowledge_base",
+            "tool_name": "search_knowledge_base",
+            "reason": "测试路由",
+        }
+    )
 
     monkeypatch.setattr(
         main,
@@ -53,7 +61,8 @@ def test_chat_basic(monkeypatch):
             "status": "OK",
             "answer": "测试回答",
             "references": [],
-            "confidence": 0.9,
+            "retrieval_confidence": 0.7,
+            "answer_confidence": 0.9,
             "need_clarification": False,
             "clarification_question": "",
             "reason": "测试通过",
@@ -63,28 +72,23 @@ def test_chat_basic(monkeypatch):
         }
     )
 
-    with make_client(monkeypatch) as client:
-        resp = client.post(
-            "/chat",
-            json={
-                "question": "DevHub 支持哪些 macOS 版本？",
-                "top_k": 5
-                }
-            )
+    patch_app(monkeypatch)
+    resp = main.ask_api(
+        main.ChatRequest(
+            question="DevHub 支持哪些 macOS 版本？",
+            top_k=5
+        ),
+        DummyRequest(),
+        main.Response()
+    )
 
-    assert resp.status_code == 200
-    body = resp.json()
+    body = resp.model_dump()
     assert body["code"] == 0
     assert body["message"] == "success"
     assert body["data"]["answer"] == "测试回答"
     assert body["data"]["references"] == []
-    assert body["data"]["confidence"] == 0.9
-
-
-
-
-
-
+    assert body["data"]["retrieval_confidence"] == 0.7
+    assert body["data"]["answer_confidence"] == 0.9
 
 
 

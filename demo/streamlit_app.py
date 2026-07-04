@@ -130,11 +130,12 @@ def render_chat_result(response_json: dict[str, Any], status_code: int | None) -
     else:
         st.info("后端响应中没有 answer。")
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("status", str(pick(data, "status", "")))
-    col2.metric("confidence", str(pick(data, "confidence", "")))
-    col3.metric("action", str(pick(data, "action", "")))
-    col4.metric("trace_id", str(trace_id))
+    col2.metric("retrieval", str(pick(data, "retrieval_confidence", "")))
+    col3.metric("answer", str(pick(data, "answer_confidence", "")))
+    col4.metric("action", str(pick(data, "action", "")))
+    col5.metric("trace_id", str(trace_id))
 
     st.write("reason:", pick(data, "reason", ""))
 

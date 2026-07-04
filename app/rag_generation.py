@@ -6,7 +6,7 @@ import requests
 
 from app.config import Settings
 from app.prompts import SYSTEM_PROMPT_A, SYSTEM_PROMPT_B, USER_PROMPT, NO_ANSWER_FALLBACK
-from app.rag_retrieval import clamp01, make_snippet
+from app.rag_retrieval import clamp01, make_snippet, safe_float
 from app.untils import get_logger
 
 logger = get_logger('chat_service')
@@ -261,25 +261,103 @@ def format_reference(retrieved_chunks, selected_reference: list):
 
     return final_refs
 
-def estimate_confidence(
-    retrieved_chunks: List[dict],
-    final_references: List[dict],
-    status: str
-) -> float:
-    """根据召回分数、分数差距和引用数量估算回答置信度。"""
-    if status != "OK" or not retrieved_chunks:
+def chunk_evidence_score(item: dict) -> float:
+    """把单个 chunk 的多路检索信号压成 0 到 1 的证据强度。"""
+    vector_score = clamp01(safe_float(item.get("vector_score")))
+    rerank_score = clamp01(safe_float(item.get("rerank_score")))
+    hybrid_score = clamp01(safe_float(item.get("hybrid_score", item.get("score", 0.0))))
+    lexical_hit = 1.0 if safe_float(item.get("bm25_score")) > 0 else 0.0
+
+    weighted_score = (
+        0.50 * vector_score
+        + 0.30 * rerank_score
+        + 0.15 * hybrid_score
+        + 0.05 * lexical_hit
+    )
+
+    return round(
+        clamp01(
+            max(
+                weighted_score,
+                0.85 * vector_score,
+                0.75 * rerank_score if (hybrid_score >= 0.20 or lexical_hit) else 0.0,
+            )
+        ),
+        4
+    )
+
+
+def estimate_retrieval_confidence(retrieved_chunks: List[dict]) -> float:
+    """根据最终候选证据质量估算检索置信度。"""
+    candidates = [
+        item
+        for item in retrieved_chunks
+        if isinstance(item, dict)
+    ]
+    if not candidates:
         return 0.0
 
-    top1_vector = clamp01(retrieved_chunks[0].get("vector_score", 0.0))
+    evidence_scores = sorted(
+        (chunk_evidence_score(item) for item in candidates),
+        reverse=True
+    )
+    top_score = evidence_scores[0]
+    second_score = evidence_scores[1] if len(evidence_scores) > 1 else 0.0
+    score_gap = clamp01(top_score - second_score) if len(evidence_scores) > 1 else 0.0
 
-    scope_gap = 0.0
-    if len(retrieved_chunks) > 1:
-        scope_gap = clamp01(
-            retrieved_chunks[0].get("vector_score", 0.0) -
-            retrieved_chunks[1].get("vector_score", 0.0)
-        )
+    supporting_count = sum(
+        1
+        for score in evidence_scores[:5]
+        if score >= 0.35
+    )
+    support_ratio = clamp01(supporting_count / 3)
 
-    ref_ratio = clamp01(len(final_references) / max(1, min(len(retrieved_chunks), 5)))
+    retrieval_score = 0.70 * top_score + 0.20 * support_ratio + 0.10 * score_gap
+    return round(clamp01(retrieval_score), 3)
 
-    confidence = 0.65 * top1_vector + 0.20 * scope_gap + 0.15 * ref_ratio
-    return round(clamp01(confidence), 3)
+
+def estimate_answer_confidence(
+    retrieved_chunks: List[dict],
+    final_references: List[dict],
+    status: str,
+    retrieval_confidence: float | None = None
+) -> float:
+    """结合检索质量和引用支撑度估算最终回答置信度。"""
+    if status != "OK" or not retrieved_chunks or not final_references:
+        return 0.0
+
+    if retrieval_confidence is None:
+        retrieval_confidence = estimate_retrieval_confidence(retrieved_chunks)
+    retrieval_confidence = clamp01(retrieval_confidence)
+
+    reference_ids = {
+        str(ref.get("reference_id", ""))
+        for ref in final_references
+        if isinstance(ref, dict)
+    }
+    cited_chunks = [
+        item
+        for item in retrieved_chunks
+        if str(item.get("reference_id", "")) in reference_ids
+    ]
+
+    cited_scores = [
+        chunk_evidence_score(item)
+        for item in cited_chunks
+    ]
+    citation_quality = (
+        sum(cited_scores) / len(cited_scores)
+        if cited_scores
+        else 0.0
+    )
+    reference_ratio = clamp01(
+        len(final_references) / max(1, min(len(retrieved_chunks), 5))
+    )
+
+    answer_score = (
+        0.60 * retrieval_confidence
+        + 0.25 * citation_quality
+        + 0.15 * reference_ratio
+    )
+    answer_score = min(answer_score, retrieval_confidence + 0.10)
+    return round(clamp01(answer_score), 3)

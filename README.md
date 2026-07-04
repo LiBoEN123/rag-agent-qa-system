@@ -282,7 +282,8 @@ curl -X POST "http://127.0.0.1:8000/chat" \
 | `trace_id` | 本次请求追踪 ID，也会写入响应头 `X-Trace-Id` |
 | `data.answer` | 最终回答 |
 | `data.references` | 引用来源列表，包含 `file_name`、`source_path`、`chunk_id`、`snippet`、`score`、`rerank_score` |
-| `data.confidence` | 0 到 1 的置信度估计 |
+| `data.retrieval_confidence` | 0 到 1 的检索证据置信度估计 |
+| `data.answer_confidence` | 0 到 1 的最终回答置信度估计 |
 | `data.status` | `ok`、`no_evidence`、`empty_index`、`error`、`clarify`、`out_of_scope` |
 | `data.need_clarification` | 是否需要用户补充问题 |
 | `data.clarification_question` | 澄清追问 |
@@ -529,4 +530,4 @@ docker run --rm -p 8000:8000 --env-file .env \
 - 回答模型、路由模型和拆分模型都按 OpenAI-compatible Chat Completions 格式调用。
 - embedding 和 rerank 模型首次加载较慢，可能需要下载权重。
 - Agent 仍是单轮最小实现，没有长期记忆和复杂任务规划。
-- confidence 是基于召回分数、引用数量等启发式估计，不等同于严格概率。
+- retrieval_confidence 和 answer_confidence 是启发式估计，不等同于严格概率。
