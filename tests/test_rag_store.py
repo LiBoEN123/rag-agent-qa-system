@@ -97,7 +97,7 @@ def test_load_models_uses_configured_model_cache_dir(monkeypatch, tmp_path):
     calls = {}
 
     class FakeSentenceTransformer:
-        def __init__(self, model_name, device, cache_folder):
+        def __init__(self, model_name, device, cache_folder, **kwargs):
             calls["embedding"] = {
                 "model_name": model_name,
                 "device": device,
@@ -105,7 +105,7 @@ def test_load_models_uses_configured_model_cache_dir(monkeypatch, tmp_path):
             }
 
     class FakeCrossEncoder:
-        def __init__(self, model_name, device, cache_folder):
+        def __init__(self, model_name, device, cache_folder, **kwargs):
             calls["rerank"] = {
                 "model_name": model_name,
                 "device": device,

@@ -30,6 +30,14 @@ ROUTER_ALLOWED_TOOLS = {
     "get_chunk_text",
 }
 
+HIGH_CONFIDENCE_RULE_ACTIONS = {
+    "simple_calculator",
+    "list_documents",
+    "get_chunk_text",
+    "direct_answer",
+    "clarify",
+}
+
 ROUTER_ACTION_TO_DECISION = {
     "search_knowledge_base": "use_knowledge_base",
     "simple_calculator": "use_tool",
@@ -375,7 +383,8 @@ def add_router_metadata(
         decision: dict,
         source: str,
         confidence: float | None = None,
-        fallback_reason: str = ""
+        fallback_reason: str = "",
+        llm_used: bool | None = None
 ) -> dict:
     """给路由决策补充来源、置信度和回退原因等元数据。"""
     decision = dict(decision or {})
@@ -384,8 +393,14 @@ def add_router_metadata(
     if confidence is not None:
         decision["router_confidence"] = confidence
 
+    if llm_used is None:
+        llm_used = source in {"llm", "rule_based_fallback"}
+    decision["router_llm_used"] = bool(llm_used)
+
     if fallback_reason:
         decision["router_fallback_reason"] = fallback_reason[:300]
+
+    decision.setdefault("router_fallback_reason", "")
 
     return decision
 
@@ -747,17 +762,30 @@ def route_agent_action_rule_based(question: str, top_k:int) -> dict:
 def route_agent_action(question: str, top_k:int, trace_id: str = "") -> dict:
     """根据问题内容决定走澄清、工具调用还是知识库 RAG。"""
     q = normalize_question(question)
+    rule_decision = route_agent_action_rule_based(question, top_k)
 
     if not q:
         return add_router_metadata(
-            route_agent_action_rule_based(question, top_k),
-            source="rule_based_guardrail"
+            rule_decision,
+            source="rule_based_guardrail",
+            confidence=1.0,
+            llm_used=False
+        )
+
+    if rule_decision.get("action") in HIGH_CONFIDENCE_RULE_ACTIONS:
+        return add_router_metadata(
+            rule_decision,
+            source="rule_based",
+            confidence=1.0,
+            llm_used=False
         )
 
     if not Settings.ENABLE_LLM_ROUTER:
         return add_router_metadata(
-            route_agent_action_rule_based(question, top_k),
-            source="rule_based"
+            rule_decision,
+            source="rule_based",
+            confidence=0.6,
+            llm_used=False
         )
 
     try:
@@ -765,16 +793,69 @@ def route_agent_action(question: str, top_k:int, trace_id: str = "") -> dict:
         return validate_route_decision(raw_decision, question, top_k)
 
     except Exception as e:
-        fallback = route_agent_action_rule_based(question, top_k)
         logger.warning(
             f"[trace_id={trace_id}] [router_llm] fallback_to_rule_based "
             f"error={str(e)[:300]}"
         )
         return add_router_metadata(
-            fallback,
+            rule_decision,
             source="rule_based_fallback",
-            fallback_reason=str(e)
+            confidence=0.4,
+            fallback_reason=str(e),
+            llm_used=True
         )
+
+
+def attach_llm_usage(
+    result: dict,
+    router_llm_used: bool,
+    decompose_llm_used: bool | None = None,
+    answer_llm_used: bool | None = None,
+) -> dict:
+    """把本次请求各阶段 LLM 调用情况写回结果和 tool_trace。"""
+    result = dict(result or {})
+
+    if decompose_llm_used is None:
+        decompose_llm_used = bool(result.get("decompose_llm_used", False))
+
+    if answer_llm_used is None:
+        answer_llm_used = bool(result.get("answer_llm_used", False))
+
+    llm_call_count = (
+        int(bool(router_llm_used))
+        + int(bool(decompose_llm_used))
+        + int(bool(answer_llm_used))
+    )
+
+    result["router_llm_used"] = bool(router_llm_used)
+    result["decompose_llm_used"] = bool(decompose_llm_used)
+    result["answer_llm_used"] = bool(answer_llm_used)
+    result["llm_call_count"] = llm_call_count
+
+    tool_trace = list(result.get("tool_trace") or [])
+    if not any(step.get("step") == "llm_usage" for step in tool_trace):
+        tool_trace.append({
+            "step": "llm_usage",
+            "router_llm_used": bool(router_llm_used),
+            "decompose_llm_used": bool(decompose_llm_used),
+            "answer_llm_used": bool(answer_llm_used),
+            "llm_call_count": llm_call_count,
+        })
+    result["tool_trace"] = tool_trace
+
+    return result
+
+
+def build_empty_evidence_gate_step(reason: str) -> dict:
+    """构造无召回结果时的证据门控 trace。"""
+    return {
+        "step": "evidence_gate",
+        "refused": True,
+        "max_vector_score": 0.0,
+        "max_rerank_score": 0.0,
+        "max_hybrid_score": 0.0,
+        "reason": reason,
+    }
 
 # =========================
 # Agent 执行主流程
@@ -816,6 +897,12 @@ def run_agent_once(
     action = decision.get("action")
     tool_name = decision.get("tool_name", "")
     tool_args = decision.get("tool_args", {})
+    router_llm_used = bool(
+        decision.get(
+            "router_llm_used",
+            decision.get("router_source") in {"llm", "rule_based_fallback"}
+        )
+    )
 
     tool_trace = [
         {
@@ -828,9 +915,13 @@ def run_agent_once(
             "reason": decision.get("reason", ""),
             "router_source": decision.get("router_source", ""),
             "router_confidence": decision.get("router_confidence"),
-            "router_fallback_reason": decision.get("router_fallback_reason", "")
+            "router_fallback_reason": decision.get("router_fallback_reason", ""),
+            "router_llm_used": router_llm_used
         }
     ]
+
+    def finalize_result(result: dict) -> dict:
+        return attach_llm_usage(result, router_llm_used=router_llm_used)
 
     logger.info(
         f"[trace_id={trace_id}] [agent] route_decision={route_decision} "
@@ -850,7 +941,7 @@ def run_agent_once(
             "answer_preview": decision.get("clarification_question", "")[:80]
         })
 
-        return {
+        return finalize_result({
             "status": "NEED_CLARIFICATION",
             "answer": "",
             "references": [],
@@ -862,7 +953,7 @@ def run_agent_once(
             "action": action,
             "tool_result_summary": "未调用工具，问题需要澄清",
             "tool_trace": tool_trace
-        }
+        })
 
     # =========================
     # 3. 直接回答系统能力问题
@@ -881,7 +972,7 @@ def run_agent_once(
             "answer_preview": answer[:80]
         })
 
-        return {
+        return finalize_result({
             "status": "OK",
             "answer": answer,
             "references": [],
@@ -893,7 +984,7 @@ def run_agent_once(
             "action": action,
             "tool_result_summary": "未调用工具，直接回答",
             "tool_trace": tool_trace
-        }
+        })
 
     # =========================
     # 4. 调用工具
@@ -935,7 +1026,7 @@ def run_agent_once(
             bad_case["note"] = f"工具 {tool_name} 执行错误：{error_msg}"
             write_bad_cases(bad_case)
 
-            return {
+            return finalize_result({
                 "status": "TOOL_ERROR",
                 "answer": f"工具 {tool_name} 执行异常，无法完成本次请求。",
                 "references": [],
@@ -947,7 +1038,7 @@ def run_agent_once(
                 "action": action,
                 "tool_result_summary": f"{tool_name} 工具执行异常：{error_msg}",
                 "tool_trace": tool_trace
-            }
+            })
 
         if not isinstance(tool_result, dict):
             logger.info(f"[trace_id={trace_id}] [agent] 工具返回异常，tool_status:error tool_error:{type(tool_result)}")
@@ -965,7 +1056,7 @@ def run_agent_once(
             bad_case["note"] = f"工具 {tool_name} 返回格式异常，返回值不是 dict"
             write_bad_cases(bad_case)
 
-            return {
+            return finalize_result({
                 "status": "TOOL_ERROR",
                 "answer": f"工具 {tool_name} 返回格式异常，无法完成本次请求。",
                 "references": [],
@@ -977,7 +1068,7 @@ def run_agent_once(
                 "action": action,
                 "tool_result_summary": f"{tool_name} 工具返回格式异常",
                 "tool_trace": tool_trace
-            }
+            })
 
         if tool_result.get("status") != "success":
             error_msg = tool_result.get("error", f"{tool_name} 工具执行失败")
@@ -1001,7 +1092,7 @@ def run_agent_once(
             bad_case["note"] = f"工具 {tool_name} 执行失败：{error_msg}"
             write_bad_cases(bad_case)
 
-            return {
+            return finalize_result({
                 "status": "TOOL_ERROR",
                 "answer": f"工具 {tool_name} 执行失败，无法完成本次请求。",
                 "references": [],
@@ -1013,7 +1104,7 @@ def run_agent_once(
                 "action": action,
                 "tool_result_summary": summarize_tool_result(tool_name, tool_result),
                 "tool_trace": tool_trace
-            }
+            })
 
         logger.info(
             f"[trace_id={trace_id}] [tool] tool_name={tool_name} "
@@ -1029,7 +1120,7 @@ def run_agent_once(
             "answer_preview": answer[:80]
         })
 
-        return {
+        return finalize_result({
             "status": "OK",
             "answer": answer,
             "references": [],
@@ -1041,7 +1132,7 @@ def run_agent_once(
             "action": action,
             "tool_result_summary": summarize_tool_result(tool_name, tool_result),
             "tool_trace": tool_trace
-        }
+        })
 
     # =========================
     # 5. 走知识库 RAG
@@ -1078,7 +1169,9 @@ def run_agent_once(
                 "result_summary": "没有检索到候选 chunk"
             })
 
-            return {
+            tool_trace.append(build_empty_evidence_gate_step("知识库检索结果为空"))
+
+            return finalize_result({
                 "status": "NO_RELEVANT_INFO",
                 "answer": "没有检索到足够相关的知识库内容，无法根据当前文档回答。",
                 "references": [],
@@ -1094,7 +1187,7 @@ def run_agent_once(
                     "rag_answer_cost_ms": 0,
                 },
                 "tool_trace": tool_trace
-            }
+            })
 
         retrieved_count = len(retrieved_chunks)
         retrieved_chunk_ids = [chunk.get("chunk_id") for chunk in retrieved_chunks]
@@ -1142,10 +1235,21 @@ def run_agent_once(
             "hits": hit_brief
         })
 
-        tool_trace.append({
-            "step": "format_context",
-            "summary": f"将 {len(final_chunks)} 个 chunk 交给 RAG 回答逻辑"
-        })
+        evidence_gate = rag_result.get("evidence_gate")
+        if evidence_gate:
+            tool_trace.append(evidence_gate)
+
+        if evidence_gate and evidence_gate.get("refused"):
+            tool_trace.append({
+                "step": "format_context",
+                "tool_status": "skipped",
+                "summary": "证据不足，跳过上下文构造和最终回答 LLM"
+            })
+        else:
+            tool_trace.append({
+                "step": "format_context",
+                "summary": f"将 {len(final_chunks)} 个 chunk 交给 RAG 回答逻辑"
+            })
 
         rag_answer_cost = int((time.perf_counter() - rag_answer_start) * 1000)
 
@@ -1236,7 +1340,7 @@ def run_agent_once(
         rag_result["tool_result_summary"] = f"知识库检索完成，召回 {len(final_chunks)} 个 chunk"
         rag_result["tool_trace"] = tool_trace
 
-        return rag_result
+        return finalize_result(rag_result)
 
     # =========================
     # 6. 防御分支：理论上不应该走到这里
@@ -1255,7 +1359,7 @@ def run_agent_once(
     bad_case["note"] = f"未知 Agent action: {action}"
     write_bad_cases(bad_case)
 
-    return {
+    return finalize_result({
         "status": "MODEL_BAD_OUTPUT",
         "answer": "Agent 决策结果异常，无法完成本次请求。",
         "references": [],
@@ -1267,4 +1371,4 @@ def run_agent_once(
         "action": action or "",
         "tool_result_summary": "未知 Agent action",
         "tool_trace": tool_trace
-    }
+    })

@@ -68,7 +68,15 @@ def test_chat_basic(monkeypatch):
             "reason": "测试通过",
             "action": "search_knowledge_base",
             "tool_result_summary": "测试",
-            "tool_trace": []
+            "tool_trace": [
+                {
+                    "step": "llm_usage",
+                    "router_llm_used": False,
+                    "decompose_llm_used": False,
+                    "answer_llm_used": True,
+                    "llm_call_count": 1,
+                }
+            ],
         }
     )
 
@@ -89,7 +97,10 @@ def test_chat_basic(monkeypatch):
     assert body["data"]["references"] == []
     assert body["data"]["retrieval_confidence"] == 0.7
     assert body["data"]["answer_confidence"] == 0.9
-
+    assert body["data"]["router_llm_used"] is False
+    assert body["data"]["decompose_llm_used"] is False
+    assert body["data"]["answer_llm_used"] is True
+    assert body["data"]["llm_call_count"] == 1
 
 
 

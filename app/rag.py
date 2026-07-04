@@ -25,7 +25,9 @@ from app.rag_retrieval import (
     retrieve as retrieve_impl,
     rerank as rerank_impl,
     search_relevant_chunks as search_relevant_chunks_impl,
+    safe_float,
     should_refuse,
+    should_decompose_query,
     default_decompose_result,
     decompose_query_with_llm,
     retrieve_with_sub_queries
@@ -61,6 +63,41 @@ RAG_INIT_MESSAGE = "RAG 尚未初始化"
 INDEX_SOURCE = "none"
 NO_DOCUMENTS_MESSAGE = "当前知识库为空，请先在 data 目录中放入文档后再提问"
 STOP_WORD = "我无法根据提供的文档确定答案"
+
+
+def build_evidence_gate_step(
+    final_chunks: List[Dict[str, Any]],
+    refused: bool,
+    reason: str,
+) -> dict:
+    """汇总证据门控结果，供 tool_trace 和日志观测。"""
+    candidates = [
+        item
+        for item in (final_chunks or [])
+        if isinstance(item, dict)
+    ]
+
+    max_vector_score = round(
+        max((safe_float(item.get("vector_score")) for item in candidates), default=0.0),
+        4,
+    )
+    max_rerank_score = round(
+        max((safe_float(item.get("rerank_score")) for item in candidates), default=0.0),
+        4,
+    )
+    max_hybrid_score = round(
+        max((safe_float(item.get("hybrid_score")) for item in candidates), default=0.0),
+        4,
+    )
+
+    return {
+        "step": "evidence_gate",
+        "refused": bool(refused),
+        "max_vector_score": max_vector_score,
+        "max_rerank_score": max_rerank_score,
+        "max_hybrid_score": max_hybrid_score,
+        "reason": reason,
+    }
 
 
 # =========================
@@ -278,6 +315,9 @@ def ask(
     # timings 只用于日志和性能观测，不参与业务判断。
     timings = {
         "decompose_cost_ms": 0,
+        "decompose_llm_used": False,
+        "decompose_rule_reason": "",
+        "decompose_skipped_reason": "",
         "rerank_cost_ms": 0,
         "retrieve_with_sub_queries_cost_ms": 0,
         "context_build_cost_ms": 0,
@@ -296,40 +336,62 @@ def ask(
             "need_clarification": True,
             "clarification_question": build_clarification_question(question),
             "reason": "问题存在指代不明或缺少关键限定信息",
-            "timings": timings
+            "timings": timings,
+            "decompose_llm_used": False,
+            "answer_llm_used": False,
+            "llm_call_count": 0,
         }
 
     decompose_result = None
     decompose_cost_ms = 0
+    decompose_llm_used = False
 
     if not Settings.ENABLE_QUERY_DECOMPOSE:
         decompose_result = default_decompose_result("query decomposition disabled")
+        timings["decompose_skipped_reason"] = "disabled"
         logger.info(
             f"[trace_id={trace_id}] [retrieve] decompose_skipped reason=disabled"
         )
-    elif not Settings.DECOMPOSE_MODEL_NAME or not Settings.DECOMPOSE_API_URL:
-        decompose_result = default_decompose_result("query decomposition not configured")
-        logger.info(
-            f"[trace_id={trace_id}] [retrieve] decompose_skipped reason=not_configured"
-        )
     else:
-        strat_decompose = time.perf_counter()
-        try:
-            decompose_result = decompose_query_with_llm(question)
-        except Exception as e:
-            logger.warning(
-                f"[trace_id={trace_id}] [retrieve] decompose_failed fallback_to_single_query error={e}"
-            )
-            decompose_result = default_decompose_result("decompose failed, fallback to original question")
+        should_decompose, decompose_rule_reason = should_decompose_query(question)
+        timings["decompose_rule_reason"] = decompose_rule_reason
 
-        decompose_cost_ms = int((time.perf_counter() - strat_decompose) * 1000)
+        if not should_decompose:
+            decompose_result = default_decompose_result(
+                f"decompose skipped by rule: {decompose_rule_reason}"
+            )
+            timings["decompose_skipped_reason"] = decompose_rule_reason
+            logger.info(
+                f"[trace_id={trace_id}] [retrieve] decompose_skipped "
+                f"reason={decompose_rule_reason}"
+            )
+        elif not Settings.DECOMPOSE_MODEL_NAME or not Settings.DECOMPOSE_API_URL:
+            decompose_result = default_decompose_result("query decomposition not configured")
+            timings["decompose_skipped_reason"] = "not_configured"
+            logger.info(
+                f"[trace_id={trace_id}] [retrieve] decompose_skipped reason=not_configured"
+            )
+        else:
+            strat_decompose = time.perf_counter()
+            decompose_llm_used = True
+            try:
+                decompose_result = decompose_query_with_llm(question)
+            except Exception as e:
+                logger.warning(
+                    f"[trace_id={trace_id}] [retrieve] decompose_failed fallback_to_single_query error={e}"
+                )
+                decompose_result = default_decompose_result("decompose failed, fallback to original question")
+
+            decompose_cost_ms = int((time.perf_counter() - strat_decompose) * 1000)
 
     logger.info(
         f"[trace_id={trace_id}] [retrieve] decompose_cost_ms={decompose_cost_ms} "
+        f"decompose_llm_used={decompose_llm_used} "
         f"need_decompose={decompose_result.get('need_decompose')} "
         f"reason={decompose_result.get('reason', '')}"
     )
     timings["decompose_cost_ms"] = decompose_cost_ms
+    timings["decompose_llm_used"] = decompose_llm_used
 
     if retrieved_chunks is None:
         retrieved_chunks = retrieve(question, top_k)
@@ -384,8 +446,10 @@ def ask(
     logger.info(f"[trace_id={trace_id}] [rag] 开始问答流程 top_k={top_k}")
 
     retrieval_confidence = estimate_retrieval_confidence(final_chunks)
+    answer_llm_used = False
 
     if should_refuse(final_chunks):
+        refuse_reason = "检索结果为空或证据分数低于阈值"
         return {
             "status": "NO_RELEVANT_INFO",
             "answer": NO_ANSWER_FALLBACK,
@@ -395,8 +459,16 @@ def ask(
             "answer_confidence": 0.0,
             "need_clarification": False,
             "clarification_question": "",
-            "reason": "检索结果为空或证据分数低于阈值",
-            "timings": timings
+            "reason": refuse_reason,
+            "timings": timings,
+            "evidence_gate": build_evidence_gate_step(
+                final_chunks,
+                refused=True,
+                reason=refuse_reason,
+            ),
+            "decompose_llm_used": decompose_llm_used,
+            "answer_llm_used": False,
+            "llm_call_count": int(decompose_llm_used),
         }
 
     context_start = time.perf_counter()
@@ -411,6 +483,7 @@ def ask(
     logger.info(f"[trace_id={trace_id}] [llm] 开始调用模型")
 
     llm_start = time.perf_counter()
+    answer_llm_used = True
     try:
         llm_out = call_llm(question, context, trace_id)
     except LLMCallError as e:
@@ -425,7 +498,10 @@ def ask(
             "need_clarification": False,
             "clarification_question": "",
             "reason": e.user_message,
-            "timings": timings
+            "timings": timings,
+            "decompose_llm_used": decompose_llm_used,
+            "answer_llm_used": answer_llm_used,
+            "llm_call_count": int(decompose_llm_used) + int(answer_llm_used),
         }
 
     timings["llm_cost_ms"] = int((time.perf_counter() - llm_start) * 1000)
@@ -455,7 +531,10 @@ def ask(
             "need_clarification": False,
             "clarification_question": "",
             "reason": "模型未按约定 JSON 格式返回",
-            "timings": timings
+            "timings": timings,
+            "decompose_llm_used": decompose_llm_used,
+            "answer_llm_used": answer_llm_used,
+            "llm_call_count": int(decompose_llm_used) + int(answer_llm_used),
         }
 
     final_references = format_reference(final_chunks, parsed["references"])
@@ -471,7 +550,10 @@ def ask(
             "need_clarification": False,
             "clarification_question": "",
             "reason": "模型给出的答案没有足够的引用支撑",
-            "timings": timings
+            "timings": timings,
+            "decompose_llm_used": decompose_llm_used,
+            "answer_llm_used": answer_llm_used,
+            "llm_call_count": int(decompose_llm_used) + int(answer_llm_used),
         }
 
     answer_confidence = estimate_answer_confidence(
@@ -491,7 +573,10 @@ def ask(
         "need_clarification": False,
         "clarification_question": "",
         "reason": "检索命中有效证据，且答案成功绑定引用",
-        "timings": timings
+        "timings": timings,
+        "decompose_llm_used": decompose_llm_used,
+        "answer_llm_used": answer_llm_used,
+        "llm_call_count": int(decompose_llm_used) + int(answer_llm_used),
     }
 
 

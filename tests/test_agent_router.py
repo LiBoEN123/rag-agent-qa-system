@@ -60,27 +60,46 @@ def test_validate_llm_route_rejects_unknown_tool():
         )
 
 
-def test_route_uses_llm_when_enabled(monkeypatch):
-    """验证启用 LLM 路由时会采用模型决策并清洗参数。"""
+def test_tool_route_uses_rules_before_llm_when_router_enabled(monkeypatch):
+    """验证工具类问题命中高置信规则时不会调用 LLM Router。"""
     monkeypatch.setattr(agent.Settings, "ENABLE_LLM_ROUTER", True, raising=False)
-    monkeypatch.setattr(
-        agent,
-        "route_agent_action_by_llm",
-        lambda question, top_k, trace_id="": {
-            "decision": "use_tool",
-            "action": "list_documents",
-            "tool_name": "list_documents",
-            "tool_args": {"ignored": True},
-            "reason": "用户询问文档列表",
-            "confidence": 0.8,
-        },
-    )
+    called = {"count": 0}
+
+    def fake_llm(question, top_k, trace_id=""):
+        called["count"] += 1
+        raise AssertionError("工具类问题不应调用 LLM Router")
+
+    monkeypatch.setattr(agent, "route_agent_action_by_llm", fake_llm)
 
     decision = agent.route_agent_action("知识库有哪些文档？", 5)
 
     assert decision["action"] == "list_documents"
     assert decision["tool_args"] == {}
+    assert decision["router_source"] == "rule_based"
+    assert decision["router_llm_used"] is False
+    assert called["count"] == 0
+
+
+def test_default_kb_route_can_use_llm_when_enabled(monkeypatch):
+    """验证默认知识库问题在启用 Router 时仍可走 LLM 路由。"""
+    monkeypatch.setattr(agent.Settings, "ENABLE_LLM_ROUTER", True, raising=False)
+    monkeypatch.setattr(
+        agent,
+        "route_agent_action_by_llm",
+        lambda question, top_k, trace_id="": {
+            "decision": "use_knowledge_base",
+            "action": "search_knowledge_base",
+            "tool_args": {"query": "bad rewrite"},
+            "reason": "需要查知识库",
+            "confidence": 0.8,
+        },
+    )
+
+    decision = agent.route_agent_action("Vue 应用如何创建？", 5)
+
+    assert decision["action"] == "search_knowledge_base"
     assert decision["router_source"] == "llm"
+    assert decision["router_llm_used"] is True
 
 
 def test_route_falls_back_to_rules_when_llm_is_invalid(monkeypatch):
@@ -92,10 +111,11 @@ def test_route_falls_back_to_rules_when_llm_is_invalid(monkeypatch):
         lambda question, top_k, trace_id="": {"action": "unknown_tool"},
     )
 
-    decision = agent.route_agent_action("1 + 2 * 3", 5)
+    decision = agent.route_agent_action("Vue 应用如何创建？", 5)
 
-    assert decision["action"] == "simple_calculator"
+    assert decision["action"] == "search_knowledge_base"
     assert decision["router_source"] == "rule_based_fallback"
+    assert decision["router_llm_used"] is True
     assert "未知路由 action" in decision["router_fallback_reason"]
 
 
@@ -107,3 +127,4 @@ def test_route_uses_rules_when_router_disabled(monkeypatch):
 
     assert decision["action"] == "list_documents"
     assert decision["router_source"] == "rule_based"
+    assert decision["router_llm_used"] is False

@@ -1,7 +1,11 @@
 import pytest
 
 import app.rag_retrieval as rag_retrieval
-from app.rag_retrieval import parse_decompose_llm_json, should_refuse
+from app.rag_retrieval import (
+    parse_decompose_llm_json,
+    should_decompose_query,
+    should_refuse,
+)
 
 
 def test_should_refuse_empty_results():
@@ -77,6 +81,27 @@ def test_should_refuse_accepts_strong_keyword_and_rerank_signal():
     ]
 
     assert should_refuse(chunks, vector_threshold=0.35) is False
+
+
+def test_should_decompose_query_skips_short_single_intent_question():
+    """验证普通短问题不触发拆分模型。"""
+    should_decompose, reason = should_decompose_query("最长学习年限是几年？")
+
+    assert should_decompose is False
+    assert "single-intent" in reason
+
+
+def test_should_decompose_query_triggers_for_multi_intent_keywords():
+    """验证对比、新旧、分别、以及等关键词会触发拆分。"""
+    examples = [
+        "新旧政策对比有哪些变化？",
+        "请分别说明缓考入口以及申请时间。",
+        "毕业条件和材料分别是什么？",
+    ]
+
+    for question in examples:
+        should_decompose, reason = should_decompose_query(question)
+        assert should_decompose is True, (question, reason)
 
 
 def test_parse_decompose_llm_json_accepts_valid_compact_json():

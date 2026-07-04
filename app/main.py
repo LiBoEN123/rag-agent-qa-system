@@ -80,6 +80,10 @@ class ChatData(BaseModel):
     action:str = Field(default="", description="本次Agent选择的动作")
     tool_result_summary:str = Field(default="", description="工具结果摘要")
     tool_trace:list[dict] = Field(default_factory=list, description="工具调用或路径追踪")
+    router_llm_used: bool = Field(default=False, description="本次请求是否调用了 Router LLM")
+    decompose_llm_used: bool = Field(default=False, description="本次请求是否调用了问题拆分 LLM")
+    answer_llm_used: bool = Field(default=False, description="本次请求是否调用了最终回答 LLM")
+    llm_call_count: int = Field(default=0, ge=0, description="本次请求累计 LLM 调用次数")
 
 class ChatResponse(BaseModel):
     code:int|str
@@ -450,6 +454,10 @@ def collect_trace_metrics(result: dict) -> dict:
     tool_called = False
     tool_success = False
     tool_name = ""
+    router_llm_used = bool(result.get("router_llm_used", False))
+    decompose_llm_used = bool(result.get("decompose_llm_used", False))
+    answer_llm_used = bool(result.get("answer_llm_used", False))
+    llm_call_count = result.get("llm_call_count")
 
     real_tools = {"simple_calculator", "list_documents", "get_chunk_text"}
 
@@ -466,11 +474,28 @@ def collect_trace_metrics(result: dict) -> dict:
             if step.get("tool_status") == "success":
                 tool_success = True
 
+        if step.get("step") == "llm_usage":
+            router_llm_used = bool(step.get("router_llm_used", router_llm_used))
+            decompose_llm_used = bool(step.get("decompose_llm_used", decompose_llm_used))
+            answer_llm_used = bool(step.get("answer_llm_used", answer_llm_used))
+            llm_call_count = step.get("llm_call_count", llm_call_count)
+
+    if llm_call_count is None:
+        llm_call_count = (
+            int(router_llm_used)
+            + int(decompose_llm_used)
+            + int(answer_llm_used)
+        )
+
     return {
         "retrieved_count": retrieved_count,
         "tool_called": tool_called,
         "tool_success": tool_success,
         "tool_name": tool_name,
+        "router_llm_used": router_llm_used,
+        "decompose_llm_used": decompose_llm_used,
+        "answer_llm_used": answer_llm_used,
+        "llm_call_count": int(llm_call_count or 0),
         "timings": result.get("timings") or {},
     }
 
@@ -549,6 +574,10 @@ def log_and_write_metrics(record: dict) -> None:
         f"tool_called={record.get('tool_called')} "
         f"tool_success={record.get('tool_success')} "
         f"tool_name={record.get('tool_name')} "
+        f"router_llm_used={record.get('router_llm_used')} "
+        f"decompose_llm_used={record.get('decompose_llm_used')} "
+        f"answer_llm_used={record.get('answer_llm_used')} "
+        f"llm_call_count={record.get('llm_call_count')} "
         f"action={record.get('action')} "
         f"reason={record.get('reason')}"
     )
@@ -573,10 +602,39 @@ def build_chat_response(code:int|str,
                         action:str = "",
                         tool_result_summary:str = "",
                         tool_trace:list | None = None,
+                        router_llm_used: bool | None = None,
+                        decompose_llm_used: bool | None = None,
+                        answer_llm_used: bool | None = None,
+                        llm_call_count: int | None = None,
                         ) -> ChatResponse:
     """按统一响应模型组装 /chat 返回数据。"""
     retrieval_confidence = max(0.0, min(1.0, safe_float(retrieval_confidence)))
     answer_confidence = max(0.0, min(1.0, safe_float(answer_confidence)))
+    tool_trace = tool_trace or []
+
+    if (
+        router_llm_used is None
+        or decompose_llm_used is None
+        or answer_llm_used is None
+        or llm_call_count is None
+    ):
+        for step in tool_trace:
+            if step.get("step") == "llm_usage":
+                router_llm_used = bool(step.get("router_llm_used", router_llm_used or False))
+                decompose_llm_used = bool(step.get("decompose_llm_used", decompose_llm_used or False))
+                answer_llm_used = bool(step.get("answer_llm_used", answer_llm_used or False))
+                llm_call_count = step.get("llm_call_count", llm_call_count)
+                break
+
+    router_llm_used = bool(router_llm_used)
+    decompose_llm_used = bool(decompose_llm_used)
+    answer_llm_used = bool(answer_llm_used)
+    if llm_call_count is None:
+        llm_call_count = (
+            int(router_llm_used)
+            + int(decompose_llm_used)
+            + int(answer_llm_used)
+        )
 
     return ChatResponse(code=code,
                         message=message,
@@ -593,7 +651,11 @@ def build_chat_response(code:int|str,
                             reason=reason,
                             action=action,
                             tool_result_summary=tool_result_summary,
-                            tool_trace=tool_trace or []
+                            tool_trace=tool_trace,
+                            router_llm_used=router_llm_used,
+                            decompose_llm_used=decompose_llm_used,
+                            answer_llm_used=answer_llm_used,
+                            llm_call_count=max(0, int(llm_call_count or 0))
                             )
                         )
 
@@ -780,6 +842,10 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
         "tool_called": False,
         "tool_success": False,
         "tool_name": "",
+        "router_llm_used": False,
+        "decompose_llm_used": False,
+        "answer_llm_used": False,
+        "llm_call_count": 0,
         "action": "",
         "reason": "",
     }
@@ -814,6 +880,13 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
         metrics["route_cost_ms"] = route_cost_ms
 
         action = decision.get("action")
+        metrics["router_llm_used"] = bool(
+            decision.get(
+                "router_llm_used",
+                decision.get("router_source") in {"llm", "rule_based_fallback"}
+            )
+        )
+        metrics["llm_call_count"] = int(metrics["router_llm_used"])
 
         logger.info(
             f"[trace_id={trace_id}] [agent] route_end "
@@ -902,6 +975,10 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
             metrics["tool_called"] = trace_metrics["tool_called"]
             metrics["tool_success"] = trace_metrics["tool_success"]
             metrics["tool_name"] = trace_metrics["tool_name"]
+            metrics["router_llm_used"] = trace_metrics["router_llm_used"]
+            metrics["decompose_llm_used"] = trace_metrics["decompose_llm_used"]
+            metrics["answer_llm_used"] = trace_metrics["answer_llm_used"]
+            metrics["llm_call_count"] = trace_metrics["llm_call_count"]
             for timing_key in [
                 "retrieve_cost_ms",
                 "decompose_cost_ms",
@@ -924,6 +1001,13 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
             metrics["tool_name"] = decision.get("tool_name", "")
             metrics["tool_called"] = bool(decision.get("tool_name", ""))
             metrics["tool_success"] = False
+            metrics["router_llm_used"] = bool(
+                decision.get(
+                    "router_llm_used",
+                    decision.get("router_source") in {"llm", "rule_based_fallback"}
+                )
+            )
+            metrics["llm_call_count"] = int(metrics["router_llm_used"])
             metrics["reason"] = str(e)
 
             bad_case["route"] = action or decision.get("decision", "")
@@ -1151,7 +1235,8 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
             f"retrieve_cost_ms={metrics.get('retrieve_cost_ms')} "
             f"decompose_cost_ms={metrics.get('decompose_cost_ms')} "
             f"rerank_cost_ms={metrics.get('rerank_cost_ms')} "
-            f"llm_cost_ms={metrics.get('llm_cost_ms')}"
+            f"llm_cost_ms={metrics.get('llm_cost_ms')} "
+            f"llm_call_count={metrics.get('llm_call_count')}"
         )
 
         log_and_write_metrics(metrics)
@@ -1380,9 +1465,13 @@ def metrics_summary(limit: int = Query(20, ge=1, le=200)):
         avg_latency_ms = round(
             sum(record.get("latency_ms", 0) for record in records) /
             len(records), 2)
+        avg_llm_call_count = round(
+            sum(record.get("llm_call_count", 0) for record in records) /
+            len(records), 2)
 
     else:
         avg_latency_ms = 0
+        avg_llm_call_count = 0
 
     return {
         "code": 0,
@@ -1401,5 +1490,15 @@ def metrics_summary(limit: int = Query(20, ge=1, le=200)):
             "empty_index_count": status_counter.get("empty_index", 0),
             "internal_error_count": status_counter.get("internal_error", 0),
             "avg_latency_ms": avg_latency_ms,
+            "avg_llm_call_count": avg_llm_call_count,
+            "router_llm_used_count": sum(
+                1 for record in records if record.get("router_llm_used")
+            ),
+            "decompose_llm_used_count": sum(
+                1 for record in records if record.get("decompose_llm_used")
+            ),
+            "answer_llm_used_count": sum(
+                1 for record in records if record.get("answer_llm_used")
+            ),
         }
     }

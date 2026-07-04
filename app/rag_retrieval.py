@@ -108,6 +108,70 @@ def default_decompose_result(reason: str = "query decomposition skipped") -> dic
     }
 
 
+def should_decompose_query(question: str) -> tuple[bool, str]:
+    """用轻量规则判断是否值得调用问题拆分模型。"""
+    q = (question or "").strip()
+    if not q:
+        return False, "empty query"
+
+    normalized = q.replace("？", "?")
+    question_mark_count = normalized.count("?")
+    if question_mark_count >= 2:
+        return True, "multiple question marks"
+
+    multi_intent_keywords = [
+        "分别",
+        "同时",
+        "以及",
+        "对比",
+        "区别",
+        "新旧",
+        "变化",
+        "调整",
+        "修订",
+        "流程和条件",
+        "条件和材料",
+        "入口和时间",
+    ]
+    for keyword in multi_intent_keywords:
+        if keyword in q:
+            return True, f"multi-intent keyword: {keyword}"
+
+    years = re.findall(r"(?:19|20)\d{2}", q)
+    if len(set(years)) >= 2:
+        return True, "compares multiple years"
+
+    version_or_policy_pattern = (
+        r"(新版|旧版|新政策|旧政策|新规|旧规|新办法|旧办法|"
+        r"现行|原规定|以前|之前|修订前|修订后|调整前|调整后)"
+        r".{0,20}"
+        r"(对比|区别|变化|调整|修订|相比|不同|差异)"
+        r"|"
+        r"(对比|区别|变化|调整|修订|相比|不同|差异)"
+        r".{0,20}"
+        r"(新版|旧版|新政策|旧政策|新规|旧规|新办法|旧办法|"
+        r"现行|原规定|以前|之前|修订前|修订后|调整前|调整后)"
+    )
+    if re.search(version_or_policy_pattern, q):
+        return True, "compares policy versions"
+
+    intent_words = (
+        "怎么|如何|什么|哪些|是否|能否|有没有|多少|哪里|入口|时间|"
+        "条件|材料|流程|要求|办法"
+    )
+    multi_clause_pattern = (
+        rf"({intent_words}).{{0,30}}(，|,|；|;|、|和|及|并且|同时).{{0,30}}"
+        rf"({intent_words})"
+    )
+    if re.search(multi_clause_pattern, q):
+        return True, "multiple explicit intents"
+
+    if len(q) <= 30:
+        return False, "short single-intent query"
+
+    return False, "single-intent query"
+
+
 def parse_decompose_bool(value) -> bool:
     """将拆分模型返回的布尔样值转换为 bool。"""
     if isinstance(value, bool):
