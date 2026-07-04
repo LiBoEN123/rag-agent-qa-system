@@ -181,18 +181,9 @@ def dispatch_tool(tool_name: str, tool_args: dict | None=None, trace_id: str = "
     start = time.time()
 
     try:
-        if tool_name == "list_documents":
-            result = list_documents()
-        elif tool_name == "simple_calculator":
-            result = simple_calculator(tool_args.get("expression", ""))
-        elif tool_name == "get_chunk_text":
-            result = get_chunk_text(tool_args.get("chunk_id"))
-        else:
-            result = tool_error(
-                tool_name=tool_name,
-                tool_input=tool_args,
-                error=f"unknown tool: {tool_name}"
-            )
+        from app.tool_registry import tool_registry
+
+        result = tool_registry.dispatch(tool_name, tool_args)
 
         append_tool_log({
             "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
