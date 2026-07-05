@@ -445,6 +445,49 @@ def normalize_metrics_status(result_status: str) -> str:
 
     return status_map.get(result_status, "internal_error")
 
+def extract_llm_usage(
+        tool_trace: list | None = None,
+        router_llm_used: bool | None = None,
+        decompose_llm_used: bool | None = None,
+        answer_llm_used: bool | None = None,
+        llm_call_count: int | None = None
+) -> dict:
+    """从 tool_trace 中读取 LLM 调用情况，并补齐缺省计数。"""
+    for step in tool_trace or []:
+        if step.get("step") != "llm_usage":
+            continue
+
+        router_llm_used = bool(
+            step.get("router_llm_used", router_llm_used or False)
+        )
+        decompose_llm_used = bool(
+            step.get("decompose_llm_used", decompose_llm_used or False)
+        )
+        answer_llm_used = bool(
+            step.get("answer_llm_used", answer_llm_used or False)
+        )
+        llm_call_count = step.get("llm_call_count", llm_call_count)
+        break
+
+    router_llm_used = bool(router_llm_used)
+    decompose_llm_used = bool(decompose_llm_used)
+    answer_llm_used = bool(answer_llm_used)
+
+    if llm_call_count is None:
+        llm_call_count = (
+            int(router_llm_used)
+            + int(decompose_llm_used)
+            + int(answer_llm_used)
+        )
+
+    return {
+        "router_llm_used": router_llm_used,
+        "decompose_llm_used": decompose_llm_used,
+        "answer_llm_used": answer_llm_used,
+        "llm_call_count": max(0, int(llm_call_count or 0)),
+    }
+
+
 def collect_trace_metrics(result: dict) -> dict:
 
     """从 Agent 的 tool_trace 中提取检索、工具调用和耗时信息。"""
@@ -474,28 +517,20 @@ def collect_trace_metrics(result: dict) -> dict:
             if step.get("tool_status") == "success":
                 tool_success = True
 
-        if step.get("step") == "llm_usage":
-            router_llm_used = bool(step.get("router_llm_used", router_llm_used))
-            decompose_llm_used = bool(step.get("decompose_llm_used", decompose_llm_used))
-            answer_llm_used = bool(step.get("answer_llm_used", answer_llm_used))
-            llm_call_count = step.get("llm_call_count", llm_call_count)
-
-    if llm_call_count is None:
-        llm_call_count = (
-            int(router_llm_used)
-            + int(decompose_llm_used)
-            + int(answer_llm_used)
-        )
+    llm_usage = extract_llm_usage(
+        tool_trace,
+        router_llm_used=router_llm_used,
+        decompose_llm_used=decompose_llm_used,
+        answer_llm_used=answer_llm_used,
+        llm_call_count=llm_call_count,
+    )
 
     return {
         "retrieved_count": retrieved_count,
         "tool_called": tool_called,
         "tool_success": tool_success,
         "tool_name": tool_name,
-        "router_llm_used": router_llm_used,
-        "decompose_llm_used": decompose_llm_used,
-        "answer_llm_used": answer_llm_used,
-        "llm_call_count": int(llm_call_count or 0),
+        **llm_usage,
         "timings": result.get("timings") or {},
     }
 
@@ -611,30 +646,13 @@ def build_chat_response(code:int|str,
     retrieval_confidence = max(0.0, min(1.0, safe_float(retrieval_confidence)))
     answer_confidence = max(0.0, min(1.0, safe_float(answer_confidence)))
     tool_trace = tool_trace or []
-
-    if (
-        router_llm_used is None
-        or decompose_llm_used is None
-        or answer_llm_used is None
-        or llm_call_count is None
-    ):
-        for step in tool_trace:
-            if step.get("step") == "llm_usage":
-                router_llm_used = bool(step.get("router_llm_used", router_llm_used or False))
-                decompose_llm_used = bool(step.get("decompose_llm_used", decompose_llm_used or False))
-                answer_llm_used = bool(step.get("answer_llm_used", answer_llm_used or False))
-                llm_call_count = step.get("llm_call_count", llm_call_count)
-                break
-
-    router_llm_used = bool(router_llm_used)
-    decompose_llm_used = bool(decompose_llm_used)
-    answer_llm_used = bool(answer_llm_used)
-    if llm_call_count is None:
-        llm_call_count = (
-            int(router_llm_used)
-            + int(decompose_llm_used)
-            + int(answer_llm_used)
-        )
+    llm_usage = extract_llm_usage(
+        tool_trace,
+        router_llm_used=router_llm_used,
+        decompose_llm_used=decompose_llm_used,
+        answer_llm_used=answer_llm_used,
+        llm_call_count=llm_call_count,
+    )
 
     return ChatResponse(code=code,
                         message=message,
@@ -652,38 +670,101 @@ def build_chat_response(code:int|str,
                             action=action,
                             tool_result_summary=tool_result_summary,
                             tool_trace=tool_trace,
-                            router_llm_used=router_llm_used,
-                            decompose_llm_used=decompose_llm_used,
-                            answer_llm_used=answer_llm_used,
-                            llm_call_count=max(0, int(llm_call_count or 0))
+                            **llm_usage
                             )
                         )
 
-def get_normalize_status(result: dict) -> str:
-    """将 Agent 结果状态映射为对外公开的响应状态。"""
-    status = result.get("status", "")
 
-    status_map = {
-        "OK": "ok",
-        "NO_RELEVANT_INFO": "no_evidence",
-        "NEED_CLARIFICATION": "clarify",
-        "TOOL_ERROR": "error",
-        "OUT_OF_SCOPE": "out_of_scope",
-        "MODEL_BAD_OUTPUT": "error",
-    }
+CHAT_RESULT_RESPONSE_MAP = {
+    "MODEL_ERROR": {
+        "code": "MODEL_ERROR",
+        "message": "模型调用失败",
+        "status": "error",
+        "default_reason": "模型调用失败",
+        "references": [],
+        "need_clarification": False,
+        "clarification_question": "",
+        "log_status": "error",
+    },
+    "NEED_CLARIFICATION": {
+        "code": "NEED_CLARIFICATION",
+        "message": "问题信息不足，需要补充后再回答",
+        "status": "clarify",
+        "default_reason": "问题缺少关键限定信息",
+        "answer": "",
+        "references": [],
+        "need_clarification": True,
+        "log_status": "need_clarification",
+    },
+    "NO_RELEVANT_INFO": {
+        "code": "NO_RELEVANT_INFO",
+        "message": "我没有在文档中找到相关信息",
+        "status": "no_evidence",
+        "default_reason": "模型判断当前上下文不足以支撑回答",
+        "clarification_question": "",
+        "log_status": "no_evidence",
+    },
+    "TOOL_ERROR": {
+        "code": "TOOL_ERROR",
+        "message": "工具调用失败",
+        "status": "error",
+        "default_reason": "工具调用失败",
+        "references": [],
+        "log_status": "error",
+    },
+    "OUT_OF_SCOPE": {
+        "code": "OUT_OF_SCOPE",
+        "message": "问题超出当前知识库范围",
+        "status": "out_of_scope",
+        "default_reason": "问题超出知识库范围",
+        "references": [],
+        "need_clarification": False,
+        "clarification_question": "",
+        "log_status": "out_of_scope",
+    },
+    "MODEL_BAD_OUTPUT": {
+        "code": "MODEL_BAD_OUTPUT",
+        "message": "模型输出格式异常，请稍候重试",
+        "status": "error",
+        "default_reason": "模型返回结构不符合预期",
+        "references": [],
+        "clarification_question": "",
+        "log_status": "error",
+    },
+}
 
-    return status_map.get(status, "unknown")
 
-def log_final_status(trace_id: str, result: dict):
-    """记录最终回答状态、引用数量和是否需要澄清。"""
-    answer_status = get_normalize_status(result)
-    reference_count = len(result.get("references") or [])
-    need_clarification = result.get("need_clarification", False)
-
-    logger.info(
-        f"[trace_id={trace_id}] [final] answer_status={answer_status} "
-        f"reference_count={reference_count} need_clarification={need_clarification}"
+def build_chat_response_from_result(
+        result: dict,
+        trace_id: str,
+        question: str,
+        response_config: dict,
+) -> ChatResponse:
+    """按状态配置从 Agent 结果构造 /chat 响应。"""
+    return build_chat_response(
+        code=response_config["code"],
+        message=response_config["message"],
+        trace_id=trace_id,
+        question=question,
+        answer=response_config.get("answer", result.get("answer", "")),
+        references=response_config.get("references", result.get("references", [])),
+        retrieval_confidence=result.get("retrieval_confidence", 0.0),
+        answer_confidence=result.get("answer_confidence", 0.0),
+        need_clarification=response_config.get(
+            "need_clarification",
+            result.get("need_clarification", False)
+        ),
+        status=response_config["status"],
+        clarification_question=response_config.get(
+            "clarification_question",
+            result.get("clarification_question", "")
+        ),
+        reason=result.get("reason", response_config["default_reason"]),
+        action=result.get("action", ""),
+        tool_result_summary=result.get("tool_result_summary", ""),
+        tool_trace=result.get("tool_trace", []),
     )
+
 
 def read_recent_metrics(limit: int = 20) -> list[dict]:
 
@@ -1027,139 +1108,19 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
                 reason="工具调用或模型调用异常"
             )
 
-        if result["status"] == "MODEL_ERROR":
-            response.status_code = 200
-            return build_chat_response(
-                code="MODEL_ERROR",
-                message="模型调用失败",
-                trace_id=trace_id,
-                question=question,
-                answer=result.get("answer", ""),
-                references=[],
-                retrieval_confidence=result.get("retrieval_confidence", 0.0),
-                answer_confidence=result.get("answer_confidence", 0.0),
-                need_clarification=False,
-                status="error",
-                clarification_question="",
-                reason=result.get("reason", "模型调用失败"),
-                action=result.get("action", ""),
-                tool_result_summary=result.get("tool_result_summary", ""),
-                tool_trace=result.get("tool_trace", [])
-            )
-
-        if result["status"] == "NEED_CLARIFICATION":
+        response_config = CHAT_RESULT_RESPONSE_MAP.get(result["status"])
+        if response_config:
             logger.warning(
-                f"[trace_id={trace_id}] [chat] final_status=need_clarification reason=问题信息不足"
+                f"[trace_id={trace_id}] [chat] "
+                f"final_status={response_config['log_status']} "
+                f"reason={result.get('reason', response_config['default_reason'])}"
             )
             response.status_code = 200
-            return build_chat_response(
-                code="NEED_CLARIFICATION",
-                message="问题信息不足，需要补充后再回答",
+            return build_chat_response_from_result(
+                result=result,
                 trace_id=trace_id,
                 question=question,
-                answer="",
-                references=[],
-                retrieval_confidence=result.get("retrieval_confidence", 0.0),
-                answer_confidence=result.get("answer_confidence", 0.0),
-                need_clarification=True,
-                status="clarify",
-                clarification_question=result.get("clarification_question", ""),
-                reason=result.get("reason", "问题缺少关键限定信息"),
-                action=result.get("action", ""),
-                tool_result_summary=result.get("tool_result_summary", ""),
-                tool_trace=result.get("tool_trace", [])
-            )
-
-        if result["status"] == "NO_RELEVANT_INFO":
-            logger.warning(
-                f"[trace_id={trace_id}] [chat] final_status=no_evidence reason={result.get('reason', '检索证据不足')}"
-            )
-            response.status_code = 200
-            return build_chat_response(
-                code="NO_RELEVANT_INFO",
-                message="我没有在文档中找到相关信息",
-                trace_id=trace_id,
-                question=question,
-                answer=result.get("answer", ""),
-                references=result.get("references", []),
-                retrieval_confidence=result.get("retrieval_confidence", 0.0),
-                answer_confidence=result.get("answer_confidence", 0.0),
-                need_clarification=result.get("need_clarification", False),
-                status="no_evidence",
-                clarification_question="",
-                reason=result.get("reason", "模型判断当前上下文不足以支撑回答"),
-                action=result.get("action", ""),
-                tool_result_summary=result.get("tool_result_summary", ""),
-                tool_trace=result.get("tool_trace", [])
-            )
-
-        if result["status"] == "TOOL_ERROR":
-            logger.warning(
-                f"[trace_id={trace_id}] [chat] final_status=error reason={result.get('reason', '工具调用失败')}"
-            )
-            response.status_code = 200
-            return build_chat_response(
-                code="TOOL_ERROR",
-                message="工具调用失败",
-                trace_id=trace_id,
-                question=question,
-                answer=result.get("answer", ""),
-                references=[],
-                retrieval_confidence=result.get("retrieval_confidence", 0.0),
-                answer_confidence=result.get("answer_confidence", 0.0),
-                need_clarification=result.get("need_clarification", False),
-                status="error",
-                clarification_question=result.get("clarification_question", ""),
-                reason=result.get("reason", "工具调用失败"),
-                action=result.get("action", ""),
-                tool_result_summary=result.get("tool_result_summary", ""),
-                tool_trace=result.get("tool_trace", [])
-            )
-
-        if result["status"] == "OUT_OF_SCOPE":
-            logger.warning(
-                f"[trace_id={trace_id}] [chat] final_status=out_of_scope reason={result.get('reason', '超出知识库范围')}"
-            )
-            response.status_code = 200
-            return build_chat_response(
-                code="OUT_OF_SCOPE",
-                message="问题超出当前知识库范围",
-                trace_id=trace_id,
-                question=question,
-                answer=result.get("answer", ""),
-                references=[],
-                retrieval_confidence=result.get("retrieval_confidence", 0.0),
-                answer_confidence=result.get("answer_confidence", 0.0),
-                need_clarification=False,
-                status="out_of_scope",
-                clarification_question="",
-                reason=result.get("reason", "问题超出知识库范围"),
-                action=result.get("action", ""),
-                tool_result_summary=result.get("tool_result_summary", ""),
-                tool_trace=result.get("tool_trace", [])
-            )
-
-        if result["status"] == "MODEL_BAD_OUTPUT":
-            logger.warning(
-                f"[trace_id={trace_id}] [chat] final_status=error reason={result.get('reason', '模型输出格式异常')}"
-            )
-            response.status_code = 200
-            return build_chat_response(
-                code="MODEL_BAD_OUTPUT",
-                message="模型输出格式异常，请稍候重试",
-                trace_id=trace_id,
-                question=question,
-                answer=result.get("answer", ""),
-                references=[],
-                retrieval_confidence=result.get("retrieval_confidence", 0.0),
-                answer_confidence=result.get("answer_confidence", 0.0),
-                need_clarification=result.get("need_clarification", False),
-                status="error",
-                clarification_question="",
-                reason=result.get("reason", "模型返回结构不符合预期"),
-                action=result.get("action", ""),
-                tool_result_summary=result.get("tool_result_summary", ""),
-                tool_trace=result.get("tool_trace", [])
+                response_config=response_config,
             )
 
         logger.info(

@@ -9,25 +9,19 @@ import requests
 from app.config import Settings
 from app.prompts import ROUTER_SYSTEM_PROMPT, ROUTER_USER_PROMPT
 from app.rag import ask, search_relevant_chunks
+from app.tool_registry import tool_registry
 from app.tools import dispatch_tool
 from app.untils import get_logger
 
 
 logger = get_logger('chat_service')
 
-ROUTER_ALLOWED_ACTIONS = {
+ROUTER_ALLOWED_TOOLS = set(tool_registry.names())
+
+ROUTER_ALLOWED_ACTIONS = ROUTER_ALLOWED_TOOLS | {
     "search_knowledge_base",
-    "simple_calculator",
-    "list_documents",
-    "get_chunk_text",
     "clarify",
     "direct_answer",
-}
-
-ROUTER_ALLOWED_TOOLS = {
-    "simple_calculator",
-    "list_documents",
-    "get_chunk_text",
 }
 
 HIGH_CONFIDENCE_RULE_ACTIONS = {
@@ -46,24 +40,6 @@ ROUTER_ACTION_TO_DECISION = {
     "clarify": "clarify",
     "direct_answer": "direct_answer",
 }
-
-ROUTER_TOOL_SPECS = [
-    {
-        "name": "simple_calculator",
-        "description": "执行简单数字四则运算",
-        "args_schema": {"expression": "string, 必填，例如 '1 + 2 * 3'"},
-    },
-    {
-        "name": "list_documents",
-        "description": "列出知识库文档及数量",
-        "args_schema": {},
-    },
-    {
-        "name": "get_chunk_text",
-        "description": "查看指定 chunk_id 的完整原文",
-        "args_schema": {"chunk_id": "integer|string, 必填"},
-    },
-]
 
 DEFAULT_CLARIFICATION_QUESTION = "请补充你想查询的具体对象、文档、功能或报错信息。"
 
@@ -457,7 +433,7 @@ def call_router_llm(question: str, top_k: int, trace_id: str = "") -> str:
                         ensure_ascii=False
                     ),
                     tool_specs=json.dumps(
-                        ROUTER_TOOL_SPECS,
+                        tool_registry.router_specs(),
                         ensure_ascii=False,
                         indent=2
                     )
@@ -857,6 +833,39 @@ def build_empty_evidence_gate_step(reason: str) -> dict:
         "reason": reason,
     }
 
+
+def build_agent_result(
+    status: str,
+    answer: str = "",
+    references: list | None = None,
+    retrieval_confidence: float = 0.0,
+    answer_confidence: float = 0.0,
+    need_clarification: bool = False,
+    clarification_question: str = "",
+    reason: str = "",
+    action: str = "",
+    tool_result_summary: str = "",
+    tool_trace: list | None = None,
+    **extra,
+) -> dict:
+    """构造 Agent 返回结构，避免各分支重复填同一批字段。"""
+    result = {
+        "status": status,
+        "answer": answer,
+        "references": references or [],
+        "retrieval_confidence": retrieval_confidence,
+        "answer_confidence": answer_confidence,
+        "need_clarification": need_clarification,
+        "clarification_question": clarification_question,
+        "reason": reason,
+        "action": action or "",
+        "tool_result_summary": tool_result_summary,
+        "tool_trace": tool_trace or [],
+    }
+    result.update(extra)
+    return result
+
+
 # =========================
 # Agent 执行主流程
 # =========================
@@ -923,6 +932,39 @@ def run_agent_once(
     def finalize_result(result: dict) -> dict:
         return attach_llm_usage(result, router_llm_used=router_llm_used)
 
+    def agent_result(**kwargs) -> dict:
+        kwargs.setdefault("action", action)
+        kwargs.setdefault("tool_trace", tool_trace)
+        return build_agent_result(**kwargs)
+
+    def finalize_tool_error(
+        answer: str,
+        reason: str,
+        summary: str,
+        bad_case_note: str,
+        trace_error: str | None = None,
+    ) -> dict:
+        tool_trace.append({
+            "step": "call_tool",
+            "tool_name": tool_name,
+            "tool_status": "error",
+            "final_status": "tool_error",
+            "error": trace_error or reason
+        })
+
+        bad_case["answer"] = answer
+        bad_case["route"] = route_decision
+        bad_case["error_type"] = "tool_error"
+        bad_case["note"] = bad_case_note
+        write_bad_cases(bad_case)
+
+        return finalize_result(agent_result(
+            status="TOOL_ERROR",
+            answer=answer,
+            reason=reason,
+            tool_result_summary=summary,
+        ))
+
     logger.info(
         f"[trace_id={trace_id}] [agent] route_decision={route_decision} "
         f"decision={decision_type} action={action} "
@@ -941,19 +983,13 @@ def run_agent_once(
             "answer_preview": decision.get("clarification_question", "")[:80]
         })
 
-        return finalize_result({
-            "status": "NEED_CLARIFICATION",
-            "answer": "",
-            "references": [],
-            "retrieval_confidence": 0.0,
-            "answer_confidence": 0.0,
-            "need_clarification": True,
-            "clarification_question": decision.get("clarification_question", ""),
-            "reason": decision.get("reason", "问题需要澄清"),
-            "action": action,
-            "tool_result_summary": "未调用工具，问题需要澄清",
-            "tool_trace": tool_trace
-        })
+        return finalize_result(agent_result(
+            status="NEED_CLARIFICATION",
+            need_clarification=True,
+            clarification_question=decision.get("clarification_question", ""),
+            reason=decision.get("reason", "问题需要澄清"),
+            tool_result_summary="未调用工具，问题需要澄清",
+        ))
 
     # =========================
     # 3. 直接回答系统能力问题
@@ -972,19 +1008,13 @@ def run_agent_once(
             "answer_preview": answer[:80]
         })
 
-        return finalize_result({
-            "status": "OK",
-            "answer": answer,
-            "references": [],
-            "retrieval_confidence": 0.0,
-            "answer_confidence": 1.0,
-            "need_clarification": False,
-            "clarification_question": "",
-            "reason": decision.get("reason", "直接回答系统能力问题"),
-            "action": action,
-            "tool_result_summary": "未调用工具，直接回答",
-            "tool_trace": tool_trace
-        })
+        return finalize_result(agent_result(
+            status="OK",
+            answer=answer,
+            answer_confidence=1.0,
+            reason=decision.get("reason", "直接回答系统能力问题"),
+            tool_result_summary="未调用工具，直接回答",
+        ))
 
     # =========================
     # 4. 调用工具
@@ -1012,63 +1042,22 @@ def run_agent_once(
                 f"tool_status=error tool_error={error_msg}"
             )
 
-            tool_trace.append({
-                "step": "call_tool",
-                "tool_name": tool_name,
-                "tool_status": "error",
-                "final_status": "tool_error",
-                "error": error_msg
-            })
-
-            bad_case["answer"] = f"工具 {tool_name} 执行异常，无法完成本次请求。"
-            bad_case["route"] = route_decision
-            bad_case["error_type"] = "tool_error"
-            bad_case["note"] = f"工具 {tool_name} 执行错误：{error_msg}"
-            write_bad_cases(bad_case)
-
-            return finalize_result({
-                "status": "TOOL_ERROR",
-                "answer": f"工具 {tool_name} 执行异常，无法完成本次请求。",
-                "references": [],
-                "retrieval_confidence": 0.0,
-                "answer_confidence": 0.0,
-                "need_clarification": False,
-                "clarification_question": "",
-                "reason": error_msg,
-                "action": action,
-                "tool_result_summary": f"{tool_name} 工具执行异常：{error_msg}",
-                "tool_trace": tool_trace
-            })
+            return finalize_tool_error(
+                answer=f"工具 {tool_name} 执行异常，无法完成本次请求。",
+                reason=error_msg,
+                summary=f"{tool_name} 工具执行异常：{error_msg}",
+                bad_case_note=f"工具 {tool_name} 执行错误：{error_msg}",
+            )
 
         if not isinstance(tool_result, dict):
             logger.info(f"[trace_id={trace_id}] [agent] 工具返回异常，tool_status:error tool_error:{type(tool_result)}")
-            tool_trace.append({
-                "step": "call_tool",
-                "tool_name": tool_name,
-                "tool_status": "error",
-                "final_status": "tool_error",
-                "error": f"工具返回值类型异常：{type(tool_result)}"
-            })
-
-            bad_case["answer"] = f"工具 {tool_name} 返回格式异常，无法完成本次请求。"
-            bad_case["route"] =route_decision
-            bad_case["error_type"] = "tool_error"
-            bad_case["note"] = f"工具 {tool_name} 返回格式异常，返回值不是 dict"
-            write_bad_cases(bad_case)
-
-            return finalize_result({
-                "status": "TOOL_ERROR",
-                "answer": f"工具 {tool_name} 返回格式异常，无法完成本次请求。",
-                "references": [],
-                "retrieval_confidence": 0.0,
-                "answer_confidence": 0.0,
-                "need_clarification": False,
-                "clarification_question": "",
-                "reason": "工具返回值不是 dict",
-                "action": action,
-                "tool_result_summary": f"{tool_name} 工具返回格式异常",
-                "tool_trace": tool_trace
-            })
+            return finalize_tool_error(
+                answer=f"工具 {tool_name} 返回格式异常，无法完成本次请求。",
+                reason="工具返回值不是 dict",
+                summary=f"{tool_name} 工具返回格式异常",
+                bad_case_note=f"工具 {tool_name} 返回格式异常，返回值不是 dict",
+                trace_error=f"工具返回值类型异常：{type(tool_result)}",
+            )
 
         if tool_result.get("status") != "success":
             error_msg = tool_result.get("error", f"{tool_name} 工具执行失败")
@@ -1078,33 +1067,12 @@ def run_agent_once(
                 f"tool_status=error tool_error={error_msg}"
             )
 
-            tool_trace.append({
-                "step": "call_tool",
-                "tool_name": tool_name,
-                "tool_status": "error",
-                "final_status": "tool_error",
-                "error": error_msg
-            })
-
-            bad_case["answer"] = f"工具 {tool_name} 执行失败，无法完成本次请求。"
-            bad_case["route"] = route_decision
-            bad_case["error_type"] = "tool_error"
-            bad_case["note"] = f"工具 {tool_name} 执行失败：{error_msg}"
-            write_bad_cases(bad_case)
-
-            return finalize_result({
-                "status": "TOOL_ERROR",
-                "answer": f"工具 {tool_name} 执行失败，无法完成本次请求。",
-                "references": [],
-                "retrieval_confidence": 0.0,
-                "answer_confidence": 0.0,
-                "need_clarification": False,
-                "clarification_question": "",
-                "reason": error_msg,
-                "action": action,
-                "tool_result_summary": summarize_tool_result(tool_name, tool_result),
-                "tool_trace": tool_trace
-            })
+            return finalize_tool_error(
+                answer=f"工具 {tool_name} 执行失败，无法完成本次请求。",
+                reason=error_msg,
+                summary=summarize_tool_result(tool_name, tool_result),
+                bad_case_note=f"工具 {tool_name} 执行失败：{error_msg}",
+            )
 
         logger.info(
             f"[trace_id={trace_id}] [tool] tool_name={tool_name} "
@@ -1120,19 +1088,13 @@ def run_agent_once(
             "answer_preview": answer[:80]
         })
 
-        return finalize_result({
-            "status": "OK",
-            "answer": answer,
-            "references": [],
-            "retrieval_confidence": 0.0,
-            "answer_confidence": 1.0,
-            "need_clarification": False,
-            "clarification_question": "",
-            "reason": f"Agent 选择工具：{tool_name}",
-            "action": action,
-            "tool_result_summary": summarize_tool_result(tool_name, tool_result),
-            "tool_trace": tool_trace
-        })
+        return finalize_result(agent_result(
+            status="OK",
+            answer=answer,
+            answer_confidence=1.0,
+            reason=f"Agent 选择工具：{tool_name}",
+            tool_result_summary=summarize_tool_result(tool_name, tool_result),
+        ))
 
     # =========================
     # 5. 走知识库 RAG
@@ -1359,16 +1321,10 @@ def run_agent_once(
     bad_case["note"] = f"未知 Agent action: {action}"
     write_bad_cases(bad_case)
 
-    return finalize_result({
-        "status": "MODEL_BAD_OUTPUT",
-        "answer": "Agent 决策结果异常，无法完成本次请求。",
-        "references": [],
-        "retrieval_confidence": 0.0,
-        "answer_confidence": 0.0,
-        "need_clarification": False,
-        "clarification_question": "",
-        "reason": f"未知 Agent action: {action}",
-        "action": action or "",
-        "tool_result_summary": "未知 Agent action",
-        "tool_trace": tool_trace
-    })
+    return finalize_result(agent_result(
+        status="MODEL_BAD_OUTPUT",
+        answer="Agent 决策结果异常，无法完成本次请求。",
+        reason=f"未知 Agent action: {action}",
+        action=action or "",
+        tool_result_summary="未知 Agent action",
+    ))

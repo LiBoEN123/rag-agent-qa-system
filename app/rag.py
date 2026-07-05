@@ -100,6 +100,41 @@ def build_evidence_gate_step(
     }
 
 
+def build_rag_result(
+    status: str,
+    answer: str = "",
+    references: list | None = None,
+    final_chunks: list | None = None,
+    retrieval_confidence: float = 0.0,
+    answer_confidence: float = 0.0,
+    need_clarification: bool = False,
+    clarification_question: str = "",
+    reason: str = "",
+    timings: dict | None = None,
+    decompose_llm_used: bool = False,
+    answer_llm_used: bool = False,
+    **extra,
+) -> dict:
+    """构造 RAG 问答结果，避免 ask 各分支重复同一批字段。"""
+    result = {
+        "status": status,
+        "answer": answer,
+        "references": references or [],
+        "final_chunks": final_chunks or [],
+        "retrieval_confidence": retrieval_confidence,
+        "answer_confidence": answer_confidence,
+        "need_clarification": need_clarification,
+        "clarification_question": clarification_question,
+        "reason": reason,
+        "timings": timings or {},
+        "decompose_llm_used": bool(decompose_llm_used),
+        "answer_llm_used": bool(answer_llm_used),
+        "llm_call_count": int(bool(decompose_llm_used)) + int(bool(answer_llm_used)),
+    }
+    result.update(extra)
+    return result
+
+
 # =========================
 # 状态函数
 # =========================
@@ -326,21 +361,13 @@ def ask(
     }
 
     if is_ambiguous_question(question):
-        return {
-            "status": "NEED_CLARIFICATION",
-            "answer": "",
-            "references": [],
-            "final_chunks": [],
-            "retrieval_confidence": 0.0,
-            "answer_confidence": 0.0,
-            "need_clarification": True,
-            "clarification_question": build_clarification_question(question),
-            "reason": "问题存在指代不明或缺少关键限定信息",
-            "timings": timings,
-            "decompose_llm_used": False,
-            "answer_llm_used": False,
-            "llm_call_count": 0,
-        }
+        return build_rag_result(
+            status="NEED_CLARIFICATION",
+            need_clarification=True,
+            clarification_question=build_clarification_question(question),
+            reason="问题存在指代不明或缺少关键限定信息",
+            timings=timings,
+        )
 
     decompose_result = None
     decompose_cost_ms = 0
@@ -450,26 +477,19 @@ def ask(
 
     if should_refuse(final_chunks):
         refuse_reason = "检索结果为空或证据分数低于阈值"
-        return {
-            "status": "NO_RELEVANT_INFO",
-            "answer": NO_ANSWER_FALLBACK,
-            "references": [],
-            "final_chunks": [],
-            "retrieval_confidence": retrieval_confidence,
-            "answer_confidence": 0.0,
-            "need_clarification": False,
-            "clarification_question": "",
-            "reason": refuse_reason,
-            "timings": timings,
-            "evidence_gate": build_evidence_gate_step(
+        return build_rag_result(
+            status="NO_RELEVANT_INFO",
+            answer=NO_ANSWER_FALLBACK,
+            retrieval_confidence=retrieval_confidence,
+            reason=refuse_reason,
+            timings=timings,
+            decompose_llm_used=decompose_llm_used,
+            evidence_gate=build_evidence_gate_step(
                 final_chunks,
                 refused=True,
                 reason=refuse_reason,
             ),
-            "decompose_llm_used": decompose_llm_used,
-            "answer_llm_used": False,
-            "llm_call_count": int(decompose_llm_used),
-        }
+        )
 
     context_start = time.perf_counter()
     context = build_context(final_chunks, Settings.MAX_CONTEXT_CHARS)
@@ -488,21 +508,16 @@ def ask(
         llm_out = call_llm(question, context, trace_id)
     except LLMCallError as e:
         timings["llm_cost_ms"] = int((time.perf_counter() - llm_start) * 1000)
-        return {
-            "status": "MODEL_ERROR",
-            "answer": e.user_message,
-            "references": [],
-            "final_chunks": final_chunks,
-            "retrieval_confidence": retrieval_confidence,
-            "answer_confidence": 0.0,
-            "need_clarification": False,
-            "clarification_question": "",
-            "reason": e.user_message,
-            "timings": timings,
-            "decompose_llm_used": decompose_llm_used,
-            "answer_llm_used": answer_llm_used,
-            "llm_call_count": int(decompose_llm_used) + int(answer_llm_used),
-        }
+        return build_rag_result(
+            status="MODEL_ERROR",
+            answer=e.user_message,
+            final_chunks=final_chunks,
+            retrieval_confidence=retrieval_confidence,
+            reason=e.user_message,
+            timings=timings,
+            decompose_llm_used=decompose_llm_used,
+            answer_llm_used=answer_llm_used,
+        )
 
     timings["llm_cost_ms"] = int((time.perf_counter() - llm_start) * 1000)
 
@@ -521,40 +536,30 @@ def ask(
     )
 
     if not parsed["ok"]:
-        return {
-            "status": "MODEL_BAD_OUTPUT",
-            "answer": NO_ANSWER_FALLBACK,
-            "references": [],
-            "final_chunks": [],
-            "retrieval_confidence": retrieval_confidence,
-            "answer_confidence": 0.0,
-            "need_clarification": False,
-            "clarification_question": "",
-            "reason": "模型未按约定 JSON 格式返回",
-            "timings": timings,
-            "decompose_llm_used": decompose_llm_used,
-            "answer_llm_used": answer_llm_used,
-            "llm_call_count": int(decompose_llm_used) + int(answer_llm_used),
-        }
+        return build_rag_result(
+            status="MODEL_BAD_OUTPUT",
+            answer=NO_ANSWER_FALLBACK,
+            retrieval_confidence=retrieval_confidence,
+            reason="模型未按约定 JSON 格式返回",
+            timings=timings,
+            decompose_llm_used=decompose_llm_used,
+            answer_llm_used=answer_llm_used,
+        )
 
     final_references = format_reference(final_chunks, parsed["references"])
 
     if not final_references or STOP_WORD in parsed["answer"]:
-        return {
-            "status": "NO_RELEVANT_INFO",
-            "answer": parsed["answer"],
-            "references": final_references,
-            "final_chunks": final_chunks,
-            "retrieval_confidence": retrieval_confidence,
-            "answer_confidence": 0.0,
-            "need_clarification": False,
-            "clarification_question": "",
-            "reason": "模型给出的答案没有足够的引用支撑",
-            "timings": timings,
-            "decompose_llm_used": decompose_llm_used,
-            "answer_llm_used": answer_llm_used,
-            "llm_call_count": int(decompose_llm_used) + int(answer_llm_used),
-        }
+        return build_rag_result(
+            status="NO_RELEVANT_INFO",
+            answer=parsed["answer"],
+            references=final_references,
+            final_chunks=final_chunks,
+            retrieval_confidence=retrieval_confidence,
+            reason="模型给出的答案没有足够的引用支撑",
+            timings=timings,
+            decompose_llm_used=decompose_llm_used,
+            answer_llm_used=answer_llm_used,
+        )
 
     answer_confidence = estimate_answer_confidence(
         retrieved_chunks=final_chunks,
@@ -563,21 +568,18 @@ def ask(
         retrieval_confidence=retrieval_confidence
     )
 
-    return {
-        "status": "OK",
-        "answer": parsed["answer"],
-        "references": final_references,
-        "final_chunks": final_chunks,
-        "retrieval_confidence": retrieval_confidence,
-        "answer_confidence": answer_confidence,
-        "need_clarification": False,
-        "clarification_question": "",
-        "reason": "检索命中有效证据，且答案成功绑定引用",
-        "timings": timings,
-        "decompose_llm_used": decompose_llm_used,
-        "answer_llm_used": answer_llm_used,
-        "llm_call_count": int(decompose_llm_used) + int(answer_llm_used),
-    }
+    return build_rag_result(
+        status="OK",
+        answer=parsed["answer"],
+        references=final_references,
+        final_chunks=final_chunks,
+        retrieval_confidence=retrieval_confidence,
+        answer_confidence=answer_confidence,
+        reason="检索命中有效证据，且答案成功绑定引用",
+        timings=timings,
+        decompose_llm_used=decompose_llm_used,
+        answer_llm_used=answer_llm_used,
+    )
 
 
 # =========================

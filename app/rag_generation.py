@@ -5,7 +5,7 @@ from typing import List
 import requests
 
 from app.config import Settings
-from app.prompts import SYSTEM_PROMPT_A, SYSTEM_PROMPT_B, USER_PROMPT, NO_ANSWER_FALLBACK
+from app.prompts import SYSTEM_PROMPT_B, USER_PROMPT, NO_ANSWER_FALLBACK
 from app.rag_retrieval import clamp01, make_snippet, safe_float
 from app.untils import get_logger
 
