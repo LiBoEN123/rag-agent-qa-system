@@ -8,7 +8,7 @@ import requests
 
 from app.config import Settings
 from app.prompts import ROUTER_SYSTEM_PROMPT, ROUTER_USER_PROMPT
-from app.rag import ask, search_relevant_chunks
+from app.rag import ask
 from app.tool_registry import tool_registry
 from app.tools import dispatch_tool
 from app.untils import get_logger
@@ -20,7 +20,6 @@ ROUTER_ALLOWED_TOOLS = set(tool_registry.names())
 ROUTER_TOOL_SPECS = tool_registry.router_specs()
 
 ROUTER_ALLOWED_ACTIONS = ROUTER_ALLOWED_TOOLS | {
-    "search_knowledge_base",
     "clarify",
     "direct_answer",
 }
@@ -220,6 +219,9 @@ def format_tool_answer(tool_name: str, output: dict) -> str:
 
         return f"chunk_{chunk_id} 内容如下：\n{text}"
 
+    if tool_name == "search_knowledge_base":
+        return f"知识库检索完成，共找到 {output.get('count', 0)} 个候选 chunk。"
+
     return str(output)
 
 
@@ -238,6 +240,9 @@ def summarize_tool_result(tool_name: str, tool_result: dict) -> str:
 
     if tool_name == "get_chunk_text":
         return f"get_chunk_text 执行成功，返回 chunk_id={output.get('chunk_id')} 的内容"
+
+    if tool_name == "search_knowledge_base":
+        return f"search_knowledge_base 执行成功，召回 {output.get('count', 0)} 个 chunk"
 
     return f"{tool_name} 执行成功"
 
@@ -561,7 +566,7 @@ def validate_route_decision(raw_decision: dict, question: str, top_k: int) -> di
             {
                 "decision": decision_type,
                 "action": "search_knowledge_base",
-                "tool_name": "",
+                "tool_name": "search_knowledge_base",
                 "tool_args": {
                     "query": q,
                     "top_k": top_k,
@@ -727,7 +732,7 @@ def route_agent_action_rule_based(question: str, top_k:int) -> dict:
     return {
         "decision": "use_knowledge_base",
         "action": "search_knowledge_base",
-        "tool_name": "",
+        "tool_name": "search_knowledge_base",
         "tool_args": {
             "query": q,
             "top_k": top_k
@@ -833,6 +838,46 @@ def build_empty_evidence_gate_step(reason: str) -> dict:
         "max_hybrid_score": 0.0,
         "reason": reason,
     }
+
+
+def get_chunk_trace_value(chunk: dict, key: str, default=None):
+    """从 chunk 顶层或 metadata 中取 trace 展示字段。"""
+    if not isinstance(chunk, dict):
+        return default
+
+    value = chunk.get(key)
+    if value is not None:
+        return value
+
+    metadata = chunk.get("metadata") or {}
+    if isinstance(metadata, dict):
+        return metadata.get(key, default)
+
+    return default
+
+
+def round_chunk_score(chunk: dict, key: str) -> float:
+    """安全读取并四舍五入 chunk 分数字段。"""
+    try:
+        return round(float(get_chunk_trace_value(chunk, key, 0) or 0), 4)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def build_chunk_hits(chunks: list[dict]) -> list[dict]:
+    """构造工具 trace 中可快速查看的 chunk 命中摘要。"""
+    return [
+        {
+            "chunk_id": get_chunk_trace_value(chunk, "chunk_id"),
+            "rerank": round_chunk_score(chunk, "rerank_score"),
+            "score": round_chunk_score(chunk, "hybrid_score"),
+            "bm25": round_chunk_score(chunk, "bm25_score"),
+            "vector": round_chunk_score(chunk, "vector_score"),
+            "file_name": get_chunk_trace_value(chunk, "file_name"),
+        }
+        for chunk in (chunks or [])
+        if isinstance(chunk, dict)
+    ]
 
 
 def build_agent_result(
@@ -1020,7 +1065,7 @@ def run_agent_once(
     # =========================
     # 4. 调用工具
     # =========================
-    if decision_type == "use_tool":
+    if decision_type == "use_tool" and action != "search_knowledge_base":
         tool_trace.append({
             "step": "call_tool",
             "tool_name": tool_name,
@@ -1101,14 +1146,131 @@ def run_agent_once(
     # 5. 走知识库 RAG
     # =========================
     if action == "search_knowledge_base":
+        search_tool_name = "search_knowledge_base"
+        search_tool_args = {
+            "query": question,
+            "top_k": top_k
+        }
+
         logger.info(f"[trace_id={trace_id}] [retrieve] 开始检索 top_k={top_k}")
         retrieve_start = time.perf_counter()
 
-        retrieved_chunks = search_relevant_chunks(question, top_k)
+        try:
+            tool_result = dispatch_tool(
+                search_tool_name,
+                search_tool_args,
+                trace_id=trace_id
+            )
+        except Exception as e:
+            tool_result = {
+                "status": "error",
+                "ok": False,
+                "tool_name": search_tool_name,
+                "tool_input": search_tool_args,
+                "output": None,
+                "error": str(e),
+            }
 
         retrieve_cost = int((time.perf_counter() - retrieve_start) * 1000)
 
         logger.info(f"[trace_id={trace_id}] [retrieve] retrieve_cost_ms={retrieve_cost}")
+
+        if not isinstance(tool_result, dict):
+            error_msg = f"工具返回值类型异常：{type(tool_result)}"
+
+            tool_trace.append({
+                "step": "call_tool",
+                "tool_name": search_tool_name,
+                "tool_args": search_tool_args,
+                "tool_status": "error",
+                "success": False,
+                "final_chunk_count": 0,
+                "top_chunk_ids": [],
+                "top_scores": [],
+                "result_summary": "知识库检索工具返回格式异常",
+                "hits": [],
+                "error": error_msg,
+            })
+
+            bad_case["answer"] = f"工具 {search_tool_name} 返回格式异常，无法完成本次请求。"
+            bad_case["route"] = route_decision
+            bad_case["error_type"] = "tool_error"
+            bad_case["note"] = error_msg
+            write_bad_cases(bad_case)
+
+            return finalize_result(agent_result(
+                status="TOOL_ERROR",
+                answer=f"工具 {search_tool_name} 返回格式异常，无法完成本次请求。",
+                reason=error_msg,
+                tool_result_summary="search_knowledge_base 工具返回格式异常",
+                timings={
+                    "retrieve_cost_ms": retrieve_cost,
+                    "rag_answer_cost_ms": 0,
+                },
+            ))
+
+        if tool_result.get("status") != "success":
+            error_msg = tool_result.get("error", "search_knowledge_base 工具执行失败")
+
+            logger.warning(
+                f"[trace_id={trace_id}] [tool] tool_name={search_tool_name} "
+                f"tool_status=error tool_error={error_msg}"
+            )
+
+            tool_trace.append({
+                "step": "call_tool",
+                "tool_name": search_tool_name,
+                "tool_args": search_tool_args,
+                "tool_status": "error",
+                "success": False,
+                "final_chunk_count": 0,
+                "top_chunk_ids": [],
+                "top_scores": [],
+                "result_summary": f"知识库检索工具执行失败：{error_msg}",
+                "hits": [],
+                "error": error_msg,
+            })
+
+            bad_case["answer"] = f"工具 {search_tool_name} 执行失败，无法完成本次请求。"
+            bad_case["route"] = route_decision
+            bad_case["error_type"] = "tool_error"
+            bad_case["note"] = f"工具 {search_tool_name} 执行失败：{error_msg}"
+            write_bad_cases(bad_case)
+
+            return finalize_result(agent_result(
+                status="TOOL_ERROR",
+                answer=f"工具 {search_tool_name} 执行失败，无法完成本次请求。",
+                reason=error_msg,
+                tool_result_summary=summarize_tool_result(search_tool_name, tool_result),
+                timings={
+                    "retrieve_cost_ms": retrieve_cost,
+                    "rag_answer_cost_ms": 0,
+                },
+            ))
+
+        tool_output = tool_result.get("output") or {}
+        if not isinstance(tool_output, dict):
+            tool_output = {}
+
+        retrieved_chunks = tool_output.get("chunks", [])
+        if not isinstance(retrieved_chunks, list):
+            retrieved_chunks = []
+
+        retrieved_count = len(retrieved_chunks)
+        retrieved_chunk_ids = (
+            tool_output.get("top_chunk_ids")
+            or [
+                get_chunk_trace_value(chunk, "chunk_id")
+                for chunk in retrieved_chunks
+            ]
+        )
+        retrieved_scores = (
+            tool_output.get("top_scores")
+            or [
+                round_chunk_score(chunk, "hybrid_score")
+                for chunk in retrieved_chunks
+            ]
+        )
 
         rag_answer_start = time.perf_counter()
 
@@ -1121,15 +1283,16 @@ def run_agent_once(
 
             tool_trace.append({
                 "step": "call_tool",
-                "tool_name": "search_knowledge_base",
-                "tool_args": {
-                    "query": question,
-                    "top_k": top_k
-                },
-                "tool_status": "skipped",
+                "tool_name": search_tool_name,
+                "tool_args": search_tool_args,
+                "tool_status": "success",
                 "final_status": "no_evidence",
-                "success": False,
-                "result_summary": "没有检索到候选 chunk"
+                "success": True,
+                "final_chunk_count": 0,
+                "top_chunk_ids": [],
+                "top_scores": [],
+                "result_summary": "没有检索到候选 chunk",
+                "hits": [],
             })
 
             tool_trace.append(build_empty_evidence_gate_step("知识库检索结果为空"))
@@ -1152,43 +1315,35 @@ def run_agent_once(
                 "tool_trace": tool_trace
             })
 
-        retrieved_count = len(retrieved_chunks)
-        retrieved_chunk_ids = [chunk.get("chunk_id") for chunk in retrieved_chunks]
-
         logger.info(
             f"[trace_id={trace_id}] [retrieve] retrieved_count={retrieved_count} "
-            f"top_chunk_ids={retrieved_chunk_ids}"
+            f"top_chunk_ids={retrieved_chunk_ids} top_scores={retrieved_scores}"
         )
 
-        rag_result = ask(question, top_k=top_k, retrieved_chunks=retrieved_chunks,
-                         decompose_top_k=decompose_top_k,trace_id=trace_id)
+        rag_result = ask(
+            question,
+            top_k=top_k,
+            decompose_top_k=decompose_top_k,
+            retrieved_chunks=retrieved_chunks,
+            trace_id=trace_id
+        )
 
         final_chunks = rag_result.get("final_chunks", [])
         final_chunk_count = len(final_chunks)
-        top_chunk_ids = [chunk.get("chunk_id") for chunk in final_chunks]
-        top_scores = [
-            round(chunk.get("hybrid_score", 0), 4)
-            for chunk in final_chunks]
-
-        hit_brief = [
-            {
-                "chunk_id": chunk.get("chunk_id"),
-                "rerank": round(chunk.get("rerank_score", 0), 4),
-                "score": round(chunk.get("hybrid_score", 0), 4),
-                "bm25": round(chunk.get("bm25_score", 0), 4),
-                "vector": round(chunk.get("vector_score", 0), 4),
-                "file_name": chunk.get("file_name"),
-            }
+        top_chunk_ids = [
+            get_chunk_trace_value(chunk, "chunk_id")
             for chunk in final_chunks
         ]
+        top_scores = [
+            round_chunk_score(chunk, "hybrid_score")
+            for chunk in final_chunks
+        ]
+        hit_brief = build_chunk_hits(final_chunks)
 
         tool_trace.append({
             "step": "call_tool",
-            "tool_name": "search_knowledge_base",
-            "tool_args": {
-                "query": question,
-                "top_k": top_k
-            },
+            "tool_name": search_tool_name,
+            "tool_args": search_tool_args,
             "tool_status": "success",
             "success": True,
             "final_chunk_count": final_chunk_count,

@@ -86,8 +86,29 @@ def _handle_get_chunk_text(args: dict) -> dict:
     return tools.get_chunk_text(args.get("chunk_id"))
 
 
+def _handle_search_knowledge_base(args: dict) -> dict:
+    """适配知识库检索工具的参数格式。"""
+    return tools.search_knowledge_base(args)
+
+
 def register_default_tools(registry: ToolRegistry) -> None:
     """注册项目内置工具。"""
+    registry.register(
+        ToolSpec(
+            name="search_knowledge_base",
+            description="检索知识库并返回相关证据 chunk",
+            args_schema={
+                "query": "string, 必填，用户问题或检索问题",
+                "top_k": "integer, 可选，返回候选 chunk 数量",
+            },
+            output_schema={
+                "count": "integer, 命中的 chunk 数量",
+                "chunks": "list, 候选证据 chunk 列表",
+                "top_chunk_ids": "list, 命中的 chunk_id 列表",
+            },
+            handler=_handle_search_knowledge_base,
+        )
+    )
     registry.register(
         ToolSpec(
             name="simple_calculator",

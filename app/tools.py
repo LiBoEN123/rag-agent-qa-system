@@ -5,8 +5,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-from app.rag import get_chunk_full_text, preview_docs
-
 
 _ALLOWED_OPERATORS = {
     ast.Add: op.add,
@@ -110,6 +108,8 @@ def list_documents() -> dict:
     tool_input = {}
 
     try:
+        from app.rag import preview_docs
+
         docs = preview_docs()
 
         return tool_success(
@@ -135,6 +135,8 @@ def get_chunk_text(chunk_id: int | str) -> dict:
     tool_input = {"chunk_id": chunk_id}
 
     try:
+        from app.rag import get_chunk_full_text
+
         if not chunk_id or str(chunk_id).strip() == "":
             return tool_error(tool_name, tool_input, "chunk_id 不能为空")
 
@@ -160,6 +162,84 @@ def get_chunk_text(chunk_id: int | str) -> dict:
         return tool_error(
             tool_name=tool_name,
             tool_input=tool_input,
+            error=str(e)
+        )
+
+
+def _get_chunk_value(chunk: dict, key: str, default=None):
+    """从 chunk 顶层或 metadata 中读取字段。"""
+    if not isinstance(chunk, dict):
+        return default
+
+    value = chunk.get(key)
+    if value is not None:
+        return value
+
+    metadata = chunk.get("metadata") or {}
+    if isinstance(metadata, dict):
+        return metadata.get(key, default)
+
+    return default
+
+
+def _round_chunk_score(chunk: dict, key: str) -> float:
+    """安全读取 chunk 分数字段。"""
+    try:
+        return round(float(_get_chunk_value(chunk, key, 0.0) or 0.0), 4)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def search_knowledge_base(args: dict) -> dict:
+    """检索知识库候选 chunk，并保持 chunk 原始结构供后续 RAG 生成使用。"""
+    tool_name = "search_knowledge_base"
+
+    try:
+        from app.config import Settings
+        from app.rag import search_relevant_chunks
+
+        args = args or {}
+        query = str(args.get("query") or "").strip()
+        raw_top_k = args.get("top_k", Settings.TOP_K)
+
+        try:
+            top_k = int(raw_top_k)
+        except (TypeError, ValueError):
+            return tool_error(
+                tool_name=tool_name,
+                tool_input={"query": query, "top_k": raw_top_k},
+                error="top_k 必须是整数"
+            )
+
+        top_k = max(1, min(top_k, 20))
+        tool_input = {"query": query, "top_k": top_k}
+
+        if not query:
+            return tool_error(tool_name, tool_input, "query 不能为空")
+
+        chunks = search_relevant_chunks(query, top_k=top_k)
+
+        return tool_success(
+            tool_name=tool_name,
+            tool_input=tool_input,
+            output={
+                "count": len(chunks),
+                "chunks": chunks,
+                "top_chunk_ids": [
+                    _get_chunk_value(chunk, "chunk_id")
+                    for chunk in chunks
+                ],
+                "top_scores": [
+                    _round_chunk_score(chunk, "hybrid_score")
+                    for chunk in chunks
+                ],
+            }
+        )
+
+    except Exception as e:
+        return tool_error(
+            tool_name=tool_name,
+            tool_input=args if isinstance(args, dict) else {},
             error=str(e)
         )
 

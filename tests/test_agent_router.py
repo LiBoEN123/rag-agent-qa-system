@@ -14,6 +14,7 @@ def test_agent_router_tool_specs_from_registry():
     specs = agent.ROUTER_TOOL_SPECS
     names = {item["name"] for item in specs}
 
+    assert "search_knowledge_base" in names
     assert "simple_calculator" in names
     assert "list_documents" in names
     assert "get_chunk_text" in names
@@ -24,10 +25,10 @@ def test_agent_router_tool_specs_from_registry():
         assert "args_schema" in item
 
 
-def test_search_knowledge_base_still_allowed_action():
-    """验证知识库检索仍是特殊 action，而不是注册工具。"""
+def test_search_knowledge_base_is_now_standard_tool():
+    """验证知识库检索已经成为 Router 可调用的标准工具。"""
+    assert "search_knowledge_base" in agent.ROUTER_ALLOWED_TOOLS
     assert "search_knowledge_base" in agent.ROUTER_ALLOWED_ACTIONS
-    assert "search_knowledge_base" not in agent.ROUTER_ALLOWED_TOOLS
 
 
 def test_validate_llm_rag_route_normalizes_safe_args():
@@ -47,7 +48,7 @@ def test_validate_llm_rag_route_normalizes_safe_args():
 
     assert decision["decision"] == "use_knowledge_base"
     assert decision["action"] == "search_knowledge_base"
-    assert decision["tool_name"] == ""
+    assert decision["tool_name"] == "search_knowledge_base"
     assert decision["tool_args"] == {"query": "Vue 应用如何创建?", "top_k": 3}
     assert decision["router_source"] == "llm"
     assert decision["router_confidence"] == 0.9
@@ -155,3 +156,96 @@ def test_route_uses_rules_when_router_disabled(monkeypatch):
     assert decision["action"] == "list_documents"
     assert decision["router_source"] == "rule_based"
     assert decision["router_llm_used"] is False
+
+
+def test_run_agent_once_uses_search_knowledge_base_tool(monkeypatch):
+    """验证知识库路径通过 dispatch_tool 调用标准检索工具。"""
+    called = {"count": 0}
+    fake_chunk = {
+        "chunk_id": 1,
+        "text": "测试 chunk",
+        "snippet": "测试 chunk",
+        "hybrid_score": 0.9,
+        "bm25_score": 1.0,
+        "vector_score": 0.8,
+        "rerank_score": 0.7,
+        "file_name": "test.md",
+        "metadata": {
+            "chunk_id": 1,
+            "file_name": "test.md",
+        },
+    }
+
+    def fake_dispatch_tool(tool_name, tool_args=None, trace_id=""):
+        called["count"] += 1
+        assert tool_name == "search_knowledge_base"
+        assert tool_args == {"query": "测试问题", "top_k": 5}
+        return {
+            "status": "success",
+            "ok": True,
+            "tool_name": tool_name,
+            "tool_input": tool_args,
+            "output": {
+                "count": 1,
+                "chunks": [fake_chunk],
+                "top_chunk_ids": [1],
+                "top_scores": [0.9],
+            },
+            "error": "",
+        }
+
+    def fake_ask(*args, **kwargs):
+        assert kwargs.get("retrieved_chunks") == [fake_chunk]
+        return {
+            "status": "OK",
+            "answer": "测试答案",
+            "references": [],
+            "final_chunks": [fake_chunk],
+            "retrieval_confidence": 0.9,
+            "answer_confidence": 0.8,
+            "need_clarification": False,
+            "clarification_question": "",
+            "reason": "测试",
+            "tool_trace": [],
+            "decompose_llm_used": False,
+            "answer_llm_used": True,
+            "llm_call_count": 1,
+        }
+
+    monkeypatch.setattr(agent, "dispatch_tool", fake_dispatch_tool)
+    monkeypatch.setattr(agent, "ask", fake_ask)
+
+    result = agent.run_agent_once(
+        write_bad_cases=lambda record: None,
+        question="测试问题",
+        top_k=5,
+        decompose_top_k=10,
+        decision={
+            "decision": "use_knowledge_base",
+            "action": "search_knowledge_base",
+            "tool_name": "search_knowledge_base",
+            "tool_args": {"query": "测试问题", "top_k": 5},
+            "reason": "测试知识库检索",
+            "router_source": "rule_based",
+            "router_llm_used": False,
+        },
+        trace_id="test_trace",
+    )
+
+    call_tool_steps = [
+        step
+        for step in result["tool_trace"]
+        if step.get("step") == "call_tool"
+        and step.get("tool_name") == "search_knowledge_base"
+    ]
+
+    assert called["count"] == 1
+    assert result["status"] == "OK"
+    assert call_tool_steps
+    assert call_tool_steps[0]["tool_args"] == {"query": "测试问题", "top_k": 5}
+    assert call_tool_steps[0]["tool_status"] == "success"
+    assert call_tool_steps[0]["success"] is True
+    assert call_tool_steps[0]["final_chunk_count"] == 1
+    assert call_tool_steps[0]["top_chunk_ids"] == [1]
+    assert call_tool_steps[0]["top_scores"] == [0.9]
+    assert call_tool_steps[0]["hits"][0]["file_name"] == "test.md"
