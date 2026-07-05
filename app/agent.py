@@ -17,6 +17,7 @@ from app.untils import get_logger
 logger = get_logger('chat_service')
 
 ROUTER_ALLOWED_TOOLS = set(tool_registry.names())
+ROUTER_TOOL_SPECS = tool_registry.router_specs()
 
 ROUTER_ALLOWED_ACTIONS = ROUTER_ALLOWED_TOOLS | {
     "search_knowledge_base",
@@ -433,7 +434,7 @@ def call_router_llm(question: str, top_k: int, trace_id: str = "") -> str:
                         ensure_ascii=False
                     ),
                     tool_specs=json.dumps(
-                        tool_registry.router_specs(),
+                        ROUTER_TOOL_SPECS,
                         ensure_ascii=False,
                         indent=2
                     )

@@ -1,6 +1,33 @@
 import pytest
 
 from app import agent
+from app.tool_registry import tool_registry
+
+
+def test_agent_allowed_tools_from_registry():
+    """验证 Agent Router 的工具白名单来自注册中心。"""
+    assert agent.ROUTER_ALLOWED_TOOLS == set(tool_registry.names())
+
+
+def test_agent_router_tool_specs_from_registry():
+    """验证 Agent Router 的工具说明来自注册中心。"""
+    specs = agent.ROUTER_TOOL_SPECS
+    names = {item["name"] for item in specs}
+
+    assert "simple_calculator" in names
+    assert "list_documents" in names
+    assert "get_chunk_text" in names
+
+    for item in specs:
+        assert "name" in item
+        assert "description" in item
+        assert "args_schema" in item
+
+
+def test_search_knowledge_base_still_allowed_action():
+    """验证知识库检索仍是特殊 action，而不是注册工具。"""
+    assert "search_knowledge_base" in agent.ROUTER_ALLOWED_ACTIONS
+    assert "search_knowledge_base" not in agent.ROUTER_ALLOWED_TOOLS
 
 
 def test_validate_llm_rag_route_normalizes_safe_args():
