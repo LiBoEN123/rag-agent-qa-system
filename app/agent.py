@@ -289,41 +289,6 @@ def check_reference_reliability(
 
     return True, reason
 
-
-def should_record_reference_bad_case(
-        question: str,
-        answer: str,
-        references: list[dict],
-        reason: str
-) -> tuple[bool, str]:
-
-    """判断引用不足的回答是否应该记录为 bad case。"""
-    answer = (answer or "").strip()
-    reason = (reason or "").strip()
-
-    if not question:
-        return False, ""
-
-    if "我无法根据提供的文档确定答案" in answer:
-        return False, ""
-
-    if (
-        "检索结果为空" in reason
-        or "top1 分数低于阈值" in reason
-        or "证据分数低于阈值" in reason
-    ):
-        return False, ""
-
-    if "模型给出的答案没有足够的引用支撑" in reason:
-        return check_reference_reliability(
-            question,
-            answer,
-            references
-        )
-
-    return False, ""
-
-
 # =========================
 # Agent 路由决策
 # =========================
@@ -1365,13 +1330,11 @@ def run_agent_once(
 
             answer_text = rag_result.get("answer", "")
             references = rag_result.get("references", []) or []
-            reason_text = rag_result.get("reason", "")
 
-            is_bad_reference, reference_note = should_record_reference_bad_case(
-                question=question,
-                answer=answer_text,
-                references=references,
-                reason=reason_text
+            is_bad_reference, reference_note = check_reference_reliability(
+                question,
+                answer_text,
+                references
             )
 
             if is_bad_reference:
