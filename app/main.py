@@ -21,7 +21,9 @@ from app.config import Settings
 from app.untils import get_logger
 from app.agent import route_agent_action, run_agent_once
 from app.observability import create_trace_id
+from app.query_rewrite import rewrite_query_with_history
 from app.rag_retrieval import safe_float, should_refuse
+from app.session_store import append_message, get_history
 
 PublicStatus: TypeAlias = Literal[
     "ok",
@@ -46,13 +48,15 @@ class ChatRequest(BaseModel):
     question:str = Field(..., description='用户问题')
     top_k:int | None=Field(None, ge=1, le=10, description='召回条数')
     decompose_top_k:int | None=Field(None, ge=1, le=10, description='召回条数')
+    session_id: str | None = Field(None, description="多轮会话 ID")
 
 
     model_config = ConfigDict(
         json_schema_extra={
             "example":{
               "question": "普通本科四年制专业学生现在最长学习年限是不是 8 年？",
-              "top_k": 5
+              "top_k": 5,
+              "session_id": "demo_session_001"
             }
         }
     )
@@ -453,7 +457,13 @@ def extract_llm_usage(
         llm_call_count: int | None = None
 ) -> dict:
     """从 tool_trace 中读取 LLM 调用情况，并补齐缺省计数。"""
+    query_rewrite_llm_used = False
+
     for step in tool_trace or []:
+        if step.get("step") == "query_rewrite":
+            query_rewrite_llm_used = bool(step.get("rewrite_llm_used", False))
+            continue
+
         if step.get("step") != "llm_usage":
             continue
 
@@ -480,11 +490,13 @@ def extract_llm_usage(
             + int(answer_llm_used)
         )
 
+    llm_call_count = int(llm_call_count or 0) + int(query_rewrite_llm_used)
+
     return {
         "router_llm_used": router_llm_used,
         "decompose_llm_used": decompose_llm_used,
         "answer_llm_used": answer_llm_used,
-        "llm_call_count": max(0, int(llm_call_count or 0)),
+        "llm_call_count": max(0, llm_call_count),
     }
 
 
@@ -533,6 +545,57 @@ def collect_trace_metrics(result: dict) -> dict:
         **llm_usage,
         "timings": result.get("timings") or {},
     }
+
+
+def build_query_rewrite_trace(rewrite_result: dict) -> dict:
+    """构造 query rewrite 观测 trace，放在路由决策之前。"""
+    return {
+        "step": "query_rewrite",
+        "original_question": rewrite_result.get("original_question", ""),
+        "rewritten_question": rewrite_result.get("rewritten_question", ""),
+        "history_used": bool(rewrite_result.get("history_used", False)),
+        "rewritten": bool(rewrite_result.get("rewritten", False)),
+        "rewrite_llm_used": bool(rewrite_result.get("rewrite_llm_used", False)),
+        "reason": rewrite_result.get("reason", ""),
+        "error": rewrite_result.get("error", ""),
+    }
+
+
+def attach_query_rewrite_trace(result: dict, rewrite_trace: dict) -> dict:
+    """把 query rewrite trace 前插到 Agent 返回结果中。"""
+    result = dict(result or {})
+    tool_trace = list(result.get("tool_trace") or [])
+
+    if not any(step.get("step") == "query_rewrite" for step in tool_trace):
+        tool_trace.insert(0, rewrite_trace)
+
+    result["tool_trace"] = tool_trace
+    result["query_rewrite_used"] = bool(rewrite_trace.get("rewritten", False))
+    result["query_rewrite_llm_used"] = bool(rewrite_trace.get("rewrite_llm_used", False))
+    result["effective_question_len"] = len(rewrite_trace.get("rewritten_question", "") or "")
+
+    return result
+
+
+def save_session_turn(
+        session_id: str,
+        user_question: str,
+        assistant_content: str,
+        trace_id: str = "",
+) -> None:
+    """保存一轮成功生成的会话消息，失败只记日志不影响响应。"""
+    if not session_id:
+        return
+
+    try:
+        append_message(session_id, "user", user_question)
+        append_message(session_id, "assistant", assistant_content)
+    except Exception as e:
+        logger.warning(
+            f"[trace_id={trace_id}] [session_store] append_failed "
+            f"session_id={session_id} error={str(e)[:200]}"
+        )
+
 
 def write_metrics(record: dict) -> None:
 
@@ -613,6 +676,9 @@ def log_and_write_metrics(record: dict) -> None:
         f"decompose_llm_used={record.get('decompose_llm_used')} "
         f"answer_llm_used={record.get('answer_llm_used')} "
         f"llm_call_count={record.get('llm_call_count')} "
+        f"query_rewrite_used={record.get('query_rewrite_used')} "
+        f"query_rewrite_llm_used={record.get('query_rewrite_llm_used')} "
+        f"effective_question_len={record.get('effective_question_len')} "
         f"action={record.get('action')} "
         f"reason={record.get('reason')}"
     )
@@ -863,19 +929,24 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
 
     queue_wait_ms = int((process_start_perf - request_enter_perf) * 1000)
 
-    question = (req.question or "").strip()
+    original_question = (req.question or "").strip()
+    session_id = (req.session_id or "").strip()
+    effective_question = original_question
+    session_should_store = False
+    session_assistant_content = ""
 
     logger.info(
         f"[trace_id={trace_id}] [chat] process_start "
         f"queue_wait_ms={queue_wait_ms} "
-        f"question_len={len(question)} "
-        f"preview={question[:50]}"
+        f"question_len={len(original_question)} "
+        f"session_id={session_id or '-'} "
+        f"preview={original_question[:50]}"
     )
 
     bad_case = {
         "created_at": now_iso(),
         "trace_id":trace_id,
-        "question":question,
+        "question":original_question,
         "answer":"",
         "references":[],
         "route":"",
@@ -917,7 +988,7 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
         "rag_answer_cost_ms": 0,
 
         "status": "internal_error",
-        "question_len": len(question),
+        "question_len": len(original_question),
         "reference_count": 0,
         "retrieved_count": 0,
         "tool_called": False,
@@ -927,12 +998,15 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
         "decompose_llm_used": False,
         "answer_llm_used": False,
         "llm_call_count": 0,
+        "query_rewrite_used": False,
+        "query_rewrite_llm_used": False,
+        "effective_question_len": len(effective_question),
         "action": "",
         "reason": "",
     }
 
     try:
-        if not question:
+        if not original_question:
             logger.warning(f"[trace_id={trace_id}] [chat] final_status=clarify reason=用户未输入问题")
             response.status_code = 400
 
@@ -943,7 +1017,7 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
                 code="EMPTY_QUESTION",
                 message="问题不能为空，请输入你想查询的内容",
                 trace_id=trace_id,
-                question=question,
+                question=original_question,
                 need_clarification=True,
                 status="clarify",
                 clarification_question="请直接输入你想查询的具体问题，例如：年假申请流程是什么？",
@@ -953,9 +1027,41 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
         final_top_k = req.top_k if req.top_k is not None else Settings.TOP_K
         decompose_top_k = req.decompose_top_k if req.decompose_top_k is not None else Settings.DECOMPOSE_TOP_K
 
+        history = get_history(session_id)
+        rewrite_result = rewrite_query_with_history(
+            question=original_question,
+            history=history,
+            trace_id=trace_id,
+        )
+        effective_question = (
+            rewrite_result.get("rewritten_question")
+            or original_question
+        ).strip() or original_question
+        rewrite_result["original_question"] = (
+            rewrite_result.get("original_question")
+            or original_question
+        )
+        rewrite_result["rewritten_question"] = effective_question
+        rewrite_trace = build_query_rewrite_trace(rewrite_result)
+
+        metrics["query_rewrite_used"] = bool(rewrite_result.get("rewritten", False))
+        metrics["query_rewrite_llm_used"] = bool(rewrite_result.get("rewrite_llm_used", False))
+        metrics["effective_question_len"] = len(effective_question)
+        metrics["llm_call_count"] = int(metrics["query_rewrite_llm_used"])
+
+        logger.info(
+            f"[trace_id={trace_id}] [query_rewrite] "
+            f"history_used={rewrite_result.get('history_used')} "
+            f"rewritten={rewrite_result.get('rewritten')} "
+            f"rewrite_llm_used={rewrite_result.get('rewrite_llm_used')} "
+            f"reason={rewrite_result.get('reason', '')} "
+            f"original_len={len(original_question)} "
+            f"effective_len={len(effective_question)}"
+        )
+
         route_start = time.perf_counter()
 
-        decision = route_agent_action(question, final_top_k, trace_id=trace_id)
+        decision = route_agent_action(effective_question, final_top_k, trace_id=trace_id)
 
         route_cost_ms = int((time.perf_counter() - route_start) * 1000)
         metrics["route_cost_ms"] = route_cost_ms
@@ -967,7 +1073,10 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
                 decision.get("router_source") in {"llm", "rule_based_fallback"}
             )
         )
-        metrics["llm_call_count"] = int(metrics["router_llm_used"])
+        metrics["llm_call_count"] = (
+            int(metrics["query_rewrite_llm_used"])
+            + int(metrics["router_llm_used"])
+        )
 
         logger.info(
             f"[trace_id={trace_id}] [agent] route_end "
@@ -1013,15 +1122,19 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
                 bad_case["note"] = "知识库未准备完成，请检查知识库"
                 write_bad_cases(bad_case)
 
+                session_should_store = True
+                session_assistant_content = rag_status["message"] or "知识库未准备完成"
+
                 return build_chat_response(
                     code="NO_DOCUMENTS",
                     message=rag_status["message"],
                     trace_id=trace_id,
-                    question=question,
+                    question=original_question,
                     need_clarification=False,
                     status="empty_index",
                     clarification_question="",
-                    reason="知识库未准备完成"
+                    reason="知识库未准备完成",
+                    tool_trace=[rewrite_trace]
                 )
 
         try:
@@ -1029,13 +1142,14 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
 
             result = run_agent_once(
                 write_bad_cases,
-                question,
+                effective_question,
                 final_top_k,
                 decompose_top_k,
                 decision,
                 trace_id,
                 bad_case
             )
+            result = attach_query_rewrite_trace(result, rewrite_trace)
 
             agent_cost_ms = int((time.perf_counter() - agent_start) * 1000)
             metrics["agent_cost_ms"] = agent_cost_ms
@@ -1088,7 +1202,10 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
                     decision.get("router_source") in {"llm", "rule_based_fallback"}
                 )
             )
-            metrics["llm_call_count"] = int(metrics["router_llm_used"])
+            metrics["llm_call_count"] = (
+                int(metrics["query_rewrite_llm_used"])
+                + int(metrics["router_llm_used"])
+            )
             metrics["reason"] = str(e)
 
             bad_case["route"] = action or decision.get("decision", "")
@@ -1101,11 +1218,12 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
                 code="MODEL_ERROR",
                 message="处理失败，请稍后重试",
                 trace_id=trace_id,
-                question=question,
+                question=original_question,
                 need_clarification=False,
                 status="error",
                 clarification_question="",
-                reason="工具调用或模型调用异常"
+                reason="工具调用或模型调用异常",
+                tool_trace=[rewrite_trace]
             )
 
         response_config = CHAT_RESULT_RESPONSE_MAP.get(result["status"])
@@ -1116,10 +1234,16 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
                 f"reason={result.get('reason', response_config['default_reason'])}"
             )
             response.status_code = 200
+            session_should_store = True
+            session_assistant_content = (
+                response_config.get("answer", result.get("answer", ""))
+                or result.get("clarification_question", "")
+                or result.get("reason", response_config["default_reason"])
+            )
             return build_chat_response_from_result(
                 result=result,
                 trace_id=trace_id,
-                question=question,
+                question=original_question,
                 response_config=response_config,
             )
 
@@ -1127,11 +1251,13 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
             f"[trace_id={trace_id}] [chat] final_status=ok reason={result.get('reason', '正常回答')}"
         )
         response.status_code = 200
+        session_should_store = True
+        session_assistant_content = result.get("answer", "") or result.get("reason", "正常回答")
         return build_chat_response(
             code=0,
             message="success",
             trace_id=trace_id,
-            question=question,
+            question=original_question,
             answer=result["answer"],
             references=result.get("references", []),
             retrieval_confidence=result.get("retrieval_confidence", 0.0),
@@ -1164,7 +1290,7 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
             code="INTERNAL_ERROR",
             message="服务器内部错误",
             trace_id=trace_id,
-            question=question,
+            question=original_question,
             need_clarification=False
         )
 
@@ -1184,6 +1310,14 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
             (process_end_perf - request_enter_perf) * 1000
         )
 
+        if session_should_store:
+            save_session_turn(
+                session_id=session_id,
+                user_question=original_question,
+                assistant_content=session_assistant_content,
+                trace_id=trace_id,
+            )
+
         logger.info(
             f"[trace_id={trace_id}] [chat] process_end "
             f"status={metrics.get('status')} "
@@ -1197,7 +1331,10 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
             f"decompose_cost_ms={metrics.get('decompose_cost_ms')} "
             f"rerank_cost_ms={metrics.get('rerank_cost_ms')} "
             f"llm_cost_ms={metrics.get('llm_cost_ms')} "
-            f"llm_call_count={metrics.get('llm_call_count')}"
+            f"llm_call_count={metrics.get('llm_call_count')} "
+            f"query_rewrite_used={metrics.get('query_rewrite_used')} "
+            f"query_rewrite_llm_used={metrics.get('query_rewrite_llm_used')} "
+            f"effective_question_len={metrics.get('effective_question_len')}"
         )
 
         log_and_write_metrics(metrics)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 import requests
@@ -8,6 +9,26 @@ import streamlit as st
 
 DEFAULT_BACKEND_URL = "http://127.0.0.1:8000"
 REQUEST_TIMEOUT_SECONDS = 120
+
+
+def new_session_id() -> str:
+    """生成前端会话 ID，用于让后端识别同一轮多轮对话。"""
+    return f"streamlit_{uuid.uuid4().hex}"
+
+
+def init_chat_state() -> None:
+    """初始化聊天页所需的 Streamlit 会话状态。"""
+    if "session_id" not in st.session_state:
+        st.session_state["session_id"] = new_session_id()
+
+    if "messages" not in st.session_state:
+        st.session_state["messages"] = []
+
+
+def reset_chat_state() -> None:
+    """开始一段新对话，清空前端消息并换用新的后端 session_id。"""
+    st.session_state["session_id"] = new_session_id()
+    st.session_state["messages"] = []
 
 
 def normalize_backend_url(raw_url: str) -> str:
@@ -68,125 +89,74 @@ def table_rows(items: list[dict[str, Any]], columns: list[str]) -> list[dict[str
     return [{column: item.get(column, "") for column in columns} for item in items]
 
 
-def render_references(references: list[dict[str, Any]]) -> None:
-    """渲染回答引用的知识库片段，包含来源文件、分块编号和片段内容。"""
-    st.subheader("references")
+def render_chat_response_details(
+    response_json: dict[str, Any],
+    status_code: int | None,
+) -> None:
+    """渲染 /chat 接口的指标、引用、工具链路和完整 JSON。"""
+    with st.expander("本轮详情", expanded=False):
+        render_http_warning("/chat", status_code)
 
-    if not references:
-        st.info("本次响应没有 references。")
-        return
+        data = response_json.get("data") or {}
+        trace_id = pick(response_json, "trace_id", "")
 
-    for idx, reference in enumerate(references, start=1):
-        reference_id = pick(reference, "reference_id", f"Reference {idx}")
-        file_name = pick(reference, "file_name", "")
-        chunk_id = pick(reference, "chunk_id", "")
-        label = f"{reference_id} | {file_name} | chunk_id={chunk_id}"
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric("status", str(pick(data, "status", "")))
+        col2.metric("retrieval", str(pick(data, "retrieval_confidence", "")))
+        col3.metric("answer", str(pick(data, "answer_confidence", "")))
+        col4.metric("action", str(pick(data, "action", "")))
+        col5.metric("trace_id", str(trace_id))
 
-        with st.expander(label, expanded=False):
-            st.write("reference_id:", reference_id)
-            st.write("file_name:", file_name)
-            st.write("chunk_id:", chunk_id)
-            st.write("score:", pick(reference, "score", ""))
-            st.write("rerank_score:", pick(reference, "rerank_score", ""))
-            st.write("source_path:", pick(reference, "source_path", ""))
-            st.markdown("**snippet**")
-            st.write(pick(reference, "snippet", ""))
+        st.write("reason:", pick(data, "reason", ""))
 
+        references = data.get("references") or []
+        st.subheader("references")
+        if not references:
+            st.info("本次响应没有 references。")
+        else:
+            columns = [
+                "reference_id",
+                "file_name",
+                "chunk_id",
+                "score",
+                "rerank_score",
+                "source_path",
+            ]
+            st.dataframe(
+                table_rows(references, columns),
+                use_container_width=True,
+                hide_index=True,
+            )
 
-def render_tool_trace(tool_trace: list[dict[str, Any]]) -> None:
-    """渲染工具调用链路，展示每一步的动作、状态和完整 JSON。"""
-    st.subheader("tool_trace")
+            for idx, reference in enumerate(references, start=1):
+                reference_id = pick(reference, "reference_id", f"Reference {idx}")
+                file_name = pick(reference, "file_name", "")
+                st.markdown(f"**{reference_id} | {file_name}**")
+                st.write(pick(reference, "snippet", ""))
 
-    if not tool_trace:
-        st.info("本次响应没有 tool_trace。")
-        return
+        tool_trace = data.get("tool_trace") or []
+        st.subheader("tool_trace")
+        if not tool_trace:
+            st.info("本次响应没有 tool_trace。")
+        else:
+            columns = [
+                "step",
+                "action",
+                "tool_name",
+                "tool_status",
+                "final_status",
+                "router_source",
+                "reason",
+            ]
+            st.dataframe(
+                table_rows(tool_trace, columns),
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.json(tool_trace, expanded=False)
 
-    columns = [
-        "step",
-        "action",
-        "tool_name",
-        "tool_status",
-        "final_status",
-        "router_source",
-        "reason",
-    ]
-    st.dataframe(table_rows(tool_trace, columns), use_container_width=True, hide_index=True)
-
-    with st.expander("tool_trace 完整 JSON", expanded=False):
-        st.json(tool_trace)
-
-
-def render_chat_result(response_json: dict[str, Any], status_code: int | None) -> None:
-    """渲染 /chat 接口的问答结果，包括答案、指标、引用和工具链路。"""
-    render_http_warning("/chat", status_code)
-
-    data = response_json.get("data") or {}
-    trace_id = pick(response_json, "trace_id", "")
-
-    st.subheader("answer")
-    answer = pick(data, "answer", "")
-    if answer:
-        st.write(answer)
-    else:
-        st.info("后端响应中没有 answer。")
-
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("status", str(pick(data, "status", "")))
-    col2.metric("retrieval", str(pick(data, "retrieval_confidence", "")))
-    col3.metric("answer", str(pick(data, "answer_confidence", "")))
-    col4.metric("action", str(pick(data, "action", "")))
-    col5.metric("trace_id", str(trace_id))
-
-    st.write("reason:", pick(data, "reason", ""))
-
-    render_references(data.get("references") or [])
-    render_tool_trace(data.get("tool_trace") or [])
-
-    with st.expander("完整响应 JSON", expanded=False):
-        st.json(response_json)
-
-
-def render_search_result(response_json: dict[str, Any], status_code: int | None) -> None:
-    """渲染 /search 接口的检索结果，包括匹配列表、分数和文本片段。"""
-    render_http_warning("/search", status_code)
-
-    data = response_json.get("data") or {}
-    status = pick(data, "status", "")
-    reason = pick(data, "reason", "")
-    st.write("status:", status)
-    st.write("reason:", reason)
-
-    results = data.get("results") or []
-    if not results:
-        st.info("本次检索没有返回结果。")
-    else:
-        columns = [
-            "reference_id",
-            "file_name",
-            "chunk_id",
-            "score",
-            "bm25_score",
-            "vector_score",
-            "rerank_score",
-        ]
-        st.dataframe(table_rows(results, columns), use_container_width=True, hide_index=True)
-
-        st.subheader("snippet")
-        for idx, item in enumerate(results, start=1):
-            reference_id = pick(item, "reference_id", f"Reference {idx}")
-            file_name = pick(item, "file_name", "")
-            with st.expander(f"{reference_id} | {file_name}", expanded=False):
-                st.write(pick(item, "snippet", ""))
-                st.caption(str(pick(item, "source_path", "")))
-
-    with st.expander("完整响应 JSON", expanded=False):
-        st.json(response_json)
-
-
-def render_decide_result(response_json: dict[str, Any], status_code: int | None) -> None:
-    """渲染 /decide 接口的路由判断结果，直接展示完整 JSON。"""
-    render_http_warning("/decide", status_code)
-    st.json(response_json)
+        st.subheader("完整响应 JSON")
+        st.json(response_json, expanded=False)
 
 
 def render_kb_summary(backend_url: str) -> None:
@@ -228,107 +198,154 @@ def render_kb_summary(backend_url: str) -> None:
         st.json(response_json)
 
 
-def run_action(
-    endpoint: str,
+def extract_assistant_content(
+    response_json: dict[str, Any] | None,
+    error: str | None,
+) -> str:
+    """从 /chat 响应中提取适合显示在聊天气泡里的助手文本。"""
+    if error:
+        return f"请求失败：{error}"
+
+    if not response_json:
+        return "后端没有返回可展示的数据。"
+
+    data = response_json.get("data") or {}
+    candidates = [
+        pick(data, "answer", ""),
+        pick(data, "clarification_question", ""),
+        pick(response_json, "message", ""),
+        pick(data, "reason", ""),
+    ]
+
+    for candidate in candidates:
+        content = str(candidate).strip()
+        if content:
+            return content
+
+    return "后端没有返回 answer。"
+
+
+def request_chat_response(
     backend_url: str,
     question: str,
     top_k: int,
     decompose_top_k: int,
-) -> None:
-    """校验用户问题，调用指定接口，并将最新请求结果保存到会话状态。"""
-    question = question.strip()
-    if not question:
-        st.warning("请输入 question 后再发起请求。")
-        return
-
+) -> tuple[dict[str, Any] | None, int | None, str | None]:
+    """调用 /chat 接口，并携带当前 Streamlit 会话中的 session_id。"""
     payload = {
         "question": question,
         "top_k": int(top_k),
         "decompose_top_k": int(decompose_top_k),
+        "session_id": st.session_state["session_id"],
     }
 
-    with st.spinner(f"正在请求 {endpoint} ..."):
-        response_json, status_code, error = post_json(backend_url, endpoint, payload=payload)
-
-    st.session_state["last_result"] = {
-        "endpoint": endpoint,
-        "response_json": response_json,
-        "status_code": status_code,
-        "error": error,
-    }
+    return post_json(backend_url, "/chat", payload=payload)
 
 
-def render_last_result() -> None:
-    """读取会话中的最近一次请求结果，并根据接口类型选择对应渲染函数。"""
-    result = st.session_state.get("last_result")
-    if not result:
+def render_message_detail(message: dict[str, Any]) -> None:
+    """在助手消息下方折叠展示本轮响应的引用、trace 和原始 JSON。"""
+    if message.get("role") != "assistant":
         return
 
-    endpoint = result["endpoint"]
-    response_json = result["response_json"]
-    status_code = result["status_code"]
-    error = result["error"]
-
-    st.divider()
-    st.header("结果")
-
-    if error:
-        st.error(error)
-        return
-
+    response_json = message.get("response_json")
     if not response_json:
-        st.error("后端没有返回可展示的数据。")
         return
 
-    if endpoint == "/chat":
-        render_chat_result(response_json, status_code)
-    elif endpoint == "/search":
-        render_search_result(response_json, status_code)
-    elif endpoint == "/decide":
-        render_decide_result(response_json, status_code)
+    render_chat_response_details(response_json, message.get("status_code"))
+
+
+def render_chat_message(message: dict[str, Any]) -> None:
+    """渲染单条聊天消息。"""
+    role = message.get("role", "assistant")
+    content = message.get("content", "")
+
+    with st.chat_message(role):
+        st.write(content)
+        render_message_detail(message)
+
+
+def render_chat_history() -> None:
+    """渲染 st.session_state 中保存的聊天历史。"""
+    messages = st.session_state.get("messages", [])
+    if not messages:
+        st.info("开始一段对话吧。当前页面会保留 session_id，让后端使用同一段上下文回答。")
+        return
+
+    for message in messages:
+        render_chat_message(message)
+
+
+def handle_chat_prompt(
+    backend_url: str,
+    prompt: str,
+    top_k: int,
+    decompose_top_k: int,
+) -> None:
+    """处理一次聊天输入，更新前端消息并展示助手响应。"""
+    question = prompt.strip()
+    if not question:
+        st.warning("请输入 question 后再发起请求。")
+        return
+
+    user_message = {"role": "user", "content": question}
+    st.session_state["messages"].append(user_message)
+    render_chat_message(user_message)
+
+    with st.chat_message("assistant"):
+        with st.spinner("正在生成回答..."):
+            response_json, status_code, error = request_chat_response(
+                backend_url,
+                question,
+                top_k,
+                decompose_top_k,
+            )
+
+        content = extract_assistant_content(response_json, error)
+        st.write(content)
+
+        assistant_message = {
+            "role": "assistant",
+            "content": content,
+            "response_json": response_json,
+            "status_code": status_code,
+            "error": error,
+        }
+        render_message_detail(assistant_message)
+        st.session_state["messages"].append(assistant_message)
 
 
 def main() -> None:
-    """组装 Streamlit Demo 页面，绑定侧边栏、输入区、操作按钮和结果展示。"""
+    """组装 Streamlit 聊天 Demo 页面，绑定侧边栏、聊天历史和输入框。"""
     st.set_page_config(page_title="RAG Demo", layout="wide")
+    init_chat_state()
 
-    st.title("FastAPI RAG Demo")
+    st.title("FastAPI RAG Chat")
 
     backend_url = normalize_backend_url(
         st.sidebar.text_input("后端地址", value=DEFAULT_BACKEND_URL)
     )
-    render_kb_summary(backend_url)
 
-    question = st.text_area(
-        "question",
-        height=120,
-        placeholder="请输入要询问知识库的问题...",
+    if st.sidebar.button("新对话", use_container_width=True):
+        reset_chat_state()
+
+    st.sidebar.caption(f"session_id: `{st.session_state['session_id']}`")
+
+    st.sidebar.subheader("请求参数")
+    top_k = st.sidebar.number_input("top_k", min_value=1, max_value=10, value=5, step=1)
+    decompose_top_k = st.sidebar.number_input(
+        "decompose_top_k",
+        min_value=1,
+        max_value=10,
+        value=10,
+        step=1,
     )
 
-    col1, col2 = st.columns(2)
-    with col1:
-        top_k = st.number_input("top_k", min_value=1, max_value=10, value=5, step=1)
-    with col2:
-        decompose_top_k = st.number_input(
-            "decompose_top_k",
-            min_value=1,
-            max_value=10,
-            value=10,
-            step=1,
-        )
+    render_kb_summary(backend_url)
+    render_chat_history()
 
-    btn1, btn2, btn3 = st.columns(3)
-    with btn1:
-        if st.button("开始问答", use_container_width=True):
-            run_action("/chat", backend_url, question, top_k, decompose_top_k)
-    with btn2:
-        if st.button("只看检索", use_container_width=True):
-            run_action("/search", backend_url, question, top_k, decompose_top_k)
-    with btn3:
-        if st.button("只看路由", use_container_width=True):
-            run_action("/decide", backend_url, question, top_k, decompose_top_k)
-
-    render_last_result()
+    prompt = st.chat_input("请输入要询问知识库的问题...")
+    if prompt is not None:
+        handle_chat_prompt(backend_url, prompt, top_k, decompose_top_k)
 
 
 if __name__ == "__main__":
