@@ -3,6 +3,7 @@ import time
 
 from app.untils import get_logger
 from app.config import Settings
+from app.citation_verifier import verify_answer_citations
 from app.prompts import NO_ANSWER_FALLBACK
 from app.rag_debug import (
     get_chunk_full_text as get_chunk_full_text_impl,
@@ -547,6 +548,28 @@ def ask(
         )
 
     final_references = format_reference(final_chunks, parsed["references"])
+    citation_verification = verify_answer_citations(
+        question=question,
+        answer=parsed["answer"],
+        references=final_references,
+    )
+
+    if not citation_verification["supported"]:
+        return build_rag_result(
+            status="NO_RELEVANT_INFO",
+            answer=NO_ANSWER_FALLBACK,
+            references=final_references,
+            final_chunks=final_chunks,
+            retrieval_confidence=retrieval_confidence,
+            answer_confidence=0.0,
+            need_clarification=False,
+            clarification_question="",
+            reason=citation_verification["reason"],
+            timings=timings,
+            decompose_llm_used=decompose_llm_used,
+            answer_llm_used=answer_llm_used,
+            citation_verification=citation_verification,
+        )
 
     if not final_references or STOP_WORD in parsed["answer"]:
         return build_rag_result(
@@ -559,6 +582,7 @@ def ask(
             timings=timings,
             decompose_llm_used=decompose_llm_used,
             answer_llm_used=answer_llm_used,
+            citation_verification=citation_verification,
         )
 
     answer_confidence = estimate_answer_confidence(
@@ -579,6 +603,7 @@ def ask(
         timings=timings,
         decompose_llm_used=decompose_llm_used,
         answer_llm_used=answer_llm_used,
+        citation_verification=citation_verification,
     )
 
 

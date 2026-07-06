@@ -6,6 +6,11 @@ import unicodedata
 
 import requests
 
+from app.citation_verifier import (
+    REFERENCE_STOPWORDS,
+    extract_reference_keywords,
+    verify_answer_citations,
+)
 from app.config import Settings
 from app.prompts import ROUTER_SYSTEM_PROMPT, ROUTER_USER_PROMPT
 from app.rag import ask
@@ -250,38 +255,6 @@ def summarize_tool_result(tool_name: str, tool_result: dict) -> str:
 # =========================
 # 引用质量检查
 # =========================
-REFERENCE_STOPWORDS = {
-    "这个", "那个", "什么", "怎么", "如何", "为什么", "是否", "可以", "需要",
-    "用户", "问题", "回答", "根据", "文档", "内容", "相关", "说明",
-    "的是", "一个", "以及", "进行", "通过", "如果", "时候", "没有",
-    "the", "and", "for", "with", "from", "this", "that", "what", "how"
-}
-
-
-def extract_reference_keywords(text: str) -> set[str]:
-    """从问题、答案或引用文本中提取用于粗略匹配的关键词集合。"""
-    text = (text or "").lower()
-
-    keywords = set()
-
-    # 英文、数字、函数名，例如 createapp、mount、v-model、computed。
-    english_tokens = re.findall(r"[a-zA-Z_][a-zA-Z0-9_\-]{1,}|\d+(?:\.\d+)?", text)
-    for token in english_tokens:
-        token = (token or "").strip().lower()
-        if token and token not in REFERENCE_STOPWORDS:
-            keywords.add(token)
-
-    # 中文连续片段用二字滑窗做粗粒度匹配，足够用于 bad case 兜底判断。
-    chinese_blocks = re.findall(r"[\u4e00-\u9fff]{2,}", text)
-    for block in chinese_blocks:
-        for i in range(len(block) - 1):
-            word = block[i: i+2]
-            if word and word not in REFERENCE_STOPWORDS:
-                keywords.add(word)
-
-    return keywords
-
-
 def check_reference_reliability(
         question: str,
         answer: str,
@@ -293,34 +266,28 @@ def check_reference_reliability(
     if not question:
         return False, ""
 
-    if not references:
-        return True, "答案非空，但reference为空，无法验证答案依据"
-
-    evidence_text = "\n".join(
-        str(ref.get("snippet") or ref.get("text") or ref.get("content") or "")
-        for ref in references
+    verify_result = verify_answer_citations(
+        question=question,
+        answer=answer,
+        references=references,
+        min_overlap_ratio=min_overlap_ratio,
     )
 
-    if not evidence_text.strip():
-        return True, "references 存在，但 snippet/text 为空，无法验证答案依据"
-
-    expected_keywords = extract_reference_keywords(question + "\n" + answer)
-    evidence_keywords = extract_reference_keywords(evidence_text)
-
-    if not expected_keywords:
+    if verify_result["supported"]:
         return False, ""
 
-    overlap_keywords = expected_keywords & evidence_keywords
-    overlap_ratio = len(overlap_keywords) / max(len(expected_keywords), 1)
+    if verify_result.get("expected_keyword_count") == 0 and references:
+        return False, ""
 
-    if overlap_ratio < min_overlap_ratio:
-        return True, (
-            f"答案与引用片段关键词重合度过低，"
-            f"overlap_ratio={overlap_ratio:.2f}，"
-            f"matched_keywords={sorted(list(overlap_keywords))[:10]}"
+    reason = verify_result.get("reason", "")
+    if verify_result.get("expected_keyword_count", 0) > 0:
+        reason = (
+            f"{reason}，"
+            f"overlap_ratio={verify_result.get('overlap_ratio', 0.0):.2f}，"
+            f"matched_keywords={verify_result.get('matched_keywords', [])[:10]}"
         )
 
-    return False, ""
+    return True, reason
 
 
 def should_record_reference_bad_case(
@@ -1367,6 +1334,16 @@ def run_agent_once(
             tool_trace.append({
                 "step": "format_context",
                 "summary": f"将 {len(final_chunks)} 个 chunk 交给 RAG 回答逻辑"
+            })
+
+        citation_verification = rag_result.get("citation_verification")
+        if isinstance(citation_verification, dict):
+            tool_trace.append({
+                "step": "citation_verifier",
+                "supported": bool(citation_verification.get("supported", False)),
+                "overlap_ratio": citation_verification.get("overlap_ratio", 0.0),
+                "matched_keywords": citation_verification.get("matched_keywords", []),
+                "reason": citation_verification.get("reason", ""),
             })
 
         rag_answer_cost = int((time.perf_counter() - rag_answer_start) * 1000)

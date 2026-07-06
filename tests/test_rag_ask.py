@@ -91,3 +91,64 @@ def test_ask_calls_decompose_llm_for_compare_question(monkeypatch):
     assert result["answer_llm_used"] is False
     assert result["llm_call_count"] == 1
     assert calls == {"decompose": 1, "answer": 0}
+
+
+def test_ask_returns_no_relevant_info_when_citation_verification_fails(monkeypatch):
+    """验证引用验证失败时，RAG 会拒答并返回验证结果。"""
+    final_chunk = make_chunk(
+        text="普通本科四年制专业学生学习年限调整为3～6年。",
+        snippet="普通本科四年制专业学生学习年限调整为3～6年。",
+        vector_score=0.9,
+        hybrid_score=0.9,
+        rerank_score=0.9,
+        bm25_score=5.0,
+    )
+    verification = {
+        "supported": False,
+        "reason": "答案与引用片段关键词重合度过低",
+        "overlap_ratio": 0.08,
+        "matched_keywords": [],
+        "expected_keyword_count": 12,
+        "evidence_keyword_count": 5,
+    }
+
+    monkeypatch.setattr(rag.Settings, "ENABLE_QUERY_DECOMPOSE", False, raising=False)
+    monkeypatch.setattr(rag, "rerank", lambda candidates, question: candidates)
+    monkeypatch.setattr(rag, "should_refuse", lambda final_chunks: False)
+    monkeypatch.setattr(rag, "call_llm", lambda question, context, trace_id="": "{}")
+    monkeypatch.setattr(
+        rag,
+        "parse_llm_output",
+        lambda llm_output: {
+            "ok": True,
+            "answer": "普通本科四年制最长学习年限为 8 年。",
+            "references": ["Reference 1"],
+        },
+    )
+    monkeypatch.setattr(
+        rag,
+        "format_reference",
+        lambda final_chunks, references: [
+            {
+                "reference_id": "Reference 1",
+                "snippet": "学生应当遵守课堂纪律，按时参加教学活动。",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        rag,
+        "verify_answer_citations",
+        lambda question, answer, references: verification,
+    )
+
+    result = rag.ask(
+        "最长学习年限是多少？",
+        top_k=1,
+        retrieved_chunks=[final_chunk],
+        trace_id="test",
+    )
+
+    assert result["status"] == "NO_RELEVANT_INFO"
+    assert result["answer_confidence"] == 0.0
+    assert "citation_verification" in result
+    assert result["citation_verification"]["supported"] is False
