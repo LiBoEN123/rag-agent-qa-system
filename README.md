@@ -1,8 +1,8 @@
 # Agentic RAG 知识库问答系统
 
-一个面向中文制度类文档的 Agentic RAG 问答系统，支持文档解析、混合检索、重排、引用生成、Agent 路由、可观测性和离线评测。
+一个面向中文制度类文档的 Agentic RAG 问答系统，支持文档解析、混合检索、重排、引用生成、Agent 路由、多轮追问改写、可观测性和离线评测。
 
-本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。`/chat` 入口外层增加了最小 Agent Router，可以在知识库问答、工具调用、直接回答和澄清追问之间做路由。
+本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。`/chat` 入口外层增加了最小 Agent Router，可以在知识库问答、工具调用、直接回答和澄清追问之间做路由；传入 `session_id` 时，还会结合最近会话历史对短追问做 Query Rewrite。
 
 ## 项目亮点
 
@@ -11,18 +11,20 @@
 - CrossEncoder rerank：对候选 chunk 做二阶段重排，缓解初召回排序不准的问题。
 - ChromaDB 持久化：chunk 文本、metadata 和 embedding 持久化保存，服务重启可复用索引缓存。
 - LLM Router + 规则 fallback：可开启 LLM 路由，输出异常或参数非法时自动回退到规则路由。
+- 多轮追问改写：同一 `session_id` 下保留最近会话历史，短追问和指代问题会先改写成独立检索问题。
 - 工具调用：支持简单四则运算、列出知识库文档、查看指定 chunk 原文。
 - 引用绑定和拒答机制：模型输出的 `Reference N` 会绑定回真实文件与 chunk；证据不足或引用支撑不足时拒答。
-- 可观测性：每次 `/chat` 请求记录 `trace_id`、阶段耗时、状态、工具调用和引用数量。
+- 可观测性：每次 `/chat` 请求记录 `trace_id`、阶段耗时、状态、工具调用、引用数量和 LLM 调用次数。
 - bad case 日志：对模型格式异常、引用异常、工具异常、索引未就绪等失败样例做结构化记录。
-- 离线评测闭环：支持批量生成预测结果，并从答案质量、检索命中和行为约束等维度评测。
+- 离线评测闭环：支持批量生成预测结果，并从答案质量、检索命中、行为约束和可选 LLM Judge 语义判断等维度评测。
 
 ## 系统架构
 
 ```mermaid
 flowchart TD
     U[用户问题] --> API[FastAPI /chat]
-    API --> Router[Agent Router]
+    API --> QR[Session History<br/>Query Rewrite]
+    QR --> Router[Agent Router]
     Router -->|search_knowledge_base| RAG[RAG Pipeline]
     Router -->|simple_calculator / list_documents / get_chunk_text| Tools[Tools]
     Router -->|clarify| Clarify[澄清追问]
@@ -63,12 +65,14 @@ flowchart TD
 | 混合检索 | jieba + BM25 关键词召回，SentenceTransformer Embedding 语义召回 |
 | 重排 | CrossEncoder reranker 对候选 chunk 重新排序 |
 | 问题拆分 | 可选 Query Decompose，复杂问题可拆成子问题后多路召回并合并证据 |
+| 多轮追问 | `session_id` 维持内存会话历史，对短追问、指代问题做 Query Rewrite |
 | 答案生成 | 调用 OpenAI-compatible Chat Completions，要求模型返回 JSON |
 | 引用绑定 | 将 `Reference N` 映射回真实文件、`chunk_id`、`snippet` 和分数 |
 | Agent 路由 | 支持规则路由和可选 LLM Router，失败时回退规则路由 |
 | 工具调用 | `simple_calculator`、`list_documents`、`get_chunk_text` |
 | 可观测性 | `trace_id`、请求耗时、阶段耗时、工具调用日志、metrics 汇总接口 |
 | 失败分析 | `logs/bad_cases.jsonl` 记录值得分析的失败样例 |
+| 评测 | 支持规则评测、Chroma/chunks 索引取证和可选 LLM Judge 语义评估 |
 | 索引缓存 | ChromaDB 持久化 chunk、metadata、embedding，manifest 记录索引构建状态 |
 
 ## RAG 流程说明
@@ -77,14 +81,15 @@ flowchart TD
 2. 文本清洗：统一清理不可见字符、空白和文档噪声。
 3. 文档切分：Markdown 先按标题层级切分并保留标题路径，普通文本按段落和标点递归切分。
 4. 建立索引：构建 BM25 关键词索引，并使用 SentenceTransformer 生成 embedding；向量、chunk 和 metadata 持久化到 ChromaDB。
-5. 查询路由：`/chat` 先经过 Agent Router，判断走 RAG、工具、澄清还是直接回答。
-6. 查询拆分：启用 `ENABLE_QUERY_DECOMPOSE` 后，复杂问题可由拆分模型生成子问题。
-7. 混合召回：查询时同时执行 BM25 和 embedding 召回，合并候选 chunk。
-8. 二阶段重排：使用 CrossEncoder reranker 对候选证据重新排序。
-9. 构造上下文：按 `MAX_CONTEXT_CHARS` 控制上下文长度，组装带 `Reference N` 的 evidence context。
-10. LLM 生成：调用 OpenAI-compatible Chat Completions，要求返回结构化 JSON。
-11. 引用绑定：解析模型返回的 references，并绑定到真实文件、chunk、snippet、score。
-12. 置信度与拒答：结合召回分数、引用数量和证据阈值估算置信度；证据不足、检索为空或引用支撑不足时返回拒答状态。
+5. 多轮改写：`/chat` 如果传入 `session_id`，会读取最近历史；短追问或指代问题会先改写成独立问题。
+6. 查询路由：改写后的问题进入 Agent Router，判断走 RAG、工具、澄清还是直接回答。
+7. 查询拆分：启用 `ENABLE_QUERY_DECOMPOSE` 后，复杂问题可由拆分模型生成子问题。
+8. 混合召回：查询时同时执行 BM25 和 embedding 召回，合并候选 chunk。
+9. 二阶段重排：使用 CrossEncoder reranker 对候选证据重新排序。
+10. 构造上下文：按 `MAX_CONTEXT_CHARS` 控制上下文长度，组装带 `Reference N` 的 evidence context。
+11. LLM 生成：调用 OpenAI-compatible Chat Completions，要求返回结构化 JSON。
+12. 引用绑定：解析模型返回的 references，并绑定到真实文件、chunk、snippet、score。
+13. 置信度与拒答：结合召回分数、引用数量和证据阈值估算置信度；证据不足、检索为空或引用支撑不足时返回拒答状态。
 
 ## 评测结果
 
@@ -103,12 +108,13 @@ flowchart TD
 
 ## 工程化设计
 
-- 配置通过 `.env` 管理，`.env.example` 提供默认模板，回答模型、路由模型、拆分模型均使用 OpenAI-compatible Chat Completions 配置。
+- 配置通过 `.env` 管理，`.env.example` 提供默认模板，回答模型、路由模型、追问改写模型、拆分模型和评测 Judge 均使用 OpenAI-compatible Chat Completions 配置。
 - 支持 embedding / rerank 模型本地缓存，默认缓存目录为 `./.cache/huggingface/hub`，也可通过 `MODEL_CACHE_DIR`、`HF_HOME` 等环境变量调整。
 - 支持 ChromaDB 持久化，默认将向量、chunk 文本、metadata 和文档注册信息保存到 `data/chroma/`。
 - 启动时基于 manifest 判断是否需要重建索引；知识库文件、chunk 参数、embedding/rerank 模型或 pipeline 版本变化会触发重建。
+- 多轮会话历史保存在进程内内存中，每个 `session_id` 默认保留最近 6 条 user/assistant 消息，适合演示追问改写，不作为长期记忆。
 - `/chat` 请求支持继承或生成 `trace_id`，响应头返回 `X-Trace-Id` 和 `X-Total-Cost-Ms`。
-- metrics 记录路由、知识库就绪检查、检索、问题拆分、重排、上下文构造、LLM 调用、JSON 解析等阶段耗时。
+- metrics 记录 Query Rewrite、路由、知识库就绪检查、检索、问题拆分、重排、上下文构造、LLM 调用、JSON 解析等阶段耗时和 LLM 调用次数。
 - bad case 日志用于定位失败样例，包括模型 JSON 解析失败、引用异常、工具异常、内部异常和索引未就绪。
 
 ## 快速启动
@@ -188,16 +194,35 @@ streamlit run demo/streamlit_app.py
 | `LLM_MAX_TOKENS` | 回答模型最大输出 token |
 | `LLM_TIMEOUT` | 单次回答模型请求超时秒数 |
 | `LLM_MAX_RETRIES` | 回答模型失败重试次数 |
+| `LLM_RETRY_SLEEP` | 回答模型失败重试间隔秒数 |
+| `USE_LLM_JUDGE` | 评测脚本是否启用 LLM Judge，默认 `false` |
+| `JUDGE_API_KEY` | 评测 Judge 模型 API Key；为空时可复用回答模型 Key |
+| `JUDGE_MODEL` | 评测 Judge 模型名称 |
+| `JUDGE_API_URL` | 评测 Judge 模型接口地址 |
+| `JUDGE_TIMEOUT` | Judge 模型请求超时秒数 |
+| `JUDGE_MAX_RETRIES` | Judge 模型失败重试次数 |
+| `JUDGE_MAX_TOKENS` | Judge 模型最大输出 token |
 | `ENABLE_LLM_ROUTER` | 是否启用 LLM Agent 路由，默认 `false` |
 | `ROUTER_API_KEY` | 路由模型 API Key；为空时复用回答模型 Key |
 | `ROUTER_MODEL_NAME` | 路由模型名称 |
 | `ROUTER_API_URL` | 路由模型接口地址 |
 | `ROUTER_TIMEOUT` | 路由模型请求超时秒数 |
+| `ROUTER_MAX_RETRIES` | 路由模型失败重试次数 |
+| `ROUTER_MAX_TOKENS` | 路由模型最大输出 token |
+| `ROUTER_TEMPERATURE` | 路由模型温度 |
+| `ENABLE_QUERY_REWRITE` | 是否启用多轮追问改写，默认 `true` |
+| `QUERY_REWRITE_API_KEY` | 追问改写模型 API Key；为空时复用回答模型 Key |
+| `QUERY_REWRITE_MODEL_NAME` | 追问改写模型名称 |
+| `QUERY_REWRITE_API_URL` | 追问改写模型接口地址 |
+| `QUERY_REWRITE_TIMEOUT` | 追问改写模型请求超时秒数 |
+| `QUERY_REWRITE_MAX_TOKENS` | 追问改写模型最大输出 token |
+| `QUERY_REWRITE_TEMPERATURE` | 追问改写模型温度 |
 | `ENABLE_QUERY_DECOMPOSE` | 是否启用问题拆分，默认 `true` |
 | `DECOMPOSE_API_KEY` | 问题拆分模型 API Key |
 | `DECOMPOSE_MODEL_NAME` | 问题拆分模型名称 |
 | `DECOMPOSE_API_URL` | 问题拆分模型接口地址 |
 | `DECOMPOSE_TIMEOUT` | 问题拆分模型请求超时秒数 |
+| `DECOMPOSE_MAX_TOKENS` | 问题拆分模型最大输出 token |
 | `VECTOR_THRESHOLD` | 召回证据不足时拒答的向量分数阈值 |
 | `MARGIN_THRESHOLD` | 预留的分数差距阈值配置 |
 | `AUTO_REBUILD_ON_STARTUP` | 是否启动时强制重建索引 |
@@ -226,14 +251,29 @@ MODEL_NAME=deepseek-chat
 LLM_API_URL=https://api.deepseek.com/v1/chat/completions
 TEMPERATURE=0.1
 LLM_MAX_TOKENS=1024
+LLM_TIMEOUT=60
+LLM_MAX_RETRIES=2
+LLM_RETRY_SLEEP=1
 
 ENABLE_LLM_ROUTER=false
+ROUTER_API_KEY=
+ROUTER_MODEL_NAME=deepseek-chat
+ROUTER_API_URL=https://api.deepseek.com/v1/chat/completions
+ROUTER_TIMEOUT=10
+
+ENABLE_QUERY_REWRITE=true
+QUERY_REWRITE_API_KEY=
+QUERY_REWRITE_MODEL_NAME=deepseek-chat
+QUERY_REWRITE_API_URL=https://api.deepseek.com/v1/chat/completions
+QUERY_REWRITE_MAX_TOKENS=256
+
 ENABLE_QUERY_DECOMPOSE=true
 DECOMPOSE_API_KEY=your-api-key
 DECOMPOSE_MODEL_NAME=qwen-plus
 DECOMPOSE_API_URL=https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
 DECOMPOSE_MAX_TOKENS=512
 
+USE_LLM_JUDGE=false
 VECTOR_THRESHOLD=0.1
 ```
 
@@ -243,6 +283,10 @@ VECTOR_THRESHOLD=0.1
 LLM_API_KEY=ollama
 MODEL_NAME=qwen2.5:7b
 LLM_API_URL=http://127.0.0.1:11434/v1/chat/completions
+
+QUERY_REWRITE_API_KEY=ollama
+QUERY_REWRITE_MODEL_NAME=qwen2.5:7b
+QUERY_REWRITE_API_URL=http://127.0.0.1:11434/v1/chat/completions
 
 DECOMPOSE_API_KEY=ollama
 DECOMPOSE_MODEL_NAME=qwen2.5:7b
@@ -271,7 +315,8 @@ curl -X POST "http://127.0.0.1:8000/chat" \
   -d '{
     "question": "普通本科四年制专业学生现在最长学习年限是不是 8 年？",
     "top_k": 5,
-    "decompose_top_k": 10
+    "decompose_top_k": 10,
+    "session_id": "demo_session_001"
   }'
 ```
 
@@ -280,6 +325,7 @@ curl -X POST "http://127.0.0.1:8000/chat" \
 | 字段 | 说明 |
 | --- | --- |
 | `trace_id` | 本次请求追踪 ID，也会写入响应头 `X-Trace-Id` |
+| `data.question` | 原始用户问题；如果触发 Query Rewrite，改写后的问题可在 `tool_trace` 中查看 |
 | `data.answer` | 最终回答 |
 | `data.references` | 引用来源列表，包含 `file_name`、`source_path`、`chunk_id`、`snippet`、`score`、`rerank_score` |
 | `data.retrieval_confidence` | 0 到 1 的检索证据置信度估计 |
@@ -290,7 +336,17 @@ curl -X POST "http://127.0.0.1:8000/chat" \
 | `data.reason` | 当前状态原因 |
 | `data.action` | Agent 选择的动作 |
 | `data.tool_result_summary` | 工具或 RAG 路径摘要 |
-| `data.tool_trace` | 路由、工具调用、检索命中、最终状态等过程信息 |
+| `data.tool_trace` | Query Rewrite、路由、工具调用、检索命中、最终状态等过程信息 |
+| `data.router_llm_used` | 本次请求是否调用 Router LLM |
+| `data.decompose_llm_used` | 本次请求是否调用问题拆分 LLM |
+| `data.answer_llm_used` | 本次请求是否调用最终回答 LLM |
+| `data.llm_call_count` | 本次请求累计 LLM 调用次数 |
+
+### 多轮追问与 Query Rewrite
+
+`/chat` 的 `session_id` 是可选字段。为空时系统按单轮问题处理；非空时系统会读取该会话最近 6 条 user/assistant 消息，并在问题像短追问或包含“这个、那个、它、上面、刚才”等指代词时尝试改写成独立问题。
+
+改写逻辑的优先级是：先用规则判断是否需要改写；如果 `ENABLE_QUERY_REWRITE=true` 且改写模型配置可用，就调用改写模型；如果改写模型不可用或返回异常，会回退为“基于上一轮问题的追问”格式，保证主链路仍可继续。
 
 ### `/search`
 
@@ -328,7 +384,7 @@ curl -X POST "http://127.0.0.1:8000/chat" \
 GET /metrics-summary?limit=20
 ```
 
-用于查看最近请求的状态分布、成功数、拒答数、错误数和平均延迟。
+用于查看最近请求的状态分布、成功数、拒答数、错误数、平均延迟、平均 LLM 调用次数，以及 Router / Decompose / Answer LLM 的使用次数。
 
 ## Agent 路由与工具
 
@@ -342,6 +398,8 @@ GET /metrics-summary?limit=20
 | `get_chunk_text` | 根据 `chunk_id` 返回完整 chunk 文本 |
 | `direct_answer` | 直接回答系统能力类问题 |
 | `clarify` | 问题过短、为空或指代不明时追问 |
+
+如果 `/chat` 传入 `session_id`，Query Rewrite 会在 Agent Router 之前执行；Router 看到的是改写后的有效问题，响应中的 `data.question` 仍保留原始输入，改写细节记录在 `data.tool_trace` 的 `query_rewrite` step 中。
 
 设置 `ENABLE_LLM_ROUTER=true` 后，系统会先调用路由模型生成 JSON 决策；如果模型调用失败、输出不是 JSON、action 非法或工具参数不合法，会自动回退到规则路由。
 
@@ -382,7 +440,7 @@ python scripts/cache_models.py
 
 | 文件 | 说明 |
 | --- | --- |
-| `logs/metrics.jsonl` | 每次 `/chat` 的耗时、状态、action、引用数、工具信息 |
+| `logs/metrics.jsonl` | 每次 `/chat` 的耗时、状态、action、引用数、工具信息、Query Rewrite 和 LLM 调用统计 |
 | `logs/tool_calls.jsonl` | 每次工具调用的输入、输出、耗时和是否成功 |
 | `logs/bad_cases.jsonl` | 模型 JSON 解析失败、引用异常、工具异常、内部异常、索引未就绪等失败样例 |
 
@@ -420,6 +478,20 @@ python scripts/evaluate_rag_results_semantic_fixed.py \
   --k 10
 ```
 
+评测脚本默认会优先从 ChromaDB 加载 chunk 文本和 metadata，用于计算文档命中、gold chunk 命中和证据匹配。需要语义级关键点评分时，可以通过参数或环境变量启用 LLM Judge：
+
+```bash
+python scripts/evaluate_rag_results_semantic_fixed.py \
+  --eval-file data/eval/rag_eval_questions_v2_semantic_fixed.json \
+  --pred-file outputs/predictions.csv \
+  --out-dir outputs/rag_llm_judge \
+  --k 10 \
+  --use-llm-judge \
+  --judge-model deepseek-chat
+```
+
+评测输出包括 `per_question_report.csv`、`summary_report.csv`、`summary_report.json` 和 `llm_judge_details.jsonl`。如果已经有上一轮 `per_question_report.csv`，可以用 `--judge-cache-report` 复用 Judge 结果，避免重复调用评测模型。
+
 Agent 路由评测、压测和本地模型接口检查：
 
 ```bash
@@ -436,6 +508,7 @@ python scripts/test_local_llm.py
 - 为什么需要引用绑定：RAG 问答不能只给自然语言答案，还需要能追溯到文件、chunk 和片段，便于用户核验，也便于排查模型是否引用了错误证据。
 - 为什么证据不足时拒答：制度类问答对准确性要求高，低相关度证据强行生成容易造成误导；系统通过阈值、引用绑定和模型输出检查，在证据不足时返回 `no_evidence`。
 - 为什么 Agent Router 要有规则 fallback：LLM Router 能提升灵活性，但可能出现格式错误、动作非法或参数缺失；规则 fallback 保证核心路径可控，避免路由失败影响主流程。
+- 为什么 Query Rewrite 只对追问触发：完整问题直接进入检索可以减少额外 LLM 成本；短追问和指代问题才结合历史改写，能在成本和多轮体验之间取得平衡。
 - 为什么要做离线评测：RAG 优化不能只看单个 demo，需要用覆盖多场景的评测集持续观察召回、答案关键点、拒答行为和 forbidden 命中情况，形成可复现的优化闭环。
 
 ## 项目结构
@@ -446,10 +519,14 @@ python scripts/test_local_llm.py
 │   ├── main.py                  # FastAPI 入口、接口模型、指标记录
 │   ├── agent.py                 # Agent 路由、LLM Router、工具/RAG 调度
 │   ├── tools.py                 # simple_calculator / list_documents / get_chunk_text
+│   ├── tool_registry.py         # 工具注册表和 Router 可见工具声明
 │   ├── rag.py                   # RAG 总控、索引生命周期、问答流程
 │   ├── rag_ingest.py            # 文档读取、清洗、切分
 │   ├── rag_retrieval.py         # BM25 + 向量召回、rerank、问题拆分
 │   ├── rag_generation.py        # Prompt、模型调用、JSON 解析、引用绑定
+│   ├── query_rewrite.py         # 多轮追问识别和 Query Rewrite
+│   ├── session_store.py         # 进程内 session 历史存储
+│   ├── citation_verifier.py     # 答案引用可靠性检查
 │   ├── rag_store.py             # 索引缓存、manifest、模型加载
 │   ├── chroma_store.py          # ChromaDB 持久化存储
 │   ├── rag_debug.py             # 文档/chunk 预览与 chunk 原文查询
@@ -465,12 +542,15 @@ python scripts/test_local_llm.py
 ├── scripts/
 │   ├── predictions.py           # 批量生成 RAG 预测结果
 │   ├── evaluate_rag_results_semantic_fixed.py
+│   ├── rag_eval/                # 评测指标、Judge、检索打分和报告生成
 │   ├── agent_eval.py            # Agent 路由评测
 │   ├── summarize_logs.py        # metrics/bad_cases 日志汇总
 │   ├── cache_models.py          # 预下载 embedding/rerank 模型
 │   ├── perf_test.py             # 简单串行压测
 │   ├── concurrent_perf_test.py  # 简单并发压测
 │   └── test_local_llm.py        # 本地模型接口测试
+├── demo/
+│   └── streamlit_app.py         # Streamlit Demo 页面
 ├── tests/                       # 单元测试和接口测试
 ├── logs/                        # metrics、bad_cases、tool_calls
 ├── outputs/                     # 评测和日志汇总输出
@@ -520,14 +600,15 @@ docker run --rm -p 8000:8000 --env-file .env \
 
 - 优化 `partial_answer` 场景的 prompt，让模型在只能回答部分问题时更清晰地说明已回答和未覆盖部分。
 - 强化新旧政策冲突判断，提升 `trap` 类问题中对时间、版本和政策优先级的识别能力。
-- 针对 hard query 做 query rewrite，提升复杂问法、隐含限定和跨文档查询的召回质量。
+- 继续优化 Query Rewrite 对跨轮限定、复杂指代和历史冲突的处理能力。
 - 增加更完整的 CI，覆盖格式检查、单元测试、接口测试和关键评测脚本。
-- 增加 Streamlit 或 Web Demo，降低招聘方和非技术用户的体验门槛。
+- 为 Streamlit Demo 增加更多调试视图，例如 Query Rewrite、Router 决策和检索命中对比。
 
 ## 已知限制
 
 - 当前支持 `.txt`、`.md`、`.pdf`、`.docx`；PDF 依赖可提取文本，暂不内置 OCR，旧版 `.doc` 和图片文件暂不支持。
-- 回答模型、路由模型和拆分模型都按 OpenAI-compatible Chat Completions 格式调用。
+- 回答模型、路由模型、追问改写模型、拆分模型和 Judge 模型都按 OpenAI-compatible Chat Completions 格式调用。
 - embedding 和 rerank 模型首次加载较慢，可能需要下载权重。
-- Agent 仍是单轮最小实现，没有长期记忆和复杂任务规划。
+- 多轮历史目前是进程内内存存储，服务重启会丢失，不适合作为长期记忆。
+- Agent 仍是轻量路由实现，没有复杂任务规划和多步骤工具编排。
 - retrieval_confidence 和 answer_confidence 是启发式估计，不等同于严格概率。
