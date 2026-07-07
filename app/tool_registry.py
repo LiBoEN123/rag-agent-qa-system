@@ -91,6 +91,11 @@ def _handle_search_knowledge_base(args: dict) -> dict:
     return tools.search_knowledge_base(args)
 
 
+def _handle_compare_documents(args: dict) -> dict:
+    """适配文档对比工具的参数格式。"""
+    return tools.compare_documents_tool(args)
+
+
 def register_default_tools(registry: ToolRegistry) -> None:
     """注册项目内置工具。"""
     registry.register(
@@ -107,6 +112,29 @@ def register_default_tools(registry: ToolRegistry) -> None:
                 "top_chunk_ids": "list, 命中的 chunk_id 列表",
             },
             handler=_handle_search_knowledge_base,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="compare_documents",
+            description="对比两个知识库文档中关于同一问题的相关规定差异",
+            args_schema={
+                "query": "string, 必填，对比主题或问题",
+                "doc_a": "string, 必填，第一个文档名或文档名关键词",
+                "doc_b": "string, 必填，第二个文档名或文档名关键词",
+                "top_k": "integer, 可选，每个文档返回的证据数量，默认 3",
+            },
+            output_schema={
+                "query": "string, 对比主题",
+                "doc_a": "string, 第一个文档",
+                "doc_b": "string, 第二个文档",
+                "doc_a_evidence": "list, 第一个文档的证据片段",
+                "doc_b_evidence": "list, 第二个文档的证据片段",
+                "comparison": "string, 差异说明",
+                "conflict_detected": "boolean, 是否可能存在差异或冲突",
+                "summary": "string, 简要摘要",
+            },
+            handler=_handle_compare_documents,
         )
     )
     registry.register(

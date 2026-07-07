@@ -146,7 +146,7 @@ def should_rewrite_with_history(question: str, history: list[dict]) -> tuple[boo
     if q.endswith(("呢?", "呢")) and len(q) <= 18:
         return True, "short question ends with follow-up particle"
 
-    if len(q) <= 15 and not _looks_standalone_question(q):
+    if len(q) <= 20 and not _looks_standalone_question(q):
         return True, "short follow-up question with history"
 
     return False, "not a follow-up question"

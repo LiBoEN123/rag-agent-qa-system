@@ -278,6 +278,64 @@ def check_sources(case: dict, result: dict) -> dict:
 # =========================
 # 7. 单条 case 判分
 # =========================
+
+
+def extract_tool_output(result: dict) -> dict | None:
+    """从 Agent 结果或 tool_trace 中提取最近一次完整工具输出。"""
+    tool_result = result.get("tool_result")
+    if isinstance(tool_result, dict):
+        output = tool_result.get("output")
+        if isinstance(output, dict):
+            return output
+
+    direct_output = result.get("tool_output")
+    if isinstance(direct_output, dict):
+        return direct_output
+
+    trace = result.get("tool_trace") or []
+    if not isinstance(trace, list):
+        return None
+
+    for step in reversed(trace):
+        if not isinstance(step, dict):
+            continue
+        output = step.get("tool_output")
+        if isinstance(output, dict):
+            return output
+        nested_result = step.get("tool_result")
+        if isinstance(nested_result, dict):
+            nested_output = nested_result.get("output")
+            if isinstance(nested_output, dict):
+                return nested_output
+
+    return None
+
+
+def check_tool_output_keys(case: dict, result: dict) -> dict:
+    """按 case 要求检查工具输出中是否包含指定字段。"""
+    expected_keys = case.get("expected_tool_output_keys", []) or []
+    if not expected_keys:
+        return {
+            "tool_output_keys_pass": True,
+            "tool_output_keys_expected": [],
+            "tool_output_keys_missing": [],
+        }
+
+    output = extract_tool_output(result)
+    if not isinstance(output, dict):
+        return {
+            "tool_output_keys_pass": False,
+            "tool_output_keys_expected": expected_keys,
+            "tool_output_keys_missing": expected_keys,
+        }
+
+    missing = [key for key in expected_keys if key not in output]
+    return {
+        "tool_output_keys_pass": not missing,
+        "tool_output_keys_expected": expected_keys,
+        "tool_output_keys_missing": missing,
+    }
+
 def evaluate_one_case(case: dict, top_k: int) -> dict:
     """运行单条 Agent 评测用例并返回完整判分结果。"""
     case_id = case.get("id", "")
@@ -323,6 +381,7 @@ def evaluate_one_case(case: dict, top_k: int) -> dict:
 
         keyword_check = check_keywords(case, result)
         source_check = check_sources(case, result)
+        tool_output_keys_check = check_tool_output_keys(case, result)
 
         passed = all([
             decision_pass,
@@ -331,6 +390,7 @@ def evaluate_one_case(case: dict, top_k: int) -> dict:
             status_pass,
             keyword_check["keyword_pass"],
             source_check["source_pass"],
+            tool_output_keys_check["tool_output_keys_pass"],
         ])
 
         error_type, error_reason = diagnose_error(
@@ -340,6 +400,7 @@ def evaluate_one_case(case: dict, top_k: int) -> dict:
             status_pass=status_pass,
             keyword_pass=keyword_check["keyword_pass"],
             source_pass=source_check["source_pass"],
+            tool_output_keys_pass=tool_output_keys_check["tool_output_keys_pass"],
             expected_decision=expected_decision,
             expected_action=expected_action,
             expected_tool=expected_tool,
@@ -347,6 +408,7 @@ def evaluate_one_case(case: dict, top_k: int) -> dict:
             actual=actual,
             keyword_check=keyword_check,
             source_check=source_check,
+            tool_output_keys_check=tool_output_keys_check,
         )
 
         return {
@@ -379,6 +441,10 @@ def evaluate_one_case(case: dict, top_k: int) -> dict:
             "source_pass": source_check["source_pass"],
             "source_hits": source_check["source_hits"],
             "source_missing": source_check["source_missing"],
+
+            "tool_output_keys_pass": tool_output_keys_check["tool_output_keys_pass"],
+            "tool_output_keys_expected": tool_output_keys_check["tool_output_keys_expected"],
+            "tool_output_keys_missing": tool_output_keys_check["tool_output_keys_missing"],
 
             "answer": result.get("answer", ""),
             "reason": result.get("reason", ""),
@@ -425,6 +491,10 @@ def evaluate_one_case(case: dict, top_k: int) -> dict:
             "source_hits": [],
             "source_missing": case.get("expected_sources", []) or [],
 
+            "tool_output_keys_pass": False,
+            "tool_output_keys_expected": case.get("expected_tool_output_keys", []) or [],
+            "tool_output_keys_missing": case.get("expected_tool_output_keys", []) or [],
+
             "answer": "",
             "reason": "",
             "tool_result_summary": "",
@@ -445,6 +515,7 @@ def diagnose_error(
     status_pass: bool,
     keyword_pass: bool,
     source_pass: bool,
+    tool_output_keys_pass: bool,
     expected_decision: str,
     expected_action: str,
     expected_tool: str,
@@ -452,6 +523,7 @@ def diagnose_error(
     actual: dict,
     keyword_check: dict,
     source_check: dict,
+    tool_output_keys_check: dict,
 ) -> tuple[str, str]:
     """根据各项检查结果定位评测失败类型和原因。"""
     if not decision_pass:
@@ -490,6 +562,12 @@ def diagnose_error(
             f"引用来源未命中：缺失={source_check['source_missing']}"
         )
 
+    if not tool_output_keys_pass:
+        return (
+            "tool_output_keys_error",
+            f"工具输出字段缺失：缺失={tool_output_keys_check['tool_output_keys_missing']}"
+        )
+
     return "ok", ""
 
 
@@ -506,7 +584,10 @@ def calc_metrics(rows: list[dict]) -> dict:
         if not r["expected_decision"] or r["actual_decision"] == r["expected_decision"]
     )
 
-    tool_cases = [r for r in rows if r["category"] == "tool_use"]
+    tool_cases = [
+        r for r in rows
+        if r["category"] in {"tool_use", "compare_documents"}
+    ]
     tool_ok = sum(
         1 for r in tool_cases
         if r["actual_decision"] == "use_tool"
@@ -517,9 +598,7 @@ def calc_metrics(rows: list[dict]) -> dict:
     refuse_cases = [r for r in rows if r["category"] == "refuse"]
     refuse_ok = sum(
         1 for r in refuse_cases
-        if r["actual_decision"] == "refuse"
-        and r["actual_action"] == "refuse"
-        and r["actual_status"] == "OUT_OF_SCOPE"
+        if r["actual_status"] in {"NO_RELEVANT_INFO", "OUT_OF_SCOPE"}
     )
 
     direct_cases = [r for r in rows if r["category"] == "direct"]
@@ -587,6 +666,8 @@ def write_csv(path: Path, rows: list[dict]) -> None:
         "keyword_missing",
         "source_hits",
         "source_missing",
+        "tool_output_keys_expected",
+        "tool_output_keys_missing",
 
         "retrieval_confidence",
         "answer_confidence",
@@ -626,6 +707,8 @@ def write_csv(path: Path, rows: list[dict]) -> None:
                 "keyword_missing": " | ".join(map(str, r.get("keyword_missing", []))),
                 "source_hits": " | ".join(map(str, r.get("source_hits", []))),
                 "source_missing": " | ".join(map(str, r.get("source_missing", []))),
+                "tool_output_keys_expected": " | ".join(map(str, r.get("tool_output_keys_expected", []))),
+                "tool_output_keys_missing": " | ".join(map(str, r.get("tool_output_keys_missing", []))),
 
                 "retrieval_confidence": r.get("retrieval_confidence", 0.0),
                 "answer_confidence": r.get("answer_confidence", 0.0),

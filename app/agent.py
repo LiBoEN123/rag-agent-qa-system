@@ -29,6 +29,7 @@ HIGH_CONFIDENCE_RULE_ACTIONS = {
     "simple_calculator",
     "list_documents",
     "get_chunk_text",
+    "compare_documents",
     "direct_answer",
     "clarify",
 }
@@ -38,6 +39,7 @@ ROUTER_ACTION_TO_DECISION = {
     "simple_calculator": "use_tool",
     "list_documents": "use_tool",
     "get_chunk_text": "use_tool",
+    "compare_documents": "use_tool",
     "clarify": "clarify",
     "direct_answer": "direct_answer",
 }
@@ -55,7 +57,7 @@ def get_route_decision(decision:dict) -> str:
     if action == "search_knowledge_base":
         return "rag"
 
-    if action in ["simple_calculator", "list_documents", "get_chunk_text"]:
+    if action in ROUTER_ALLOWED_TOOLS:
         return action
 
     if action in ["clarify", "direct_answer"]:
@@ -182,6 +184,31 @@ def extract_simple_math_expression(question:str) -> str | None:
 # =========================
 # 工具结果格式化
 # =========================
+COMPARE_DOCUMENT_KEYWORDS = ("对比", "比较", "区别", "差异", "不同", "冲突", "一致")
+
+
+def build_compare_documents_rule_args(question: str, top_k: int) -> dict | None:
+    """从显式双文档对比问题中构造 compare_documents 参数。"""
+    q = normalize_question(question)
+    if not any(keyword in q for keyword in COMPARE_DOCUMENT_KEYWORDS):
+        return None
+
+    titles = [
+        title.strip()
+        for title in re.findall(r"\u300a([^\u300b]+)\u300b", q) # \u300a和\u300b代表中文书名号《》
+        if title.strip()
+    ]
+    if len(titles) >= 2:
+        return {
+            "query": q,
+            "doc_a": titles[0],
+            "doc_b": titles[1],
+            "top_k": max(1, min(int(top_k or 3), 10)),
+        }
+
+    return None
+
+
 def format_tool_answer(tool_name: str, output: dict) -> str:
     """将工具输出转换成可以直接返回给用户的自然语言答案。"""
     if tool_name == "simple_calculator":
@@ -223,6 +250,9 @@ def format_tool_answer(tool_name: str, output: dict) -> str:
     if tool_name == "search_knowledge_base":
         return f"知识库检索完成，共找到 {output.get('count', 0)} 个候选 chunk。"
 
+    if tool_name == "compare_documents":
+        return output.get("comparison") or output.get("summary") or str(output)
+
     return str(output)
 
 
@@ -244,6 +274,14 @@ def summarize_tool_result(tool_name: str, tool_result: dict) -> str:
 
     if tool_name == "search_knowledge_base":
         return f"search_knowledge_base 执行成功，召回 {output.get('count', 0)} 个 chunk"
+
+    if tool_name == "compare_documents":
+        return (
+            "compare_documents 执行成功，"
+            f"doc_a_evidence={len(output.get('doc_a_evidence', []))}，"
+            f"doc_b_evidence={len(output.get('doc_b_evidence', []))}，"
+            f"conflict_detected={output.get('conflict_detected')}"
+        )
 
     return f"{tool_name} 执行成功"
 
@@ -569,6 +607,26 @@ def validate_route_decision(raw_decision: dict, question: str, top_k: int) -> di
 
         checked_args = {"chunk_id": chunk_id}
 
+    elif raw_action == "compare_documents":
+        query_arg = str(tool_args.get("query") or q).strip()
+        doc_a = str(tool_args.get("doc_a") or "").strip()
+        doc_b = str(tool_args.get("doc_b") or "").strip()
+
+        if not doc_a or not doc_b:
+            raise ValueError("compare_documents 缺少 doc_a 或 doc_b")
+
+        try:
+            compare_top_k = int(tool_args.get("top_k", top_k))
+        except (TypeError, ValueError):
+            compare_top_k = top_k
+
+        checked_args = {
+            "query": query_arg,
+            "doc_a": doc_a,
+            "doc_b": doc_b,
+            "top_k": max(1, min(compare_top_k, 10)),
+        }
+
     else:
         raise ValueError(f"未处理的工具 action: {raw_action}")
 
@@ -611,7 +669,17 @@ def route_agent_action_rule_based(question: str, top_k:int) -> dict:
             "reason": "用户询问系统能力，可以直接回答"
         }
 
-    # 3. 用户问知识库某文档内容：调用 get_chunk_text
+    # 3. 用户明确要求工具型文档操作：对比文档或查看 chunk
+    compare_args = build_compare_documents_rule_args(question, top_k)
+    if compare_args is not None:
+        return {
+            "decision": "use_tool",
+            "action": "compare_documents",
+            "tool_name": "compare_documents",
+            "tool_args": compare_args,
+            "reason": "用户明确要求对比两份文档中的规定差异"
+        }
+
     chunk_id = extract_chunk_id(q)
     if chunk_id is not None:
         return {
@@ -904,9 +972,11 @@ def run_agent_once(
     ]
 
     def finalize_result(result: dict) -> dict:
+        """统一给结果附加本次流程的 LLM 使用统计。"""
         return attach_llm_usage(result, router_llm_used=router_llm_used)
 
     def agent_result(**kwargs) -> dict:
+        """构造带默认 action 和 tool_trace 的 Agent 返回结构。"""
         kwargs.setdefault("action", action)
         kwargs.setdefault("tool_trace", tool_trace)
         return build_agent_result(**kwargs)
@@ -918,6 +988,7 @@ def run_agent_once(
         bad_case_note: str,
         trace_error: str | None = None,
     ) -> dict:
+        """记录工具失败轨迹和 bad case，并返回统一错误结果。"""
         tool_trace.append({
             "step": "call_tool",
             "tool_name": tool_name,
@@ -1052,7 +1123,17 @@ def run_agent_once(
             f"[trace_id={trace_id}] [tool] tool_name={tool_name} "
             f"tool_status=success tool_error="
         )
-        answer = format_tool_answer(tool_name, tool_result.get("output", {}))
+        tool_output = tool_result.get("output", {})
+        tool_summary = summarize_tool_result(tool_name, tool_result)
+        answer = format_tool_answer(tool_name, tool_output)
+
+        if tool_trace and tool_trace[-1].get("step") == "call_tool":
+            tool_trace[-1].update({
+                "tool_status": "success",
+                "success": True,
+                "result_summary": tool_summary,
+                "tool_output": tool_output,
+            })
 
         tool_trace.append({
             "step": "final_answer",
@@ -1067,7 +1148,8 @@ def run_agent_once(
             answer=answer,
             answer_confidence=1.0,
             reason=f"Agent 选择工具：{tool_name}",
-            tool_result_summary=summarize_tool_result(tool_name, tool_result),
+            tool_result_summary=tool_summary,
+            tool_result=tool_result,
         ))
 
     # =========================

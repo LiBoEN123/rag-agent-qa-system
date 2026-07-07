@@ -18,6 +18,7 @@ def test_agent_router_tool_specs_from_registry():
     assert "simple_calculator" in names
     assert "list_documents" in names
     assert "get_chunk_text" in names
+    assert "compare_documents" in names
 
     for item in specs:
         assert "name" in item
@@ -29,6 +30,66 @@ def test_search_knowledge_base_is_now_standard_tool():
     """验证知识库检索已经成为 Router 可调用的标准工具。"""
     assert "search_knowledge_base" in agent.ROUTER_ALLOWED_TOOLS
     assert "search_knowledge_base" in agent.ROUTER_ALLOWED_ACTIONS
+
+
+def test_compare_documents_is_allowed_tool():
+    """验证 compare_documents 已进入 Agent Router 白名单。"""
+    assert "compare_documents" in agent.ROUTER_ALLOWED_TOOLS
+    assert "compare_documents" in agent.ROUTER_ALLOWED_ACTIONS
+
+
+def test_validate_llm_compare_documents_route_keeps_safe_args():
+    """验证 LLM 路由选择 compare_documents 时会校验并规整参数。"""
+    decision = agent.validate_route_decision(
+        {
+            "decision": "use_tool",
+            "action": "compare_documents",
+            "tool_name": "compare_documents",
+            "tool_args": {
+                "query": "\u666e\u901a\u672c\u79d1\u56db\u5e74\u5236\u6700\u957f\u5b66\u4e60\u5e74\u9650",
+                "doc_a": "old.md",
+                "doc_b": "new.md",
+                "top_k": "20",
+            },
+            "reason": "compare two docs",
+            "confidence": 0.7,
+        },
+        "compare docs",
+        3,
+    )
+
+    assert decision["decision"] == "use_tool"
+    assert decision["action"] == "compare_documents"
+    assert decision["tool_name"] == "compare_documents"
+    assert decision["tool_args"] == {
+        "query": "\u666e\u901a\u672c\u79d1\u56db\u5e74\u5236\u6700\u957f\u5b66\u4e60\u5e74\u9650",
+        "doc_a": "old.md",
+        "doc_b": "new.md",
+        "top_k": 10,
+    }
+
+
+def test_rule_route_detects_explicit_compare_documents_question():
+    """验证显式双标题对比问题会命中 compare_documents 规则路由。"""
+    decision = agent.route_agent_action_rule_based(
+        "\u8bf7\u5bf9\u6bd4\u300a\u5185\u8499\u53e4\u5de5\u4e1a\u5927\u5b66\u5b66\u751f\u624b\u518c\u300b\u548c\u300a\u8c03\u6574\u901a\u77e5\u300b\u4e2d\u5173\u4e8e\u6700\u957f\u5b66\u4e60\u5e74\u9650\u7684\u5dee\u5f02\u3002",
+        3,
+    )
+
+    assert decision["action"] == "compare_documents"
+    assert decision["tool_name"] == "compare_documents"
+    assert decision["tool_args"]["doc_a"] == "\u5185\u8499\u53e4\u5de5\u4e1a\u5927\u5b66\u5b66\u751f\u624b\u518c"
+    assert decision["tool_args"]["doc_b"] == "\u8c03\u6574\u901a\u77e5"
+
+
+def test_rule_route_does_not_guess_compare_documents_from_vague_names():
+    """验证缺少两个显式文档标题时，规则路由不会硬编码猜测对比文件。"""
+    decision = agent.route_agent_action_rule_based(
+        "\u5b66\u751f\u624b\u518c\u548c\u901a\u77e5\u4e2d\u6700\u957f\u5b66\u4e60\u5e74\u9650\u6709\u4ec0\u4e48\u5dee\u5f02\uff1f",
+        3,
+    )
+
+    assert decision["action"] != "compare_documents"
 
 
 def test_validate_llm_rag_route_normalizes_safe_args():
@@ -94,6 +155,7 @@ def test_tool_route_uses_rules_before_llm_when_router_enabled(monkeypatch):
     called = {"count": 0}
 
     def fake_llm(question, top_k, trace_id=""):
+        """模拟不应被调用的 LLM Router。"""
         called["count"] += 1
         raise AssertionError("工具类问题不应调用 LLM Router")
 
@@ -177,6 +239,7 @@ def test_run_agent_once_uses_search_knowledge_base_tool(monkeypatch):
     }
 
     def fake_dispatch_tool(tool_name, tool_args=None, trace_id=""):
+        """模拟 search_knowledge_base 工具分发结果。"""
         called["count"] += 1
         assert tool_name == "search_knowledge_base"
         assert tool_args == {"query": "测试问题", "top_k": 5}
@@ -195,6 +258,7 @@ def test_run_agent_once_uses_search_knowledge_base_tool(monkeypatch):
         }
 
     def fake_ask(*args, **kwargs):
+        """模拟 RAG 生成结果并校验收到的检索 chunks。"""
         assert kwargs.get("retrieved_chunks") == [fake_chunk]
         return {
             "status": "OK",

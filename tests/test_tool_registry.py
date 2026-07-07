@@ -10,6 +10,7 @@ def test_tool_registry_names_include_builtin_tools():
     assert "simple_calculator" in names
     assert "list_documents" in names
     assert "get_chunk_text" in names
+    assert "compare_documents" in names
 
 
 def test_search_knowledge_base_registered():
@@ -55,6 +56,7 @@ def test_tool_registry_dispatch_search_knowledge_base(monkeypatch):
     import app.rag as rag
 
     def fake_search_relevant_chunks(query, top_k=5):
+        """模拟知识库检索返回单个候选 chunk。"""
         assert query == "普通本科四年制专业最长学习年限是多少？"
         assert top_k == 5
         return [
@@ -125,3 +127,14 @@ def test_dispatch_tool_keeps_compatible_entrypoint(monkeypatch, tmp_path):
     assert result["ok"] is True
     assert result["status"] == "success"
     assert result["output"]["result"] == 5
+
+
+def test_compare_documents_registered():
+    """验证 compare_documents 已注册到工具注册表。"""
+    assert "compare_documents" in tool_registry.names()
+
+
+def test_router_specs_include_compare_documents():
+    """验证 Router 工具描述中包含 compare_documents。"""
+    names = {item["name"] for item in tool_registry.router_specs()}
+    assert "compare_documents" in names
