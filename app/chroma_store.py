@@ -11,19 +11,11 @@ logger = get_logger("chat_service")
 
 
 class ChromaUnavailableError(RuntimeError):
-    """ChromaDB 被禁用或不可用时抛出的异常。"""
-
-
-def is_chroma_enabled() -> bool:
-    """判断是否启用 ChromaDB 持久化层。"""
-    return bool(getattr(Settings, "ENABLE_CHROMA", True))
+    """ChromaDB 不可用时抛出的异常。"""
 
 
 def _import_chromadb():
     """延迟导入 ChromaDB，避免测试阶段过早依赖它。"""
-    if not is_chroma_enabled():
-        raise ChromaUnavailableError("ChromaDB 已通过 ENABLE_CHROMA=false 禁用")
-
     try:
         import chromadb
     except ImportError as exc:
@@ -32,16 +24,6 @@ def _import_chromadb():
         ) from exc
 
     return chromadb
-
-
-def is_chroma_available() -> bool:
-    """检查 ChromaDB 是否已启用且可以正常导入。"""
-    try:
-        _import_chromadb()
-        return True
-    except ChromaUnavailableError:
-        return False
-
 
 def _persist_dir() -> Path:
     return Path(getattr(Settings, "CHROMA_PERSIST_DIR"))

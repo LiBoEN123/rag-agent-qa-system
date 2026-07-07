@@ -32,7 +32,6 @@ docker pull python:3.11-slim
 RAG_FILE_PATH：必填，要参考的文档的路径，例如：./data/白鹿原.txt
 INDEX_STORE_DIR：选填，默认 ./data/manifest，保存索引 manifest
 CHROMA_PERSIST_DIR：选填，默认 ./data/chroma，保存 ChromaDB 向量索引
-ENABLE_CHROMA：选填，默认 true，是否启用 ChromaDB 持久化索引
 TOP_K：选填，默认3，表示默认召回条数
 CHUNK_OVERLAP：选填，默认120，表示相邻文本块之间的重叠长度（按字符数）
 CHUNK_SIZE：选填，默认800，表示每个文本块的最大长度（按字符数）

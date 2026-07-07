@@ -6,11 +6,7 @@ import unicodedata
 
 import requests
 
-from app.citation_verifier import (
-    REFERENCE_STOPWORDS,
-    extract_reference_keywords,
-    verify_answer_citations,
-)
+from app.citation_verifier import verify_answer_citations
 from app.config import Settings
 from app.prompts import ROUTER_SYSTEM_PROMPT, ROUTER_USER_PROMPT
 from app.rag import ask

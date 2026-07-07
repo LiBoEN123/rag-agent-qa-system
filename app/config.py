@@ -34,7 +34,6 @@ class Settings:
 
     CHROMA_PERSIST_DIR = Path(os.getenv("CHROMA_PERSIST_DIR", str(BASE_DIR / "data" / "chroma")))
     CHROMA_COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "mini_rag_chunks")
-    ENABLE_CHROMA = env_bool("ENABLE_CHROMA", "true")
 
     TOP_K = int(os.getenv("TOP_K", "5"))
     DECOMPOSE_TOP_K = int(os.getenv("DECOMPOSE_TOP_K", "10"))
@@ -94,7 +93,6 @@ class Settings:
     DECOMPOSE_TIMEOUT = int(os.getenv("DECOMPOSE_TIMEOUT", "15"))
     DECOMPOSE_MAX_TOKENS = int(os.getenv("DECOMPOSE_MAX_TOKENS", "512"))
 
-    MARGIN_THRESHOLD = float(os.getenv("MARGIN_THRESHOLD", "0.03"))
     VECTOR_THRESHOLD = float(os.getenv("VECTOR_THRESHOLD", "0.35"))
 
     AUTO_REBUILD_ON_STARTUP = env_bool("AUTO_REBUILD_ON_STARTUP", "false") #是否强制启动就重建

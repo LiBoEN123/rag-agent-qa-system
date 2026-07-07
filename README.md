@@ -178,7 +178,6 @@ streamlit run demo/streamlit_app.py
 | `INDEX_STORE_DIR` | 索引构建 manifest 目录，示例：`./data/manifest` |
 | `CHROMA_PERSIST_DIR` | ChromaDB 本地持久化目录，示例：`./data/chroma` |
 | `CHROMA_COLLECTION_NAME` | ChromaDB collection 名称，默认 `mini_rag_chunks` |
-| `ENABLE_CHROMA` | 是否启用 ChromaDB 向量存储，默认 `true` |
 | `TOP_K` | `/chat` 和 `/search` 默认召回条数 |
 | `DECOMPOSE_TOP_K` | 多子问题召回合并后的候选上限 |
 | `CHUNK_SIZE` | chunk 最大长度 |
@@ -224,7 +223,6 @@ streamlit run demo/streamlit_app.py
 | `DECOMPOSE_TIMEOUT` | 问题拆分模型请求超时秒数 |
 | `DECOMPOSE_MAX_TOKENS` | 问题拆分模型最大输出 token |
 | `VECTOR_THRESHOLD` | 召回证据不足时拒答的向量分数阈值 |
-| `MARGIN_THRESHOLD` | 预留的分数差距阈值配置 |
 | `AUTO_REBUILD_ON_STARTUP` | 是否启动时强制重建索引 |
 
 ### DeepSeek 示例
@@ -234,7 +232,6 @@ RAG_FILE_PATH=./data/kb
 INDEX_STORE_DIR=./data/manifest
 CHROMA_PERSIST_DIR=./data/chroma
 CHROMA_COLLECTION_NAME=mini_rag_chunks
-ENABLE_CHROMA=true
 
 TOP_K=5
 DECOMPOSE_TOP_K=10

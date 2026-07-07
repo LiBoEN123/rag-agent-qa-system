@@ -207,16 +207,6 @@ def rebuild_index(
     RAG_INIT_MESSAGE = "OK"
     INDEX_SOURCE = "memory"
 
-
-def init_rag(
-    data_dir: str,
-    chunk_size: int = Settings.CHUNK_SIZE,
-    chunk_overlap: int = Settings.CHUNK_OVERLAP
-):
-    """对外暴露的 RAG 初始化入口，内部复用重建索引流程。"""
-    rebuild_index(data_dir, chunk_size, chunk_overlap)
-
-
 def rebuild_and_persist_index(
     data_dir: str,
     chunk_size: int = Settings.CHUNK_SIZE,

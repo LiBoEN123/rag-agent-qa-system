@@ -5,7 +5,6 @@ from rank_bm25 import BM25Okapi
 from sentence_transformers import CrossEncoder, SentenceTransformer
 
 from app.chroma_store import (
-    ChromaUnavailableError,
     chroma_collection_has_chunks,
     load_chunks_from_chroma,
     persist_chunks_to_chroma,
@@ -198,9 +197,6 @@ def save_index_cache(
     doc_embeddings
 ):
     """Persist chunk text, metadata, and embeddings to ChromaDB."""
-    if not Settings.ENABLE_CHROMA:
-        raise ChromaUnavailableError("已移除本地 JSON/NPY 缓存，ENABLE_CHROMA=false 时无法保存索引")
-
     try:
         saved_count = persist_chunks_to_chroma(
             chunks=chunks,
