@@ -25,11 +25,14 @@ def _import_chromadb():
 
     return chromadb
 
+
 def _persist_dir() -> Path:
+    """读取 ChromaDB 本地持久化目录配置。"""
     return Path(getattr(Settings, "CHROMA_PERSIST_DIR"))
 
 
 def _collection_name() -> str:
+    """读取 ChromaDB collection 名称配置，未配置时使用默认名称。"""
     return str(getattr(Settings, "CHROMA_COLLECTION_NAME", "mini_rag_chunks"))
 
 
@@ -112,6 +115,7 @@ def make_chroma_id(chunk: dict[str, Any]) -> str:
 
 
 def _as_embedding_list(embedding: Any) -> list[float]:
+    """将不同来源的 embedding 转换为 ChromaDB 可写入的 float 列表。"""
     if hasattr(embedding, "tolist"):
         return [float(x) for x in embedding.tolist()]
     return [float(x) for x in embedding]
@@ -136,6 +140,7 @@ def persist_chunks_to_chroma(
     batch_embeddings: list[list[float]] = []
 
     def flush_batch() -> None:
+        """将当前累计的 batch 写入 ChromaDB，并重置临时缓存。"""
         nonlocal saved, batch_ids, batch_documents, batch_metadatas, batch_embeddings
         if not batch_ids:
             return
@@ -188,6 +193,7 @@ def load_chunks_from_chroma() -> list[dict[str, Any]]:
     ]
 
     def sort_key(chunk: dict[str, Any]):
+        """按 chunk_id 生成排序键，缺失或非法时回退到 0。"""
         metadata = chunk.get("metadata") or {}
         try:
             return int(metadata.get("chunk_id", 0))
