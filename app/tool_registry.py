@@ -1,6 +1,15 @@
 from dataclasses import dataclass
 from typing import Callable
 
+from pydantic import BaseModel, ValidationError
+
+from app.tool_schema import (
+    CompareDocumentsArgs,
+    GetChunkTextArgs,
+    ListDocumentsArgs,
+    SearchKnowledgeBaseArgs,
+    SimpleCalculatorArgs,
+)
 import app.tools as tools
 
 
@@ -14,6 +23,7 @@ class ToolSpec:
     handler: Callable[[dict], dict]
     timeout: int = 10
     safe_level: str = "safe"
+    args_model: type[BaseModel] | None = None
 
 
 class ToolRegistry:
@@ -61,12 +71,24 @@ class ToolRegistry:
                 error=f"unknown tool: {name}"
             )
 
+        if spec.args_model is not None:
+            try:
+                validated_args = spec.args_model.model_validate(tool_args).model_dump()
+            except ValidationError as e:
+                return tools.tool_error(
+                    tool_name=name,
+                    tool_input=tool_args,
+                    error=f"invalid tool args: {e}"
+                )
+        else:
+            validated_args = tool_args
+
         try:
-            return spec.handler(tool_args)
+            return spec.handler(validated_args)
         except Exception as e:
             return tools.tool_error(
                 tool_name=name,
-                tool_input=tool_args,
+                tool_input=validated_args,
                 error=str(e)
             )
 
@@ -112,6 +134,7 @@ def register_default_tools(registry: ToolRegistry) -> None:
                 "top_chunk_ids": "list, 命中的 chunk_id 列表",
             },
             handler=_handle_search_knowledge_base,
+            args_model=SearchKnowledgeBaseArgs,
         )
     )
     registry.register(
@@ -135,6 +158,7 @@ def register_default_tools(registry: ToolRegistry) -> None:
                 "summary": "string, 简要摘要",
             },
             handler=_handle_compare_documents,
+            args_model=CompareDocumentsArgs,
         )
     )
     registry.register(
@@ -144,6 +168,7 @@ def register_default_tools(registry: ToolRegistry) -> None:
             args_schema={"expression": "string, 必填，例如 '1 + 2 * 3'"},
             output_schema={"expression": "string", "result": "number"},
             handler=_handle_simple_calculator,
+            args_model=SimpleCalculatorArgs,
         )
     )
     registry.register(
@@ -153,6 +178,7 @@ def register_default_tools(registry: ToolRegistry) -> None:
             args_schema={},
             output_schema={"count": "integer", "documents": "list"},
             handler=_handle_list_documents,
+            args_model=ListDocumentsArgs,
         )
     )
     registry.register(
@@ -162,6 +188,7 @@ def register_default_tools(registry: ToolRegistry) -> None:
             args_schema={"chunk_id": "integer|string, 必填"},
             output_schema={"chunk_id": "integer|string", "chunk": "dict"},
             handler=_handle_get_chunk_text,
+            args_model=GetChunkTextArgs,
         )
     )
 

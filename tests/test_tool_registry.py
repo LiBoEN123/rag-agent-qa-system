@@ -1,4 +1,5 @@
-from app.tool_registry import tool_registry
+from app.tool_registry import ToolRegistry, ToolSpec, tool_registry
+from app.tool_schema import SearchKnowledgeBaseArgs
 from app.tools import dispatch_tool
 
 
@@ -37,6 +38,18 @@ def test_tool_registry_router_specs_shape():
         assert "name" in spec
         assert "description" in spec
         assert "args_schema" in spec
+
+
+def test_router_specs_keep_backward_compatible_shape():
+    """验证 Router 工具描述不暴露 Pydantic 模型对象。"""
+    specs = tool_registry.router_specs()
+    assert specs
+
+    for spec in specs:
+        assert "name" in spec
+        assert "description" in spec
+        assert "args_schema" in spec
+        assert "args_model" not in spec
 
 
 def test_tool_registry_dispatch_simple_calculator():
@@ -105,6 +118,83 @@ def test_tool_registry_dispatch_unknown_tool():
     assert result["tool_input"] == {}
     assert result["output"] is None
     assert result["error"] == "unknown tool: unknown_tool"
+
+
+def test_dispatch_validates_args_before_handler():
+    """验证 dispatch 在调用 handler 前执行参数校验。"""
+    registry = ToolRegistry()
+    seen = {}
+
+    def fake_handler(args):
+        seen["args"] = args
+        return {
+            "status": "success",
+            "ok": True,
+            "tool_name": "search_knowledge_base",
+            "tool_input": args,
+            "output": {"count": 0},
+            "error": "",
+        }
+
+    registry.register(
+        ToolSpec(
+            name="search_knowledge_base",
+            description="检索知识库",
+            args_schema={"query": "string", "top_k": "integer"},
+            output_schema={},
+            handler=fake_handler,
+            args_model=SearchKnowledgeBaseArgs,
+        )
+    )
+
+    result = registry.dispatch(
+        "search_knowledge_base",
+        {"query": "测试", "top_k": 5},
+    )
+
+    assert result["status"] == "success"
+    assert seen["args"] == {"query": "测试", "top_k": 5}
+
+
+def test_dispatch_returns_tool_error_when_args_invalid():
+    """验证参数非法时返回工具错误且不调用 handler。"""
+    registry = ToolRegistry()
+    called = {"count": 0}
+
+    def fake_handler(args):
+        called["count"] += 1
+        return {"status": "success", "ok": True, "tool_name": "search_knowledge_base"}
+
+    registry.register(
+        ToolSpec(
+            name="search_knowledge_base",
+            description="检索知识库",
+            args_schema={"query": "string", "top_k": "integer"},
+            output_schema={},
+            handler=fake_handler,
+            args_model=SearchKnowledgeBaseArgs,
+        )
+    )
+
+    result = registry.dispatch(
+        "search_knowledge_base",
+        {"query": "测试", "top_k": 999},
+    )
+
+    assert called["count"] == 0
+    assert result["status"] != "success"
+    assert result["ok"] is False
+    assert "invalid tool args" in result["error"]
+
+
+def test_dispatch_unknown_tool_still_returns_error():
+    """验证未知工具仍然返回标准工具错误。"""
+    registry = ToolRegistry()
+    result = registry.dispatch("unknown_tool", {})
+
+    assert result["ok"] is False
+    assert result["status"] != "success"
+    assert "unknown tool" in result["error"]
 
 
 def test_dispatch_tool_keeps_compatible_entrypoint(monkeypatch, tmp_path):
