@@ -9,10 +9,8 @@ from app.untils import get_logger
 
 logger = get_logger("chat_service")
 
-FOLLOW_UP_MARKERS = [
+OBVIOUS_FOLLOW_UP_MARKERS = [
     "那",
-    "那这个",
-    "那它",
     "这个",
     "那个",
     "它",
@@ -20,12 +18,18 @@ FOLLOW_UP_MARKERS = [
     "前面",
     "刚才",
     "继续",
-    "还有呢",
-    "休学创业呢",
-    "这种情况呢",
+    "还有",
+    "遗漏",
+    "完整",
+    "补充",
+    "就这些",
+    "都包括",
+    "条件呢",
+    "材料呢",
+    "时间呢",
+    "入口呢",
 ]
 
-REFERENCE_MARKERS = ["这个", "那个", "它", "上面", "刚才", "前面"]
 SYSTEM_QUESTIONS = {
     "你是谁",
     "你是谁?",
@@ -36,20 +40,6 @@ SYSTEM_QUESTIONS = {
     "你有什么功能",
     "你有什么功能?",
 }
-QUESTION_CUES = [
-    "多少",
-    "几",
-    "什么",
-    "如何",
-    "怎么",
-    "为什么",
-    "是否",
-    "是不是",
-    "吗",
-    "哪",
-]
-
-
 def _normalize_question(question: str) -> str:
     """清理问题文本并统一常见问号。"""
     return (question or "").strip().replace("？", "?")
@@ -85,21 +75,6 @@ def _is_system_capability_question(question: str) -> bool:
     return compact in SYSTEM_QUESTIONS
 
 
-def _looks_standalone_question(question: str) -> bool:
-    """粗略判断短问题是否已经具备独立语义。"""
-    q = _normalize_question(question)
-    if not q:
-        return False
-
-    if q.startswith(("那", "这个", "那个", "它", "上面", "前面", "刚才", "继续")):
-        return False
-
-    if any(marker in q for marker in REFERENCE_MARKERS):
-        return False
-
-    return any(cue in q for cue in QUESTION_CUES)
-
-
 def _last_user_question(history: list[dict]) -> str:
     """从历史中取最近一条用户问题。"""
     for message in reversed(history or []):
@@ -121,8 +96,17 @@ def _fallback_rewrite(question: str, history: list[dict]) -> str:
     return f"基于“{previous_question}”，追问“{question}”"
 
 
-def should_rewrite_with_history(question: str, history: list[dict]) -> tuple[bool, str]:
-    """根据轻量规则判断当前问题是否需要结合历史改写。"""
+def _has_obvious_follow_up_marker(question: str) -> bool:
+    """判断问题是否包含明显追问标记。"""
+    q = _normalize_question(question)
+    return any(marker in q for marker in OBVIOUS_FOLLOW_UP_MARKERS)
+
+
+def should_check_rewrite_with_history(
+    question: str,
+    history: list[dict],
+) -> tuple[bool, str]:
+    """判断是否需要让 LLM 检查问题对历史的依赖，不直接判定一定改写。"""
     q = _normalize_question(question)
 
     if not q:
@@ -137,23 +121,17 @@ def should_rewrite_with_history(question: str, history: list[dict]) -> tuple[boo
     if _is_system_capability_question(q):
         return False, "system capability question"
 
-    if q.startswith("那"):
-        return True, "question starts with follow-up marker"
+    if _has_obvious_follow_up_marker(q):
+        return True, "obvious follow-up marker"
 
-    if any(marker in q for marker in REFERENCE_MARKERS):
-        return True, "question contains reference marker"
-
-    if q.endswith(("呢?", "呢")) and len(q) <= 18:
-        return True, "short question ends with follow-up particle"
-
-    if len(q) <= 20 and not _looks_standalone_question(q):
-        return True, "short follow-up question with history"
+    if len(q) <= 20:
+        return True, "short ambiguous question with history"
 
     return False, "not a follow-up question"
 
 
 def build_rewrite_prompt(question: str, history: list[dict]) -> str:
-    """构造追问改写提示词，要求模型只返回 JSON。"""
+    """构造历史依赖判断与查询改写提示词，要求模型只返回 JSON。"""
     recent_messages = []
     for message in (history or [])[-6:]:
         if not isinstance(message, dict):
@@ -168,14 +146,22 @@ def build_rewrite_prompt(question: str, history: list[dict]) -> str:
     history_text = "\n".join(recent_messages) or "无"
 
     return (
-        "你是一个检索问答系统的查询改写器。请根据历史对话，把当前用户追问改写成"
-        "独立、完整、可直接用于知识库检索的问题。\n"
+        "你是一个检索问答系统的查询判断与改写器。请判断当前问题是否依赖历史对话。\n"
         "要求：\n"
         "1. 只返回 JSON，不要输出 Markdown 或额外解释。\n"
-        "2. 不要回答问题，只改写问题。\n"
-        "3. 如果历史不足以改写，尽量保留原问题并说明原因。\n"
-        "4. JSON 格式必须为："
-        "{\"rewritten_question\":\"完整问题\",\"reason\":\"为什么这样改写\"}\n\n"
+        "2. 不要回答用户问题，只判断和改写问题。\n"
+        "3. 如果当前问题依赖历史，将它改写成独立、完整、适合知识库检索的问题，"
+        "need_rewrite=true。\n"
+        "4. 如果当前问题本身语义完整、不依赖历史，必须保留原问题，"
+        "need_rewrite=false。\n"
+        "5. 输出必须是合法 JSON。需要改写时示例："
+        "{\"need_rewrite\":true,"
+        "\"rewritten_question\":\"改写后的完整问题\","
+        "\"reason\":\"判断依据\"}；"
+        "不需要改写时示例："
+        "{\"need_rewrite\":false,"
+        "\"rewritten_question\":\"原问题\","
+        "\"reason\":\"当前问题语义完整，不依赖历史\"}。\n\n"
         f"历史对话：\n{history_text}\n\n"
         f"当前问题：{question}"
     )
@@ -203,7 +189,12 @@ def _parse_rewrite_json(output: str) -> dict:
     if not rewritten_question:
         raise ValueError("query rewrite output missing rewritten_question")
 
+    need_rewrite = data.get("need_rewrite")
+    if not isinstance(need_rewrite, bool):
+        raise ValueError("query rewrite output has invalid need_rewrite")
+
     return {
+        "need_rewrite": need_rewrite,
         "rewritten_question": rewritten_question,
         "reason": str(data.get("reason") or "").strip(),
     }
@@ -254,14 +245,20 @@ def call_query_rewrite_llm(prompt: str, trace_id: str = "") -> str:
     return data["choices"][0]["message"]["content"]
 
 
-def rewrite_query_with_history(question: str, history: list[dict], trace_id: str = "") -> dict:
-    """结合历史对追问做轻量改写，失败时回退到安全拼接策略。"""
+def rewrite_query_with_history(
+    question: str,
+    history: list[dict],
+    trace_id: str = "",
+) -> dict:
+    """判断问题是否依赖历史并按需改写；明显追问可在 LLM 不可用时降级。"""
     original_question = (question or "").strip()
     base_result = {
         "original_question": original_question,
         "rewritten_question": original_question,
         "history_used": False,
         "rewritten": False,
+        "need_check": False,
+        "need_rewrite": False,
         "reason": "",
         "rewrite_llm_used": False,
         "error": "",
@@ -273,21 +270,38 @@ def rewrite_query_with_history(question: str, history: list[dict], trace_id: str
             "reason": "query rewrite disabled",
         }
 
-    need_rewrite, reason = should_rewrite_with_history(original_question, history)
-    if not need_rewrite:
+    need_check, reason = should_check_rewrite_with_history(
+        original_question,
+        history,
+    )
+
+    if not need_check:
         return {
             **base_result,
             "reason": reason,
         }
 
+    obvious_follow_up = _has_obvious_follow_up_marker(original_question)
+
     if not _query_rewrite_llm_configured():
-        rewritten_question = _fallback_rewrite(original_question, history)
+        if obvious_follow_up:
+            rewritten_question = _fallback_rewrite(original_question, history)
+            fallback_reason = "fallback rewrite without llm"
+        else:
+            rewritten_question = original_question
+            fallback_reason = (
+                "ambiguous question but query rewrite llm is not configured"
+                if reason == "short ambiguous question with history"
+                else "query rewrite llm is not configured"
+            )
         return {
             **base_result,
+            "need_check": True,
+            "need_rewrite": bool(rewritten_question != original_question),
             "rewritten_question": rewritten_question,
             "history_used": bool(rewritten_question != original_question),
             "rewritten": bool(rewritten_question != original_question),
-            "reason": "fallback rewrite without llm",
+            "reason": fallback_reason,
             "rewrite_llm_used": False,
             "error": "query rewrite llm is not configured",
         }
@@ -296,12 +310,19 @@ def rewrite_query_with_history(question: str, history: list[dict], trace_id: str
         prompt = build_rewrite_prompt(original_question, history)
         output = call_query_rewrite_llm(prompt, trace_id=trace_id)
         parsed = _parse_rewrite_json(output)
-        rewritten_question = parsed["rewritten_question"]
+        need_rewrite = parsed["need_rewrite"]
+        rewritten_question = (
+            parsed["rewritten_question"]
+            if need_rewrite
+            else original_question
+        )
 
         return {
             **base_result,
+            "need_check": True,
+            "need_rewrite": need_rewrite,
             "rewritten_question": rewritten_question,
-            "history_used": True,
+            "history_used": need_rewrite,
             "rewritten": rewritten_question != original_question,
             "reason": parsed.get("reason") or reason,
             "rewrite_llm_used": True,
@@ -314,14 +335,24 @@ def rewrite_query_with_history(question: str, history: list[dict], trace_id: str
             f"[trace_id={trace_id}] [query_rewrite] fallback_after_error "
             f"error={error[:300]}"
         )
-        rewritten_question = _fallback_rewrite(original_question, history)
+        rewritten_question = (
+            _fallback_rewrite(original_question, history)
+            if obvious_follow_up
+            else original_question
+        )
 
         return {
             **base_result,
+            "need_check": True,
+            "need_rewrite": bool(rewritten_question != original_question),
             "rewritten_question": rewritten_question,
             "history_used": bool(rewritten_question != original_question),
             "rewritten": bool(rewritten_question != original_question),
-            "reason": "fallback rewrite after llm error",
+            "reason": (
+                "fallback rewrite after llm error"
+                if obvious_follow_up
+                else "ambiguous question unchanged after query rewrite llm error"
+            ),
             "rewrite_llm_used": True,
             "error": error,
         }

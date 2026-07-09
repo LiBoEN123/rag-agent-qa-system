@@ -367,6 +367,3 @@ def test_chat_uses_legacy_agent_when_v2_disabled(monkeypatch):
     assert body["data"]["answer"] == "v1 answer"
 
 
-
-
-

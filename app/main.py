@@ -557,13 +557,18 @@ def build_query_rewrite_trace(rewrite_result: dict) -> dict:
         "rewritten_question": rewrite_result.get("rewritten_question", ""),
         "history_used": bool(rewrite_result.get("history_used", False)),
         "rewritten": bool(rewrite_result.get("rewritten", False)),
+        "need_check": bool(rewrite_result.get("need_check", False)),
+        "need_rewrite": bool(rewrite_result.get("need_rewrite", False)),
         "rewrite_llm_used": bool(rewrite_result.get("rewrite_llm_used", False)),
         "reason": rewrite_result.get("reason", ""),
         "error": rewrite_result.get("error", ""),
     }
 
 
-def attach_query_rewrite_trace(result: dict, rewrite_trace: dict) -> dict:
+def attach_query_rewrite_trace(
+    result: dict,
+    rewrite_trace: dict,
+) -> dict:
     """把 query rewrite trace 前插到 Agent 返回结果中。"""
     result = dict(result or {})
     tool_trace = list(result.get("tool_trace") or [])
@@ -1067,12 +1072,15 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
 
         logger.info(
             f"[trace_id={trace_id}] [query_rewrite] "
+            f"history_count={len(history)} "
+            f"need_check={rewrite_result.get('need_check', False)} "
+            f"need_rewrite={rewrite_result.get('need_rewrite', False)} "
             f"history_used={rewrite_result.get('history_used')} "
             f"rewritten={rewrite_result.get('rewritten')} "
             f"rewrite_llm_used={rewrite_result.get('rewrite_llm_used')} "
             f"reason={rewrite_result.get('reason', '')} "
-            f"original_len={len(original_question)} "
-            f"effective_len={len(effective_question)}"
+            f"original_question={original_question!r} "
+            f"rewritten_question={effective_question!r}"
         )
 
         route_start = time.perf_counter()
@@ -1099,6 +1107,10 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
             f"action={action} "
             f"route_cost_ms={route_cost_ms} "
             f"reason={decision.get('reason', '')}"
+        )
+
+        logger.info(
+            f"[trace_id={trace_id}] [agent] route_final action={action}"
         )
 
         need_rag_ready_actions = {
