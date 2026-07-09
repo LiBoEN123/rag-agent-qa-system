@@ -23,7 +23,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.main import write_bad_cases
 from app.config import Settings
-from app.agent_runtime import run_agent_v2
+from app.agent.runtime import run_agent_v2
 from app.rag import (
     get_rag_status,
     needs_rebuild,

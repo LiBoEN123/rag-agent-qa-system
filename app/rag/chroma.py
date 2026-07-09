@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import Settings
-from app.untils import get_logger
+from app.common.logging import get_logger
 
 logger = get_logger("chat_service")
 

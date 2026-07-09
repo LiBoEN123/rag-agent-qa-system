@@ -1,4 +1,4 @@
-from app.citation_verifier import verify_answer_citations
+from app.rag.citations import verify_answer_citations
 
 
 def test_verify_answer_citations_supported():

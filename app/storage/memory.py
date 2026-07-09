@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from app.db import get_connection, init_db, now_iso
+from app.storage.database import get_connection, init_db, now_iso
 
 
 _ALLOWED_ROLES = {"user", "assistant"}

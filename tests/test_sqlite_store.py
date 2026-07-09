@@ -3,7 +3,7 @@ import pytest
 
 def test_init_db_creates_tables(tmp_path):
     """验证初始化数据库会创建全部持久化表。"""
-    from app.db import get_connection, init_db
+    from app.storage.database import get_connection, init_db
 
     db_path = tmp_path / "test.sqlite"
     init_db(db_path)
@@ -23,7 +23,7 @@ def test_init_db_creates_tables(tmp_path):
 
 def test_sqlite_memory_append_and_get_history(tmp_path):
     """验证 SQLite 会话消息可以按写入顺序读取。"""
-    from app.memory_store import append_message_sqlite, get_history_sqlite
+    from app.storage.memory import append_message_sqlite, get_history_sqlite
 
     db_path = tmp_path / "test.sqlite"
 
@@ -40,7 +40,7 @@ def test_sqlite_memory_append_and_get_history(tmp_path):
 
 def test_sqlite_memory_get_history_limit_order(tmp_path):
     """验证历史查询仅返回最近消息且保持旧到新顺序。"""
-    from app.memory_store import append_message_sqlite, get_history_sqlite
+    from app.storage.memory import append_message_sqlite, get_history_sqlite
 
     db_path = tmp_path / "test.sqlite"
 
@@ -54,7 +54,7 @@ def test_sqlite_memory_get_history_limit_order(tmp_path):
 
 def test_clear_session_sqlite(tmp_path):
     """验证清理会话时不会影响其他 session。"""
-    from app.memory_store import (
+    from app.storage.memory import (
         append_message_sqlite,
         clear_session_sqlite,
         get_history_sqlite,
@@ -75,7 +75,7 @@ def test_clear_session_sqlite(tmp_path):
 
 def test_append_message_sqlite_rejects_invalid_role(tmp_path):
     """验证 SQLite 会话存储拒绝非法消息角色。"""
-    from app.memory_store import append_message_sqlite
+    from app.storage.memory import append_message_sqlite
 
     db_path = tmp_path / "test.sqlite"
 
@@ -85,7 +85,7 @@ def test_append_message_sqlite_rejects_invalid_role(tmp_path):
 
 def test_save_agent_trace_writes_run_and_steps(tmp_path):
     """验证 Agent 运行摘要和步骤能够完整写入 SQLite。"""
-    from app.trace_store import get_agent_run, get_agent_steps, save_agent_trace
+    from app.storage.traces import get_agent_run, get_agent_steps, save_agent_trace
 
     db_path = tmp_path / "test.sqlite"
 
@@ -141,7 +141,7 @@ def test_save_agent_trace_writes_run_and_steps(tmp_path):
 
 def test_save_agent_trace_replaces_existing_steps(tmp_path):
     """验证重复保存同一 trace 时旧步骤会被替换。"""
-    from app.trace_store import get_agent_steps, save_agent_trace
+    from app.storage.traces import get_agent_steps, save_agent_trace
 
     db_path = tmp_path / "test.sqlite"
 

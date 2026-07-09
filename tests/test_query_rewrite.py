@@ -1,6 +1,6 @@
 import pytest
 
-from app import query_rewrite
+from app.agent import query_rewrite
 
 
 HISTORY = [

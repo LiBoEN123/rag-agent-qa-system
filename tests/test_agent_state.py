@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.agent_state import AgentObservation, AgentPlanStep, AgentState
+from app.agent.state import AgentObservation, AgentPlanStep, AgentState
 
 
 def test_agent_plan_step_defaults():

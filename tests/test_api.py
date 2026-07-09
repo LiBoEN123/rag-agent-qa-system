@@ -1,7 +1,7 @@
 import pytest
 
 import app.main as main
-from app.session_store import clear_session
+from app.storage.session import clear_session
 
 
 @pytest.fixture(autouse=True)
@@ -310,4 +310,3 @@ def test_chat_always_uses_agent_v2(monkeypatch):
     assert body["code"] == 0
     assert body["data"]["answer"] == "v2 answer"
     assert body["data"]["action"] == "direct_answer"
-

@@ -10,7 +10,7 @@ import requests
 
 from app.config import Settings
 from app.prompts import FORBIDDEN_JUDGE_SYSTEM_PROMPT, KEY_POINT_JUDGE_SYSTEM_PROMPT
-from app.untils import get_logger
+from app.common.logging import get_logger
 from scripts.rag_eval.common import json_dumps, point_texts, warn
 
 

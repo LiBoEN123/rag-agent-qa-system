@@ -1,6 +1,6 @@
 from typing import Any
 
-from app.agent_state import AgentObservation, AgentState
+from app.agent.state import AgentObservation, AgentState
 
 
 ERROR_STATUSES = {"tool_error", "error", "model_error"}

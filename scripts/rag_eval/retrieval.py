@@ -123,7 +123,7 @@ def load_chroma_index(chroma_persist_dir: Path | None, chroma_collection_name: s
         if chroma_collection_name:
             Settings.CHROMA_COLLECTION_NAME = chroma_collection_name
 
-        from app.chroma_store import load_chunks_from_chroma
+        from app.rag.chroma import load_chunks_from_chroma
 
         chunks = load_chunks_from_chroma()
         return chunks_to_index(chunks, source="chroma")

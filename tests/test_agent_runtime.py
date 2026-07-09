@@ -1,5 +1,5 @@
-from app.agent_runtime import map_agent_status_to_public_status, run_agent_v2
-from app.agent_state import AgentPlanStep, AgentState
+from app.agent.runtime import map_agent_status_to_public_status, run_agent_v2
+from app.agent.state import AgentPlanStep, AgentState
 
 
 def test_run_agent_v2_happy_path(monkeypatch):
@@ -55,10 +55,10 @@ def test_run_agent_v2_happy_path(monkeypatch):
         state.answer_llm_used = False
         return state
 
-    monkeypatch.setattr("app.agent_runtime._route_agent_action", fake_route)
-    monkeypatch.setattr("app.agent_runtime.build_plan_from_decision", fake_build_plan)
-    monkeypatch.setattr("app.agent_runtime.execute_plan", fake_execute)
-    monkeypatch.setattr("app.agent_runtime.compose_final_answer", fake_compose)
+    monkeypatch.setattr("app.agent.runtime._route_agent_action", fake_route)
+    monkeypatch.setattr("app.agent.runtime.build_plan_from_decision", fake_build_plan)
+    monkeypatch.setattr("app.agent.runtime.execute_plan", fake_execute)
+    monkeypatch.setattr("app.agent.runtime.compose_final_answer", fake_compose)
 
     result = run_agent_v2(
         write_bad_cases=lambda record: None,
@@ -105,10 +105,10 @@ def test_run_agent_v2_uses_provided_decision(monkeypatch):
         state.final_answer = "ok"
         return state
 
-    monkeypatch.setattr("app.agent_runtime._route_agent_action", fake_route)
-    monkeypatch.setattr("app.agent_runtime.build_plan_from_decision", fake_build_plan)
-    monkeypatch.setattr("app.agent_runtime.execute_plan", fake_execute)
-    monkeypatch.setattr("app.agent_runtime.compose_final_answer", fake_compose)
+    monkeypatch.setattr("app.agent.runtime._route_agent_action", fake_route)
+    monkeypatch.setattr("app.agent.runtime.build_plan_from_decision", fake_build_plan)
+    monkeypatch.setattr("app.agent.runtime.execute_plan", fake_execute)
+    monkeypatch.setattr("app.agent.runtime.compose_final_answer", fake_compose)
 
     decision = {
         "decision": "direct_answer",
@@ -142,11 +142,11 @@ def test_run_agent_v2_maps_clarify_status(monkeypatch):
     }
 
     monkeypatch.setattr(
-        "app.agent_runtime._route_agent_action",
+        "app.agent.runtime._route_agent_action",
         lambda question, top_k, trace_id="": decision,
     )
     monkeypatch.setattr(
-        "app.agent_runtime.build_plan_from_decision",
+        "app.agent.runtime.build_plan_from_decision",
         lambda decision, question, top_k: [
             AgentPlanStep(step_id=1, action="clarify", reason="请补充具体文档。")
         ],
@@ -159,8 +159,8 @@ def test_run_agent_v2_maps_clarify_status(monkeypatch):
         state.reason = "请补充具体文档。"
         return state
 
-    monkeypatch.setattr("app.agent_runtime.execute_plan", fake_execute)
-    monkeypatch.setattr("app.agent_runtime.compose_final_answer", lambda state: state)
+    monkeypatch.setattr("app.agent.runtime.execute_plan", fake_execute)
+    monkeypatch.setattr("app.agent.runtime.compose_final_answer", lambda state: state)
 
     result = run_agent_v2(
         write_bad_cases=lambda record: None,
@@ -185,9 +185,9 @@ def test_run_agent_v2_maps_no_evidence_status(monkeypatch):
         "router_llm_used": False,
     }
 
-    monkeypatch.setattr("app.agent_runtime._route_agent_action", lambda question, top_k, trace_id="": decision)
-    monkeypatch.setattr("app.agent_runtime.build_plan_from_decision", lambda decision, question, top_k: [])
-    monkeypatch.setattr("app.agent_runtime.execute_plan", lambda state: state)
+    monkeypatch.setattr("app.agent.runtime._route_agent_action", lambda question, top_k, trace_id="": decision)
+    monkeypatch.setattr("app.agent.runtime.build_plan_from_decision", lambda decision, question, top_k: [])
+    monkeypatch.setattr("app.agent.runtime.execute_plan", lambda state: state)
 
     def fake_compose(state):
         """模拟 Composer 判断证据不足。"""
@@ -196,7 +196,7 @@ def test_run_agent_v2_maps_no_evidence_status(monkeypatch):
         state.reason = "证据不足"
         return state
 
-    monkeypatch.setattr("app.agent_runtime.compose_final_answer", fake_compose)
+    monkeypatch.setattr("app.agent.runtime.compose_final_answer", fake_compose)
 
     result = run_agent_v2(
         write_bad_cases=lambda record: None,
@@ -220,9 +220,9 @@ def test_run_agent_v2_counts_router_llm(monkeypatch):
         "router_llm_used": True,
     }
 
-    monkeypatch.setattr("app.agent_runtime._route_agent_action", lambda question, top_k, trace_id="": decision)
-    monkeypatch.setattr("app.agent_runtime.build_plan_from_decision", lambda decision, question, top_k: [])
-    monkeypatch.setattr("app.agent_runtime.execute_plan", lambda state: state)
+    monkeypatch.setattr("app.agent.runtime._route_agent_action", lambda question, top_k, trace_id="": decision)
+    monkeypatch.setattr("app.agent.runtime.build_plan_from_decision", lambda decision, question, top_k: [])
+    monkeypatch.setattr("app.agent.runtime.execute_plan", lambda state: state)
 
     def fake_compose(state):
         """模拟 Composer 已经统计一次答案 LLM 调用。"""
@@ -232,7 +232,7 @@ def test_run_agent_v2_counts_router_llm(monkeypatch):
         state.llm_call_count = 1
         return state
 
-    monkeypatch.setattr("app.agent_runtime.compose_final_answer", fake_compose)
+    monkeypatch.setattr("app.agent.runtime.compose_final_answer", fake_compose)
 
     result = run_agent_v2(
         write_bad_cases=lambda record: None,
@@ -256,7 +256,7 @@ def test_run_agent_v2_handles_internal_error(monkeypatch):
         """模拟 Router 抛出 Runtime 顶层异常。"""
         raise RuntimeError("router exploded")
 
-    monkeypatch.setattr("app.agent_runtime._route_agent_action", fake_route)
+    monkeypatch.setattr("app.agent.runtime._route_agent_action", fake_route)
 
     result = run_agent_v2(
         write_bad_cases=lambda record: bad_cases.append(record),
@@ -289,7 +289,7 @@ def test_map_agent_status_to_public_status():
 
 def test_run_agent_v2_saves_trace_when_enabled(monkeypatch):
     """验证 trace 开关开启时 Runtime 保存最终结果和执行步骤。"""
-    from app import agent_runtime
+    from app.agent import runtime as agent_runtime
 
     saved = {}
     decision = {

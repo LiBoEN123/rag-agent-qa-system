@@ -513,24 +513,56 @@ python scripts/test_local_llm.py
 ```text
 .
 ├── app/
-│   ├── main.py                  # FastAPI 入口、接口模型、指标记录
-│   ├── agent.py                 # Agent 路由、LLM Router、工具/RAG 调度
-│   ├── tools.py                 # simple_calculator / list_documents / get_chunk_text
-│   ├── tool_registry.py         # 工具注册表和 Router 可见工具声明
-│   ├── rag.py                   # RAG 总控、索引生命周期、问答流程
-│   ├── rag_ingest.py            # 文档读取、清洗、切分
-│   ├── rag_retrieval.py         # BM25 + 向量召回、rerank、问题拆分
-│   ├── rag_generation.py        # Prompt、模型调用、JSON 解析、引用绑定
-│   ├── query_rewrite.py         # 多轮追问识别和 Query Rewrite
-│   ├── session_store.py         # 进程内 session 历史存储
-│   ├── citation_verifier.py     # 答案引用可靠性检查
-│   ├── rag_store.py             # 索引缓存、manifest、模型加载
-│   ├── chroma_store.py          # ChromaDB 持久化存储
-│   ├── rag_debug.py             # 文档/chunk 预览与 chunk 原文查询
-│   ├── observability.py         # trace_id 生成
+│   ├── main.py                  # 正式 ASGI 入口：app.main:app
+│   ├── api/
+│   │   ├── chat.py              # FastAPI 组装和 /chat 主流程
+│   │   ├── schemas.py           # 请求、响应和引用数据模型
+│   │   ├── diagnostics.py       # 检索、知识库和指标诊断接口
+│   │   ├── responses.py         # 响应构造和业务状态映射
+│   │   └── lifecycle.py         # RAG 启动和索引加载流程
+│   ├── agent/
+│   │   ├── __init__.py          # Agent 公共入口
+│   │   ├── router.py            # 路由决策与结果校验
+│   │   ├── rules.py             # 数学、chunk 和文档对比规则
+│   │   ├── llm_router.py        # LLM Router 调用与解析
+│   │   ├── formatting.py        # 普通工具答案格式化
+│   │   ├── state.py             # Agent 状态模型
+│   │   ├── planner.py           # 执行计划构造
+│   │   ├── executor.py          # 工具步骤执行
+│   │   ├── answer.py            # 最终答案合成
+│   │   └── runtime.py           # Agent 主流程编排
+│   ├── rag/
+│   │   ├── __init__.py          # RAG 公共门面和依赖注入
+│   │   ├── pipeline.py          # 索引状态与问答流程编排
+│   │   ├── ingest.py            # 文档读取、清洗、切分
+│   │   ├── retrieval.py         # 混合召回与重排
+│   │   ├── decomposition.py     # 复杂问题识别、拆分调用和解析
+│   │   ├── policy.py            # 证据拒答与澄清策略
+│   │   ├── scoring.py           # 分数安全转换
+│   │   ├── results.py           # RAG 结果与门控 trace
+│   │   ├── generation.py        # 模型调用、解析和引用绑定
+│   │   ├── store.py             # 索引缓存、manifest、模型加载
+│   │   ├── chroma.py            # ChromaDB 持久化
+│   │   ├── citations.py         # 引用可靠性检查
+│   │   └── debug.py             # 文档和 chunk 调试查询
+│   ├── tools/
+│   │   ├── __init__.py          # 工具公共入口
+│   │   ├── result.py            # 统一成功/失败返回协议
+│   │   ├── calculator.py        # 安全四则运算
+│   │   ├── knowledge_base.py    # 文档、chunk 和检索工具
+│   │   ├── compare_documents.py # 双文档证据对比
+│   │   ├── dispatch.py          # 工具分发与调用日志
+│   │   ├── registry.py          # 工具注册和分发
+│   │   └── schemas.py           # 工具参数模型
+│   ├── storage/                 # SQLite、session 和 Agent trace 存储
+│   ├── observability/
+│   │   ├── __init__.py          # trace_id 生成
+│   │   ├── middleware.py        # HTTP trace 和端到端耗时
+│   │   └── metrics.py           # 指标、bad case 和 trace 汇总
+│   ├── common/logging.py        # 公共日志配置
+│   ├── agent/query_rewrite.py   # 多轮追问识别和 Query Rewrite
 │   ├── prompts.py               # RAG、问题拆分、路由 Prompt
-│   ├── config.py                # 环境变量配置
-│   └── untils.py                # 日志工具
+│   └── config.py                # 环境变量配置
 ├── data/
 │   ├── kb/                      # 默认知识库文档目录
 │   ├── eval/                    # 评测数据
@@ -558,7 +590,7 @@ python scripts/test_local_llm.py
 └── README.md
 ```
 
-> 说明：当前代码里日志工具文件名是 `untils.py`，README 按当前实现保留该名称。
+> 说明：旧的根目录转发模块已经删除，项目统一使用上面的领域包路径。
 
 ## Docker
 

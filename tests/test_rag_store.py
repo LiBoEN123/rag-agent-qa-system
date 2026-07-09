@@ -1,4 +1,4 @@
-from app import rag_store
+from app.rag import store as rag_store
 
 
 def test_index_cache_exists_only_depends_on_chroma(monkeypatch):

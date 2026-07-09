@@ -1,8 +1,8 @@
 import pytest
 
-from app import session_store
+from app.storage import session as session_store
 from app.config import Settings
-from app.session_store import append_message, clear_session, get_history
+from app.storage.session import append_message, clear_session, get_history
 
 
 @pytest.fixture(autouse=True)

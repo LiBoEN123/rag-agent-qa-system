@@ -1,5 +1,5 @@
-from app.agent_executor import execute_plan
-from app.agent_state import AgentPlanStep, AgentState
+from app.agent.executor import execute_plan
+from app.agent.state import AgentPlanStep, AgentState
 
 
 def test_execute_single_tool_success(monkeypatch):
@@ -31,7 +31,7 @@ def test_execute_single_tool_success(monkeypatch):
             "error": "",
         }
 
-    monkeypatch.setattr("app.agent_executor.dispatch_tool", fake_dispatch_tool)
+    monkeypatch.setattr("app.agent.executor.dispatch_tool", fake_dispatch_tool)
 
     state = AgentState(
         trace_id="trace_001",
@@ -79,7 +79,7 @@ def test_execute_tool_failure_stops_plan(monkeypatch):
             "error": "mock tool failed",
         }
 
-    monkeypatch.setattr("app.agent_executor.dispatch_tool", fake_dispatch_tool)
+    monkeypatch.setattr("app.agent.executor.dispatch_tool", fake_dispatch_tool)
 
     state = AgentState(
         original_question="测试问题",
@@ -113,7 +113,7 @@ def test_execute_tool_exception_becomes_tool_error(monkeypatch):
     def fake_dispatch_tool(tool_name, tool_args=None, trace_id=""):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("app.agent_executor.dispatch_tool", fake_dispatch_tool)
+    monkeypatch.setattr("app.agent.executor.dispatch_tool", fake_dispatch_tool)
 
     state = AgentState(
         original_question="测试问题",
@@ -243,7 +243,7 @@ def test_execute_respects_max_steps(monkeypatch):
             "error": "",
         }
 
-    monkeypatch.setattr("app.agent_executor.dispatch_tool", fake_dispatch_tool)
+    monkeypatch.setattr("app.agent.executor.dispatch_tool", fake_dispatch_tool)
 
     state = AgentState(
         original_question="测试问题",
@@ -281,7 +281,7 @@ def test_execute_tool_trace_handles_missing_fields(monkeypatch):
             "error": "",
         }
 
-    monkeypatch.setattr("app.agent_executor.dispatch_tool", fake_dispatch_tool)
+    monkeypatch.setattr("app.agent.executor.dispatch_tool", fake_dispatch_tool)
 
     state = AgentState(
         original_question="测试问题",

@@ -1,16 +1,16 @@
 from typing import Any, Dict, List
 import time
 
-from app.untils import get_logger
+from app.common.logging import get_logger
 from app.config import Settings
-from app.citation_verifier import verify_answer_citations
+from app.rag.citations import verify_answer_citations
 from app.prompts import NO_ANSWER_FALLBACK
-from app.rag_debug import (
+from app.rag.debug import (
     get_chunk_full_text as get_chunk_full_text_impl,
     preview_chunks as preview_chunks_impl,
     preview_docs as preview_docs_impl,
 )
-from app.rag_generation import (
+from app.rag.generation import (
     build_context,
     call_llm,
     estimate_answer_confidence,
@@ -19,8 +19,8 @@ from app.rag_generation import (
     parse_llm_output,
     LLMCallError
 )
-from app.rag_ingest import clean_documents, load_files, split_chunks
-from app.rag_retrieval import (
+from app.rag.ingest import clean_documents, load_files, split_chunks
+from app.rag.retrieval import (
     build_clarification_question,
     is_ambiguous_question,
     retrieve as retrieve_impl,
@@ -33,7 +33,7 @@ from app.rag_retrieval import (
     decompose_query_with_llm,
     retrieve_with_sub_queries
 )
-from app.rag_store import (
+from app.rag.store import (
     build_current_manifest,
     build_index,
     get_index_cache_source as get_index_cache_source_impl,
@@ -43,11 +43,10 @@ from app.rag_store import (
     save_index_cache as save_index_cache_impl,
     save_manifest,
 )
+from app.rag.results import build_evidence_gate_step, build_rag_result
 
 
-# =========================
-# 全局状态 / 常量
-# =========================
+# RAG orchestration and in-process index state.
 logger = get_logger('chat_service')
 
 chunks: list[dict] = []
@@ -64,76 +63,6 @@ RAG_INIT_MESSAGE = "RAG 尚未初始化"
 INDEX_SOURCE = "none"
 NO_DOCUMENTS_MESSAGE = "当前知识库为空，请先在 data 目录中放入文档后再提问"
 STOP_WORD = "我无法根据提供的文档确定答案"
-
-
-def build_evidence_gate_step(
-    final_chunks: List[Dict[str, Any]],
-    refused: bool,
-    reason: str,
-) -> dict:
-    """汇总证据门控结果，供 tool_trace 和日志观测。"""
-    candidates = [
-        item
-        for item in (final_chunks or [])
-        if isinstance(item, dict)
-    ]
-
-    max_vector_score = round(
-        max((safe_float(item.get("vector_score")) for item in candidates), default=0.0),
-        4,
-    )
-    max_rerank_score = round(
-        max((safe_float(item.get("rerank_score")) for item in candidates), default=0.0),
-        4,
-    )
-    max_hybrid_score = round(
-        max((safe_float(item.get("hybrid_score")) for item in candidates), default=0.0),
-        4,
-    )
-
-    return {
-        "step": "evidence_gate",
-        "refused": bool(refused),
-        "max_vector_score": max_vector_score,
-        "max_rerank_score": max_rerank_score,
-        "max_hybrid_score": max_hybrid_score,
-        "reason": reason,
-    }
-
-
-def build_rag_result(
-    status: str,
-    answer: str = "",
-    references: list | None = None,
-    final_chunks: list | None = None,
-    retrieval_confidence: float = 0.0,
-    answer_confidence: float = 0.0,
-    need_clarification: bool = False,
-    clarification_question: str = "",
-    reason: str = "",
-    timings: dict | None = None,
-    decompose_llm_used: bool = False,
-    answer_llm_used: bool = False,
-    **extra,
-) -> dict:
-    """构造 RAG 问答结果，避免 ask 各分支重复同一批字段。"""
-    result = {
-        "status": status,
-        "answer": answer,
-        "references": references or [],
-        "final_chunks": final_chunks or [],
-        "retrieval_confidence": retrieval_confidence,
-        "answer_confidence": answer_confidence,
-        "need_clarification": need_clarification,
-        "clarification_question": clarification_question,
-        "reason": reason,
-        "timings": timings or {},
-        "decompose_llm_used": bool(decompose_llm_used),
-        "answer_llm_used": bool(answer_llm_used),
-        "llm_call_count": int(bool(decompose_llm_used)) + int(bool(answer_llm_used)),
-    }
-    result.update(extra)
-    return result
 
 
 # =========================

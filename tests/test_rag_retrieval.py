@@ -1,7 +1,7 @@
 import pytest
 
-import app.rag_retrieval as rag_retrieval
-from app.rag_retrieval import (
+import app.rag.retrieval as rag_retrieval
+from app.rag.retrieval import (
     parse_decompose_llm_json,
     should_decompose_query,
     should_refuse,

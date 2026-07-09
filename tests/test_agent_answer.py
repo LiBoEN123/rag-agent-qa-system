@@ -1,5 +1,5 @@
-from app.agent_answer import compose_final_answer, map_rag_status
-from app.agent_state import AgentObservation, AgentState
+from app.agent.answer import compose_final_answer, map_rag_status
+from app.agent.state import AgentObservation, AgentState
 
 
 def test_compose_rag_answer_calls_ask(monkeypatch):
@@ -23,7 +23,7 @@ def test_compose_rag_answer_calls_ask(monkeypatch):
             "llm_call_count": 1,
         }
 
-    monkeypatch.setattr("app.agent_answer._call_ask", fake_call_ask)
+    monkeypatch.setattr("app.agent.answer._call_ask", fake_call_ask)
 
     chunks = [{"chunk_id": 1, "text": "测试 chunk"}]
     state = AgentState(
@@ -74,7 +74,7 @@ def test_compose_rag_answer_uses_original_question_when_no_rewrite(monkeypatch):
             "answer_llm_used": True,
         }
 
-    monkeypatch.setattr("app.agent_answer._call_ask", fake_call_ask)
+    monkeypatch.setattr("app.agent.answer._call_ask", fake_call_ask)
 
     state = AgentState(
         original_question="原始问题",
@@ -105,7 +105,7 @@ def test_compose_rag_answer_maps_no_relevant_info(monkeypatch):
             "llm_call_count": 0,
         }
 
-    monkeypatch.setattr("app.agent_answer._call_ask", fake_call_ask)
+    monkeypatch.setattr("app.agent.answer._call_ask", fake_call_ask)
 
     state = AgentState(
         original_question="测试问题",
@@ -131,7 +131,7 @@ def test_compose_rag_answer_handles_ask_exception(monkeypatch):
         """模拟 ask 在生成阶段抛出异常。"""
         raise RuntimeError("LLM failed")
 
-    monkeypatch.setattr("app.agent_answer._call_ask", fake_call_ask)
+    monkeypatch.setattr("app.agent.answer._call_ask", fake_call_ask)
 
     state = AgentState(
         original_question="测试问题",
@@ -163,7 +163,7 @@ def test_compose_tool_answer_uses_format_tool_answer(monkeypatch):
         called["output"] = output
         return "计算结果是：7"
 
-    monkeypatch.setattr("app.agent_answer._format_tool_answer", fake_format_tool_answer)
+    monkeypatch.setattr("app.agent.answer._format_tool_answer", fake_format_tool_answer)
 
     state = AgentState(
         original_question="帮我算 1+2*3",
@@ -193,7 +193,7 @@ def test_compose_tool_answer_uses_last_successful_observation(monkeypatch):
         """模拟普通工具结果格式化，便于断言使用的观察结果。"""
         return f"{tool_name}: {output.get('value')}"
 
-    monkeypatch.setattr("app.agent_answer._format_tool_answer", fake_format_tool_answer)
+    monkeypatch.setattr("app.agent.answer._format_tool_answer", fake_format_tool_answer)
 
     state = AgentState(
         original_question="测试",
@@ -224,7 +224,7 @@ def test_compose_tool_answer_handles_format_exception(monkeypatch):
         """模拟工具答案格式化失败。"""
         raise RuntimeError("format failed")
 
-    monkeypatch.setattr("app.agent_answer._format_tool_answer", fake_format_tool_answer)
+    monkeypatch.setattr("app.agent.answer._format_tool_answer", fake_format_tool_answer)
 
     state = AgentState(
         original_question="测试",

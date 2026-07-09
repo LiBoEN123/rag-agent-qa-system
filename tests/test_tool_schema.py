@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.tool_schema import (
+from app.tools.schemas import (
     CompareDocumentsArgs,
     GetChunkTextArgs,
     ListDocumentsArgs,

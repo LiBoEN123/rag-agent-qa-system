@@ -1,7 +1,10 @@
 import pytest
 
-from app import agent, agent_answer, agent_executor, agent_runtime
-from app.tool_registry import tool_registry
+from app import agent
+from app.agent import answer as agent_answer
+from app.agent import executor as agent_executor
+from app.agent import runtime as agent_runtime
+from app.tools.registry import tool_registry
 
 
 def test_agent_allowed_tools_from_registry():

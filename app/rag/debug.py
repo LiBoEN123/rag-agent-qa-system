@@ -1,4 +1,4 @@
-from app.rag_retrieval import make_snippet
+from app.rag.retrieval import make_snippet
 
 
 def preview_docs(docs_registry):

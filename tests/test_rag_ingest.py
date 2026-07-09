@@ -1,4 +1,4 @@
-from app import rag_ingest
+from app.rag import ingest as rag_ingest
 
 
 def test_collect_supported_files_includes_pdf_and_docx(tmp_path):

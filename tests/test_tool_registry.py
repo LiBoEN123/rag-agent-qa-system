@@ -1,5 +1,5 @@
-from app.tool_registry import ToolRegistry, ToolSpec, tool_registry
-from app.tool_schema import SearchKnowledgeBaseArgs
+from app.tools.registry import ToolRegistry, ToolSpec, tool_registry
+from app.tools.schemas import SearchKnowledgeBaseArgs
 from app.tools import dispatch_tool
 
 

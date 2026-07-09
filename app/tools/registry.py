@@ -3,7 +3,7 @@ from typing import Callable
 
 from pydantic import BaseModel, ValidationError
 
-from app.tool_schema import (
+from app.tools.schemas import (
     CompareDocumentsArgs,
     GetChunkTextArgs,
     ListDocumentsArgs,

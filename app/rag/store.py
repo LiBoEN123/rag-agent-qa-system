@@ -4,15 +4,15 @@ import torch
 from rank_bm25 import BM25Okapi
 from sentence_transformers import CrossEncoder, SentenceTransformer
 
-from app.chroma_store import (
+from app.rag.chroma import (
     chroma_collection_has_chunks,
     load_chunks_from_chroma,
     persist_chunks_to_chroma,
 )
 from app.config import Settings
-from app.rag_ingest import collect_supported_files
-from app.rag_retrieval import tokenize
-from app.untils import get_logger
+from app.rag.ingest import collect_supported_files
+from app.rag.retrieval import tokenize
+from app.common.logging import get_logger
 
 
 devcie = 'cuda' if torch.cuda.is_available() else "cpu"

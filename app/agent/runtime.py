@@ -1,12 +1,12 @@
 from typing import Any
 
-from app.agent_answer import compose_final_answer
-from app.agent_executor import execute_plan
-from app.agent_planner import build_plan_from_decision
-from app.agent_state import AgentState
+from app.agent.answer import compose_final_answer
+from app.agent.executor import execute_plan
+from app.agent.planner import build_plan_from_decision
+from app.agent.state import AgentState
 from app.config import Settings
-from app.trace_store import save_agent_trace
-from app.untils import get_logger
+from app.storage.traces import save_agent_trace
+from app.common.logging import get_logger
 
 
 logger = get_logger("chat_service")

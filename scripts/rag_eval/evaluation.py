@@ -4,7 +4,7 @@ import json
 from collections import defaultdict
 from typing import Any, Dict, List, Tuple
 
-from app.untils import get_logger
+from app.common.logging import get_logger
 from scripts.rag_eval.common import ChunkIndex, get_answer, is_refusal, json_dumps, mean
 from scripts.rag_eval.judge import (
     LLMJudgeConfig,

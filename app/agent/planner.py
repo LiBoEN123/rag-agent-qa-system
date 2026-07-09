@@ -1,6 +1,6 @@
 from typing import Any
 
-from app.agent_state import AgentPlanStep
+from app.agent.state import AgentPlanStep
 
 
 def _safe_decision(decision: dict[str, Any] | None) -> dict[str, Any]:

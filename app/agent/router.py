@@ -1,15 +1,21 @@
-import ast
-import json
-import re
-import time
-import unicodedata
-
-import requests
-
+from app.agent.formatting import format_tool_answer
+from app.agent.llm_router import (
+    build_router_headers,
+    call_router_llm,
+    parse_router_json_output,
+)
+from app.agent.rules import (
+    COMPARE_DOCUMENT_KEYWORDS,
+    build_compare_documents_rule_args,
+    extract_chunk_id,
+    extract_simple_math_expression,
+    is_safe_math_expression,
+    normalize_math_text,
+    normalize_question,
+)
 from app.config import Settings
-from app.prompts import ROUTER_SYSTEM_PROMPT, ROUTER_USER_PROMPT
-from app.tool_registry import tool_registry
-from app.untils import get_logger
+from app.tools.registry import tool_registry
+from app.common.logging import get_logger
 
 
 logger = get_logger('chat_service')
@@ -44,196 +50,6 @@ ROUTER_ACTION_TO_DECISION = {
 DEFAULT_CLARIFICATION_QUESTION = "请补充你想查询的具体对象、文档、功能或报错信息。"
 
 
-def normalize_question(question: str) -> str:
-    """清理用户问题的首尾空白，并把常见中文标点统一成英文标点。"""
-    q = (question or "").strip()
-    q = q.replace("？", "?")
-    q = q.replace("：", ":")
-    q = q.replace("，", ",")
-    q = q.replace("。", "")
-    return q
-
-
-# Agent决策层：判断走哪个动作
-
-
-# =========================
-# 工具路由识别
-# =========================
-def extract_chunk_id(q: str) -> int | None:
-    """从用户问题中识别显式提到的 chunk_id。"""
-    patterns = [
-        r"chunk[_\s-]?id\s*[:=]?\s*(\d+)",
-        r"chunk\s*(\d+)",
-        r"第\s*(\d+)\s*个\s*chunk",
-        r"查看\s*(\d+)\s*号\s*chunk",
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, q, re.IGNORECASE)
-        if match:
-            return int(match.group(1))
-
-    return None
-
-
-def normalize_math_text(text: str) -> str:
-    # 全角字符转半角，例如：１＋２ -> 1+2
-    """将全角数字、中文运算词和千分位格式标准化为可解析的算式。"""
-    text = unicodedata.normalize("NFKC", text or "")
-
-    # 中文运算词转成符号，例如：加 -> +
-    replacements = [
-        (r"加上|加", "+"),
-        (r"减去|减掉|减", "-"),
-        (r"乘以|乘上|乘", "*"),
-        (r"除以|除", "/"),
-        (r"×|x|X", "*"),
-        (r"÷", "/"),
-        (r"负\s*(?=\d|\()", "-"),
-    ]
-
-    for pattern, repl in replacements:
-        text = re.sub(pattern, repl, text)
-
-    # 处理千分位：1,000 + 2,000 -> 1000 + 2000
-    text = re.sub(r"(?<=\d),(?=\d{3}\b)", "", text)
-
-    return text
-
-def is_safe_math_expression(expr: str) -> bool:
-
-    """使用 AST 检查表达式是否只包含数字和允许的四则运算。"""
-    try:
-        tree = ast.parse(expr, mode="eval")
-    except SyntaxError:
-        return False
-
-    allowed_nodes = (
-        ast.Expression,
-        ast.BinOp,
-        ast.UnaryOp,
-        ast.Constant,
-        ast.Add,
-        ast.Sub,
-        ast.Div,
-        ast.Mult,
-        ast.UAdd,
-        ast.USub
-    )
-
-    has_binary_operator = False
-
-    for node in ast.walk(tree):
-        if not isinstance(node, allowed_nodes):
-            return False
-
-        if isinstance(node, ast.BinOp):
-            has_binary_operator = True
-
-        if isinstance(node, ast.Constant):
-            if not isinstance(node.value, (int, float)):
-                return False
-
-    return has_binary_operator
-
-
-def extract_simple_math_expression(question:str) -> str | None:
-    """从自然语言问题中提取可安全计算的简单数学表达式。"""
-    text = normalize_math_text(question)
-
-    # 从整句话中提取由数字、运算符、小数点、括号、空格组成的片段
-    candidates = re.findall(r"[0-9+\-*/().\s]+", text)
-
-    # 优先尝试更长的候选表达式
-    candidates = sorted(
-        (c.strip() for c in candidates if c.strip()),
-        key=len,
-        reverse=True
-    )
-
-    for expr in candidates:
-        if is_safe_math_expression(expr):
-            return expr
-
-    return None
-
-
-# =========================
-# 工具结果格式化
-# =========================
-COMPARE_DOCUMENT_KEYWORDS = ("对比", "比较", "区别", "差异", "不同", "冲突", "一致")
-
-
-def build_compare_documents_rule_args(question: str, top_k: int) -> dict | None:
-    """从显式双文档对比问题中构造 compare_documents 参数。"""
-    q = normalize_question(question)
-    if not any(keyword in q for keyword in COMPARE_DOCUMENT_KEYWORDS):
-        return None
-
-    titles = [
-        title.strip()
-        for title in re.findall(r"\u300a([^\u300b]+)\u300b", q) # \u300a和\u300b代表中文书名号《》
-        if title.strip()
-    ]
-    if len(titles) >= 2:
-        return {
-            "query": q,
-            "doc_a": titles[0],
-            "doc_b": titles[1],
-            "top_k": max(1, min(int(top_k or 3), 10)),
-        }
-
-    return None
-
-
-def format_tool_answer(tool_name: str, output: dict) -> str:
-    """将工具输出转换成可以直接返回给用户的自然语言答案。"""
-    if tool_name == "simple_calculator":
-        return f"计算结果是：{output.get('result')}"
-    if tool_name == "list_documents":
-        docs = output.get("documents", [])
-        count = output.get("count", 0)
-
-        doc_names = []
-        for d in docs[:10]:
-            doc_names.append(
-                d.get("source_file")
-                or d.get("file_name")
-                or d.get("title")
-                or d.get("doc_name")
-                or d.get("doc_id")
-                or "未命名文档"
-            )
-
-        answer = f"当前系统中共有 {count} 个文档。"
-        if doc_names:
-            answer += " 文档包括：" + "、".join(doc_names)
-
-        return answer
-
-    if tool_name == "get_chunk_text":
-        chunk_id = output.get("chunk_id")
-        chunk = output.get("chunk", {})
-
-        text = (
-            chunk.get("text")
-            or chunk.get("content")
-            or chunk.get("chunk_text")
-            or str(chunk)
-        )
-
-        return f"chunk_{chunk_id} 内容如下：\n{text}"
-
-    if tool_name == "search_knowledge_base":
-        return f"知识库检索完成，共找到 {output.get('count', 0)} 个候选 chunk。"
-
-    if tool_name == "compare_documents":
-        return output.get("comparison") or output.get("summary") or str(output)
-
-    return str(output)
-
-
 # =========================
 # Agent 路由决策
 # =========================
@@ -262,110 +78,6 @@ def add_router_metadata(
     decision.setdefault("router_fallback_reason", "")
 
     return decision
-
-
-def build_router_headers() -> dict:
-    """构造调用路由模型时使用的 HTTP 请求头。"""
-    headers = {"Content-Type": "application/json"}
-
-    if Settings.ROUTER_API_KEY:
-        headers["Authorization"] = f"Bearer {Settings.ROUTER_API_KEY}"
-
-    return headers
-
-
-def parse_router_json_output(llm_output: str) -> dict:
-    """从路由模型输出中解析出 JSON 决策对象。"""
-    output = (llm_output or "").strip()
-
-    if output.startswith("```"):
-        output = output.replace("```json", "").replace("```", "").strip()
-
-    try:
-        data = json.loads(output)
-    except json.JSONDecodeError:
-        start = output.find("{")
-        end = output.rfind("}")
-
-        if start < 0 or end <= start:
-            raise ValueError("路由模型未返回 JSON 对象")
-
-        data = json.loads(output[start:end + 1])
-
-    if not isinstance(data, dict):
-        raise ValueError("路由模型返回值不是 JSON 对象")
-
-    return data
-
-
-def call_router_llm(question: str, top_k: int, trace_id: str = "") -> str:
-    """调用路由模型生成 Agent 动作决策，并处理重试和错误。"""
-    payload = {
-        "model": Settings.ROUTER_MODEL_NAME,
-        "temperature": Settings.ROUTER_TEMPERATURE,
-        "max_tokens": Settings.ROUTER_MAX_TOKENS,
-        "messages": [
-            {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": ROUTER_USER_PROMPT.format(
-                    question=question,
-                    top_k=top_k,
-                    available_actions=json.dumps(
-                        sorted(ROUTER_ALLOWED_ACTIONS),
-                        ensure_ascii=False
-                    ),
-                    tool_specs=json.dumps(
-                        ROUTER_TOOL_SPECS,
-                        ensure_ascii=False,
-                        indent=2
-                    )
-                )
-            }
-        ]
-    }
-
-    headers = build_router_headers()
-    total_attempts = Settings.ROUTER_MAX_RETRIES + 1
-    last_error = ""
-
-    for attempt in range(total_attempts):
-        try:
-            logger.info(
-                f"[trace_id={trace_id}] [router_llm] attempt={attempt + 1}/{total_attempts} "
-                f"url={Settings.ROUTER_API_URL} model={Settings.ROUTER_MODEL_NAME} "
-                f"timeout={Settings.ROUTER_TIMEOUT}"
-            )
-
-            response = requests.post(
-                Settings.ROUTER_API_URL,
-                headers=headers,
-                json=payload,
-                timeout=Settings.ROUTER_TIMEOUT
-            )
-
-            if response.status_code != 200:
-                last_error = (
-                    f"HTTP {response.status_code}: "
-                    f"{response.text[:300]}"
-                )
-                raise RuntimeError(last_error)
-
-            data = response.json()
-            return data["choices"][0]["message"]["content"]
-
-        except Exception as e:
-            last_error = str(e)
-
-            if attempt < Settings.ROUTER_MAX_RETRIES:
-                logger.warning(
-                    f"[trace_id={trace_id}] [router_llm] 调用失败，准备重试 "
-                    f"attempt={attempt + 1}/{total_attempts} error={last_error}"
-                )
-                time.sleep(Settings.LLM_RETRY_SLEEP)
-                continue
-
-    raise RuntimeError(f"路由模型调用失败：{last_error}")
 
 
 def route_agent_action_by_llm(question: str, top_k: int, trace_id: str = "") -> dict:
