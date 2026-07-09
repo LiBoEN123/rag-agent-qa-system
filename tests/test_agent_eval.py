@@ -69,8 +69,8 @@ def test_refuse_metrics_use_final_status_not_refuse_action():
 
 def test_evaluate_one_case_checks_tool_output_keys(monkeypatch):
     """验证单条 Agent Eval 会把工具输出字段检查纳入通过判定。"""
-    def fake_run_agent_once(**kwargs):
-        """模拟 compare_documents 的 Agent 返回结果。"""
+    def fake_run_agent_v2(**kwargs):
+        """模拟 compare_documents 的 Agent v2 返回结果。"""
         return {
             "status": "OK",
             "action": "compare_documents",
@@ -78,25 +78,27 @@ def test_evaluate_one_case_checks_tool_output_keys(monkeypatch):
             "reason": "Agent 选择工具：compare_documents",
             "tool_result_summary": "compare_documents 执行成功",
             "references": [],
-            "tool_result": {
-                "output": {
-                    "doc_a_evidence": [],
-                    "doc_b_evidence": [],
-                    "comparison": "存在差异",
-                    "conflict_detected": True,
-                }
-            },
             "tool_trace": [
                 {
                     "step": "decide",
                     "decision_type": "use_tool",
                     "action": "compare_documents",
                     "tool_name": "compare_documents",
-                }
+                },
+                {
+                    "step": "tool_call",
+                    "tool_name": "compare_documents",
+                    "tool_output": {
+                        "doc_a_evidence": [],
+                        "doc_b_evidence": [],
+                        "comparison": "存在差异",
+                        "conflict_detected": True,
+                    },
+                },
             ],
         }
 
-    monkeypatch.setattr(agent_eval, "run_agent_once", fake_run_agent_once)
+    monkeypatch.setattr(agent_eval, "run_agent_v2", fake_run_agent_v2)
 
     row = evaluate_one_case(
         {

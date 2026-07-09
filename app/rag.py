@@ -542,6 +542,7 @@ def ask(
         question=question,
         answer=parsed["answer"],
         references=final_references,
+        min_overlap_ratio=0.1,
     )
 
     if not citation_verification["supported"]:

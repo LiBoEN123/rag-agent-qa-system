@@ -19,7 +19,7 @@ from app.rag import (
 )
 from app.config import Settings
 from app.untils import get_logger
-from app.agent import route_agent_action, run_agent_once
+from app.agent import route_agent_action
 from app.agent_runtime import run_agent_v2
 from app.observability import create_trace_id
 from app.query_rewrite import rewrite_query_with_history
@@ -1168,35 +1168,23 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
         try:
             agent_start = time.perf_counter()
 
-            agent_runtime_name = "run_agent_v2" if Settings.ENABLE_AGENT_V2 else "run_agent_once"
-            if Settings.ENABLE_AGENT_V2:
-                result = run_agent_v2(
-                    write_bad_cases=write_bad_cases,
-                    question=effective_question,
-                    top_k=final_top_k,
-                    decompose_top_k=decompose_top_k,
-                    decision=decision,
-                    trace_id=trace_id,
-                    session_id=session_id or None,
-                    bad_case=bad_case,
-                )
-            else:
-                result = run_agent_once(
-                    write_bad_cases,
-                    effective_question,
-                    final_top_k,
-                    decompose_top_k,
-                    decision,
-                    trace_id,
-                    bad_case
-                )
+            result = run_agent_v2(
+                write_bad_cases=write_bad_cases,
+                question=effective_question,
+                top_k=final_top_k,
+                decompose_top_k=decompose_top_k,
+                decision=decision,
+                trace_id=trace_id,
+                session_id=session_id or None,
+                bad_case=bad_case,
+            )
             result = attach_query_rewrite_trace(result, rewrite_trace)
 
             agent_cost_ms = int((time.perf_counter() - agent_start) * 1000)
             metrics["agent_cost_ms"] = agent_cost_ms
 
             logger.info(
-                f"[trace_id={trace_id}] [agent] {agent_runtime_name}_end "
+                f"[trace_id={trace_id}] [agent] run_agent_v2_end "
                 f"status={result.get('status', '')} "
                 f"agent_cost_ms={agent_cost_ms} "
                 f"answer_len={len(result.get('answer', '') or '')} "

@@ -5,10 +5,15 @@ from app.agent_executor import execute_plan
 from app.agent_planner import build_plan_from_decision
 from app.agent_state import AgentState
 from app.config import Settings
+from app.trace_store import save_agent_trace
+from app.untils import get_logger
+
+
+logger = get_logger("chat_service")
 
 
 def _route_agent_action(question: str, top_k: int, trace_id: str = "") -> dict:
-    """局部导入旧 Router，避免 v2 Runtime 与旧 Agent 模块形成循环依赖。"""
+    """局部导入 Router，避免 Runtime 与路由模块形成循环依赖。"""
     from app.agent import route_agent_action
 
     return route_agent_action(question, top_k, trace_id=trace_id)
@@ -20,7 +25,7 @@ def _safe_decision(decision: dict | None) -> dict:
 
 
 def get_route_decision_for_trace(decision: dict) -> str:
-    """根据路由 action 生成兼容旧 tool_trace 的 route_decision。"""
+    """根据路由 action 生成 trace 使用的 route_decision。"""
     action = decision.get("action", "")
 
     if action == "search_knowledge_base":
@@ -35,8 +40,8 @@ def get_route_decision_for_trace(decision: dict) -> str:
     return "unknown"
 
 
-def map_agent_status_to_legacy_status(status: str) -> str:
-    """将 Agent v2 内部状态映射为旧 run_agent_once 使用的大写业务状态。"""
+def map_agent_status_to_public_status(status: str) -> str:
+    """将 Agent v2 内部状态映射为 API 使用的大写业务状态。"""
     mapping = {
         "ok": "OK",
         "clarify": "NEED_CLARIFICATION",
@@ -51,7 +56,7 @@ def map_agent_status_to_legacy_status(status: str) -> str:
 
 
 def summarize_observations_for_result(state: AgentState) -> str:
-    """从 v2 observations 中提取兼容旧响应的工具结果摘要。"""
+    """从 observations 中提取 API 响应使用的工具结果摘要。"""
     if state.status == "clarify":
         return "未调用工具，问题需要澄清"
 
@@ -123,7 +128,7 @@ def normalize_llm_call_count(state: AgentState) -> None:
 
 
 def append_llm_usage_trace(state: AgentState) -> None:
-    """把本次 v2 Runtime 的 LLM 使用情况写入兼容旧响应的 trace。"""
+    """把本次 Runtime 的 LLM 使用情况写入工具 trace。"""
     usage_trace = {
         "step": "llm_usage",
         "router_llm_used": bool(state.router_llm_used),
@@ -141,8 +146,8 @@ def append_llm_usage_trace(state: AgentState) -> None:
 
 
 def build_v2_result(state: AgentState, decision: dict) -> dict:
-    """将 AgentState 转换成旧 run_agent_once 兼容的结果字典。"""
-    public_status = map_agent_status_to_legacy_status(state.status)
+    """将 AgentState 转换成 API 主流程使用的结果字典。"""
+    public_status = map_agent_status_to_public_status(state.status)
     need_clarification = state.status == "clarify"
 
     return {
@@ -193,7 +198,7 @@ def build_internal_error_result(exc: Exception, decision: dict | None = None) ->
 
 
 def _default_bad_case(trace_id: str, question: str) -> dict:
-    """构造与旧 Agent 流程兼容的 bad case 默认结构。"""
+    """构造 Agent v2 使用的 bad case 默认结构。"""
     return {
         "trace_id": trace_id,
         "question": question,
@@ -227,6 +232,38 @@ def _write_internal_bad_case(
         write_bad_cases(record)
     except Exception:
         return
+
+
+def maybe_save_agent_trace(
+    *,
+    trace_id: str,
+    session_id: str | None,
+    question: str,
+    rewritten_question: str = "",
+    final_answer: str = "",
+    status: str = "",
+    reason: str = "",
+    tool_trace: list[dict] | None = None,
+    total_cost_ms: int = 0,
+) -> None:
+    """按配置保存 Agent trace，持久化失败不影响主流程。"""
+    if not Settings.ENABLE_AGENT_TRACE_STORE:
+        return
+
+    try:
+        save_agent_trace(
+            trace_id=trace_id,
+            session_id=session_id,
+            question=question,
+            rewritten_question=rewritten_question,
+            final_answer=final_answer,
+            status=status,
+            reason=reason,
+            tool_trace=tool_trace or [],
+            total_cost_ms=total_cost_ms,
+        )
+    except Exception as exc:
+        logger.warning("保存 Agent v2 trace 失败，忽略持久化错误: %s", exc)
 
 
 def run_agent_v2(
@@ -283,7 +320,18 @@ def run_agent_v2(
         normalize_llm_call_count(state)
         append_llm_usage_trace(state)
 
-        return build_v2_result(state, decision)
+        result = build_v2_result(state, decision)
+        maybe_save_agent_trace(
+            trace_id=state.trace_id,
+            session_id=state.session_id,
+            question=state.original_question,
+            rewritten_question=state.rewritten_question,
+            final_answer=result.get("answer", ""),
+            status=result.get("status", ""),
+            reason=result.get("reason", ""),
+            tool_trace=result.get("tool_trace", []),
+        )
+        return result
 
     except Exception as exc:
         _write_internal_bad_case(
@@ -293,7 +341,17 @@ def run_agent_v2(
             question=question,
             exc=exc,
         )
-        return build_internal_error_result(exc, decision_for_error)
+        result = build_internal_error_result(exc, decision_for_error)
+        maybe_save_agent_trace(
+            trace_id=trace_id,
+            session_id=session_id,
+            question=question,
+            final_answer=result.get("answer", ""),
+            status=result.get("status", ""),
+            reason=result.get("reason", ""),
+            tool_trace=result.get("tool_trace", []),
+        )
+        return result
 
 
 __all__ = [
@@ -303,7 +361,8 @@ __all__ = [
     "build_plan_trace",
     "build_v2_result",
     "get_route_decision_for_trace",
-    "map_agent_status_to_legacy_status",
+    "map_agent_status_to_public_status",
+    "maybe_save_agent_trace",
     "normalize_llm_call_count",
     "run_agent_v2",
     "summarize_observations_for_result",

@@ -1,4 +1,4 @@
-from app.agent_runtime import map_agent_status_to_legacy_status, run_agent_v2
+from app.agent_runtime import map_agent_status_to_public_status, run_agent_v2
 from app.agent_state import AgentPlanStep, AgentState
 
 
@@ -276,12 +276,79 @@ def test_run_agent_v2_handles_internal_error(monkeypatch):
     assert bad_cases[0]["error_type"] == "internal_error"
 
 
-def test_map_agent_status_to_legacy_status():
-    """验证 v2 状态到旧业务状态的映射。"""
-    assert map_agent_status_to_legacy_status("ok") == "OK"
-    assert map_agent_status_to_legacy_status("clarify") == "NEED_CLARIFICATION"
-    assert map_agent_status_to_legacy_status("direct_answer") == "OK"
-    assert map_agent_status_to_legacy_status("tool_error") == "TOOL_ERROR"
-    assert map_agent_status_to_legacy_status("model_error") == "MODEL_ERROR"
-    assert map_agent_status_to_legacy_status("no_evidence") == "NO_RELEVANT_INFO"
-    assert map_agent_status_to_legacy_status("error") == "INTERNAL_ERROR"
+def test_map_agent_status_to_public_status():
+    """验证 v2 内部状态到 API 业务状态的映射。"""
+    assert map_agent_status_to_public_status("ok") == "OK"
+    assert map_agent_status_to_public_status("clarify") == "NEED_CLARIFICATION"
+    assert map_agent_status_to_public_status("direct_answer") == "OK"
+    assert map_agent_status_to_public_status("tool_error") == "TOOL_ERROR"
+    assert map_agent_status_to_public_status("model_error") == "MODEL_ERROR"
+    assert map_agent_status_to_public_status("no_evidence") == "NO_RELEVANT_INFO"
+    assert map_agent_status_to_public_status("error") == "INTERNAL_ERROR"
+
+
+def test_run_agent_v2_saves_trace_when_enabled(monkeypatch):
+    """验证 trace 开关开启时 Runtime 保存最终结果和执行步骤。"""
+    from app import agent_runtime
+
+    saved = {}
+    decision = {
+        "decision": "direct_answer",
+        "action": "direct_answer",
+        "reason": "可以直接回答",
+        "router_llm_used": False,
+    }
+
+    monkeypatch.setattr(
+        agent_runtime.Settings,
+        "ENABLE_AGENT_TRACE_STORE",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        agent_runtime,
+        "_route_agent_action",
+        lambda question, top_k, trace_id="": decision,
+    )
+    monkeypatch.setattr(
+        agent_runtime,
+        "build_plan_from_decision",
+        lambda decision, question, top_k: [
+            AgentPlanStep(
+                step_id=1,
+                action="direct_answer",
+                reason="可以直接回答",
+            )
+        ],
+    )
+
+    def fake_execute(state):
+        """模拟直接回答步骤执行完成。"""
+        state.status = "direct_answer"
+        state.final_answer = "可以直接回答"
+        state.reason = "可以直接回答"
+        return state
+
+    monkeypatch.setattr(agent_runtime, "execute_plan", fake_execute)
+    monkeypatch.setattr(agent_runtime, "compose_final_answer", lambda state: state)
+    monkeypatch.setattr(
+        agent_runtime,
+        "save_agent_trace",
+        lambda **kwargs: saved.update(kwargs),
+    )
+
+    result = agent_runtime.run_agent_v2(
+        write_bad_cases=lambda record: None,
+        question="你能做什么？",
+        top_k=5,
+        decompose_top_k=10,
+        trace_id="trace_save",
+        session_id="session_save",
+    )
+
+    assert result["status"] == "OK"
+    assert saved["trace_id"] == "trace_save"
+    assert saved["session_id"] == "session_save"
+    assert saved["question"] == "你能做什么？"
+    assert saved["final_answer"] == "可以直接回答"
+    assert saved["tool_trace"]

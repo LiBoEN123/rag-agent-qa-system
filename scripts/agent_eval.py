@@ -23,7 +23,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.main import write_bad_cases
 from app.config import Settings
-from app.agent import run_agent_once
+from app.agent_runtime import run_agent_v2
 from app.rag import (
     get_rag_status,
     needs_rebuild,
@@ -141,7 +141,7 @@ def get_first_trace(result: dict) -> dict:
 
 def extract_actual_fields(result: dict) -> dict:
     """
-    你的 run_agent_once 返回里：
+    Agent v2 返回里：
     - result["status"] 是最终状态
     - result["action"] 是最终动作
     - result["tool_trace"][0]["decision_type"] 是路由决策
@@ -344,7 +344,7 @@ def evaluate_one_case(case: dict, top_k: int) -> dict:
     started_at = time.time()
 
     try:
-        result = run_agent_once(
+        result = run_agent_v2(
             write_bad_cases=write_bad_cases,
             question=question,
             top_k=top_k,
@@ -799,7 +799,7 @@ def main() -> None:
         "--top-k",
         type=int,
         default=3,
-        help="传给 run_agent_once 的 top_k"
+        help="传给 run_agent_v2 的 top_k"
     )
 
     parser.add_argument(

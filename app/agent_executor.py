@@ -107,16 +107,16 @@ def build_tool_trace_step(
                 }
             )
         trace["hits"] = hits
+    else:
+        # 普通工具输出体量较小，保留原始结果供评测和故障排查使用。
+        trace["tool_output"] = observation.output
 
     return trace
 
 
 def _call_dispatch_tool(step: AgentPlanStep, trace_id: str = "") -> dict:
-    """调用现有工具分发入口，并兼容旧版不支持 trace_id 的签名。"""
-    try:
-        return dispatch_tool(step.tool_name, step.tool_args, trace_id=trace_id)
-    except TypeError:
-        return dispatch_tool(step.tool_name, step.tool_args)
+    """调用工具分发入口并传递当前 trace_id。"""
+    return dispatch_tool(step.tool_name, step.tool_args, trace_id=trace_id)
 
 
 def _execute_tool_step(state: AgentState, step: AgentPlanStep) -> bool:

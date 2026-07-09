@@ -1,6 +1,6 @@
 import pytest
 
-from app import agent
+from app import agent, agent_answer, agent_executor, agent_runtime
 from app.tool_registry import tool_registry
 
 
@@ -220,8 +220,8 @@ def test_route_uses_rules_when_router_disabled(monkeypatch):
     assert decision["router_llm_used"] is False
 
 
-def test_run_agent_once_uses_search_knowledge_base_tool(monkeypatch):
-    """验证知识库路径通过 dispatch_tool 调用标准检索工具。"""
+def test_run_agent_v2_uses_search_knowledge_base_tool(monkeypatch):
+    """验证 Agent v2 知识库路径通过 dispatch_tool 调用标准检索工具。"""
     called = {"count": 0}
     fake_chunk = {
         "chunk_id": 1,
@@ -276,10 +276,10 @@ def test_run_agent_once_uses_search_knowledge_base_tool(monkeypatch):
             "llm_call_count": 1,
         }
 
-    monkeypatch.setattr(agent, "dispatch_tool", fake_dispatch_tool)
-    monkeypatch.setattr(agent, "ask", fake_ask)
+    monkeypatch.setattr(agent_executor, "dispatch_tool", fake_dispatch_tool)
+    monkeypatch.setattr(agent_answer, "_call_ask", fake_ask)
 
-    result = agent.run_agent_once(
+    result = agent_runtime.run_agent_v2(
         write_bad_cases=lambda record: None,
         question="测试问题",
         top_k=5,
@@ -299,7 +299,7 @@ def test_run_agent_once_uses_search_knowledge_base_tool(monkeypatch):
     call_tool_steps = [
         step
         for step in result["tool_trace"]
-        if step.get("step") == "call_tool"
+        if step.get("step") == "tool_call"
         and step.get("tool_name") == "search_knowledge_base"
     ]
 

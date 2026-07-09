@@ -138,7 +138,7 @@ def test_ask_returns_no_relevant_info_when_citation_verification_fails(monkeypat
     monkeypatch.setattr(
         rag,
         "verify_answer_citations",
-        lambda question, answer, references: verification,
+        lambda question, answer, references, **kwargs: verification,
     )
 
     result = rag.ask(
