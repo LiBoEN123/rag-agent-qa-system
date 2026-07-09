@@ -1,3 +1,8 @@
+"""RAG 答案生成模块。
+
+负责上下文组装、回答模型调用、JSON 解析、引用绑定和置信度估算。
+"""
+
 import json
 import time
 from typing import List

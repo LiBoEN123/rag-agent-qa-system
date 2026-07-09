@@ -1,3 +1,8 @@
+"""混合检索与重排模块。
+
+融合 BM25、向量召回和交叉编码器重排，并支持多子查询结果合并。
+"""
+
 from typing import Any, Dict, List
 
 import jieba
@@ -27,6 +32,7 @@ parse_decompose_llm_json = _decomposition.parse_decompose_llm_json
 
 
 def decompose_query_with_llm(question: str):
+    """转发问题拆分调用，并同步可替换的 HTTP 客户端。"""
     # Preserve monkeypatching app.rag.retrieval.requests.post.
     _decomposition.requests = requests
     return _decomposition.decompose_query_with_llm(question)

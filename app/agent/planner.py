@@ -1,3 +1,8 @@
+"""Agent 计划构造模块。
+
+把经过校验的路由决策转换为可由执行器处理的标准计划步骤。
+"""
+
 from typing import Any
 
 from app.agent.state import AgentPlanStep

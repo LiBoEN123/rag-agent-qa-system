@@ -1,1 +1,4 @@
-"""Persistence adapters for sessions, traces, and SQLite."""
+"""持久化适配包。
+
+集中管理 SQLite 连接、会话消息、短期记忆和 Agent 运行追踪数据。
+"""

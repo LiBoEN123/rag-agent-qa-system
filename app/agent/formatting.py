@@ -1,7 +1,11 @@
-"""Natural-language formatting for non-RAG tool results."""
+"""普通工具答案格式化模块。
+
+把计算器、文档列表、chunk 查询和文档对比结果转换为自然语言回答。
+"""
 
 
 def format_tool_answer(tool_name: str, output: dict) -> str:
+    """把普通工具的结构化输出转换为面向用户的中文回答。"""
     if tool_name == "simple_calculator":
         return f"计算结果是：{output.get('result')}"
     if tool_name == "list_documents":

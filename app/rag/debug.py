@@ -1,3 +1,8 @@
+"""RAG 调试查询模块。
+
+提供文档注册表、chunk 预览和指定 chunk 完整原文的读取能力。
+"""
+
 from app.rag.retrieval import make_snippet
 
 

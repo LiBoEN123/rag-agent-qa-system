@@ -1,3 +1,8 @@
+"""Agent 状态模型模块。
+
+定义计划步骤、工具观察和完整运行状态，统一各执行阶段之间的数据协议。
+"""
+
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field

@@ -1,4 +1,7 @@
-"""Public tool API and backwards-compatible entry points."""
+"""工具系统公共入口。
+
+统一暴露内置工具、分发器和文档对比能力，并同步可替换的运行时依赖。
+"""
 
 from pathlib import Path
 
@@ -18,6 +21,7 @@ _call_compare_documents_llm = _compare._call_compare_documents_llm
 
 
 def append_tool_log(record: dict) -> None:
+    """使用门面层配置的路径追加工具调用日志。"""
     _dispatch.TOOL_CALLS_PATH = TOOL_CALLS_PATH
     _dispatch.append_tool_log(record)
 
@@ -27,11 +31,13 @@ def dispatch_tool(
     tool_args: dict | None = None,
     trace_id: str = "",
 ):
+    """通过统一入口分发工具，并同步调用日志路径。"""
     _dispatch.TOOL_CALLS_PATH = TOOL_CALLS_PATH
     return _dispatch.dispatch_tool(tool_name, tool_args, trace_id=trace_id)
 
 
 def compare_documents_tool(args: dict) -> dict:
+    """执行文档对比工具，并应用门面层替换的 LLM 调用函数。"""
     # Keep monkeypatching app.tools._call_compare_documents_llm compatible.
     _compare._call_compare_documents_llm = _call_compare_documents_llm
     return _compare.compare_documents_tool(args)

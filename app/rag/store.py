@@ -1,3 +1,8 @@
+"""RAG 索引存储与模型加载模块。
+
+管理模型缓存、BM25 构建、索引清单、ChromaDB 缓存保存和恢复。
+"""
+
 import json
 
 import torch
@@ -24,10 +29,12 @@ MANIFEST_PATH = INDEX_STORE_DIR / "index_manifest.json"
 
 
 def _model_cache_folder() -> str:
+    """返回模型加载使用的本地缓存目录。"""
     return str(Settings.ensure_model_cache_dir())
 
 
 def _load_embedding_model():
+    """从本地缓存加载文本向量模型。"""
     cache_folder = _model_cache_folder()
     logger.info(
         f"[models] loading embedding model={Settings.EMBEDDING_MODEL_NAME} "
@@ -42,6 +49,7 @@ def _load_embedding_model():
 
 
 def _load_rerank_model():
+    """从本地缓存加载交叉编码器重排模型。"""
     cache_folder = _model_cache_folder()
     logger.info(
         f"[models] loading rerank model={Settings.RERANK_MODEL_NAME} "
@@ -181,7 +189,7 @@ def needs_rebuild(
 
 
 def index_cache_exists() -> bool:
-    """Return whether the ChromaDB index cache is available."""
+    """判断 ChromaDB 中是否存在可用的索引缓存。"""
     return chroma_collection_has_chunks()
 
 
@@ -196,7 +204,7 @@ def save_index_cache(
     chunks: list[dict],
     doc_embeddings
 ):
-    """Persist chunk text, metadata, and embeddings to ChromaDB."""
+    """将 chunk、元数据和向量持久化到 ChromaDB。"""
     try:
         saved_count = persist_chunks_to_chroma(
             chunks=chunks,
@@ -227,7 +235,7 @@ def _build_bm25(texts: list[str]):
 
 
 def build_docs_registry_from_chunks(chunks: list[dict]) -> list[dict]:
-    """Rebuild the document registry from ChromaDB chunk metadata."""
+    """根据 ChromaDB chunk 元数据重建文档注册表。"""
     docs_by_source: dict[str, dict] = {}
     docs_registry: list[dict] = []
 

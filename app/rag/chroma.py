@@ -1,3 +1,8 @@
+"""ChromaDB 存储适配模块。
+
+封装 collection 初始化、chunk 向量持久化、查询和缓存恢复等底层操作。
+"""
+
 from __future__ import annotations
 
 import hashlib

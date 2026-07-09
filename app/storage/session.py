@@ -1,3 +1,8 @@
+"""会话存储公共接口。
+
+封装底层 SQLite 记忆实现，并对角色、会话编号和异常进行统一处理。
+"""
+
 from app.storage.memory import (
     append_message_sqlite,
     clear_session_sqlite,

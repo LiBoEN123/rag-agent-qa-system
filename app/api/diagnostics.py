@@ -1,4 +1,7 @@
-"""Knowledge-base search and diagnostic HTTP endpoints."""
+"""知识库诊断接口模块。
+
+提供检索、文档预览、知识库摘要、路由决策和指标汇总等辅助接口。
+"""
 
 from collections import Counter
 from dataclasses import dataclass
@@ -33,10 +36,12 @@ class DiagnosticsDependencies:
 def create_diagnostics_router(
     deps: DiagnosticsDependencies,
 ) -> tuple[APIRouter, dict[str, Callable]]:
+    """根据注入的依赖创建知识库与诊断接口路由。"""
     router = APIRouter()
 
     @router.get("/docs-preview")
     def docs_preview():
+        """返回知识库文档注册信息的预览。"""
         docs = deps.preview_docs()
         return {"count": len(docs), "data": docs}
 
@@ -46,11 +51,13 @@ def create_diagnostics_router(
         limit: int = Query(70, ge=1, le=1000),
         file_name: str | None = Query(None),
     ):
+        """按长度、数量和文件名筛选并返回 chunk 预览。"""
         data = deps.preview_chunks(max_len, limit, file_name)
         return {"count": len(data), "data": data}
 
     @router.post("/search", response_model=deps.search_response)
     def search_api(req: deps.chat_request, response: Response):
+        """执行知识库检索、重排和证据门控并返回候选片段。"""
         question = (req.question or "").strip()
         logger.info(
             "[search] request question_len=%s question_preview=%s",
@@ -172,6 +179,7 @@ def create_diagnostics_router(
 
     @router.post("/kb_summary")
     def kb_summary():
+        """汇总知识库状态、文档数量和文件名称。"""
         status = deps.get_rag_status()
         docs = deps.preview_docs()
         return {
@@ -190,6 +198,7 @@ def create_diagnostics_router(
 
     @router.post("/decide")
     def decide_api(req: deps.chat_request, response: Response):
+        """返回 Agent 对给定问题作出的路由决策。"""
         question = (req.question or "").strip()
         if not question:
             response.status_code = 400
@@ -212,6 +221,7 @@ def create_diagnostics_router(
 
     @router.get("/metrics-summary")
     def metrics_summary(limit: int = Query(20, ge=1, le=200)):
+        """统计最近请求的状态、耗时和 LLM 调用情况。"""
         records = deps.read_recent_metrics(limit)
         statuses = Counter(record.get("status", "unknown") for record in records)
         count = len(records)

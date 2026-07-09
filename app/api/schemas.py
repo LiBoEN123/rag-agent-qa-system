@@ -1,4 +1,7 @@
-"""Pydantic request and response models for the HTTP API."""
+"""API 数据模型模块。
+
+使用 Pydantic 定义聊天、引用和检索接口的请求与响应字段约束。
+"""
 
 from typing import Literal, TypeAlias
 

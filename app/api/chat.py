@@ -1,4 +1,7 @@
-"""FastAPI chat controller and application assembly."""
+"""聊天 API 控制器。
+
+组装 FastAPI 应用，并串联会话改写、Agent 执行、响应构造和指标记录流程。
+"""
 
 from fastapi import FastAPI, HTTPException, Response, Request
 from contextlib import asynccontextmanager
@@ -59,6 +62,7 @@ from app.api.schemas import (
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    """在 FastAPI 生命周期开始时初始化 RAG，关闭时正常退出。"""
     start_on_event()
     yield
 

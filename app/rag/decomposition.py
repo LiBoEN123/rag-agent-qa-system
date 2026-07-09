@@ -1,4 +1,7 @@
-"""Query-decomposition rules, LLM transport, and output parsing."""
+"""复杂问题拆分模块。
+
+通过规则判断拆分必要性，调用拆分模型，并规范化模型返回的子查询结构。
+"""
 
 import json
 import re
@@ -10,10 +13,12 @@ from app.prompts import DECOMPOSE_PROMPT
 
 
 def default_decompose_result(reason: str = "query decomposition skipped") -> dict:
+    """构造无需问题拆分时使用的统一默认结果。"""
     return {"need_decompose": False, "reason": reason, "sub_queries": []}
 
 
 def should_decompose_query(question: str) -> tuple[bool, str]:
+    """用轻量规则判断问题是否值得调用拆分模型。"""
     query = (question or "").strip()
     if not query:
         return False, "empty query"
@@ -53,6 +58,7 @@ def should_decompose_query(question: str) -> tuple[bool, str]:
 
 
 def parse_decompose_bool(value) -> bool:
+    """将模型返回的常见布尔表示转换为 bool。"""
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
@@ -61,10 +67,12 @@ def parse_decompose_bool(value) -> bool:
 
 
 def compact_text(value) -> str:
+    """把任意模型字段压缩为单行文本。"""
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
 def normalize_decompose_result(result: dict) -> dict:
+    """校验并规范化问题拆分模型的结构化结果。"""
     if not isinstance(result, dict):
         raise ValueError(f"拆分模型返回值必须是 dict，实际为 {type(result)}")
     need_decompose = parse_decompose_bool(result.get("need_decompose", False))
@@ -100,17 +108,20 @@ def normalize_decompose_result(result: dict) -> dict:
 
 
 def compact_error_preview(text: str, max_len: int = 500) -> str:
+    """生成适合错误日志记录的单行截断预览。"""
     preview = re.sub(r"\s+", " ", (text or "")).strip()
     return preview[:max_len] + "..." if len(preview) > max_len else preview
 
 
 def strip_json_code_fence(content: str) -> str:
+    """移除模型输出外层可能存在的 Markdown JSON 代码块。"""
     content = (content or "").strip()
     content = re.sub(r"^```(?:json)?\s*", "", content, flags=re.IGNORECASE)
     return re.sub(r"\s*```$", "", content).strip()
 
 
 def extract_first_json_object(content: str) -> str:
+    """从混合文本中提取第一个完整 JSON 对象。"""
     start = content.find("{")
     if start < 0:
         raise ValueError("拆分模型未返回 JSON 对象")
@@ -139,6 +150,7 @@ def extract_first_json_object(content: str) -> str:
 
 
 def parse_decompose_llm_json(content: str) -> dict:
+    """解析并规范化拆分模型返回的 JSON 内容。"""
     content = strip_json_code_fence(content)
     try:
         result = json.loads(content, strict=False)
@@ -153,6 +165,7 @@ def parse_decompose_llm_json(content: str) -> dict:
 
 
 def decompose_query_with_llm(question: str):
+    """调用问题拆分模型并返回规范化的子查询结果。"""
     headers = {"Content-Type": "application/json"}
     if Settings.DECOMPOSE_API_KEY:
         headers["Authorization"] = f"Bearer {Settings.DECOMPOSE_API_KEY}"

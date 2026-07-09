@@ -1,3 +1,8 @@
+"""答案引用校验模块。
+
+提取答案与证据关键词，检查引用是否足以支撑最终生成内容。
+"""
+
 import re
 import unicodedata
 from typing import Any

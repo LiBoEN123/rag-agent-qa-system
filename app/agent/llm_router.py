@@ -1,4 +1,7 @@
-"""Transport and parsing for the optional LLM Agent router."""
+"""LLM 路由调用模块。
+
+负责构造路由模型请求、处理重试，并解析模型返回的 JSON 决策。
+"""
 
 import json
 import time
@@ -15,6 +18,7 @@ logger = get_logger("chat_service")
 
 
 def build_router_headers() -> dict:
+    """构造调用路由模型所需的 HTTP 请求头。"""
     headers = {"Content-Type": "application/json"}
     if Settings.ROUTER_API_KEY:
         headers["Authorization"] = f"Bearer {Settings.ROUTER_API_KEY}"
@@ -22,6 +26,7 @@ def build_router_headers() -> dict:
 
 
 def parse_router_json_output(llm_output: str) -> dict:
+    """解析路由模型输出，并兼容 Markdown JSON 代码块。"""
     output = (llm_output or "").strip()
     if output.startswith("```"):
         output = output.replace("```json", "").replace("```", "").strip()
@@ -38,6 +43,7 @@ def parse_router_json_output(llm_output: str) -> dict:
 
 
 def call_router_llm(question: str, top_k: int, trace_id: str = "") -> str:
+    """调用 LLM Router，并按配置执行失败重试。"""
     allowed_actions = set(tool_registry.names()) | {"clarify", "direct_answer"}
     payload = {
         "model": Settings.ROUTER_MODEL_NAME,

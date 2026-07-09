@@ -1,4 +1,7 @@
-"""Result envelopes and evidence-gate trace construction."""
+"""RAG 结果构造模块。
+
+统一问答返回字段，并生成记录候选证据强度的门控追踪信息。
+"""
 
 from typing import Any
 
@@ -10,6 +13,7 @@ def build_evidence_gate_step(
     refused: bool,
     reason: str,
 ) -> dict:
+    """汇总候选证据分数并构造证据门控追踪步骤。"""
     candidates = [
         item for item in (final_chunks or []) if isinstance(item, dict)
     ]
@@ -56,6 +60,7 @@ def build_rag_result(
     answer_llm_used: bool = False,
     **extra,
 ) -> dict:
+    """构造字段完整且状态统一的 RAG 问答结果。"""
     result = {
         "status": status,
         "answer": answer,

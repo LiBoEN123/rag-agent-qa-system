@@ -1,4 +1,7 @@
-"""Chat response construction and internal-status mapping."""
+"""聊天响应构造模块。
+
+把 Agent 内部状态和结果转换为稳定、统一的 HTTP 响应数据结构。
+"""
 
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -102,6 +105,7 @@ class ChatResponseBuilder:
         answer_llm_used: bool | None = None,
         llm_call_count: int | None = None,
     ) -> Any:
+        """根据标准字段构造统一的聊天响应对象。"""
         retrieval_confidence = max(
             0.0, min(1.0, self.safe_float(retrieval_confidence))
         )
@@ -142,6 +146,7 @@ class ChatResponseBuilder:
         question: str,
         response_config: dict,
     ) -> Any:
+        """根据 Agent 结果和状态配置构造聊天响应。"""
         return self.build(
             code=response_config["code"],
             message=response_config["message"],

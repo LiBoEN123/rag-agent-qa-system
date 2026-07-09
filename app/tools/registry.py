@@ -1,3 +1,8 @@
+"""工具注册表模块。
+
+定义工具描述、参数校验和分发协议，并注册系统内置工具集合。
+"""
+
 from dataclasses import dataclass
 from typing import Callable
 

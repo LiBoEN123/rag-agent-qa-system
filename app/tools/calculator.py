@@ -1,4 +1,7 @@
-"""Safe arithmetic tool."""
+"""安全计算器工具。
+
+通过 AST 节点白名单限制表达式能力，避免执行任意 Python 代码。
+"""
 
 import ast
 import operator as op
@@ -17,7 +20,9 @@ _ALLOWED_OPERATORS = {
 
 
 def safe_eval_expr(expression: str) -> int | float:
+    """使用 AST 白名单安全计算简单四则运算表达式。"""
     def evaluate(node):
+        """递归计算经过白名单校验的 AST 节点。"""
         if isinstance(node, ast.Expression):
             return evaluate(node.body)
         if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
@@ -34,6 +39,7 @@ def safe_eval_expr(expression: str) -> int | float:
 
 
 def simple_calculator(expression: str) -> dict:
+    """执行安全计算并返回统一的工具结果结构。"""
     tool_name = "simple_calculator"
     tool_input = {"expression": expression}
     try:

@@ -1,3 +1,8 @@
+"""知识库重建命令入口。
+
+读取当前配置并触发文档索引的完整重建与持久化流程。
+"""
+
 from app.config import Settings
 from app.rag import rebuild_and_persist_index
 

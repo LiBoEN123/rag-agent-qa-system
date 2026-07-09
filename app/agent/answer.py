@@ -1,3 +1,8 @@
+"""Agent 答案合成模块。
+
+根据工具观察结果选择 RAG 或普通工具格式化路径，并生成最终回答状态。
+"""
+
 from typing import Any
 
 from app.agent.state import AgentObservation, AgentState

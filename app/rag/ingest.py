@@ -1,3 +1,8 @@
+"""知识库文档摄取模块。
+
+读取多种格式文档，清洗文本，并按普通文本或 Markdown 结构切分 chunk。
+"""
+
 import re
 from pathlib import Path
 

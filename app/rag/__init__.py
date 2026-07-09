@@ -1,4 +1,7 @@
-"""Stable public facade for the RAG subsystem."""
+"""RAG 公共门面。
+
+统一暴露索引和问答能力，并动态转发可能在运行期间重建的索引状态。
+"""
 
 from app.rag import pipeline as _pipeline
 
@@ -33,7 +36,7 @@ verify_answer_citations = _pipeline.verify_answer_citations
 
 
 def ask(*args, **kwargs):
-    """Run the RAG pipeline while honoring facade-level dependency patches."""
+    """执行 RAG 问答流程，并应用门面层注入的可替换依赖。"""
     _pipeline.decompose_query_with_llm = decompose_query_with_llm
     _pipeline.call_llm = call_llm
     _pipeline.rerank = rerank
@@ -45,6 +48,7 @@ def ask(*args, **kwargs):
 
 
 def __getattr__(name: str):
+    """动态读取重建索引时可能被重新绑定的运行时状态。"""
     # Index state is rebound during rebuild/load, so resolve it dynamically.
     if name in {
         "chunks",

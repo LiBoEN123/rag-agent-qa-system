@@ -1,3 +1,8 @@
+"""双文档对比工具。
+
+筛选两份文档的相关证据，调用模型生成差异说明并验证引用支撑情况。
+"""
+
 import json
 import time
 from typing import Any

@@ -1,3 +1,8 @@
+"""会话记忆持久化模块。
+
+使用 SQLite 保存、查询和清理会话消息，为多轮问题改写提供历史上下文。
+"""
+
 from pathlib import Path
 
 from app.storage.database import get_connection, init_db, now_iso

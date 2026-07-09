@@ -1,3 +1,8 @@
+"""RAG 主流程编排模块。
+
+维护内存索引状态，组织索引生命周期、检索、重排、生成、引用和拒答流程。
+"""
+
 from typing import Any, Dict, List
 import time
 

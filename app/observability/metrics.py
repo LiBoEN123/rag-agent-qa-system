@@ -1,4 +1,7 @@
-"""Metrics, trace enrichment, and bad-case persistence."""
+"""指标与失败案例模块。
+
+负责汇总调用链指标、记录 LLM 使用情况，并持久化 metrics 与 bad case 日志。
+"""
 
 import json
 from datetime import datetime
@@ -38,10 +41,12 @@ EXPECTED_NON_BAD_CASE_TYPES = {
 
 
 def now_iso() -> str:
+    """返回带毫秒精度的当前 ISO 时间字符串。"""
     return datetime.now().isoformat(timespec="milliseconds")
 
 
 def should_write_bad_case(record: dict) -> bool:
+    """判断当前错误记录是否值得写入 bad case 日志。"""
     error_type = str(record.get("error_type", "") or "").strip()
     if error_type in REAL_BAD_CASE:
         return True
@@ -56,6 +61,7 @@ def should_write_bad_case(record: dict) -> bool:
 
 
 def normalize_metrics_status(result_status: str) -> str:
+    """把内部业务状态映射为指标统计使用的状态名称。"""
     return {
         "OK": "success",
         "NO_RELEVANT_INFO": "no_relevant_info",
@@ -75,6 +81,7 @@ def extract_llm_usage(
     answer_llm_used: bool | None = None,
     llm_call_count: int | None = None,
 ) -> dict:
+    """从调用链追踪中提取各阶段的 LLM 使用情况。"""
     query_rewrite_llm_used = False
     for step in tool_trace or []:
         if step.get("step") == "query_rewrite":
@@ -107,6 +114,7 @@ def extract_llm_usage(
 
 
 def collect_trace_metrics(result: dict) -> dict:
+    """从 Agent 结果中汇总检索、工具、耗时和模型指标。"""
     tool_trace = result.get("tool_trace") or []
     retrieved_count = 0
     tool_called = False
@@ -140,6 +148,7 @@ def collect_trace_metrics(result: dict) -> dict:
 
 
 def build_query_rewrite_trace(rewrite_result: dict) -> dict:
+    """把问题改写结果转换为标准追踪步骤。"""
     return {
         "step": "query_rewrite",
         "original_question": rewrite_result.get("original_question", ""),
@@ -155,6 +164,7 @@ def build_query_rewrite_trace(rewrite_result: dict) -> dict:
 
 
 def attach_query_rewrite_trace(result: dict, rewrite_trace: dict) -> dict:
+    """将问题改写追踪插入 Agent 返回的调用链首部。"""
     result = dict(result or {})
     tool_trace = list(result.get("tool_trace") or [])
     if not any(step.get("step") == "query_rewrite" for step in tool_trace):
@@ -171,12 +181,14 @@ def attach_query_rewrite_trace(result: dict, rewrite_trace: dict) -> dict:
 
 
 def write_metrics(record: dict) -> None:
+    """将单条请求指标追加写入 JSONL 文件。"""
     METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
     with METRICS_PATH.open("a", encoding="utf-8") as file:
         file.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def write_bad_cases(record: dict) -> None:
+    """筛选并持久化真正需要排查的失败案例。"""
     if not should_write_bad_case(record):
         logger.info(
             "[trace_id=%s] [bad_case] skip error_type=%s note=%s",
@@ -202,6 +214,7 @@ def write_bad_cases(record: dict) -> None:
 
 
 def log_and_write_metrics(record: dict) -> None:
+    """记录指标摘要日志，并将完整指标持久化。"""
     logger.info(
         "[trace_id=%s] [metrics] status=%s latency_ms=%s total_cost_ms=%s "
         "route_cost_ms=%s agent_cost_ms=%s retrieved_count=%s tool_name=%s "
@@ -222,6 +235,7 @@ def log_and_write_metrics(record: dict) -> None:
 
 
 def read_recent_metrics(limit: int = 20) -> list[dict]:
+    """读取最近指定数量的有效指标记录。"""
     if not METRICS_PATH.exists():
         return []
     records = []

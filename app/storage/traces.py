@@ -1,3 +1,8 @@
+"""Agent 追踪持久化模块。
+
+将 Agent 运行摘要和计划步骤写入 SQLite，并提供按 trace_id 查询的接口。
+"""
+
 import json
 from pathlib import Path
 

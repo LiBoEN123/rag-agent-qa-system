@@ -1,1 +1,4 @@
-"""HTTP API layer for the RAG service."""
+"""HTTP API 领域包。
+
+集中管理 FastAPI 应用组装、数据模型、响应构造、诊断接口和启动生命周期。
+"""

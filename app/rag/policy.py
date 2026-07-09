@@ -1,4 +1,7 @@
-"""Evidence refusal and clarification policies."""
+"""证据策略模块。
+
+根据多路检索分数判断是否拒答，并为模糊问题生成针对性的澄清追问。
+"""
 
 from app.config import Settings
 from app.rag.scoring import safe_float
@@ -16,6 +19,7 @@ HYBRID_STRONG_THRESHOLD = 0.35
 
 
 def should_refuse(retrieved_chunks, vector_threshold: float = None):
+    """根据向量、重排、混合和关键词分数判断是否应拒答。"""
     threshold = safe_float(
         vector_threshold
         if vector_threshold is not None
@@ -57,6 +61,7 @@ def should_refuse(retrieved_chunks, vector_threshold: float = None):
 
 
 def is_ambiguous_question(question: str) -> bool:
+    """判断问题是否过短或包含缺少上下文的指代表达。"""
     normalized = (question or "").strip()
     return (
         not normalized
@@ -69,6 +74,7 @@ def is_ambiguous_question(question: str) -> bool:
 
 
 def build_clarification_question(question: str) -> str:
+    """根据问题主题生成更具体的中文澄清追问。"""
     normalized = (question or "").strip()
     if "退款" in normalized:
         return "你想问的是退款条件、退款时间窗口，还是退款申请方式？"

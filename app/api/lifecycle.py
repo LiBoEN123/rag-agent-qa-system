@@ -1,4 +1,7 @@
-"""Application startup orchestration."""
+"""应用启动生命周期模块。
+
+负责校验配置，并在服务启动时判断加载缓存还是重建知识库索引。
+"""
 
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -19,6 +22,7 @@ class StartupDependencies:
 
 
 def initialize_rag(deps: StartupDependencies) -> None:
+    """校验配置，并在启动时加载或重建 RAG 索引。"""
     deps.settings.validate()
     data_dir = str(deps.settings.RAG_FILE_PATH)
     needs_rebuild, reason = deps.needs_rebuild(data_dir)

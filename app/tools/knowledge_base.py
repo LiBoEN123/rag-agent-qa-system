@@ -1,9 +1,13 @@
-"""Tools that expose knowledge-base documents and chunks."""
+"""知识库工具模块。
+
+向 Agent 暴露文档列表、chunk 原文和相关证据检索等基础能力。
+"""
 
 from app.tools.result import tool_error, tool_success
 
 
 def list_documents() -> dict:
+    """列出知识库中的文档并包装为标准工具结果。"""
     tool_name = "list_documents"
     tool_input = {}
     try:
@@ -20,6 +24,7 @@ def list_documents() -> dict:
 
 
 def get_chunk_text(chunk_id: int | str) -> dict:
+    """按 chunk 编号读取完整文本并包装为标准工具结果。"""
     tool_name = "get_chunk_text"
     tool_input = {"chunk_id": chunk_id}
     try:
@@ -44,6 +49,7 @@ def get_chunk_text(chunk_id: int | str) -> dict:
 
 
 def _get_chunk_value(chunk: dict, key: str, default=None):
+    """优先从 chunk 顶层读取字段，其次读取 metadata。"""
     if not isinstance(chunk, dict):
         return default
     value = chunk.get(key)
@@ -54,6 +60,7 @@ def _get_chunk_value(chunk: dict, key: str, default=None):
 
 
 def _round_chunk_score(chunk: dict, key: str) -> float:
+    """安全读取并保留四位小数的 chunk 分数。"""
     try:
         return round(float(_get_chunk_value(chunk, key, 0.0) or 0.0), 4)
     except (TypeError, ValueError):
@@ -61,6 +68,7 @@ def _round_chunk_score(chunk: dict, key: str) -> float:
 
 
 def search_knowledge_base(args: dict) -> dict:
+    """校验检索参数并调用知识库召回流程。"""
     tool_name = "search_knowledge_base"
     try:
         from app.config import Settings

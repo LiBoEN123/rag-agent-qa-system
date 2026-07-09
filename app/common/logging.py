@@ -1,3 +1,8 @@
+"""日志配置模块。
+
+统一创建控制台与文件日志处理器，为各业务模块提供一致的日志格式。
+"""
+
 import logging
 import sys
 
@@ -23,7 +28,6 @@ def get_logger(name:str = "app"):
     logger.propagate = False
 
     return logger
-
 
 
 

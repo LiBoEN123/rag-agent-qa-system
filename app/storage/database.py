@@ -1,3 +1,8 @@
+"""SQLite 数据库基础模块。
+
+负责创建连接、初始化数据表，并提供统一的时间字段生成方法。
+"""
+
 import sqlite3
 from datetime import datetime
 from pathlib import Path

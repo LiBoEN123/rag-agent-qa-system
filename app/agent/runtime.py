@@ -1,3 +1,8 @@
+"""Agent 运行时编排模块。
+
+串联路由、计划、执行、答案合成和追踪存储，生成 API 可消费的结果。
+"""
+
 from typing import Any
 
 from app.agent.answer import compose_final_answer

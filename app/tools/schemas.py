@@ -1,3 +1,8 @@
+"""工具参数模型模块。
+
+使用 Pydantic 定义并校验各内置工具接收的结构化参数。
+"""
+
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field

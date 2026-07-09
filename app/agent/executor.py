@@ -1,3 +1,8 @@
+"""Agent 计划执行模块。
+
+按顺序执行工具、澄清和直接回答步骤，并把观察结果写回 Agent 状态。
+"""
+
 import time
 from typing import Any
 

@@ -1,3 +1,8 @@
+"""应用配置模块。
+
+集中读取环境变量、解析项目路径，并提供模型、索引和服务运行参数。
+"""
+
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -12,6 +17,7 @@ def env_bool(name: str, default: str = "false") -> bool:
 
 
 def project_path(path: Path) -> Path:
+    """把相对路径解析为项目根目录下的绝对路径。"""
     return path if path.is_absolute() else BASE_DIR / path
 
 

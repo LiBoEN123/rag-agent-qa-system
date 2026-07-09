@@ -1,4 +1,7 @@
-"""HTTP tracing middleware."""
+"""HTTP 请求追踪中间件。
+
+为聊天请求注入 trace_id，计算端到端耗时，并在响应头中返回追踪信息。
+"""
 
 import time
 
@@ -13,7 +16,7 @@ logger = get_logger("chat_service")
 
 
 async def trace_and_timing_middleware(request: Request, call_next):
-    """Attach a trace id and end-to-end timing headers to chat requests."""
+    """为聊天请求注入追踪编号，并记录端到端耗时响应头。"""
     if request.url.path != "/chat":
         return await call_next(request)
 

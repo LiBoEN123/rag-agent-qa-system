@@ -1,4 +1,7 @@
-"""Deterministic question parsing used by the Agent router."""
+"""Agent 确定性规则模块。
+
+负责问题规范化、数学表达式识别、chunk 编号提取和双文档对比参数解析。
+"""
 
 import ast
 import re
@@ -9,6 +12,7 @@ COMPARE_DOCUMENT_KEYWORDS = ("对比", "比较", "区别", "差异", "不同", "
 
 
 def normalize_question(question: str) -> str:
+    """清理问题首尾空白，并统一常见中文标点。"""
     return (
         (question or "")
         .strip()
@@ -20,6 +24,7 @@ def normalize_question(question: str) -> str:
 
 
 def extract_chunk_id(question: str) -> int | None:
+    """从用户问题中提取显式给出的 chunk 编号。"""
     patterns = [
         r"chunk[_\s-]?id\s*[:=]?\s*(\d+)",
         r"chunk\s*(\d+)",
@@ -34,6 +39,7 @@ def extract_chunk_id(question: str) -> int | None:
 
 
 def normalize_math_text(text: str) -> str:
+    """把全角字符和中文运算词规整为标准数学表达式。"""
     text = unicodedata.normalize("NFKC", text or "")
     replacements = [
         (r"加上|加", "+"),
@@ -50,6 +56,7 @@ def normalize_math_text(text: str) -> str:
 
 
 def is_safe_math_expression(expression: str) -> bool:
+    """检查表达式是否只包含允许的数字和四则运算节点。"""
     try:
         tree = ast.parse(expression, mode="eval")
     except SyntaxError:
@@ -78,6 +85,7 @@ def is_safe_math_expression(expression: str) -> bool:
 
 
 def extract_simple_math_expression(question: str) -> str | None:
+    """从自然语言问题中提取可安全计算的数学表达式。"""
     candidates = re.findall(r"[0-9+\-*/().\s]+", normalize_math_text(question))
     for expression in sorted(
         (candidate.strip() for candidate in candidates if candidate.strip()),
@@ -90,6 +98,7 @@ def extract_simple_math_expression(question: str) -> str | None:
 
 
 def build_compare_documents_rule_args(question: str, top_k: int) -> dict | None:
+    """从带书名号的双文档对比问题中构造工具参数。"""
     normalized = normalize_question(question)
     if not any(keyword in normalized for keyword in COMPARE_DOCUMENT_KEYWORDS):
         return None
