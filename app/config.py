@@ -76,6 +76,9 @@ class Settings:
     ROUTER_MAX_TOKENS = int(os.getenv("ROUTER_MAX_TOKENS", "512"))
     ROUTER_TEMPERATURE = float(os.getenv("ROUTER_TEMPERATURE", "0.0"))
 
+    ENABLE_AGENT_V2 = env_bool("ENABLE_AGENT_V2", "false")
+    AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "5"))
+
     ENABLE_QUERY_REWRITE = env_bool("ENABLE_QUERY_REWRITE", "true")
     QUERY_REWRITE_API_KEY = os.getenv("QUERY_REWRITE_API_KEY") or LLM_API_KEY
     QUERY_REWRITE_MODEL_NAME = os.getenv("QUERY_REWRITE_MODEL_NAME", MODEL_NAME)

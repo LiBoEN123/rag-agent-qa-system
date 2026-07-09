@@ -20,6 +20,7 @@ from app.rag import (
 from app.config import Settings
 from app.untils import get_logger
 from app.agent import route_agent_action, run_agent_once
+from app.agent_runtime import run_agent_v2
 from app.observability import create_trace_id
 from app.query_rewrite import rewrite_query_with_history
 from app.rag_retrieval import safe_float, should_refuse
@@ -445,6 +446,7 @@ def normalize_metrics_status(result_status: str) -> str:
         "NEED_CLARIFICATION": "clarify",
         "OUT_OF_SCOPE": "out_of_scope",
         "MODEL_ERROR": "model_error",
+        "INTERNAL_ERROR": "internal_error",
     }
 
     return status_map.get(result_status, "internal_error")
@@ -797,6 +799,16 @@ CHAT_RESULT_RESPONSE_MAP = {
         "clarification_question": "",
         "log_status": "error",
     },
+    "INTERNAL_ERROR": {
+        "code": "INTERNAL_ERROR",
+        "message": "服务器内部错误",
+        "status": "error",
+        "default_reason": "Agent 内部执行异常",
+        "references": [],
+        "need_clarification": False,
+        "clarification_question": "",
+        "log_status": "error",
+    },
 }
 
 
@@ -829,6 +841,10 @@ def build_chat_response_from_result(
         action=result.get("action", ""),
         tool_result_summary=result.get("tool_result_summary", ""),
         tool_trace=result.get("tool_trace", []),
+        router_llm_used=result.get("router_llm_used"),
+        decompose_llm_used=result.get("decompose_llm_used"),
+        answer_llm_used=result.get("answer_llm_used"),
+        llm_call_count=result.get("llm_call_count"),
     )
 
 
@@ -1140,22 +1156,35 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
         try:
             agent_start = time.perf_counter()
 
-            result = run_agent_once(
-                write_bad_cases,
-                effective_question,
-                final_top_k,
-                decompose_top_k,
-                decision,
-                trace_id,
-                bad_case
-            )
+            agent_runtime_name = "run_agent_v2" if Settings.ENABLE_AGENT_V2 else "run_agent_once"
+            if Settings.ENABLE_AGENT_V2:
+                result = run_agent_v2(
+                    write_bad_cases=write_bad_cases,
+                    question=effective_question,
+                    top_k=final_top_k,
+                    decompose_top_k=decompose_top_k,
+                    decision=decision,
+                    trace_id=trace_id,
+                    session_id=session_id or None,
+                    bad_case=bad_case,
+                )
+            else:
+                result = run_agent_once(
+                    write_bad_cases,
+                    effective_question,
+                    final_top_k,
+                    decompose_top_k,
+                    decision,
+                    trace_id,
+                    bad_case
+                )
             result = attach_query_rewrite_trace(result, rewrite_trace)
 
             agent_cost_ms = int((time.perf_counter() - agent_start) * 1000)
             metrics["agent_cost_ms"] = agent_cost_ms
 
             logger.info(
-                f"[trace_id={trace_id}] [agent] run_agent_once_end "
+                f"[trace_id={trace_id}] [agent] {agent_runtime_name}_end "
                 f"status={result.get('status', '')} "
                 f"agent_cost_ms={agent_cost_ms} "
                 f"answer_len={len(result.get('answer', '') or '')} "
@@ -1210,7 +1239,7 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
 
             bad_case["route"] = action or decision.get("decision", "")
             bad_case["error_type"] = "internal_error"
-            bad_case["note"] = f"run_agent_once 执行异常：{str(e)}"
+            bad_case["note"] = f"Agent Runtime 执行异常：{str(e)}"
             write_bad_cases(bad_case)
 
             response.status_code = 500
@@ -1268,7 +1297,11 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
             reason=result.get("reason", "正常回答"),
             action=result.get("action", ""),
             tool_result_summary=result.get("tool_result_summary", ""),
-            tool_trace=result.get("tool_trace", [])
+            tool_trace=result.get("tool_trace", []),
+            router_llm_used=result.get("router_llm_used"),
+            decompose_llm_used=result.get("decompose_llm_used"),
+            answer_llm_used=result.get("answer_llm_used"),
+            llm_call_count=result.get("llm_call_count"),
         )
 
     except HTTPException:
