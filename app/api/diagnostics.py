@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Query, Response
 
+from app.api.schemas import ChatRequest
 from app.common.logging import get_logger
 
 
@@ -18,7 +19,6 @@ logger = get_logger("chat_service")
 @dataclass(frozen=True)
 class DiagnosticsDependencies:
     settings: Any
-    chat_request: type
     search_result: type
     search_data: type
     search_response: type
@@ -56,7 +56,7 @@ def create_diagnostics_router(
         return {"count": len(data), "data": data}
 
     @router.post("/search", response_model=deps.search_response)
-    def search_api(req: deps.chat_request, response: Response):
+    def search_api(req: ChatRequest, response: Response):
         """执行知识库检索、重排和证据门控并返回候选片段。"""
         question = (req.question or "").strip()
         logger.info(
@@ -197,7 +197,7 @@ def create_diagnostics_router(
         }
 
     @router.post("/decide")
-    def decide_api(req: deps.chat_request, response: Response):
+    def decide_api(req: ChatRequest, response: Response):
         """返回 Agent 对给定问题作出的路由决策。"""
         question = (req.question or "").strip()
         if not question:

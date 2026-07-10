@@ -576,7 +576,6 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
 _diagnostics_router, _diagnostics_handlers = create_diagnostics_router(
     DiagnosticsDependencies(
         settings=Settings,
-        chat_request=ChatRequest,
         search_result=SearchResult,
         search_data=SearchData,
         search_response=SearchResponse,
