@@ -3,14 +3,11 @@
 融合确定性规则和可选 LLM Router，校验动作参数并输出统一路由决策。
 """
 
-from app.agent.formatting import format_tool_answer
 from app.agent.llm_router import (
-    build_router_headers,
     call_router_llm,
     parse_router_json_output,
 )
 from app.agent.rules import (
-    COMPARE_DOCUMENT_KEYWORDS,
     build_compare_documents_rule_args,
     extract_chunk_id,
     extract_simple_math_expression,

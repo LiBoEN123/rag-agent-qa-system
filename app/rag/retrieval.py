@@ -31,6 +31,33 @@ extract_first_json_object = _decomposition.extract_first_json_object
 parse_decompose_llm_json = _decomposition.parse_decompose_llm_json
 
 
+__all__ = [
+    "Settings",
+    "build_clarification_question",
+    "clamp01",
+    "compact_error_preview",
+    "compact_text",
+    "decompose_query_with_llm",
+    "default_decompose_result",
+    "extract_first_json_object",
+    "is_ambiguous_question",
+    "make_snippet",
+    "minmax_score",
+    "normalize_decompose_result",
+    "parse_decompose_bool",
+    "parse_decompose_llm_json",
+    "rerank",
+    "retrieve",
+    "retrieve_with_sub_queries",
+    "safe_float",
+    "search_relevant_chunks",
+    "should_decompose_query",
+    "should_refuse",
+    "strip_json_code_fence",
+    "tokenize",
+]
+
+
 def decompose_query_with_llm(question: str):
     """转发问题拆分调用，并同步可替换的 HTTP 客户端。"""
     # Preserve monkeypatching app.rag.retrieval.requests.post.

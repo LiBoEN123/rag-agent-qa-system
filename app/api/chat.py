@@ -26,10 +26,6 @@ from app.agent.query_rewrite import rewrite_query_with_history
 from app.rag.retrieval import safe_float, should_refuse
 from app.storage.session import append_message, get_history
 from app.observability.metrics import (
-    BAD_CASES_PATH,
-    EXPECTED_NON_BAD_CASE_TYPES,
-    METRICS_PATH,
-    REAL_BAD_CASE,
     attach_query_rewrite_trace,
     build_query_rewrite_trace,
     collect_trace_metrics,
@@ -38,9 +34,7 @@ from app.observability.metrics import (
     normalize_metrics_status,
     now_iso,
     read_recent_metrics,
-    should_write_bad_case,
     write_bad_cases,
-    write_metrics,
 )
 from app.observability.middleware import trace_and_timing_middleware
 from app.api.diagnostics import (
@@ -51,10 +45,8 @@ from app.api.responses import CHAT_RESULT_RESPONSE_MAP, ChatResponseBuilder
 from app.api.lifecycle import StartupDependencies, initialize_rag
 from app.api.schemas import (
     ChatData,
-    ChatReferences,
     ChatRequest,
     ChatResponse,
-    PublicStatus,
     SearchData,
     SearchResponse,
     SearchResult,

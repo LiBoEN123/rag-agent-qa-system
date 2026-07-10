@@ -6,6 +6,45 @@
 from app.rag import pipeline as _pipeline
 
 
+__all__ = [
+    "INDEX_SOURCE",
+    "NO_DOCUMENTS_MESSAGE",
+    "RAG_INIT_MESSAGE",
+    "RAG_READY",
+    "STOP_WORD",
+    "Settings",
+    "ask",
+    "bm25",
+    "build_evidence_gate_step",
+    "build_rag_result",
+    "call_llm",
+    "chunks",
+    "decompose_query_with_llm",
+    "doc_embeddings",
+    "docs_registry",
+    "format_reference",
+    "get_chunk_full_text",
+    "get_rag_status",
+    "index_cache_exists",
+    "load_index_cache",
+    "model",
+    "needs_rebuild",
+    "parse_llm_output",
+    "preview_chunks",
+    "preview_docs",
+    "rebuild_and_persist_index",
+    "rebuild_index",
+    "rerank",
+    "rerank_model",
+    "retrieve",
+    "save_index_cache",
+    "search_relevant_chunks",
+    "should_refuse",
+    "texts",
+    "verify_answer_citations",
+]
+
+
 NO_DOCUMENTS_MESSAGE = _pipeline.NO_DOCUMENTS_MESSAGE
 STOP_WORD = _pipeline.STOP_WORD
 Settings = _pipeline.Settings

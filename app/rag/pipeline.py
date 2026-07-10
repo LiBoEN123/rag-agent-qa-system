@@ -31,7 +31,6 @@ from app.rag.retrieval import (
     retrieve as retrieve_impl,
     rerank as rerank_impl,
     search_relevant_chunks as search_relevant_chunks_impl,
-    safe_float,
     should_refuse,
     should_decompose_query,
     default_decompose_result,

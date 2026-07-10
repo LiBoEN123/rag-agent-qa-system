@@ -16,6 +16,21 @@ from app.tools import compare_documents as _compare
 from app.tools import dispatch as _dispatch
 
 
+__all__ = [
+    "TOOL_CALLS_PATH",
+    "append_tool_log",
+    "compare_documents_tool",
+    "dispatch_tool",
+    "get_chunk_text",
+    "list_documents",
+    "safe_eval_expr",
+    "search_knowledge_base",
+    "simple_calculator",
+    "tool_error",
+    "tool_success",
+]
+
+
 TOOL_CALLS_PATH = Path("logs") / "tool_calls.jsonl"
 _call_compare_documents_llm = _compare._call_compare_documents_llm
 
