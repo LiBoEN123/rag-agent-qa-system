@@ -1,4 +1,4 @@
-from app.agent.answer import compose_final_answer, map_rag_status
+from app.agent.answer import DIRECT_ANSWER_TEXT, compose_final_answer, map_rag_status
 from app.agent.state import AgentObservation, AgentState
 
 
@@ -273,6 +273,21 @@ def test_compose_final_answer_keeps_direct_answer_state():
 
     assert result.status == "direct_answer"
     assert result.final_answer == "我是一个知识库问答助手。"
+
+
+def test_compose_final_answer_generates_direct_answer_instead_of_using_reason():
+    """验证 direct_answer 会生成用户回答，不会把路由理由暴露为答案。"""
+    state = AgentState(
+        original_question="你能做什么？",
+        status="direct_answer",
+        reason="用户询问系统能力，属于 direct_answer 范畴",
+    )
+
+    result = compose_final_answer(state)
+
+    assert result.final_answer == DIRECT_ANSWER_TEXT
+    assert result.final_answer != result.reason
+    assert result.tool_trace[-1]["mode"] == "direct"
 
 
 def test_compose_final_answer_keeps_tool_error():

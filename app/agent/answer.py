@@ -10,6 +10,12 @@ from app.agent.state import AgentObservation, AgentState
 
 ERROR_STATUSES = {"tool_error", "error", "model_error"}
 
+DIRECT_ANSWER_TEXT = (
+    "我是一个 RAG 知识库问答助手。"
+    "我可以基于已导入的文档回答问题并提供引用，"
+    "也可以列出知识库文档、查看指定 chunk、对比文档内容，以及进行简单四则运算。"
+)
+
 
 def map_rag_status(status: str) -> str:
     """将现有 RAG 状态映射为 Agent v2 的统一状态。"""
@@ -156,7 +162,21 @@ def compose_tool_answer(state: AgentState, observation: AgentObservation) -> Age
 
 def compose_final_answer(state: AgentState) -> AgentState:
     """根据已完成的工具观察结果生成 Agent v2 最终回答。"""
-    if state.status in {"clarify", "direct_answer"}:
+    if state.status == "clarify":
+        return state
+
+    if state.status == "direct_answer":
+        if not state.final_answer:
+            state.final_answer = DIRECT_ANSWER_TEXT
+        state.tool_trace.append(
+            {
+                "step": "compose_final_answer",
+                "mode": "direct",
+                "status": state.status,
+                "answer_len": len(state.final_answer),
+                "reason": state.reason,
+            }
+        )
         return state
 
     if state.status in ERROR_STATUSES:

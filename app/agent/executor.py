@@ -223,12 +223,11 @@ def execute_plan(state: AgentState) -> AgentState:
             )
             return state
 
-        # direct_answer 先临时把 reason 作为 final_answer，后续 answer 模块可覆盖。
+        # direct_answer 只记录路由状态；用户可见的回答由 Answer Composer 生成。
         if step.action == "direct_answer":
             step.status = "success"
             state.status = "direct_answer"
             state.reason = step.reason
-            state.final_answer = step.reason
             state.tool_trace.append(
                 {
                     "step": "direct_answer",

@@ -177,7 +177,8 @@ def test_execute_direct_answer_step_stops():
     result = execute_plan(state)
 
     assert result.status == "direct_answer"
-    assert result.final_answer == "我是一个知识库问答助手。"
+    assert result.reason == "我是一个知识库问答助手。"
+    assert result.final_answer == ""
     assert result.plan[0].status == "success"
     assert result.tool_trace[0]["step"] == "direct_answer"
 

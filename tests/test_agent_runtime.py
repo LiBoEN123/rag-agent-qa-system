@@ -131,6 +131,29 @@ def test_run_agent_v2_uses_provided_decision(monkeypatch):
     assert result["action"] == "direct_answer"
 
 
+def test_run_agent_v2_direct_answer_does_not_expose_router_reason():
+    """验证真实 direct_answer 链路中 reason 与用户回答分离。"""
+    reason = "用户询问系统能力，属于 direct_answer 范畴"
+    result = run_agent_v2(
+        write_bad_cases=lambda record: None,
+        question="你能做什么？",
+        top_k=5,
+        decompose_top_k=10,
+        decision={
+            "decision": "direct_answer",
+            "action": "direct_answer",
+            "reason": reason,
+            "router_llm_used": False,
+        },
+        trace_id="trace_direct_answer",
+    )
+
+    assert result["status"] == "OK"
+    assert result["reason"] == reason
+    assert result["answer"] != reason
+    assert "RAG 知识库问答助手" in result["answer"]
+
+
 def test_run_agent_v2_maps_clarify_status(monkeypatch):
     """验证 clarify 内部状态会映射为旧业务状态。"""
     decision = {
