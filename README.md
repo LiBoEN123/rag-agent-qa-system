@@ -2,7 +2,7 @@
 
 一个面向中文制度类文档的 Agentic RAG 问答系统，支持文档解析、混合检索、重排、引用生成、Agent 路由、多轮追问改写、可观测性和离线评测。
 
-本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。`/chat` 入口外层增加了最小 Agent Router，可以在知识库问答、工具调用、直接回答和澄清追问之间做路由；传入 `session_id` 时，还会结合最近会话历史对短追问做 Query Rewrite。
+本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。`/chat` 入口接入 Agent v2 Runtime，由 Router、Planner、Executor 和 Answer Composer 串联知识库问答、工具调用、直接回答和澄清追问；传入 `session_id` 时，还会结合 SQLite 中最近的会话历史对短追问做 Query Rewrite。
 
 ## 项目亮点
 
@@ -11,8 +11,9 @@
 - CrossEncoder rerank：对候选 chunk 做二阶段重排，缓解初召回排序不准的问题。
 - ChromaDB 持久化：chunk 文本、metadata 和 embedding 持久化保存，服务重启可复用索引缓存。
 - LLM Router + 规则 fallback：可开启 LLM 路由，输出异常或参数非法时自动回退到规则路由。
-- 多轮追问改写：同一 `session_id` 下保留最近会话历史，短追问和指代问题会先改写成独立检索问题。
-- 工具调用：支持简单四则运算、列出知识库文档、查看指定 chunk 原文。
+- Agent v2 Runtime：路由决策先转换为标准执行计划，再由 Executor 调用工具并由 Answer Composer 统一生成最终回答。
+- 多轮追问改写：同一 `session_id` 下通过 SQLite 保留最近会话历史，短追问和指代问题会先改写成独立检索问题。
+- 工具调用：支持知识库检索、双文档内容对比、简单四则运算、列出知识库文档和查看指定 chunk 原文。
 - 引用绑定和拒答机制：模型输出的 `Reference N` 会绑定回真实文件与 chunk；证据不足或引用支撑不足时拒答。
 - 可观测性：每次 `/chat` 请求记录 `trace_id`、阶段耗时、状态、工具调用、引用数量和 LLM 调用次数。
 - bad case 日志：对模型格式异常、引用异常、工具异常、索引未就绪等失败样例做结构化记录。
@@ -23,12 +24,14 @@
 ```mermaid
 flowchart TD
     U[用户问题] --> API[FastAPI /chat]
-    API --> QR[Session History<br/>Query Rewrite]
+    API --> QR[SQLite Session History<br/>Query Rewrite]
     QR --> Router[Agent Router]
-    Router -->|search_knowledge_base| RAG[RAG Pipeline]
-    Router -->|simple_calculator / list_documents / get_chunk_text| Tools[Tools]
-    Router -->|clarify| Clarify[澄清追问]
-    Router -->|direct_answer| Direct[直接回答]
+    Router --> Planner[Agent Planner]
+    Planner --> Executor[Agent Executor]
+    Executor -->|search_knowledge_base| RAG[RAG Pipeline]
+    Executor -->|compare_documents / simple_calculator<br/>list_documents / get_chunk_text| Tools[Tools]
+    Executor -->|clarify| Clarify[澄清追问]
+    Executor -->|direct_answer| Direct[直接回答]
 
     RAG --> QD[Query Decompose 可选问题拆分]
     QD --> HR[Hybrid Retrieval<br/>BM25 + Embedding]
@@ -37,7 +40,7 @@ flowchart TD
     CB --> LLM[LLM Generation<br/>OpenAI-compatible Chat Completions]
     LLM --> RB[Reference Binding]
     RB --> Guard[Confidence / Refusal]
-    Guard --> Resp[统一 ChatResponse]
+    Guard --> Composer[Answer Composer]
 
     subgraph Indexing[索引构建流程]
         DL[Document Loader<br/>txt / md / pdf / docx] --> CL[Clean Documents]
@@ -51,9 +54,10 @@ flowchart TD
 
     Chroma --> HR
     BM25 --> HR
-    Tools --> Resp
-    Clarify --> Resp
-    Direct --> Resp
+    Tools --> Composer
+    Clarify --> Composer
+    Direct --> Composer
+    Composer --> Resp[统一 ChatResponse]
 ```
 
 ## 核心能力
@@ -65,11 +69,12 @@ flowchart TD
 | 混合检索 | jieba + BM25 关键词召回，SentenceTransformer Embedding 语义召回 |
 | 重排 | CrossEncoder reranker 对候选 chunk 重新排序 |
 | 问题拆分 | 可选 Query Decompose，复杂问题可拆成子问题后多路召回并合并证据 |
-| 多轮追问 | `session_id` 维持内存会话历史，对短追问、指代问题做 Query Rewrite |
+| 多轮追问 | `session_id` 通过 SQLite 维持最近会话历史，对短追问、指代问题做 Query Rewrite |
 | 答案生成 | 调用 OpenAI-compatible Chat Completions，要求模型返回 JSON |
 | 引用绑定 | 将 `Reference N` 映射回真实文件、`chunk_id`、`snippet` 和分数 |
+| Agent Runtime | Router 决策经 Planner 转为计划，由 Executor 执行，再由 Answer Composer 统一合成回答 |
 | Agent 路由 | 支持规则路由和可选 LLM Router，失败时回退规则路由 |
-| 工具调用 | `simple_calculator`、`list_documents`、`get_chunk_text` |
+| 工具调用 | `search_knowledge_base`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text` |
 | 可观测性 | `trace_id`、请求耗时、阶段耗时、工具调用日志、metrics 汇总接口 |
 | 失败分析 | `logs/bad_cases.jsonl` 记录值得分析的失败样例 |
 | 评测 | 支持规则评测、Chroma/chunks 索引取证和可选 LLM Judge 语义评估 |
@@ -82,7 +87,7 @@ flowchart TD
 3. 文档切分：Markdown 先按标题层级切分并保留标题路径，普通文本按段落和标点递归切分。
 4. 建立索引：构建 BM25 关键词索引，并使用 SentenceTransformer 生成 embedding；向量、chunk 和 metadata 持久化到 ChromaDB。
 5. 多轮改写：`/chat` 如果传入 `session_id`，会读取最近历史；短追问或指代问题会先改写成独立问题。
-6. 查询路由：改写后的问题进入 Agent Router，判断走 RAG、工具、澄清还是直接回答。
+6. Agent 执行：改写后的问题进入 Router；Planner 将路由决策转换为标准计划，Executor 执行 RAG、普通工具、澄清或直接回答步骤，最后由 Answer Composer 统一合成结果。
 7. 查询拆分：启用 `ENABLE_QUERY_DECOMPOSE` 后，复杂问题可由拆分模型生成子问题。
 8. 混合召回：查询时同时执行 BM25 和 embedding 召回，合并候选 chunk。
 9. 二阶段重排：使用 CrossEncoder reranker 对候选证据重新排序。
@@ -112,7 +117,8 @@ flowchart TD
 - 支持 embedding / rerank 模型本地缓存，默认缓存目录为 `./.cache/huggingface/hub`，也可通过 `MODEL_CACHE_DIR`、`HF_HOME` 等环境变量调整。
 - 支持 ChromaDB 持久化，默认将向量、chunk 文本、metadata 和文档注册信息保存到 `data/chroma/`。
 - 启动时基于 manifest 判断是否需要重建索引；知识库文件、chunk 参数、embedding/rerank 模型或 pipeline 版本变化会触发重建。
-- 多轮会话历史保存在进程内内存中，每个 `session_id` 默认保留最近 6 条 user/assistant 消息，适合演示追问改写，不作为长期记忆。
+- 多轮会话历史保存在 `SQLITE_DB_PATH` 指定的 SQLite 数据库中，每个 `session_id` 默认读取最近 6 条 user/assistant 消息，服务重启后仍可继续使用。
+- 设置 `ENABLE_AGENT_TRACE_STORE=true` 后，Agent v2 的运行摘要和步骤明细会写入同一 SQLite 数据库的 `agent_runs`、`agent_steps` 表。
 - `/chat` 请求支持继承或生成 `trace_id`，响应头返回 `X-Trace-Id` 和 `X-Total-Cost-Ms`。
 - metrics 记录 Query Rewrite、路由、知识库就绪检查、检索、问题拆分、重排、上下文构造、LLM 调用、JSON 解析等阶段耗时和 LLM 调用次数。
 - bad case 日志用于定位失败样例，包括模型 JSON 解析失败、引用异常、工具异常、内部异常和索引未就绪。
@@ -209,6 +215,9 @@ streamlit run demo/streamlit_app.py
 | `ROUTER_MAX_RETRIES` | 路由模型失败重试次数 |
 | `ROUTER_MAX_TOKENS` | 路由模型最大输出 token |
 | `ROUTER_TEMPERATURE` | 路由模型温度 |
+| `AGENT_MAX_STEPS` | Agent v2 单次请求最多执行的计划步骤数，默认 `5` |
+| `ENABLE_AGENT_TRACE_STORE` | 是否将 Agent v2 运行摘要和步骤写入 SQLite，默认 `false` |
+| `SQLITE_DB_PATH` | 会话历史及可选 Agent trace 的 SQLite 文件路径，默认 `./data/app.sqlite` |
 | `ENABLE_QUERY_REWRITE` | 是否启用多轮追问改写，默认 `true` |
 | `QUERY_REWRITE_API_KEY` | 追问改写模型 API Key；为空时复用回答模型 Key |
 | `QUERY_REWRITE_MODEL_NAME` | 追问改写模型名称 |
@@ -257,6 +266,10 @@ ROUTER_API_KEY=
 ROUTER_MODEL_NAME=deepseek-chat
 ROUTER_API_URL=https://api.deepseek.com/v1/chat/completions
 ROUTER_TIMEOUT=10
+
+AGENT_MAX_STEPS=5
+ENABLE_AGENT_TRACE_STORE=false
+SQLITE_DB_PATH=./data/app.sqlite
 
 ENABLE_QUERY_REWRITE=true
 QUERY_REWRITE_API_KEY=
@@ -369,7 +382,7 @@ curl -X POST "http://127.0.0.1:8000/chat" \
 }
 ```
 
-可能返回 `search_knowledge_base`、`simple_calculator`、`list_documents`、`get_chunk_text`、`clarify`、`direct_answer` 等动作。
+可能返回 `search_knowledge_base`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text`、`clarify`、`direct_answer` 等动作。
 
 ### `/kb_summary`
 
@@ -390,10 +403,11 @@ GET /metrics-summary?limit=20
 | action | 路径 |
 | --- | --- |
 | `search_knowledge_base` | 走 RAG 检索、重排、生成、引用绑定 |
+| `compare_documents` | 按主题检索两个指定文档，返回双方证据并标记可能的差异或冲突 |
 | `simple_calculator` | 调用安全四则运算工具 |
 | `list_documents` | 返回当前知识库文档数量和列表 |
 | `get_chunk_text` | 根据 `chunk_id` 返回完整 chunk 文本 |
-| `direct_answer` | 直接回答系统能力类问题 |
+| `direct_answer` | 由 Answer Composer 生成系统能力说明，不把 Router 的内部 reason 直接暴露为用户回答 |
 | `clarify` | 问题过短、为空或指代不明时追问 |
 
 如果 `/chat` 传入 `session_id`，Query Rewrite 会在 Agent Router 之前执行；Router 看到的是改写后的有效问题，响应中的 `data.question` 仍保留原始输入，改写细节记录在 `data.tool_trace` 的 `query_rewrite` step 中。
@@ -638,6 +652,6 @@ docker run --rm -p 8000:8000 --env-file .env \
 - 当前支持 `.txt`、`.md`、`.pdf`、`.docx`；PDF 依赖可提取文本，暂不内置 OCR，旧版 `.doc` 和图片文件暂不支持。
 - 回答模型、路由模型、追问改写模型、拆分模型和 Judge 模型都按 OpenAI-compatible Chat Completions 格式调用。
 - embedding 和 rerank 模型首次加载较慢，可能需要下载权重。
-- 多轮历史目前是进程内内存存储，服务重启会丢失，不适合作为长期记忆。
-- Agent 仍是轻量路由实现，没有复杂任务规划和多步骤工具编排。
+- 多轮历史使用本地 SQLite 持久化，适合单实例运行；多实例部署时需要额外规划共享存储和并发策略。
+- Agent v2 已具备标准 Planner / Executor 链路，但当前计划仍以单次工具调用加最终回答为主，不是可自主循环的复杂多工具 Agent。
 - retrieval_confidence 和 answer_confidence 是启发式估计，不等同于严格概率。
