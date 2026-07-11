@@ -65,7 +65,7 @@ preview_docs = _pipeline.preview_docs
 preview_chunks = _pipeline.preview_chunks
 get_chunk_full_text = _pipeline.get_chunk_full_text
 
-# These aliases are intentionally mutable: tests and callers patch the facade.
+# 这些别名有意设计成可以修改，测试代码或调用者可以替换门面层上的函数。
 decompose_query_with_llm = _pipeline.decompose_query_with_llm
 call_llm = _pipeline.call_llm
 should_refuse = _pipeline.should_refuse
