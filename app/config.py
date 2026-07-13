@@ -10,6 +10,25 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+AGENT_RUNTIME_VALUES = {"legacy", "langgraph"}
+
+
+def normalize_agent_runtime(value: str | None) -> str:
+    """规整 Agent Runtime 配置值，空值默认使用旧运行时。"""
+    normalized = (value or "").strip().lower()
+    return normalized or "legacy"
+
+
+def validate_agent_runtime(value: str | None) -> str:
+    """校验并返回规整后的 Agent Runtime 配置值。"""
+    normalized = normalize_agent_runtime(value)
+    if normalized not in AGENT_RUNTIME_VALUES:
+        allowed = ", ".join(sorted(AGENT_RUNTIME_VALUES))
+        raise ValueError(
+            f"AGENT_RUNTIME 配置无效: {value!r}，可选值为: {allowed}"
+        )
+    return normalized
+
 
 def env_bool(name: str, default: str = "false") -> bool:
     """从环境变量读取布尔配置，支持常见真值字符串。"""
@@ -83,6 +102,7 @@ class Settings:
     ROUTER_MAX_TOKENS = int(os.getenv("ROUTER_MAX_TOKENS", "512"))
     ROUTER_TEMPERATURE = float(os.getenv("ROUTER_TEMPERATURE", "0.0"))
 
+    AGENT_RUNTIME = normalize_agent_runtime(os.getenv("AGENT_RUNTIME", "legacy"))
     AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "5"))
 
     ENABLE_AGENT_TRACE_STORE = env_bool("ENABLE_AGENT_TRACE_STORE", "false")
@@ -119,6 +139,7 @@ class Settings:
     @classmethod
     def validate(cls):
         """校验关键配置是否存在并可访问。"""
+        cls.AGENT_RUNTIME = validate_agent_runtime(cls.AGENT_RUNTIME)
         if not cls.LLM_API_KEY:
             raise ValueError("缺少 LLM_API_KEY 或 DEEPSEEK_API_KEY，请检查 .env")
         if not cls.RAG_FILE_PATH.exists():

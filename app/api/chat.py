@@ -5,6 +5,8 @@
 
 from fastapi import FastAPI, HTTPException, Response, Request
 from contextlib import asynccontextmanager
+from collections.abc import Callable
+from typing import Any
 import time
 from app.rag import (
     preview_docs,
@@ -17,7 +19,7 @@ from app.rag import (
     index_cache_exists,
     rebuild_and_persist_index,
 )
-from app.config import Settings
+from app.config import Settings, validate_agent_runtime
 from app.common.logging import get_logger
 from app.agent import route_agent_action
 from app.agent.runtime import run_agent_v2
@@ -72,6 +74,21 @@ _chat_response_builder = ChatResponseBuilder(
 )
 build_chat_response = _chat_response_builder.build
 build_chat_response_from_result = _chat_response_builder.build_from_result
+
+
+def run_agent_langgraph(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """延迟导入 LangGraph Runtime，保持默认 legacy 启动路径轻量。"""
+    from app.graph.runtime import run_agent_langgraph as graph_runner
+
+    return graph_runner(*args, **kwargs)
+
+
+def get_agent_runtime_runner() -> Callable[..., dict[str, Any]]:
+    """根据已校验配置返回当前请求应使用的 Agent Runtime。"""
+    runtime = validate_agent_runtime(Settings.AGENT_RUNTIME)
+    if runtime == "langgraph":
+        return run_agent_langgraph
+    return run_agent_v2
 
 
 def save_session_turn(
@@ -360,8 +377,10 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
 
         try:
             agent_start = time.perf_counter()
+            agent_runtime = validate_agent_runtime(Settings.AGENT_RUNTIME)
+            runtime_runner = get_agent_runtime_runner()
 
-            result = run_agent_v2(
+            result = runtime_runner(
                 write_bad_cases=write_bad_cases,
                 question=effective_question,
                 top_k=final_top_k,
@@ -377,7 +396,8 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
             metrics["agent_cost_ms"] = agent_cost_ms
 
             logger.info(
-                f"[trace_id={trace_id}] [agent] run_agent_v2_end "
+                f"[trace_id={trace_id}] [agent] runtime_end "
+                f"agent_runtime={agent_runtime} "
                 f"status={result.get('status', '')} "
                 f"agent_cost_ms={agent_cost_ms} "
                 f"answer_len={len(result.get('answer', '') or '')} "

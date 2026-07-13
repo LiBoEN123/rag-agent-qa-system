@@ -13,6 +13,7 @@ charset-normalizer
 langchain-text-splitters
 langchain-core
 langchain-openai
+langgraph
 pypdf
 python-docx
 huggingface-hub

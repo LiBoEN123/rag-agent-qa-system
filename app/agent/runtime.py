@@ -174,12 +174,18 @@ def build_v2_result(state: AgentState, decision: dict) -> dict:
     }
 
 
-def build_internal_error_result(exc: Exception, decision: dict | None = None) -> dict:
-    """构造 v2 Runtime 顶层异常时的兼容错误结果。"""
+def build_internal_error_result(
+    exc: Exception,
+    decision: dict | None = None,
+    *,
+    runtime_label: str = "Agent v2",
+    trace_step: str = "agent_v2_error",
+) -> dict:
+    """构造 Agent Runtime 顶层异常时的兼容错误结果。"""
     decision = _safe_decision(decision)
     return {
         "status": "INTERNAL_ERROR",
-        "answer": "系统内部执行 Agent v2 时发生错误，无法生成可靠回答。",
+        "answer": f"系统内部执行 {runtime_label} 时发生错误，无法生成可靠回答。",
         "references": [],
         "retrieval_confidence": 0.0,
         "answer_confidence": 0.0,
@@ -190,7 +196,7 @@ def build_internal_error_result(exc: Exception, decision: dict | None = None) ->
         "tool_result_summary": "",
         "tool_trace": [
             {
-                "step": "agent_v2_error",
+                "step": trace_step,
                 "status": "error",
                 "error": str(exc),
             }
@@ -221,15 +227,18 @@ def _write_internal_bad_case(
     trace_id: str,
     question: str,
     exc: Exception,
+    *,
+    runtime_route: str = "agent_v2",
+    runtime_label: str = "Agent v2",
 ) -> None:
     """Runtime 顶层异常时写入 bad case，写入失败不继续抛错。"""
     if not callable(write_bad_cases):
         return
 
     record = dict(bad_case or _default_bad_case(trace_id, question))
-    record["answer"] = "系统内部执行 Agent v2 时发生错误，无法生成可靠回答。"
+    record["answer"] = f"系统内部执行 {runtime_label} 时发生错误，无法生成可靠回答。"
     record["references"] = []
-    record["route"] = "agent_v2"
+    record["route"] = runtime_route
     record["error_type"] = "internal_error"
     record["note"] = str(exc)
 

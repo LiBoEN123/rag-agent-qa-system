@@ -13,6 +13,12 @@ def use_temporary_sqlite_database(monkeypatch, tmp_path):
         tmp_path / "api.sqlite",
         raising=False,
     )
+    monkeypatch.setattr(
+        main.Settings,
+        "AGENT_RUNTIME",
+        "legacy",
+        raising=False,
+    )
 
 
 def patch_app(monkeypatch):
@@ -242,8 +248,8 @@ def test_chat_uses_rewritten_question_for_follow_up(monkeypatch):
     clear_session(session_id)
 
 
-def test_chat_always_uses_agent_v2(monkeypatch):
-    """验证 /chat 始终调用 Agent v2 Runtime。"""
+def test_chat_defaults_to_legacy_agent_v2(monkeypatch):
+    """验证 /chat 默认调用旧 Agent v2 Runtime。"""
     called = {"v2": 0}
 
     patch_app(monkeypatch)
@@ -310,3 +316,130 @@ def test_chat_always_uses_agent_v2(monkeypatch):
     assert body["code"] == 0
     assert body["data"]["answer"] == "v2 answer"
     assert body["data"]["action"] == "direct_answer"
+
+
+@pytest.mark.parametrize(
+    ("runtime_value", "expected_runtime"),
+    [
+        ("legacy", "legacy"),
+        ("  LangGraph  ", "langgraph"),
+    ],
+)
+def test_chat_selects_configured_agent_runtime(
+    monkeypatch,
+    runtime_value,
+    expected_runtime,
+):
+    """配置开关只调用选中的 Runtime，且保留改写、路由和 API 协议。"""
+    patch_app(monkeypatch)
+    monkeypatch.setattr(main.Settings, "AGENT_RUNTIME", runtime_value)
+
+    calls = {
+        "rewrite": 0,
+        "route": 0,
+        "legacy": 0,
+        "langgraph": 0,
+    }
+    runtime_kwargs: dict = {}
+
+    def fake_rewrite(question, history, trace_id=""):
+        calls["rewrite"] += 1
+        return {
+            "original_question": question,
+            "rewritten_question": "改写后的问题",
+            "history_used": True,
+            "rewritten": True,
+            "need_check": True,
+            "need_rewrite": True,
+            "reason": "测试改写",
+            "rewrite_llm_used": False,
+            "error": "",
+        }
+
+    decision = {
+        "decision": "direct_answer",
+        "action": "direct_answer",
+        "tool_name": "",
+        "tool_args": {},
+        "reason": "测试直接回答",
+        "router_source": "rule_based",
+        "router_llm_used": False,
+    }
+
+    def fake_route(question, top_k, trace_id=""):
+        calls["route"] += 1
+        assert question == "改写后的问题"
+        return decision
+
+    def build_fake_runner(runtime_name):
+        def fake_runner(**kwargs):
+            calls[runtime_name] += 1
+            runtime_kwargs.update(kwargs)
+            return {
+                "status": "OK",
+                "answer": f"{runtime_name} answer",
+                "references": [],
+                "retrieval_confidence": 0.0,
+                "answer_confidence": 0.0,
+                "need_clarification": False,
+                "clarification_question": "",
+                "reason": "ok",
+                "action": "direct_answer",
+                "tool_result_summary": "未调用工具",
+                "tool_trace": [
+                    {
+                        "step": "llm_usage",
+                        "router_llm_used": False,
+                        "decompose_llm_used": False,
+                        "answer_llm_used": False,
+                        "llm_call_count": 0,
+                    }
+                ],
+                "router_llm_used": False,
+                "decompose_llm_used": False,
+                "answer_llm_used": False,
+                "llm_call_count": 0,
+            }
+
+        return fake_runner
+
+    monkeypatch.setattr(main, "rewrite_query_with_history", fake_rewrite)
+    monkeypatch.setattr(main, "route_agent_action", fake_route)
+    monkeypatch.setattr(main, "run_agent_v2", build_fake_runner("legacy"))
+    monkeypatch.setattr(
+        main,
+        "run_agent_langgraph",
+        build_fake_runner("langgraph"),
+    )
+
+    response = main.ask_api(
+        main.ChatRequest(
+            session_id="runtime-switch-session",
+            question="原始问题",
+            top_k=4,
+            decompose_top_k=8,
+        ),
+        DummyRequest(),
+        main.Response(),
+    )
+    body = response.model_dump()
+
+    assert calls == {
+        "rewrite": 1,
+        "route": 1,
+        "legacy": int(expected_runtime == "legacy"),
+        "langgraph": int(expected_runtime == "langgraph"),
+    }
+    assert runtime_kwargs["question"] == "改写后的问题"
+    assert runtime_kwargs["top_k"] == 4
+    assert runtime_kwargs["decompose_top_k"] == 8
+    assert runtime_kwargs["decision"] is decision
+    assert runtime_kwargs["session_id"] == "runtime-switch-session"
+    assert body["code"] == 0
+    assert body["data"]["answer"] == f"{expected_runtime} answer"
+    assert body["data"]["question"] == "原始问题"
+    assert body["data"]["tool_trace"][0]["step"] == "query_rewrite"
+    assert main.get_history("runtime-switch-session") == [
+        {"role": "user", "content": "原始问题"},
+        {"role": "assistant", "content": f"{expected_runtime} answer"},
+    ]

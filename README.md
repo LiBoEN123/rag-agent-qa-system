@@ -2,7 +2,7 @@
 
 一个面向中文制度类文档的 Agentic RAG 问答系统，支持文档解析、混合检索、重排、引用生成、Agent 路由、多轮追问改写、可观测性和离线评测。
 
-本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。`/chat` 入口接入 Agent v2 Runtime，由 Router、Planner、Executor 和 Answer Composer 串联知识库问答、工具调用、直接回答和澄清追问；传入 `session_id` 时，还会结合 SQLite 中最近的会话历史对短追问做 Query Rewrite。
+本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。`/chat` 入口支持 legacy 与 LangGraph 两种 Agent Runtime，二者都复用 Router、Planner、Executor 和 Answer Composer 串联知识库问答、工具调用、直接回答和澄清追问；传入 `session_id` 时，还会结合 SQLite 中最近的会话历史对短追问做 Query Rewrite。
 
 ## 项目亮点
 
@@ -11,7 +11,7 @@
 - CrossEncoder rerank：对候选 chunk 做二阶段重排，缓解初召回排序不准的问题。
 - ChromaDB 持久化：chunk 文本、metadata 和 embedding 持久化保存，服务重启可复用索引缓存。
 - LLM Router + 规则 fallback：可开启 LLM 路由，输出异常或参数非法时自动回退到规则路由。
-- Agent v2 Runtime：路由决策先转换为标准执行计划，再由 Executor 调用工具并由 Answer Composer 统一生成最终回答。
+- 可切换 Agent Runtime：默认保留 legacy 编排，也可使用最小 LangGraph 主图；两者共享同一套业务节点和返回协议。
 - 多轮追问改写：同一 `session_id` 下通过 SQLite 保留最近会话历史，短追问和指代问题会先改写成独立检索问题。
 - 工具调用：支持知识库检索、双文档内容对比、简单四则运算、列出知识库文档和查看指定 chunk 原文。
 - 引用绑定和拒答机制：模型输出的 `Reference N` 会绑定回真实文件与 chunk；证据不足或引用支撑不足时拒答。
@@ -124,13 +124,29 @@ flowchart TD
 - metrics 记录 Query Rewrite、路由、知识库就绪检查、检索、问题拆分、重排、上下文构造、LLM 调用、JSON 解析等阶段耗时和 LLM 调用次数。
 - bad case 日志用于定位失败样例，包括模型 JSON 解析失败、引用异常、工具异常、内部异常和索引未就绪。
 
-本次模型客户端统一没有引入 LangGraph，也没有改变 RAG 检索、Rerank、ChromaDB 数据结构和引用机制。
+模型客户端统一和 LangGraph 编排彼此独立；切换 Runtime 不改变 RAG 检索、Rerank、ChromaDB 数据结构和引用机制。
 
 ## LangChain Tool 适配层
 
 现有 `ToolRegistry` 中的工具可以通过 `get_langchain_tools()` 按注册顺序转换为 LangChain `StructuredTool`。适配后的工具继续复用原有工具名称、Pydantic 参数 Schema 和返回协议，调用仍统一经过 `dispatch_tool()`，因此原有日志、耗时统计和请求级 `trace_id` 传递保持不变。
 
-当前 Agent Runtime 仍沿用 Executor → `dispatch_tool()` → `ToolRegistry` 的调用链，尚未进行模型 `bind_tools()`，也没有引入 LangGraph。后续 LangGraph 阶段可以直接获取这组兼容工具，无需复制工具实现或注册信息。
+两种 Agent Runtime 都仍沿用 Executor → `dispatch_tool()` → `ToolRegistry` 的调用链；LangGraph 主图当前不会使用这组 `StructuredTool`，也尚未进行模型 `bind_tools()`。
+
+## Agent Runtime 切换
+
+当前支持 `legacy` 和 `langgraph` 两种运行时，默认继续使用 `legacy`。在 `.env` 中设置：
+
+```env
+AGENT_RUNTIME=legacy
+```
+
+或：
+
+```env
+AGENT_RUNTIME=langgraph
+```
+
+LangGraph Runtime 当前按 `route/initialize → plan → execute → compose → finalize` 组织最小主图，并复用现有 Router、Planner、Executor、Answer Composer、状态映射与 trace 构造。它尚未使用 ToolNode、RAG 子图、Checkpointer 或 streaming；API Schema、会话存储和现有调用方式保持不变。遇到兼容问题时可切回 `legacy`。
 
 ## 快速启动
 
@@ -225,6 +241,7 @@ streamlit run demo/streamlit_app.py
 | `ROUTER_MAX_RETRIES` | 路由模型失败重试次数 |
 | `ROUTER_MAX_TOKENS` | 路由模型最大输出 token |
 | `ROUTER_TEMPERATURE` | 路由模型温度 |
+| `AGENT_RUNTIME` | Agent Runtime，支持 `legacy`（默认）或 `langgraph` |
 | `AGENT_MAX_STEPS` | Agent v2 单次请求最多执行的计划步骤数，默认 `5` |
 | `ENABLE_AGENT_TRACE_STORE` | 是否将 Agent v2 运行摘要和步骤写入 SQLite，默认 `false` |
 | `SQLITE_DB_PATH` | 会话历史及可选 Agent trace 的 SQLite 文件路径，默认 `./data/app.sqlite` |
@@ -557,6 +574,12 @@ python scripts/test_local_llm.py
 │   │   ├── executor.py          # 工具步骤执行
 │   │   ├── answer.py            # 最终答案合成
 │   │   └── runtime.py           # Agent 主流程编排
+│   ├── graph/
+│   │   ├── state.py             # LangGraph 状态 Schema
+│   │   ├── nodes.py             # 复用现有 Agent 业务函数的节点
+│   │   ├── conditions.py        # Router 条件入口
+│   │   ├── builder.py           # StateGraph 构建、连接与缓存编译
+│   │   └── runtime.py           # LangGraph 兼容 Runtime 门面
 │   ├── rag/
 │   │   ├── __init__.py          # RAG 公共门面和依赖注入
 │   │   ├── pipeline.py          # 索引状态与问答流程编排
@@ -666,5 +689,5 @@ docker run --rm -p 8000:8000 --env-file .env \
 - 回答模型、路由模型、追问改写模型、拆分模型和 Judge 模型都按 OpenAI-compatible Chat Completions 格式调用。
 - embedding 和 rerank 模型首次加载较慢，可能需要下载权重。
 - 多轮历史使用本地 SQLite 持久化，适合单实例运行；多实例部署时需要额外规划共享存储和并发策略。
-- Agent v2 已具备标准 Planner / Executor 链路，但当前计划仍以单次工具调用加最终回答为主，不是可自主循环的复杂多工具 Agent。
+- legacy 与 LangGraph Runtime 都已具备标准 Planner / Executor 链路，但当前计划仍以单次工具调用加最终回答为主，不是可自主循环的复杂多工具 Agent。
 - retrieval_confidence 和 answer_confidence 是启发式估计，不等同于严格概率。
