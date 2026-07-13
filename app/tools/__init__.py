@@ -22,6 +22,10 @@ __all__ = [
     "compare_documents_tool",
     "dispatch_tool",
     "get_chunk_text",
+    "get_langchain_tool",
+    "get_langchain_tool_map",
+    "get_langchain_tool_names",
+    "get_langchain_tools",
     "list_documents",
     "safe_eval_expr",
     "search_knowledge_base",
@@ -56,3 +60,12 @@ def compare_documents_tool(args: dict) -> dict:
     # Keep monkeypatching app.tools._call_compare_documents_llm compatible.
     _compare._call_compare_documents_llm = _call_compare_documents_llm
     return _compare.compare_documents_tool(args)
+
+
+# 放在门面函数定义之后导入，避免 registry 初始化时反向读取未完成的 app.tools。
+from app.tools.langchain_tools import (  # noqa: E402
+    get_langchain_tool,
+    get_langchain_tool_map,
+    get_langchain_tool_names,
+    get_langchain_tools,
+)

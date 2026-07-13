@@ -126,6 +126,12 @@ flowchart TD
 
 本次模型客户端统一没有引入 LangGraph，也没有改变 RAG 检索、Rerank、ChromaDB 数据结构和引用机制。
 
+## LangChain Tool 适配层
+
+现有 `ToolRegistry` 中的工具可以通过 `get_langchain_tools()` 按注册顺序转换为 LangChain `StructuredTool`。适配后的工具继续复用原有工具名称、Pydantic 参数 Schema 和返回协议，调用仍统一经过 `dispatch_tool()`，因此原有日志、耗时统计和请求级 `trace_id` 传递保持不变。
+
+当前 Agent Runtime 仍沿用 Executor → `dispatch_tool()` → `ToolRegistry` 的调用链，尚未进行模型 `bind_tools()`，也没有引入 LangGraph。后续 LangGraph 阶段可以直接获取这组兼容工具，无需复制工具实现或注册信息。
+
 ## 快速启动
 
 建议使用 Python 3.10+。
@@ -572,6 +578,7 @@ python scripts/test_local_llm.py
 │   │   ├── knowledge_base.py    # 文档、chunk 和检索工具
 │   │   ├── compare_documents.py # 双文档证据对比
 │   │   ├── dispatch.py          # 工具分发与调用日志
+│   │   ├── langchain_tools.py   # LangChain StructuredTool 适配层
 │   │   ├── registry.py          # 工具注册和分发
 │   │   └── schemas.py           # 工具参数模型
 │   ├── storage/                 # SQLite、session 和 Agent trace 存储
