@@ -10,6 +10,9 @@ from typing import List
 import requests
 
 from app.config import Settings
+from app.llm.errors import ModelCallError
+from app.llm.factory import get_answer_model
+from app.llm.gateway import ModelGateway
 from app.prompts import SYSTEM_PROMPT_B, USER_PROMPT, NO_ANSWER_FALLBACK
 from app.rag.retrieval import clamp01, make_snippet, safe_float
 from app.common.logging import get_logger
@@ -17,16 +20,8 @@ from app.common.logging import get_logger
 logger = get_logger('chat_service')
 
 
-# =========================
-# 异常定义
-# =========================
-class LLMCallError(Exception):
-    """模型调用失败时使用的统一异常。"""
-    def __init__(self, user_message: str, detail: str=""):
-        """保存面向用户的错误提示和调试细节。"""
-        super().__init__(user_message)
-        self.user_message = user_message
-        self.detail = detail
+# 保留旧导入路径 app.rag.generation.LLMCallError 的兼容性。
+LLMCallError = ModelCallError
 
 
 # =========================
@@ -98,8 +93,22 @@ def get_http_error_message(status_code: int) -> str:
     return f"模型服务返回异常状态码：{status_code}"
 
 
-def call_llm(question: str, context: str, trace_id : str = ""):
-    """调用回答模型生成原始回复，并把网络或格式错误转换为可读异常。"""
+def _build_answer_messages(question: str, context: str) -> list[dict[str, str]]:
+    """使用原有 Prompt 内容构造统一消息列表。"""
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT_B},
+        {
+            "role": "user",
+            "content": USER_PROMPT.format(
+                context=context,
+                question=question,
+            ),
+        },
+    ]
+
+
+def _legacy_call_llm(question: str, context: str, trace_id: str = "") -> str:
+    """保留原 requests 调用、重试和 OpenAI-compatible 解析逻辑。"""
     model_name = Settings.MODEL_NAME
     api_url = Settings.LLM_API_URL
     temperature = Settings.TEMPERATURE
@@ -109,16 +118,7 @@ def call_llm(question: str, context: str, trace_id : str = ""):
         "model": model_name,
         "temperature": temperature,
         "max_tokens": max_tokens,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT_B},
-            {
-                "role": "user",
-                "content": USER_PROMPT.format(
-                    context=context,
-                    question=question
-                )
-            }
-        ]
+        "messages": _build_answer_messages(question, context),
     }
 
     headers = build_llm_header()
@@ -154,7 +154,10 @@ def call_llm(question: str, context: str, trace_id : str = ""):
                 # 400 / 401 / 403 / 404 / 429 这类通常重试没意义，直接抛出
                 raise LLMCallError(
                     user_message=error_message,
-                    detail=response.text[:500]
+                    detail=response.text[:500],
+                    provider="legacy",
+                    model_name=model_name,
+                    retryable=False,
                 )
 
             # 解析JSON
@@ -163,7 +166,10 @@ def call_llm(question: str, context: str, trace_id : str = ""):
             except Exception as e:
                 raise LLMCallError(
                     user_message="模型返回内容不是合法 JSON。",
-                    detail=str(e)
+                    detail=str(e),
+                    provider="legacy",
+                    model_name=model_name,
+                    retryable=False,
                 )
 
             # 解析 OpenAI-compatible 格式
@@ -172,7 +178,10 @@ def call_llm(question: str, context: str, trace_id : str = ""):
             except Exception as e:
                 raise LLMCallError(
                     user_message="模型返回格式不符合预期，缺少 choices/message/content 字段。",
-                    detail=str(e)
+                    detail=str(e),
+                    provider="legacy",
+                    model_name=model_name,
+                    retryable=False,
                 )
 
         except LLMCallError:
@@ -193,7 +202,7 @@ def call_llm(question: str, context: str, trace_id : str = ""):
 
         except requests.exceptions.RequestException as e:
             last_error = e
-            error_message = f"模型请求失败：{e}"
+            error_message = "模型请求失败，请检查模型服务和网络配置。"
 
             # 走到这里说明是可重试类错误
         if attempt < Settings.LLM_MAX_RETRIES:
@@ -211,8 +220,43 @@ def call_llm(question: str, context: str, trace_id : str = ""):
 
         raise LLMCallError(
             user_message=error_message,
-            detail=str(last_error)
+            detail=str(last_error),
+            provider="legacy",
+            model_name=model_name,
+            retryable=True,
         )
+
+
+def call_llm(question: str, context: str, trace_id: str = "") -> str:
+    """通过统一 Gateway 调用回答模型，必要时回退原 requests 客户端。"""
+    messages = _build_answer_messages(question, context)
+    mode = (Settings.LLM_CLIENT_MODE or "langchain").strip().lower()
+    langchain_model = None
+    if mode != "legacy":
+        try:
+            langchain_model = get_answer_model()
+        except ModelCallError as exc:
+            logger.warning(
+                "[trace_id=%s] [llm] langchain_factory_unavailable "
+                "error_type=%s fallback=true",
+                trace_id,
+                type(exc).__name__,
+            )
+
+    def legacy_invoke(
+        _messages: list[dict[str, str]],
+        *,
+        trace_id: str = "",
+    ) -> str:
+        return _legacy_call_llm(question, context, trace_id=trace_id)
+
+    gateway = ModelGateway(
+        role="answer",
+        langchain_model=langchain_model,
+        legacy_invoke=legacy_invoke,
+        client_mode=mode,
+    )
+    return gateway.invoke_text(messages, trace_id=trace_id)
 
 
 # =========================

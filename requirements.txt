@@ -11,6 +11,8 @@ sentence-transformers
 chromadb
 charset-normalizer
 langchain-text-splitters
+langchain-core
+langchain-openai
 pypdf
 python-docx
 huggingface-hub

@@ -114,6 +114,7 @@ flowchart TD
 ## 工程化设计
 
 - 配置通过 `.env` 管理，`.env.example` 提供默认模板，回答模型、路由模型、追问改写模型、拆分模型和评测 Judge 均使用 OpenAI-compatible Chat Completions 配置。
+- 最终回答模型支持 `langchain` 和 `legacy` 两种客户端：默认由 `ChatOpenAI(base_url=...)` 调用 OpenAI-compatible 服务，兼容性有问题时可将 `LLM_CLIENT_MODE` 切换为 `legacy`，原有模型环境变量仍然有效。
 - 支持 embedding / rerank 模型本地缓存，默认缓存目录为 `./.cache/huggingface/hub`，也可通过 `MODEL_CACHE_DIR`、`HF_HOME` 等环境变量调整。
 - 支持 ChromaDB 持久化，默认将向量、chunk 文本、metadata 和文档注册信息保存到 `data/chroma/`。
 - 启动时基于 manifest 判断是否需要重建索引；知识库文件、chunk 参数、embedding/rerank 模型或 pipeline 版本变化会触发重建。
@@ -122,6 +123,8 @@ flowchart TD
 - `/chat` 请求支持继承或生成 `trace_id`，响应头返回 `X-Trace-Id` 和 `X-Total-Cost-Ms`。
 - metrics 记录 Query Rewrite、路由、知识库就绪检查、检索、问题拆分、重排、上下文构造、LLM 调用、JSON 解析等阶段耗时和 LLM 调用次数。
 - bad case 日志用于定位失败样例，包括模型 JSON 解析失败、引用异常、工具异常、内部异常和索引未就绪。
+
+本次模型客户端统一没有引入 LangGraph，也没有改变 RAG 检索、Rerank、ChromaDB 数据结构和引用机制。
 
 ## 快速启动
 
@@ -192,6 +195,7 @@ streamlit run demo/streamlit_app.py
 | `RERANK_MODEL_NAME` | CrossEncoder rerank 模型 |
 | `MODEL_CACHE_DIR` | embedding/rerank 模型权重本地缓存目录 |
 | `MAX_CONTEXT_CHARS` | 拼给回答模型的最大上下文长度 |
+| `LLM_CLIENT_MODE` | 最终回答模型客户端，支持 `langchain`（默认）或 `legacy` |
 | `LLM_API_KEY` | 回答模型 API Key；兼容旧变量 `DEEPSEEK_API_KEY` |
 | `MODEL_NAME` | 回答模型名称 |
 | `LLM_API_URL` | OpenAI-compatible Chat Completions 地址 |
@@ -252,6 +256,7 @@ RERANK_MODEL_NAME=BAAI/bge-reranker-v2-m3
 MODEL_CACHE_DIR=./.cache/huggingface/hub
 MAX_CONTEXT_CHARS=4000
 
+LLM_CLIENT_MODE=langchain
 LLM_API_KEY=your-api-key
 MODEL_NAME=deepseek-chat
 LLM_API_URL=https://api.deepseek.com/v1/chat/completions
@@ -290,6 +295,7 @@ VECTOR_THRESHOLD=0.1
 ### Ollama 示例
 
 ```env
+LLM_CLIENT_MODE=langchain
 LLM_API_KEY=ollama
 MODEL_NAME=qwen2.5:7b
 LLM_API_URL=http://127.0.0.1:11434/v1/chat/completions
