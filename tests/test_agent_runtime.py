@@ -44,13 +44,14 @@ def test_internal_error_result_keeps_compatible_schema():
     )
 
     assert result["status"] == "INTERNAL_ERROR"
-    assert result["reason"] == "graph exploded"
+    assert result["answer"] == "Agent 内部执行异常，请稍后重试"
+    assert result["reason"] == "Agent 内部执行异常，请稍后重试"
     assert result["action"] == "direct_answer"
     assert result["references"] == []
     assert result["tool_trace"] == [
         {
             "step": "agent_langgraph_error",
             "status": "error",
-            "error": "graph exploded",
+            "error": "internal_error",
         }
     ]

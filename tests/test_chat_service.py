@@ -226,8 +226,14 @@ def test_rewrite_routes_and_runs_once_with_original_question_preserved():
     assert len(calls["rewrite"]) == 1
     assert calls["route"][0]["question"] == rewritten_question
     assert calls["langgraph"][0]["question"] == rewritten_question
+    assert calls["langgraph"][0]["original_question"] == "原始问题"
+    assert (
+        calls["langgraph"][0]["effective_question"]
+        == rewritten_question
+    )
     assert calls["langgraph"][0]["decision"]["action"] == "direct_answer"
     assert outcome.question == "原始问题"
+    assert outcome.response_status == "ok"
     assert [
         item["step"] for item in outcome.result["tool_trace"]
     ].count("query_rewrite") == 1
@@ -247,14 +253,27 @@ def test_question_without_rewrite_is_passed_through_without_extra_llm_count():
 
     assert calls["route"][0]["question"] == "原始问题"
     assert calls["langgraph"][0]["question"] == "原始问题"
+    assert calls["langgraph"][0]["original_question"] == "原始问题"
+    assert calls["langgraph"][0]["effective_question"] == "原始问题"
     assert calls["metrics"][0]["llm_call_count"] == 0
 
 
-def test_rag_not_ready_stops_before_runtime_and_preserves_session_behavior():
+@pytest.mark.parametrize(
+    "action",
+    [
+        "search_knowledge_base",
+        "compare_documents",
+        "list_documents",
+        "get_chunk_text",
+    ],
+)
+def test_rag_not_ready_stops_before_runtime_and_preserves_session_behavior(
+    action,
+):
     decision = {
         "decision": "use_knowledge_base",
-        "action": "search_knowledge_base",
-        "tool_name": "search_knowledge_base",
+        "action": action,
+        "tool_name": action,
         "reason": "知识库问题",
         "router_source": "rule_based",
         "router_llm_used": False,
@@ -271,6 +290,7 @@ def test_rag_not_ready_stops_before_runtime_and_preserves_session_behavior():
     assert outcome.http_status == 503
     assert outcome.code == "NO_DOCUMENTS"
     assert outcome.response_status == "empty_index"
+    assert outcome.result["reason"] == "知识库未准备完成"
     assert len(calls["bad_cases"]) == 1
     assert calls["bad_cases"][0]["error_type"] == "index_not_ready"
     assert calls["messages"][-1] == (
@@ -279,6 +299,36 @@ def test_rag_not_ready_stops_before_runtime_and_preserves_session_behavior():
         "索引不可用",
     )
     assert len(calls["metrics"]) == 1
+
+
+def test_compare_documents_runs_langgraph_when_rag_is_ready():
+    decision = {
+        "decision": "use_tool",
+        "action": "compare_documents",
+        "tool_name": "compare_documents",
+        "tool_args": {
+            "query": "对比主题",
+            "doc_a": "文档甲",
+            "doc_b": "文档乙",
+            "top_k": 4,
+        },
+        "reason": "对比两份文档",
+        "router_source": "rule_based",
+        "router_llm_used": False,
+    }
+    service, calls = build_service(
+        decision=decision,
+        rag_status={"ready": True, "message": "索引可用"},
+        runtime_result=build_runtime_result(action="compare_documents"),
+    )
+
+    outcome = service.handle(make_request())
+
+    assert calls["rag_status"] == 1
+    assert len(calls["langgraph"]) == 1
+    assert calls["langgraph"][0]["decision"] is decision
+    assert calls["langgraph"][0]["decision"]["action"] == "compare_documents"
+    assert outcome.http_status == 200
 
 
 @pytest.mark.parametrize("action", ["simple_calculator", "direct_answer", "clarify"])
@@ -291,12 +341,15 @@ def test_non_rag_actions_do_not_check_rag_status(action):
             "reason": "测试",
             "router_source": "rule_based",
             "router_llm_used": False,
-        }
+        },
+        rag_status={"ready": False, "message": "索引不可用"},
     )
 
-    service.handle(make_request())
+    outcome = service.handle(make_request())
 
     assert calls["rag_status"] == 0
+    assert len(calls["langgraph"]) == 1
+    assert outcome.http_status == 200
 
 
 def test_langgraph_runtime_receives_complete_existing_protocol_once():
@@ -381,6 +434,23 @@ def test_runtime_exception_returns_compatible_error_and_writes_bad_case_once():
     assert calls["bad_cases"][0]["error_type"] == "internal_error"
     assert calls["messages"] == []
     assert len(calls["metrics"]) == 1
+    assert calls["metrics"][0]["status"] == "internal_error"
+
+
+def test_unknown_exception_returns_internal_error_with_error_status(monkeypatch):
+    service, calls = build_service()
+
+    def fail_rewrite(_context):
+        raise RuntimeError("unexpected chat failure")
+
+    monkeypatch.setattr(service, "_rewrite_question", fail_rewrite)
+
+    outcome = service.handle(make_request())
+
+    assert outcome.http_status == 500
+    assert outcome.code == "INTERNAL_ERROR"
+    assert outcome.response_status == "error"
+    assert calls["langgraph"] == []
     assert calls["metrics"][0]["status"] == "internal_error"
 
 

@@ -40,10 +40,19 @@ def _decision(label: str = "能力说明") -> dict:
     }
 
 
-def _run(trace_id: str, session_id: str = "session-1") -> dict:
+def _run(
+    trace_id: str,
+    session_id: str = "session-1",
+    *,
+    original_question: str | None = None,
+    effective_question: str | None = None,
+) -> dict:
+    question = effective_question or f"问题-{trace_id}"
     return graph_runtime.run_agent_langgraph(
         write_bad_cases=lambda record: None,
-        question=f"问题-{trace_id}",
+        question=question,
+        original_question=original_question,
+        effective_question=effective_question,
         top_k=5,
         decompose_top_k=10,
         decision=_decision(trace_id),
@@ -166,8 +175,54 @@ def test_memory_checkpoint_serializes_real_agent_state(monkeypatch):
     assert saved is not None
     values = saved.checkpoint["channel_values"]
     assert values["trace_id"] == "trace-memory"
+    assert values["original_question"] == "问题-trace-memory"
+    assert values["effective_question"] == "问题-trace-memory"
     assert values["result"]["status"] == "OK"
     assert values["agent_state"].trace_id == "trace-memory"
+    assert values["agent_state"].original_question == "问题-trace-memory"
+    assert values["agent_state"].rewritten_question == ""
+
+
+def test_memory_checkpoint_keeps_rewrite_fields_request_scoped(monkeypatch):
+    """同一 session 的 checkpoint 保留各自问题语义且不会跨请求污染。"""
+    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "memory")
+    rewritten = "研究生奖学金申请什么时候开始"
+    _run(
+        "trace-rewritten",
+        "shared-session",
+        original_question="它什么时候开始",
+        effective_question=rewritten,
+    )
+    _run(
+        "trace-plain",
+        "shared-session",
+        original_question="学校什么时候放假",
+        effective_question="学校什么时候放假",
+    )
+    saver = checkpointing.get_checkpointer()
+    rewritten_id = checkpointing.build_checkpoint_thread_id(
+        trace_id="trace-rewritten",
+        session_id="shared-session",
+    )
+    plain_id = checkpointing.build_checkpoint_thread_id(
+        trace_id="trace-plain",
+        session_id="shared-session",
+    )
+    rewritten_values = saver.get_tuple(
+        {"configurable": {"thread_id": rewritten_id}}
+    ).checkpoint["channel_values"]
+    plain_values = saver.get_tuple(
+        {"configurable": {"thread_id": plain_id}}
+    ).checkpoint["channel_values"]
+
+    assert rewritten_values["original_question"] == "它什么时候开始"
+    assert rewritten_values["effective_question"] == rewritten
+    assert rewritten_values["agent_state"].original_question == "它什么时候开始"
+    assert rewritten_values["agent_state"].rewritten_question == rewritten
+    assert plain_values["original_question"] == "学校什么时候放假"
+    assert plain_values["effective_question"] == "学校什么时候放假"
+    assert plain_values["agent_state"].original_question == "学校什么时候放假"
+    assert plain_values["agent_state"].rewritten_question == ""
 
 
 def test_same_session_requests_use_independent_checkpoint_threads(monkeypatch):
@@ -245,7 +300,7 @@ def test_checkpoint_write_failure_returns_compatible_error_once(monkeypatch):
     )
 
     assert result["status"] == "INTERNAL_ERROR"
-    assert result["reason"] == "checkpoint write failed"
+    assert result["reason"] == "Agent 内部执行异常，请稍后重试"
     assert len(bad_cases) == 1
 
 

@@ -3,8 +3,11 @@ from dataclasses import replace
 import pytest
 
 import app.main as main
+from app.agent.runtime import build_internal_error_result
 from app.services.chat_service import (
+    CHAT_RESULT_RESPONSE_MAP,
     ChatService,
+    ChatServiceOutcome,
     get_default_chat_service_dependencies,
 )
 from app.storage.session import clear_session, get_history
@@ -58,6 +61,48 @@ def test_health(monkeypatch):
 
     assert resp["code"] == 0
     assert resp["data"]["status"] == "ok"
+
+
+def test_internal_error_response_builder_does_not_expose_runtime_exception():
+    sensitive_message = (
+        "/home/test-user/project/checkpoints.sqlite: "
+        "model request failed with api_key=sk-test-secret"
+    )
+    result = build_internal_error_result(
+        RuntimeError(sensitive_message),
+        {"action": "direct_answer"},
+        runtime_label="LangGraph Agent",
+        trace_step="agent_langgraph_error",
+    )
+    outcome = ChatServiceOutcome(
+        http_status=200,
+        code="INTERNAL_ERROR",
+        message="服务器内部错误",
+        question="测试异常",
+        result=result,
+        response_status="error",
+        response_config=CHAT_RESULT_RESPONSE_MAP["INTERNAL_ERROR"],
+    )
+
+    response = main.build_chat_response_from_outcome(outcome, "trace-error")
+    body = response.model_dump()
+    response_text = response.model_dump_json()
+
+    assert "Agent 内部执行异常，请稍后重试" in response_text
+    assert "/home/test-user/project" not in response_text
+    assert "checkpoints.sqlite" not in response_text
+    assert "sk-test-secret" not in response_text
+    assert "RuntimeError" not in response_text
+    assert "model request failed" not in response_text
+    assert body["data"]["status"] == "error"
+    assert body["data"]["tool_trace"] == [
+        {
+            "step": "agent_langgraph_error",
+            "status": "error",
+            "error": "internal_error",
+        }
+    ]
+
 
 def test_chat_basic(monkeypatch):
     """验证 /chat 在 mock Agent 结果下返回标准成功响应。"""
@@ -344,6 +389,8 @@ def test_chat_uses_langgraph_once_and_keeps_rewrite_route_api_protocol(monkeypat
         "langgraph": 1,
     }
     assert runtime_kwargs["question"] == "改写后的问题"
+    assert runtime_kwargs["original_question"] == "原始问题"
+    assert runtime_kwargs["effective_question"] == "改写后的问题"
     assert runtime_kwargs["top_k"] == 4
     assert runtime_kwargs["decompose_top_k"] == 8
     assert runtime_kwargs["decision"] is decision
