@@ -126,6 +126,12 @@ flowchart TD
 
 模型客户端统一和 LangGraph 编排彼此独立；切换 Runtime 不改变 RAG 检索、Rerank、ChromaDB 数据结构和引用机制。
 
+## Chat 应用服务层
+
+`/chat` 控制器现在只负责读取 HTTP 请求上下文、调用 `ChatService`、设置状态码，并使用现有 Response Builder 构造响应。Query Rewrite、Router、RAG Ready Check、Runtime 调用、metrics 和 session 存储由 `app/services/chat_service.py` 统一编排，因此聊天业务可以脱离 FastAPI 进行单元测试。
+
+API 请求与响应 Schema、HTTP 状态语义和 trace 响应头保持不变；`legacy` 与 `langgraph` 仍通过 `AGENT_RUNTIME` 切换。本次重构没有修改 Agent Graph、RAG Subgraph 或旧 `rag.ask()` 的业务行为。
+
 ## LangChain Tool 适配层
 
 现有 `ToolRegistry` 中的工具可以通过 `get_langchain_tools()` 按注册顺序转换为 LangChain `StructuredTool`。适配后的工具继续复用原有工具名称、Pydantic 参数 Schema 和返回协议，调用仍统一经过 `dispatch_tool()`，因此原有日志、耗时统计和请求级 `trace_id` 传递保持不变。

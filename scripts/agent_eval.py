@@ -21,7 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-from app.main import write_bad_cases
+from app.observability.metrics import write_bad_cases
 from app.config import Settings
 from app.agent.runtime import run_agent_v2
 from app.rag import (

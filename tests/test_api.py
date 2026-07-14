@@ -1,7 +1,13 @@
+from dataclasses import replace
+
 import pytest
 
 import app.main as main
-from app.storage.session import clear_session
+from app.services.chat_service import (
+    ChatService,
+    get_default_chat_service_dependencies,
+)
+from app.storage.session import clear_session, get_history
 
 
 @pytest.fixture(autouse=True)
@@ -31,7 +37,16 @@ def patch_app(monkeypatch):
     monkeypatch.setattr(main, "needs_rebuild", lambda data_dir: (False, "test"), raising=False)
     monkeypatch.setattr(main, "index_cache_exists", lambda : True, raising=False)
     monkeypatch.setattr(main, "load_index_cache", lambda : (True, "test"), raising=False)
-    monkeypatch.setattr(main, "log_and_write_metrics", lambda record: None, raising=False)
+
+
+def install_chat_service(monkeypatch, **overrides):
+    """用显式注入依赖安装一次隔离外部副作用的 ChatService。"""
+    dependencies = replace(
+        get_default_chat_service_dependencies(),
+        log_and_write_metrics=lambda record: None,
+        **overrides,
+    )
+    monkeypatch.setattr(main, "chat_service", ChatService(dependencies))
 
 
 class DummyState:
@@ -52,32 +67,21 @@ def test_health(monkeypatch):
 
 def test_chat_basic(monkeypatch):
     """验证 /chat 在 mock Agent 结果下返回标准成功响应。"""
-    monkeypatch.setattr(
-        main,
-        "get_rag_status",
-        lambda :{
+    get_rag_status = lambda: {
             "ready": True,
             "message":"ok",
             "doc_count": 1,
             "chunk_count": 1
         }
-    )
 
-    monkeypatch.setattr(
-        main,
-        "route_agent_action",
-        lambda question, top_k, trace_id="": {
+    route_agent_action = lambda question, top_k, trace_id="": {
             "decision": "use_tool",
             "action": "search_knowledge_base",
             "tool_name": "search_knowledge_base",
             "reason": "测试路由",
         }
-    )
 
-    monkeypatch.setattr(
-        main,
-        "run_agent_v2",
-        lambda *args, **kwargs: {
+    run_agent_v2 = lambda *args, **kwargs: {
             "status": "OK",
             "answer": "测试回答",
             "references": [],
@@ -98,9 +102,14 @@ def test_chat_basic(monkeypatch):
                 }
             ],
         }
-    )
 
     patch_app(monkeypatch)
+    install_chat_service(
+        monkeypatch,
+        get_rag_status=get_rag_status,
+        route_agent_action=route_agent_action,
+        run_agent_v2=run_agent_v2,
+    )
     resp = main.ask_api(
         main.ChatRequest(
             question="DevHub 支持哪些 macOS 版本？",
@@ -128,16 +137,12 @@ def test_chat_uses_rewritten_question_for_follow_up(monkeypatch):
     session_id = "api_follow_up_session"
     clear_session(session_id)
 
-    monkeypatch.setattr(
-        main,
-        "get_rag_status",
-        lambda: {
+    get_rag_status = lambda: {
             "ready": True,
             "message": "ok",
             "doc_count": 1,
             "chunk_count": 1,
-        },
-    )
+        }
 
     rewrite_calls = []
 
@@ -206,11 +211,14 @@ def test_chat_uses_rewritten_question_for_follow_up(monkeypatch):
             ],
         }
 
-    monkeypatch.setattr(main, "rewrite_query_with_history", fake_rewrite)
-    monkeypatch.setattr(main, "route_agent_action", fake_route)
-    monkeypatch.setattr(main, "run_agent_v2", fake_run_agent_v2)
-
     patch_app(monkeypatch)
+    install_chat_service(
+        monkeypatch,
+        get_rag_status=get_rag_status,
+        rewrite_query_with_history=fake_rewrite,
+        route_agent_action=fake_route,
+        run_agent_v2=fake_run_agent_v2,
+    )
 
     main.ask_api(
         main.ChatRequest(
@@ -254,10 +262,7 @@ def test_chat_defaults_to_legacy_agent_v2(monkeypatch):
 
     patch_app(monkeypatch)
 
-    monkeypatch.setattr(
-        main,
-        "route_agent_action",
-        lambda question, top_k, trace_id="": {
+    route_agent_action = lambda question, top_k, trace_id="": {
             "decision": "direct_answer",
             "action": "direct_answer",
             "tool_name": "",
@@ -265,8 +270,7 @@ def test_chat_defaults_to_legacy_agent_v2(monkeypatch):
             "reason": "测试直接回答",
             "router_source": "rule_based",
             "router_llm_used": False,
-        },
-    )
+        }
 
     def fake_run_agent_v2(**kwargs):
         """模拟 v2 Runtime，并校验 main.py 传入 session_id。"""
@@ -299,7 +303,11 @@ def test_chat_defaults_to_legacy_agent_v2(monkeypatch):
             "llm_call_count": 0,
         }
 
-    monkeypatch.setattr(main, "run_agent_v2", fake_run_agent_v2)
+    install_chat_service(
+        monkeypatch,
+        route_agent_action=route_agent_action,
+        run_agent_v2=fake_run_agent_v2,
+    )
 
     resp = main.ask_api(
         main.ChatRequest(
@@ -403,13 +411,12 @@ def test_chat_selects_configured_agent_runtime(
 
         return fake_runner
 
-    monkeypatch.setattr(main, "rewrite_query_with_history", fake_rewrite)
-    monkeypatch.setattr(main, "route_agent_action", fake_route)
-    monkeypatch.setattr(main, "run_agent_v2", build_fake_runner("legacy"))
-    monkeypatch.setattr(
-        main,
-        "run_agent_langgraph",
-        build_fake_runner("langgraph"),
+    install_chat_service(
+        monkeypatch,
+        rewrite_query_with_history=fake_rewrite,
+        route_agent_action=fake_route,
+        run_agent_v2=build_fake_runner("legacy"),
+        run_agent_langgraph=build_fake_runner("langgraph"),
     )
 
     response = main.ask_api(
@@ -439,7 +446,7 @@ def test_chat_selects_configured_agent_runtime(
     assert body["data"]["answer"] == f"{expected_runtime} answer"
     assert body["data"]["question"] == "原始问题"
     assert body["data"]["tool_trace"][0]["step"] == "query_rewrite"
-    assert main.get_history("runtime-switch-session") == [
+    assert get_history("runtime-switch-session") == [
         {"role": "user", "content": "原始问题"},
         {"role": "assistant", "content": f"{expected_runtime} answer"},
     ]
