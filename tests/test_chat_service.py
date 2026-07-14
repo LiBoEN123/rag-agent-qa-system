@@ -3,7 +3,6 @@ from types import SimpleNamespace
 import pytest
 
 from app.api.responses import CHAT_RESULT_RESPONSE_MAP
-from app.config import normalize_agent_runtime
 from app.observability.metrics import (
     attach_query_rewrite_trace,
     build_query_rewrite_trace,
@@ -66,7 +65,6 @@ def build_service(
     decision=None,
     rag_status=None,
     runtime_result=None,
-    runtime_name=None,
     append_error=False,
     metrics_error=False,
 ):
@@ -75,21 +73,12 @@ def build_service(
         "rewrite": [],
         "route": [],
         "rag_status": 0,
-        "legacy": [],
         "langgraph": [],
         "bad_cases": [],
         "messages": [],
         "metrics": [],
     }
-    settings = SimpleNamespace(
-        TOP_K=5,
-        DECOMPOSE_TOP_K=10,
-        AGENT_RUNTIME=(
-            normalize_agent_runtime(runtime_name)
-            if runtime_name is None
-            else runtime_name
-        ),
-    )
+    settings = SimpleNamespace(TOP_K=5, DECOMPOSE_TOP_K=10)
     history = list(history or [])
     rewrite_result = rewrite_result or {
         "original_question": "",
@@ -167,7 +156,6 @@ def build_service(
         rewrite_query_with_history=fake_rewrite,
         route_agent_action=fake_route,
         get_rag_status=fake_rag_status,
-        run_agent_v2=lambda **kwargs: run_runtime("legacy", kwargs),
         run_agent_langgraph=lambda **kwargs: run_runtime("langgraph", kwargs),
         build_query_rewrite_trace=build_query_rewrite_trace,
         attach_query_rewrite_trace=attach_query_rewrite_trace,
@@ -209,7 +197,6 @@ def test_empty_question_skips_business_dependencies_and_writes_metrics_once():
     assert calls["history"] == []
     assert calls["rewrite"] == []
     assert calls["route"] == []
-    assert calls["legacy"] == []
     assert calls["langgraph"] == []
     assert calls["messages"] == []
     assert len(calls["metrics"]) == 1
@@ -280,7 +267,6 @@ def test_rag_not_ready_stops_before_runtime_and_preserves_session_behavior():
     outcome = service.handle(make_request())
 
     assert calls["rag_status"] == 1
-    assert calls["legacy"] == []
     assert calls["langgraph"] == []
     assert outcome.http_status == 503
     assert outcome.code == "NO_DOCUMENTS"
@@ -313,22 +299,13 @@ def test_non_rag_actions_do_not_check_rag_status(action):
     assert calls["rag_status"] == 0
 
 
-@pytest.mark.parametrize(
-    ("runtime_name", "called", "not_called"),
-    [("legacy", "legacy", "langgraph"), ("langgraph", "langgraph", "legacy")],
-)
-def test_runtime_selection_passes_complete_existing_protocol(
-    runtime_name,
-    called,
-    not_called,
-):
-    service, calls = build_service(runtime_name=runtime_name)
+def test_langgraph_runtime_receives_complete_existing_protocol_once():
+    service, calls = build_service()
 
     service.handle(make_request())
 
-    assert len(calls[called]) == 1
-    assert calls[not_called] == []
-    kwargs = calls[called][0]
+    assert len(calls["langgraph"]) == 1
+    kwargs = calls["langgraph"][0]
     assert kwargs["question"] == "原始问题"
     assert kwargs["top_k"] == 4
     assert kwargs["decompose_top_k"] == 8
@@ -339,8 +316,8 @@ def test_runtime_selection_passes_complete_existing_protocol(
     assert callable(kwargs["write_bad_cases"])
 
 
-def test_runtime_selection_is_logged_once_with_trace_id(monkeypatch):
-    """每次业务请求只记录一次带 trace_id 的关键 Runtime 选择日志。"""
+def test_langgraph_runtime_start_is_logged_once_with_trace_id(monkeypatch):
+    """每次业务请求只记录一次带 trace_id 的 Runtime 启动日志。"""
     service, _ = build_service()
     messages = []
 
@@ -350,13 +327,13 @@ def test_runtime_selection_is_logged_once_with_trace_id(monkeypatch):
 
     monkeypatch.setattr("app.services.chat_service.logger.info", record_log)
     service.handle(make_request())
-    selected_logs = [
+    runtime_logs = [
         message
         for message in messages
-        if "runtime_selected agent_runtime=" in message
+        if "runtime_start agent_runtime=" in message
     ]
-    assert selected_logs == [
-        "[trace_id=trace-1] [agent] runtime_selected agent_runtime=langgraph"
+    assert runtime_logs == [
+        "[trace_id=trace-1] [agent] runtime_start agent_runtime=langgraph"
     ]
 
 

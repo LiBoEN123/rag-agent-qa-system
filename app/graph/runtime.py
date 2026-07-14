@@ -1,4 +1,4 @@
-"""与旧 Agent Runtime 调用协议兼容的 LangGraph 门面。"""
+"""LangGraph Agent Runtime 同步执行门面。"""
 
 from collections.abc import Callable
 from typing import Any
@@ -14,7 +14,6 @@ from app.graph.checkpointing import (
     build_checkpoint_thread_id,
     get_checkpointer_mode,
 )
-from app.config import Settings, validate_agent_runtime
 
 
 logger = get_logger("chat_service")
@@ -30,7 +29,7 @@ def run_agent_langgraph(
     session_id: str | None = None,
     bad_case: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """同步执行 LangGraph 主图，并返回与 ``run_agent_v2`` 一致的结果字典。"""
+    """同步执行 LangGraph 主图，并返回 API 主流程使用的结果字典。"""
     decision_for_error = decision if isinstance(decision, dict) else {}
     graph_input: dict[str, Any] = {
         "question": question,
@@ -43,10 +42,7 @@ def run_agent_langgraph(
 
     try:
         mode = get_checkpointer_mode()
-        checkpointer_enabled = (
-            validate_agent_runtime(Settings.AGENT_RUNTIME) == "langgraph"
-            and mode != "disabled"
-        )
+        checkpointer_enabled = mode != "disabled"
         checkpoint_thread_id = (
             build_checkpoint_thread_id(
                 trace_id=trace_id,

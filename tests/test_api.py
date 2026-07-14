@@ -19,12 +19,6 @@ def use_temporary_sqlite_database(monkeypatch, tmp_path):
         tmp_path / "api.sqlite",
         raising=False,
     )
-    monkeypatch.setattr(
-        main.Settings,
-        "AGENT_RUNTIME",
-        "legacy",
-        raising=False,
-    )
 
 
 def patch_app(monkeypatch):
@@ -81,7 +75,7 @@ def test_chat_basic(monkeypatch):
             "reason": "测试路由",
         }
 
-    run_agent_v2 = lambda *args, **kwargs: {
+    run_agent_langgraph = lambda *args, **kwargs: {
             "status": "OK",
             "answer": "测试回答",
             "references": [],
@@ -108,7 +102,7 @@ def test_chat_basic(monkeypatch):
         monkeypatch,
         get_rag_status=get_rag_status,
         route_agent_action=route_agent_action,
-        run_agent_v2=run_agent_v2,
+        run_agent_langgraph=run_agent_langgraph,
     )
     resp = main.ask_api(
         main.ChatRequest(
@@ -185,8 +179,8 @@ def test_chat_uses_rewritten_question_for_follow_up(monkeypatch):
 
     agent_questions = []
 
-    def fake_run_agent_v2(**kwargs):
-        """模拟 Agent v2 并记录收到的改写后问题。"""
+    def fake_run_agent_langgraph(**kwargs):
+        """模拟 LangGraph 并记录收到的改写后问题。"""
         question = kwargs["question"]
         agent_questions.append(question)
         return {
@@ -217,7 +211,7 @@ def test_chat_uses_rewritten_question_for_follow_up(monkeypatch):
         get_rag_status=get_rag_status,
         rewrite_query_with_history=fake_rewrite,
         route_agent_action=fake_route,
-        run_agent_v2=fake_run_agent_v2,
+        run_agent_langgraph=fake_run_agent_langgraph,
     )
 
     main.ask_api(
@@ -256,96 +250,13 @@ def test_chat_uses_rewritten_question_for_follow_up(monkeypatch):
     clear_session(session_id)
 
 
-def test_chat_explicit_legacy_uses_agent_v2(monkeypatch):
-    """验证显式 legacy 回滚配置调用旧 Agent v2 Runtime。"""
-    called = {"v2": 0}
-
+def test_chat_uses_langgraph_once_and_keeps_rewrite_route_api_protocol(monkeypatch):
+    """唯一 Runtime 只调用一次，且保留改写、路由和 API 协议。"""
     patch_app(monkeypatch)
-
-    route_agent_action = lambda question, top_k, trace_id="": {
-            "decision": "direct_answer",
-            "action": "direct_answer",
-            "tool_name": "",
-            "tool_args": {},
-            "reason": "测试直接回答",
-            "router_source": "rule_based",
-            "router_llm_used": False,
-        }
-
-    def fake_run_agent_v2(**kwargs):
-        """模拟 v2 Runtime，并校验 main.py 传入 session_id。"""
-        called["v2"] += 1
-        assert kwargs["question"] == "你能做什么？"
-        assert kwargs["session_id"] == "session_v2"
-        return {
-            "status": "OK",
-            "answer": "v2 answer",
-            "references": [],
-            "retrieval_confidence": 0.0,
-            "answer_confidence": 0.0,
-            "need_clarification": False,
-            "clarification_question": "",
-            "reason": "ok",
-            "action": "direct_answer",
-            "tool_result_summary": "",
-            "tool_trace": [
-                {
-                    "step": "llm_usage",
-                    "router_llm_used": False,
-                    "decompose_llm_used": False,
-                    "answer_llm_used": False,
-                    "llm_call_count": 0,
-                }
-            ],
-            "router_llm_used": False,
-            "decompose_llm_used": False,
-            "answer_llm_used": False,
-            "llm_call_count": 0,
-        }
-
-    install_chat_service(
-        monkeypatch,
-        route_agent_action=route_agent_action,
-        run_agent_v2=fake_run_agent_v2,
-    )
-
-    resp = main.ask_api(
-        main.ChatRequest(
-            session_id="session_v2",
-            question="你能做什么？",
-            top_k=5,
-        ),
-        DummyRequest(),
-        main.Response(),
-    )
-
-    body = resp.model_dump()
-    assert called == {"v2": 1}
-    assert body["code"] == 0
-    assert body["data"]["answer"] == "v2 answer"
-    assert body["data"]["action"] == "direct_answer"
-
-
-@pytest.mark.parametrize(
-    ("runtime_value", "expected_runtime"),
-    [
-        ("legacy", "legacy"),
-        ("  LangGraph  ", "langgraph"),
-    ],
-)
-def test_chat_selects_configured_agent_runtime(
-    monkeypatch,
-    runtime_value,
-    expected_runtime,
-):
-    """配置开关只调用选中的 Runtime，且保留改写、路由和 API 协议。"""
-    patch_app(monkeypatch)
-    monkeypatch.setattr(main.Settings, "AGENT_RUNTIME", runtime_value)
 
     calls = {
         "rewrite": 0,
         "route": 0,
-        "legacy": 0,
         "langgraph": 0,
     }
     runtime_kwargs: dict = {}
@@ -379,44 +290,40 @@ def test_chat_selects_configured_agent_runtime(
         assert question == "改写后的问题"
         return decision
 
-    def build_fake_runner(runtime_name):
-        def fake_runner(**kwargs):
-            calls[runtime_name] += 1
-            runtime_kwargs.update(kwargs)
-            return {
-                "status": "OK",
-                "answer": f"{runtime_name} answer",
-                "references": [],
-                "retrieval_confidence": 0.0,
-                "answer_confidence": 0.0,
-                "need_clarification": False,
-                "clarification_question": "",
-                "reason": "ok",
-                "action": "direct_answer",
-                "tool_result_summary": "未调用工具",
-                "tool_trace": [
-                    {
-                        "step": "llm_usage",
-                        "router_llm_used": False,
-                        "decompose_llm_used": False,
-                        "answer_llm_used": False,
-                        "llm_call_count": 0,
-                    }
-                ],
-                "router_llm_used": False,
-                "decompose_llm_used": False,
-                "answer_llm_used": False,
-                "llm_call_count": 0,
-            }
-
-        return fake_runner
+    def fake_langgraph_runner(**kwargs):
+        calls["langgraph"] += 1
+        runtime_kwargs.update(kwargs)
+        return {
+            "status": "OK",
+            "answer": "langgraph answer",
+            "references": [],
+            "retrieval_confidence": 0.0,
+            "answer_confidence": 0.0,
+            "need_clarification": False,
+            "clarification_question": "",
+            "reason": "ok",
+            "action": "direct_answer",
+            "tool_result_summary": "未调用工具",
+            "tool_trace": [
+                {
+                    "step": "llm_usage",
+                    "router_llm_used": False,
+                    "decompose_llm_used": False,
+                    "answer_llm_used": False,
+                    "llm_call_count": 0,
+                }
+            ],
+            "router_llm_used": False,
+            "decompose_llm_used": False,
+            "answer_llm_used": False,
+            "llm_call_count": 0,
+        }
 
     install_chat_service(
         monkeypatch,
         rewrite_query_with_history=fake_rewrite,
         route_agent_action=fake_route,
-        run_agent_v2=build_fake_runner("legacy"),
-        run_agent_langgraph=build_fake_runner("langgraph"),
+        run_agent_langgraph=fake_langgraph_runner,
     )
 
     response = main.ask_api(
@@ -434,8 +341,7 @@ def test_chat_selects_configured_agent_runtime(
     assert calls == {
         "rewrite": 1,
         "route": 1,
-        "legacy": int(expected_runtime == "legacy"),
-        "langgraph": int(expected_runtime == "langgraph"),
+        "langgraph": 1,
     }
     assert runtime_kwargs["question"] == "改写后的问题"
     assert runtime_kwargs["top_k"] == 4
@@ -443,10 +349,10 @@ def test_chat_selects_configured_agent_runtime(
     assert runtime_kwargs["decision"] is decision
     assert runtime_kwargs["session_id"] == "runtime-switch-session"
     assert body["code"] == 0
-    assert body["data"]["answer"] == f"{expected_runtime} answer"
+    assert body["data"]["answer"] == "langgraph answer"
     assert body["data"]["question"] == "原始问题"
     assert body["data"]["tool_trace"][0]["step"] == "query_rewrite"
     assert get_history("runtime-switch-session") == [
         {"role": "user", "content": "原始问题"},
-        {"role": "assistant", "content": f"{expected_runtime} answer"},
+        {"role": "assistant", "content": "langgraph answer"},
     ]

@@ -100,7 +100,6 @@ def test_chat_controller_contains_no_business_orchestration_calls():
 
     assert "route_agent_action" not in source
     assert "rewrite_query_with_history" not in source
-    assert "run_agent_v2" not in source
     assert "run_agent_langgraph" not in source
     assert "get_history" not in source
     assert "append_message" not in source

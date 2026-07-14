@@ -1,9 +1,9 @@
 import pytest
 
 from app import agent
-from app.agent import answer as agent_answer
 from app.agent import executor as agent_executor
-from app.agent import runtime as agent_runtime
+from app.graph import nodes as graph_nodes
+from app.graph import runtime as graph_runtime
 from app.tools.registry import tool_registry
 
 
@@ -223,8 +223,8 @@ def test_route_uses_rules_when_router_disabled(monkeypatch):
     assert decision["router_llm_used"] is False
 
 
-def test_run_agent_v2_uses_search_knowledge_base_tool(monkeypatch):
-    """验证 Agent v2 知识库路径通过 dispatch_tool 调用标准检索工具。"""
+def test_langgraph_uses_search_knowledge_base_tool_once(monkeypatch):
+    """验证 LangGraph 知识库路径通过 dispatch_tool 调用标准检索工具。"""
     called = {"count": 0}
     fake_chunk = {
         "chunk_id": 1,
@@ -280,9 +280,9 @@ def test_run_agent_v2_uses_search_knowledge_base_tool(monkeypatch):
         }
 
     monkeypatch.setattr(agent_executor, "dispatch_tool", fake_dispatch_tool)
-    monkeypatch.setattr(agent_answer, "_call_ask", fake_ask)
+    monkeypatch.setattr(graph_nodes, "run_rag_subgraph", fake_ask)
 
-    result = agent_runtime.run_agent_v2(
+    result = graph_runtime.run_agent_langgraph(
         write_bad_cases=lambda record: None,
         question="测试问题",
         top_k=5,

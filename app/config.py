@@ -10,26 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_AGENT_RUNTIME = "langgraph"
-AGENT_RUNTIME_VALUES = {"legacy", "langgraph"}
 LANGGRAPH_CHECKPOINTER_VALUES = {"disabled", "memory", "sqlite"}
-
-
-def normalize_agent_runtime(value: str | None) -> str:
-    """规整 Agent Runtime 配置值，空值默认使用 LangGraph。"""
-    normalized = (value or "").strip().lower()
-    return normalized or DEFAULT_AGENT_RUNTIME
-
-
-def validate_agent_runtime(value: str | None) -> str:
-    """校验并返回规整后的 Agent Runtime 配置值。"""
-    normalized = normalize_agent_runtime(value)
-    if normalized not in AGENT_RUNTIME_VALUES:
-        allowed = ", ".join(sorted(AGENT_RUNTIME_VALUES))
-        raise ValueError(
-            f"AGENT_RUNTIME 配置无效: {value!r}，可选值为: {allowed}"
-        )
-    return normalized
 
 
 def normalize_langgraph_checkpointer(value: str | None) -> str:
@@ -132,9 +113,6 @@ class Settings:
     ROUTER_MAX_TOKENS = int(os.getenv("ROUTER_MAX_TOKENS", "512"))
     ROUTER_TEMPERATURE = float(os.getenv("ROUTER_TEMPERATURE", "0.0"))
 
-    AGENT_RUNTIME = normalize_agent_runtime(
-        os.getenv("AGENT_RUNTIME", DEFAULT_AGENT_RUNTIME)
-    )
     AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "5"))
     LANGGRAPH_CHECKPOINTER = normalize_langgraph_checkpointer(
         os.getenv("LANGGRAPH_CHECKPOINTER", "disabled")
@@ -182,14 +160,10 @@ class Settings:
     @classmethod
     def validate(cls):
         """校验关键配置是否存在并可访问。"""
-        cls.AGENT_RUNTIME = validate_agent_runtime(cls.AGENT_RUNTIME)
         cls.LANGGRAPH_CHECKPOINTER = validate_langgraph_checkpointer(
             cls.LANGGRAPH_CHECKPOINTER
         )
-        if (
-            cls.AGENT_RUNTIME == "langgraph"
-            and cls.LANGGRAPH_CHECKPOINTER == "sqlite"
-        ):
+        if cls.LANGGRAPH_CHECKPOINTER == "sqlite":
             cls.LANGGRAPH_CHECKPOINT_DB_PATH = (
                 validate_langgraph_checkpoint_db_path(
                     cls.LANGGRAPH_CHECKPOINT_DB_PATH

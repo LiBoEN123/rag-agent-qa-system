@@ -5,7 +5,6 @@ import pytest
 from app.agent import answer as agent_answer
 from app.agent import executor as agent_executor
 from app.agent import runtime as agent_runtime
-from app.agent.runtime import run_agent_v2
 from app.agent.state import AgentPlanStep, AgentState
 from app.graph import builder as graph_builder
 from app.graph import nodes as graph_nodes
@@ -38,6 +37,11 @@ def isolate_graph_and_trace_store(monkeypatch):
         agent_runtime.Settings,
         "ENABLE_AGENT_TRACE_STORE",
         False,
+    )
+    monkeypatch.setattr(
+        agent_runtime.Settings,
+        "LANGGRAPH_CHECKPOINTER",
+        "disabled",
     )
     yield
     graph_builder.get_compiled_agent_graph.cache_clear()
@@ -113,20 +117,6 @@ def _decision(action: str) -> dict:
         "reason": "用户询问系统能力",
         "router_llm_used": False,
     }
-
-
-def _trace_signature(result: dict) -> list[tuple]:
-    """忽略耗时，仅提取新旧 Runtime 应保持一致的 trace 结构。"""
-    return [
-        (
-            item.get("step"),
-            item.get("action"),
-            item.get("tool_name"),
-            item.get("success"),
-            item.get("status", item.get("tool_status")),
-        )
-        for item in result.get("tool_trace", [])
-    ]
 
 
 def test_runtime_without_decision_routes_once_and_forwards_trace_id(monkeypatch):
@@ -227,8 +217,8 @@ def test_runtime_with_decision_initializes_existing_agent_state(monkeypatch):
         "tool_error",
     ],
 )
-def test_langgraph_and_legacy_runtime_are_equivalent(monkeypatch, scenario):
-    """确定性 RAG、工具、短路和错误场景下，新旧 Runtime 返回保持一致。"""
+def test_langgraph_business_scenarios_preserve_result_protocol(monkeypatch, scenario):
+    """确定性 RAG、工具、短路和错误场景保持既有结果协议。"""
     dispatch_calls: list[str] = []
 
     def fake_dispatch(step, trace_id=""):
@@ -306,11 +296,6 @@ def test_langgraph_and_legacy_runtime_are_equivalent(monkeypatch, scenario):
             "llm_call_count": 2,
         }
     monkeypatch.setattr(
-        agent_answer,
-        "_call_ask",
-        lambda **kwargs: dict(rag_result),
-    )
-    monkeypatch.setattr(
         graph_nodes,
         "run_rag_subgraph",
         lambda **kwargs: dict(rag_result),
@@ -324,19 +309,20 @@ def test_langgraph_and_legacy_runtime_are_equivalent(monkeypatch, scenario):
         "decompose_top_k": 10,
         "decision": decision,
         "trace_id": f"trace-{scenario}",
-        "session_id": "session-equivalence",
+        "session_id": "session-regression",
     }
-    legacy_result = run_agent_v2(**common_kwargs)
     graph_result = run_agent_langgraph(**common_kwargs)
 
-    assert {key: graph_result[key] for key in RESULT_FIELDS} == {
-        key: legacy_result[key] for key in RESULT_FIELDS
-    }
-    assert _trace_signature(graph_result) == _trace_signature(legacy_result)
+    assert set(RESULT_FIELDS).issubset(graph_result)
+    assert isinstance(graph_result["answer"], str)
+    assert isinstance(graph_result["references"], list)
+    assert isinstance(graph_result["need_clarification"], bool)
+    assert isinstance(graph_result["tool_trace"], list)
+    assert isinstance(graph_result["llm_call_count"], int)
     if scenario in {"clarify", "direct_answer"}:
         assert dispatch_calls == []
     else:
-        assert dispatch_calls == [decision["tool_name"], decision["tool_name"]]
+        assert dispatch_calls == [decision["tool_name"]]
     if scenario == "tool_error":
         assert graph_result["status"] == "TOOL_ERROR"
         assert graph_result["answer"] != ""
@@ -348,14 +334,13 @@ def test_langgraph_and_legacy_runtime_are_equivalent(monkeypatch, scenario):
         assert tool_steps[0]["error"] == "mock tool failure"
 
 
-def test_internal_runtime_errors_keep_business_fields_equivalent(monkeypatch):
-    """内部异常只允许 Runtime 标签和错误 trace step 名称不同。"""
+def test_internal_runtime_errors_keep_compatible_business_fields(monkeypatch):
+    """内部异常由 LangGraph 顶层转换为现有兼容错误结构。"""
     decision = _decision("direct_answer")
 
     def fail_plan(*args, **kwargs):
         raise RuntimeError("shared orchestration failure")
 
-    monkeypatch.setattr(agent_runtime, "build_plan_from_decision", fail_plan)
     monkeypatch.setattr(graph_nodes, "build_plan_from_decision", fail_plan)
     kwargs = {
         "write_bad_cases": lambda record: None,
@@ -363,28 +348,18 @@ def test_internal_runtime_errors_keep_business_fields_equivalent(monkeypatch):
         "top_k": 5,
         "decompose_top_k": 10,
         "decision": decision,
-        "trace_id": "trace-internal-equivalence",
+        "trace_id": "trace-internal-error",
     }
 
-    legacy_result = run_agent_v2(**kwargs)
     graph_result = run_agent_langgraph(**kwargs)
 
-    for field in RESULT_FIELDS:
-        if field == "answer":
-            continue
-        assert graph_result[field] == legacy_result[field]
-    assert legacy_result["status"] == "INTERNAL_ERROR"
     assert graph_result["status"] == "INTERNAL_ERROR"
-    assert legacy_result["reason"] == graph_result["reason"]
-    assert legacy_result["answer"].replace("Agent v2", "Runtime") == (
-        graph_result["answer"].replace("LangGraph Agent", "Runtime")
-    )
-    assert _trace_signature(legacy_result)[0][1:] == (
-        _trace_signature(graph_result)[0][1:]
-    )
+    assert graph_result["reason"] == "shared orchestration failure"
+    assert "LangGraph Agent" in graph_result["answer"]
+    assert graph_result["tool_trace"][0]["step"] == "agent_langgraph_error"
 
 
-def test_knowledge_base_path_uses_rag_subgraph_without_legacy_compose(monkeypatch):
+def test_knowledge_base_path_uses_rag_subgraph_without_sequential_rag_compose(monkeypatch):
     """成功知识库 observation 进入子图，并直接 finalize 而不调用旧 ask。"""
     calls = {"subgraph": 0, "compose": 0}
 

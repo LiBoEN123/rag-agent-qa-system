@@ -338,7 +338,7 @@ def test_compose_final_answer_without_successful_observation_returns_tool_error(
 
 
 def test_map_rag_status():
-    """验证 RAG 状态到 Agent v2 状态的映射规则。"""
+    """验证 RAG 状态到 Agent 状态的映射规则。"""
     assert map_rag_status("OK") == "ok"
     assert map_rag_status("NEED_CLARIFICATION") == "clarify"
     assert map_rag_status("NO_RELEVANT_INFO") == "no_evidence"

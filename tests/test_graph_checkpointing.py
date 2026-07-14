@@ -25,7 +25,6 @@ class _CheckpointState(TypedDict):
 def isolate_checkpoint_runtime(monkeypatch, tmp_path):
     """让每个测试使用独立配置和 Saver 生命周期。"""
     graph_builder.reset_agent_graph_runtime()
-    monkeypatch.setattr(Settings, "AGENT_RUNTIME", "langgraph")
     monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "disabled")
     monkeypatch.setattr(
         Settings,
@@ -64,7 +63,6 @@ def test_invalid_checkpointer_mode_has_clear_error():
 
 def test_settings_rejects_sqlite_directory_path(monkeypatch, tmp_path):
     """启用 SQLite 时，目录不能被误当作数据库文件。"""
-    monkeypatch.setattr(Settings, "AGENT_RUNTIME", "langgraph")
     monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "sqlite")
     monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINT_DB_PATH", tmp_path)
     monkeypatch.setattr(Settings, "LLM_API_KEY", "test-key")
@@ -86,20 +84,6 @@ def test_disabled_returns_none_without_creating_database(monkeypatch, tmp_path):
     checkpointing.close_checkpointer()
     assert not db_path.exists()
     assert not db_path.parent.exists()
-
-
-def test_legacy_runtime_never_initializes_configured_saver(
-    monkeypatch,
-    tmp_path,
-):
-    """legacy Runtime 即使配置 sqlite 也不创建 Checkpoint 文件。"""
-    db_path = tmp_path / "legacy" / "checkpoint.sqlite3"
-    monkeypatch.setattr(Settings, "AGENT_RUNTIME", "legacy")
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "sqlite")
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINT_DB_PATH", db_path)
-
-    assert checkpointing.initialize_checkpointer() is None
-    assert not db_path.exists()
 
 
 def test_memory_saver_is_reused_and_reset_creates_new_instance(

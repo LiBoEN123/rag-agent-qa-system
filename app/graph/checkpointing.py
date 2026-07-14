@@ -14,7 +14,6 @@ from langgraph.checkpoint.memory import InMemorySaver
 from app.common.logging import get_logger
 from app.config import (
     Settings,
-    validate_agent_runtime,
     validate_langgraph_checkpoint_db_path,
     validate_langgraph_checkpointer,
 )
@@ -35,9 +34,8 @@ def get_checkpointer_mode() -> str:
 
 def _effective_instance_key() -> tuple[str, str] | None:
     """生成当前 Saver 配置签名；未启用时返回 ``None``。"""
-    runtime = validate_agent_runtime(Settings.AGENT_RUNTIME)
     mode = get_checkpointer_mode()
-    if runtime != "langgraph" or mode == "disabled":
+    if mode == "disabled":
         return None
     if mode == "memory":
         return (mode, "")
@@ -77,7 +75,7 @@ def _create_sqlite_checkpointer(
 
 
 def initialize_checkpointer() -> BaseCheckpointSaver | None:
-    """按配置惰性创建并复用 Checkpointer；legacy/disabled 返回 ``None``。"""
+    """按配置惰性创建并复用 Checkpointer；disabled 返回 ``None``。"""
     global _checkpointer, _instance_key, _sqlite_connection
 
     requested_key = _effective_instance_key()

@@ -58,21 +58,11 @@ def initialize_rag(deps: StartupDependencies) -> None:
     logger.info("[startup] %s", message)
 
 
-def validate_agent_runtime_configuration(settings: Any) -> str:
-    """校验 Runtime/Checkpointer，并为 LangGraph 预编译无副作用主图。"""
-    from app.config import (
-        validate_agent_runtime,
-        validate_langgraph_checkpointer,
-    )
+def validate_agent_graph_configuration(settings: Any) -> str:
+    """校验 Checkpointer，并预编译无副作用的 LangGraph 主图。"""
+    from app.config import validate_langgraph_checkpointer
 
-    runtime = validate_agent_runtime(settings.AGENT_RUNTIME)
     mode = validate_langgraph_checkpointer(settings.LANGGRAPH_CHECKPOINTER)
-    if runtime == "legacy":
-        logger.info(
-            "[startup] agent_runtime=legacy checkpointer_mode=disabled validated"
-        )
-        return runtime
-
     from app.graph.builder import get_compiled_agent_graph
 
     get_compiled_agent_graph()
@@ -80,12 +70,12 @@ def validate_agent_runtime_configuration(settings: Any) -> str:
         "[startup] agent_runtime=langgraph checkpointer_mode=%s validated",
         mode,
     )
-    return runtime
+    return mode
 
 
 def initialize_agent_graph_runtime(settings: Any) -> None:
-    """兼容现有启动入口，执行 Runtime 配置校验和 LangGraph 预编译。"""
-    validate_agent_runtime_configuration(settings)
+    """执行 Checkpointer 配置校验和 LangGraph 预编译。"""
+    validate_agent_graph_configuration(settings)
 
 
 def close_agent_graph_runtime() -> None:

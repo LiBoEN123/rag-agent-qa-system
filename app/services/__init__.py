@@ -8,7 +8,6 @@ from app.services.chat_service import (
     create_default_chat_service,
     get_default_chat_service_dependencies,
 )
-from app.services.runtime_selection import select_agent_runtime
 
 
 __all__ = [
@@ -18,5 +17,4 @@ __all__ = [
     "ChatServiceRequest",
     "create_default_chat_service",
     "get_default_chat_service_dependencies",
-    "select_agent_runtime",
 ]

@@ -32,7 +32,7 @@ def save_agent_run(
     total_cost_ms: int = 0,
     db_path: Path | None = None,
 ) -> None:
-    """新增或替换一条 Agent v2 运行记录。"""
+    """新增或替换一条 Agent 运行记录。"""
     normalized_trace_id = (trace_id or "").strip()
     if not normalized_trace_id:
         return
@@ -141,7 +141,7 @@ def save_agent_trace(
     total_cost_ms: int = 0,
     db_path: Path | None = None,
 ) -> None:
-    """保存 Agent v2 运行摘要及其步骤。"""
+    """保存 Agent 运行摘要及其步骤。"""
     save_agent_run(
         trace_id=trace_id,
         session_id=session_id,

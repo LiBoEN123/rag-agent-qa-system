@@ -1,13 +1,7 @@
-"""Agent 运行时编排模块。
-
-串联路由、计划、执行、答案合成和追踪存储，生成 API 可消费的结果。
-"""
+"""Agent Runtime 结果构造、统计和追踪存储辅助函数。"""
 
 from typing import Any
 
-from app.agent.answer import compose_final_answer
-from app.agent.executor import execute_plan
-from app.agent.planner import build_plan_from_decision
 from app.agent.state import AgentState
 from app.config import Settings
 from app.storage.traces import save_agent_trace
@@ -15,13 +9,6 @@ from app.common.logging import get_logger
 
 
 logger = get_logger("chat_service")
-
-
-def _route_agent_action(question: str, top_k: int, trace_id: str = "") -> dict:
-    """局部导入 Router，避免 Runtime 与路由模块形成循环依赖。"""
-    from app.agent import route_agent_action
-
-    return route_agent_action(question, top_k, trace_id=trace_id)
 
 
 def _safe_decision(decision: dict | None) -> dict:
@@ -46,7 +33,7 @@ def get_route_decision_for_trace(decision: dict) -> str:
 
 
 def map_agent_status_to_public_status(status: str) -> str:
-    """将 Agent v2 内部状态映射为 API 使用的大写业务状态。"""
+    """将 Agent 内部状态映射为 API 使用的大写业务状态。"""
     mapping = {
         "ok": "OK",
         "clarify": "NEED_CLARIFICATION",
@@ -87,7 +74,7 @@ def summarize_observations_for_result(state: AgentState) -> str:
 
 
 def build_decide_trace(decision: dict, router_llm_used: bool) -> dict[str, Any]:
-    """构造 v2 开始阶段的路由决策 trace。"""
+    """构造 Agent 开始阶段的路由决策 trace。"""
     return {
         "step": "decide",
         "route_decision": get_route_decision_for_trace(decision),
@@ -104,7 +91,7 @@ def build_decide_trace(decision: dict, router_llm_used: bool) -> dict[str, Any]:
 
 
 def build_plan_trace(state: AgentState) -> dict[str, Any]:
-    """构造 v2 Planner 产物 trace，便于观察计划步骤。"""
+    """构造 Planner 产物 trace，便于观察计划步骤。"""
     return {
         "step": "plan",
         "status": "success",
@@ -189,8 +176,8 @@ def build_internal_error_result(
     exc: Exception,
     decision: dict | None = None,
     *,
-    runtime_label: str = "Agent v2",
-    trace_step: str = "agent_v2_error",
+    runtime_label: str = "Agent Runtime",
+    trace_step: str = "agent_runtime_error",
 ) -> dict:
     """构造 Agent Runtime 顶层异常时的兼容错误结果。"""
     decision = _safe_decision(decision)
@@ -220,7 +207,7 @@ def build_internal_error_result(
 
 
 def _default_bad_case(trace_id: str, question: str) -> dict:
-    """构造 Agent v2 使用的 bad case 默认结构。"""
+    """构造 Agent Runtime 使用的 bad case 默认结构。"""
     return {
         "trace_id": trace_id,
         "question": question,
@@ -239,8 +226,8 @@ def _write_internal_bad_case(
     question: str,
     exc: Exception,
     *,
-    runtime_route: str = "agent_v2",
-    runtime_label: str = "Agent v2",
+    runtime_route: str = "agent_runtime",
+    runtime_label: str = "Agent Runtime",
 ) -> None:
     """Runtime 顶层异常时写入 bad case，写入失败不继续抛错。"""
     if not callable(write_bad_cases):
@@ -288,95 +275,7 @@ def maybe_save_agent_trace(
             total_cost_ms=total_cost_ms,
         )
     except Exception as exc:
-        logger.warning("保存 Agent v2 trace 失败，忽略持久化错误: %s", exc)
-
-
-def run_agent_v2(
-    write_bad_cases,
-    question: str,
-    top_k: int,
-    decompose_top_k: int,
-    decision: dict | None = None,
-    trace_id: str = "",
-    session_id: str | None = None,
-    bad_case: dict | None = None,
-) -> dict:
-    """执行兼容与紧急回滚 Runtime；签名和返回协议保持稳定。"""
-    bad_case = bad_case or _default_bad_case(trace_id, question)
-    decision_for_error = _safe_decision(decision)
-
-    try:
-        if decision is None:
-            decision = _route_agent_action(question, top_k, trace_id=trace_id)
-
-        decision = _safe_decision(decision)
-        decision_for_error = decision
-
-        router_llm_used = bool(
-            decision.get(
-                "router_llm_used",
-                decision.get("router_source") in {"llm", "rule_based_fallback"},
-            )
-        )
-
-        state = AgentState(
-            trace_id=trace_id,
-            session_id=session_id,
-            original_question=question,
-            rewritten_question="",
-            top_k=top_k,
-            decompose_top_k=decompose_top_k,
-            max_steps=Settings.AGENT_MAX_STEPS,
-            router_llm_used=router_llm_used,
-        )
-
-        state.tool_trace.append(build_decide_trace(decision, router_llm_used))
-
-        state.plan = build_plan_from_decision(
-            decision=decision,
-            question=question,
-            top_k=top_k,
-        )
-        state.tool_trace.append(build_plan_trace(state))
-
-        state = execute_plan(state)
-        state = compose_final_answer(state)
-
-        normalize_llm_call_count(state)
-        append_llm_usage_trace(state)
-
-        result = build_v2_result(state, decision)
-        maybe_save_agent_trace(
-            trace_id=state.trace_id,
-            session_id=state.session_id,
-            question=state.original_question,
-            rewritten_question=state.rewritten_question,
-            final_answer=result.get("answer", ""),
-            status=result.get("status", ""),
-            reason=result.get("reason", ""),
-            tool_trace=result.get("tool_trace", []),
-        )
-        return result
-
-    except Exception as exc:
-        _write_internal_bad_case(
-            write_bad_cases=write_bad_cases,
-            bad_case=bad_case,
-            trace_id=trace_id,
-            question=question,
-            exc=exc,
-        )
-        result = build_internal_error_result(exc, decision_for_error)
-        maybe_save_agent_trace(
-            trace_id=trace_id,
-            session_id=session_id,
-            question=question,
-            final_answer=result.get("answer", ""),
-            status=result.get("status", ""),
-            reason=result.get("reason", ""),
-            tool_trace=result.get("tool_trace", []),
-        )
-        return result
+        logger.warning("保存 Agent trace 失败，忽略持久化错误: %s", exc)
 
 
 __all__ = [
@@ -389,6 +288,5 @@ __all__ = [
     "map_agent_status_to_public_status",
     "maybe_save_agent_trace",
     "normalize_llm_call_count",
-    "run_agent_v2",
     "summarize_observations_for_result",
 ]

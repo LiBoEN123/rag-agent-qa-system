@@ -18,7 +18,7 @@ DIRECT_ANSWER_TEXT = (
 
 
 def map_rag_status(status: str) -> str:
-    """将现有 RAG 状态映射为 Agent v2 的统一状态。"""
+    """将现有 RAG 状态映射为 Agent 的统一状态。"""
     normalized = str(status or "").strip()
     mapping = {
         "OK": "ok",
@@ -180,7 +180,7 @@ def compose_tool_answer(state: AgentState, observation: AgentObservation) -> Age
 
 
 def compose_final_answer(state: AgentState) -> AgentState:
-    """根据已完成的工具观察结果生成 Agent v2 最终回答。"""
+    """根据已完成的工具观察结果生成 Agent 最终回答。"""
     if state.status == "clarify":
         return state
 

@@ -47,7 +47,7 @@ def route_node(state: AgentGraphState) -> dict[str, Any]:
 
 
 def initialize_agent_state_node(state: AgentGraphState) -> dict[str, AgentState]:
-    """按旧 Runtime 的初始化协议创建现有 AgentState。"""
+    """按现有业务协议创建 AgentState。"""
     decision = _safe_decision(state.get("decision"))
     router_llm_used = bool(
         decision.get(
@@ -73,7 +73,7 @@ def initialize_agent_state_node(state: AgentGraphState) -> dict[str, AgentState]
 
 
 def plan_node(state: AgentGraphState) -> dict[str, AgentState]:
-    """调用现有 Planner，并追加旧 Runtime 使用的 plan trace。"""
+    """调用现有 Planner，并追加共享的 plan trace。"""
     agent_state = _require_agent_state(state)
     agent_state.plan = build_plan_from_decision(
         decision=_safe_decision(state.get("decision")),
@@ -132,7 +132,7 @@ def compose_node(state: AgentGraphState) -> dict[str, AgentState]:
 
 
 def finalize_node(state: AgentGraphState) -> dict[str, Any]:
-    """复用旧 Runtime 的统计、结果映射和 trace 持久化逻辑。"""
+    """复用共享的统计、结果映射和 trace 持久化逻辑。"""
     agent_state = _require_agent_state(state)
     decision = _safe_decision(state.get("decision"))
 

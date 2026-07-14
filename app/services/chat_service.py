@@ -13,9 +13,9 @@ from typing import Any
 
 from app.agent import route_agent_action
 from app.agent.query_rewrite import rewrite_query_with_history
-from app.agent.runtime import run_agent_v2
 from app.common.logging import get_logger
 from app.config import Settings
+from app.graph.runtime import run_agent_langgraph
 from app.observability.metrics import (
     attach_query_rewrite_trace,
     build_query_rewrite_trace,
@@ -27,7 +27,6 @@ from app.observability.metrics import (
 )
 from app.rag import get_rag_status
 from app.storage.session import append_message, get_history
-from app.services.runtime_selection import select_agent_runtime
 
 
 logger = get_logger("chat_service")
@@ -153,7 +152,6 @@ class ChatServiceDependencies:
     rewrite_query_with_history: Callable[..., dict]
     route_agent_action: Callable[..., dict]
     get_rag_status: Callable[[], dict]
-    run_agent_v2: Callable[..., dict[str, Any]]
     run_agent_langgraph: Callable[..., dict[str, Any]]
     build_query_rewrite_trace: Callable[[dict], dict]
     attach_query_rewrite_trace: Callable[[dict, dict], dict]
@@ -189,13 +187,6 @@ class _ChatContext:
     session_assistant_content: str = ""
 
 
-def _run_agent_langgraph(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    """延迟导入 LangGraph Runtime，保持 legacy 启动路径轻量。"""
-    from app.graph.runtime import run_agent_langgraph
-
-    return run_agent_langgraph(*args, **kwargs)
-
-
 def get_default_chat_service_dependencies() -> ChatServiceDependencies:
     """构造只引用现有函数、且不执行外部调用的默认依赖。"""
     return ChatServiceDependencies(
@@ -204,8 +195,7 @@ def get_default_chat_service_dependencies() -> ChatServiceDependencies:
         rewrite_query_with_history=rewrite_query_with_history,
         route_agent_action=route_agent_action,
         get_rag_status=get_rag_status,
-        run_agent_v2=run_agent_v2,
-        run_agent_langgraph=_run_agent_langgraph,
+        run_agent_langgraph=run_agent_langgraph,
         build_query_rewrite_trace=build_query_rewrite_trace,
         attach_query_rewrite_trace=attach_query_rewrite_trace,
         collect_trace_metrics=collect_trace_metrics,
@@ -531,22 +521,11 @@ class ChatService:
 
     def _run_agent(self, context: _ChatContext) -> dict[str, Any]:
         agent_start = self._deps.perf_counter()
-        runtime_runner = select_agent_runtime(
-            self._deps.settings.AGENT_RUNTIME,
-            legacy_runner=self._deps.run_agent_v2,
-            langgraph_runner=self._deps.run_agent_langgraph,
-        )
-        runtime_name = (
-            "langgraph"
-            if runtime_runner is self._deps.run_agent_langgraph
-            else "legacy"
-        )
         logger.info(
-            "[trace_id=%s] [agent] runtime_selected agent_runtime=%s",
+            "[trace_id=%s] [agent] runtime_start agent_runtime=langgraph",
             context.request.trace_id,
-            runtime_name,
         )
-        result = runtime_runner(
+        result = self._deps.run_agent_langgraph(
             write_bad_cases=self._deps.write_bad_cases,
             question=context.effective_question,
             top_k=context.final_top_k,

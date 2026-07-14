@@ -69,8 +69,8 @@ def test_refuse_metrics_use_final_status_not_refuse_action():
 
 def test_evaluate_one_case_checks_tool_output_keys(monkeypatch):
     """验证单条 Agent Eval 会把工具输出字段检查纳入通过判定。"""
-    def fake_run_agent_v2(**kwargs):
-        """模拟 compare_documents 的 Agent v2 返回结果。"""
+    def fake_run_agent_langgraph(**kwargs):
+        """模拟 compare_documents 的 LangGraph 返回结果。"""
         return {
             "status": "OK",
             "action": "compare_documents",
@@ -98,8 +98,7 @@ def test_evaluate_one_case_checks_tool_output_keys(monkeypatch):
             ],
         }
 
-    monkeypatch.setattr(agent_eval, "run_agent_v2", fake_run_agent_v2)
-    monkeypatch.setattr(agent_eval.Settings, "AGENT_RUNTIME", "legacy")
+    monkeypatch.setattr(agent_eval, "run_agent_langgraph", fake_run_agent_langgraph)
 
     row = evaluate_one_case(
         {
@@ -126,15 +125,24 @@ def test_evaluate_one_case_checks_tool_output_keys(monkeypatch):
     assert row["tool_output_keys_pass"] is True
 
 
-def test_agent_eval_uses_unified_runtime_selector(monkeypatch):
-    """离线评测可按同一配置分别选择 legacy 或 LangGraph。"""
-    legacy = lambda **kwargs: {"runtime": "legacy"}
-    langgraph = lambda **kwargs: {"runtime": "langgraph"}
-    monkeypatch.setattr(agent_eval, "run_agent_v2", legacy)
-    monkeypatch.setattr(agent_eval, "_run_agent_langgraph", langgraph)
+def test_agent_eval_calls_langgraph_runtime_once(monkeypatch):
+    """离线评测固定调用 LangGraph Runtime。"""
+    calls = []
 
-    monkeypatch.setattr(agent_eval.Settings, "AGENT_RUNTIME", "legacy")
-    assert agent_eval.get_agent_runtime_runner() is legacy
+    def langgraph(**kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "OK",
+            "action": "direct_answer",
+            "answer": "ok",
+            "reason": "ok",
+            "tool_result_summary": "",
+            "references": [],
+            "tool_trace": [],
+        }
 
-    monkeypatch.setattr(agent_eval.Settings, "AGENT_RUNTIME", "langgraph")
-    assert agent_eval.get_agent_runtime_runner() is langgraph
+    monkeypatch.setattr(agent_eval, "run_agent_langgraph", langgraph)
+    evaluate_one_case({"id": "one", "question": "测试"}, top_k=3)
+
+    assert len(calls) == 1
+    assert calls[0]["question"] == "测试"

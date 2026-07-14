@@ -69,7 +69,7 @@ def build_plan_from_decision(
     question: str,
     top_k: int = 5,
 ) -> list[AgentPlanStep]:
-    """根据路由决策构建 Agent v2 的执行计划。"""
+    """根据路由决策构建 Agent 的执行计划。"""
     decision = _safe_decision(decision)
     question = (question or "").strip()
     action = str(decision.get("action") or "").strip()

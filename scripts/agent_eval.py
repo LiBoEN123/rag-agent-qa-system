@@ -23,8 +23,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.observability.metrics import write_bad_cases
 from app.config import Settings
-from app.agent.runtime import run_agent_v2
-from app.services.runtime_selection import select_agent_runtime
+from app.graph.runtime import run_agent_langgraph
 from app.rag import (
     get_rag_status,
     needs_rebuild,
@@ -39,22 +38,6 @@ from app.rag import (
 # =========================
 DEFAULT_CASES_PATH = PROJECT_ROOT / "data" / "eval" / "agent_eval_cases_nmgut_v1.json"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs" / "agent_eval"
-
-
-def _run_agent_langgraph(*args, **kwargs):
-    """按需导入 LangGraph，保持显式 legacy 评测入口轻量。"""
-    from app.graph.runtime import run_agent_langgraph
-
-    return run_agent_langgraph(*args, **kwargs)
-
-
-def get_agent_runtime_runner():
-    """按统一选择规则返回当前离线评测使用的 Runtime。"""
-    return select_agent_runtime(
-        Settings.AGENT_RUNTIME,
-        legacy_runner=run_agent_v2,
-        langgraph_runner=_run_agent_langgraph,
-    )
 
 
 # =========================
@@ -158,7 +141,7 @@ def get_first_trace(result: dict) -> dict:
 
 def extract_actual_fields(result: dict) -> dict:
     """
-    Agent v2 返回里：
+    Agent 返回里：
     - result["status"] 是最终状态
     - result["action"] 是最终动作
     - result["tool_trace"][0]["decision_type"] 是路由决策
@@ -361,7 +344,7 @@ def evaluate_one_case(case: dict, top_k: int) -> dict:
     started_at = time.time()
 
     try:
-        result = get_agent_runtime_runner()(
+        result = run_agent_langgraph(
             write_bad_cases=write_bad_cases,
             question=question,
             top_k=top_k,

@@ -1,9 +1,8 @@
-"""默认 LangGraph API 链路的单次调用与兼容协议回归。"""
+"""唯一 LangGraph API 链路的单次调用与兼容协议回归。"""
 
 from dataclasses import replace
 
 import app.main as main
-from app.config import normalize_agent_runtime
 from app.services.chat_service import (
     ChatService,
     get_default_chat_service_dependencies,
@@ -25,7 +24,6 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
         "rewrite": 0,
         "route": 0,
         "rag_ready": 0,
-        "legacy": 0,
         "langgraph": 0,
         "session_turn": 0,
         "messages": [],
@@ -62,10 +60,6 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
     def rag_status():
         calls["rag_ready"] += 1
         return {"ready": True, "message": "OK"}
-
-    def legacy(**kwargs):
-        calls["legacy"] += 1
-        raise AssertionError("默认路径不应调用 legacy Runtime")
 
     def langgraph(**kwargs):
         calls["langgraph"] += 1
@@ -119,18 +113,12 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
             "llm_call_count": 1,
         }
 
-    monkeypatch.setattr(
-        main.Settings,
-        "AGENT_RUNTIME",
-        normalize_agent_runtime(None),
-    )
     dependencies = replace(
         get_default_chat_service_dependencies(),
         get_history=lambda session_id: [],
         rewrite_query_with_history=rewrite,
         route_agent_action=route,
         get_rag_status=rag_status,
-        run_agent_v2=legacy,
         run_agent_langgraph=langgraph,
         append_message=lambda session_id, role, content: calls[
             "messages"
@@ -165,7 +153,6 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
         "rewrite": 1,
         "route": 1,
         "rag_ready": 1,
-        "legacy": 0,
         "langgraph": 1,
         "session_turn": 1,
         "messages": [

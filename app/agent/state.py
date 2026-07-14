@@ -22,7 +22,7 @@ AgentStatus = Literal[
 
 
 class AgentPlanStep(BaseModel):
-    """Agent v2 中的一条计划步骤。"""
+    """Agent 中的一条计划步骤。"""
 
     step_id: int = Field(..., ge=1, description="步骤编号，从 1 开始")
     action: str = Field(..., description="步骤动作，例如 tool_call / final_answer / clarify / direct_answer")
@@ -33,7 +33,7 @@ class AgentPlanStep(BaseModel):
 
 
 class AgentObservation(BaseModel):
-    """Agent v2 中某一步执行后的观察结果。"""
+    """Agent 中某一步执行后的观察结果。"""
 
     step_id: int = Field(..., ge=1, description="对应的计划步骤编号")
     tool_name: str = Field(default="", description="本次观察对应的工具名")
@@ -45,7 +45,7 @@ class AgentObservation(BaseModel):
 
 
 class AgentState(BaseModel):
-    """Agent v2 单次请求的完整运行状态。"""
+    """Agent 单次请求的完整运行状态。"""
 
     trace_id: str = Field(default="", description="请求追踪 ID")
     session_id: str | None = Field(default=None, description="多轮会话 ID")

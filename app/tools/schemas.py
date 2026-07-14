@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ToolResult(BaseModel):
-    """Agent v2 统一工具调用结果。"""
+    """Agent 统一工具调用结果。"""
 
     status: str = Field(..., description="工具状态，例如 success / error")
     ok: bool = Field(..., description="工具是否执行成功")
