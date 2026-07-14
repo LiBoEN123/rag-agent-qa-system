@@ -158,7 +158,24 @@ LangGraph Runtime 按 `route/initialize → plan → execute` 组织主图。成
 
 `AGENT_RUNTIME=langgraph` 时，知识库问答由独立子图依次执行问题歧义判断、Query Decompose、检索与重排、Evidence Gate、Context Build、回答生成、JSON 解析、引用绑定与验证。子图复用现有检索、Rerank、ChromaDB、模型网关、引用和置信度算法，API Schema 没有变化。
 
-`AGENT_RUNTIME=legacy` 仍沿用 `run_agent_v2 → compose_rag_answer → rag.ask()`，旧顺序编排和评测入口继续保留用于回归对比。当前两条 Runtime 都未启用 ToolNode、`bind_tools()`、Checkpointer、Streaming 或 Interrupt，会话存储也未迁移。
+`AGENT_RUNTIME=legacy` 仍沿用 `run_agent_v2 → compose_rag_answer → rag.ask()`，旧顺序编排和评测入口继续保留用于回归对比。当前两条 Runtime 都未启用 ToolNode、`bind_tools()`、Streaming 或 Interrupt，会话存储也未迁移。
+
+### LangGraph Checkpointer
+
+Checkpointer 默认关闭，并且只在 `AGENT_RUNTIME=langgraph` 时使用。它支持以下模式：
+
+```env
+LANGGRAPH_CHECKPOINTER=disabled
+LANGGRAPH_CHECKPOINTER=memory
+LANGGRAPH_CHECKPOINTER=sqlite
+LANGGRAPH_CHECKPOINT_DB_PATH=./data/langgraph_checkpoints.sqlite3
+```
+
+`memory` 仅适合测试和本地实验，进程退出后状态会丢失；`sqlite` 适合本地运行和开发。当前每次 `/chat` 请求都会根据该请求的 `trace_id` 生成独立且经过摘要处理的 Graph thread，因此同一 `session_id` 的不同请求也不会累积上一轮的 `decision`、`agent_state` 或 `result`。
+
+Checkpointer 只保存 Graph 节点执行快照，不替代应用级聊天历史。Query Rewrite 仍从 `SQLITE_DB_PATH` 指定的 session 数据库读取最近消息，用户和助手消息也仍写入该数据库。Checkpoint 文件可能包含用户问题、工具结果、模型回答、引用信息和 Graph 中间状态，不能提交到 Git 仓库，并应按敏感业务数据保护。
+
+当前尚未实现 Checkpoint 自动恢复、Replay、Time Travel、Interrupt、人工审批、Streaming 或 Checkpoint 管理 API。
 
 ## 快速启动
 
@@ -255,6 +272,8 @@ streamlit run demo/streamlit_app.py
 | `ROUTER_TEMPERATURE` | 路由模型温度 |
 | `AGENT_RUNTIME` | Agent Runtime，支持 `legacy`（默认）或 `langgraph` |
 | `AGENT_MAX_STEPS` | Agent v2 单次请求最多执行的计划步骤数，默认 `5` |
+| `LANGGRAPH_CHECKPOINTER` | LangGraph Checkpointer，支持 `disabled`（默认）、`memory` 或 `sqlite` |
+| `LANGGRAPH_CHECKPOINT_DB_PATH` | SQLite Checkpoint 文件路径，默认 `./data/langgraph_checkpoints.sqlite3` |
 | `ENABLE_AGENT_TRACE_STORE` | 是否将 Agent v2 运行摘要和步骤写入 SQLite，默认 `false` |
 | `SQLITE_DB_PATH` | 会话历史及可选 Agent trace 的 SQLite 文件路径，默认 `./data/app.sqlite` |
 | `ENABLE_QUERY_REWRITE` | 是否启用多轮追问改写，默认 `true` |
@@ -702,5 +721,6 @@ docker run --rm -p 8000:8000 --env-file .env \
 - 回答模型、路由模型、追问改写模型、拆分模型和 Judge 模型都按 OpenAI-compatible Chat Completions 格式调用。
 - embedding 和 rerank 模型首次加载较慢，可能需要下载权重。
 - 多轮历史使用本地 SQLite 持久化，适合单实例运行；多实例部署时需要额外规划共享存储和并发策略。
+- SQLite Checkpointer 适合单进程本地开发；高并发、多进程共享、数据持续增长和敏感状态留存需要额外的容量、权限及清理策略。
 - legacy 与 LangGraph Runtime 都已具备标准 Planner / Executor 链路，但当前计划仍以单次工具调用加最终回答为主，不是可自主循环的复杂多工具 Agent。
 - retrieval_confidence 和 answer_confidence 是启发式估计，不等同于严格概率。

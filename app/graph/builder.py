@@ -5,6 +5,7 @@ from functools import lru_cache
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from app.graph.checkpointing import get_checkpointer
 from app.graph.conditions import after_execute_condition, route_condition
 from app.graph.nodes import (
     compose_node,
@@ -58,8 +59,24 @@ def build_agent_graph(
 @lru_cache(maxsize=1)
 def get_compiled_agent_graph(
 ) -> CompiledStateGraph[AgentGraphState, None, AgentGraphState, AgentGraphState]:
-    """返回进程内复用的已编译 Agent Graph。"""
-    return build_agent_graph().compile()
+    """按配置注入 Checkpointer，并返回进程内复用的已编译 Agent Graph。"""
+    checkpointer = get_checkpointer()
+    builder = build_agent_graph()
+    if checkpointer is None:
+        return builder.compile()
+    return builder.compile(checkpointer=checkpointer)
 
 
-__all__ = ["build_agent_graph", "get_compiled_agent_graph"]
+def reset_agent_graph_runtime() -> None:
+    """先失效 compiled Graph，再关闭并清理其 Checkpointer。"""
+    get_compiled_agent_graph.cache_clear()
+    from app.graph.checkpointing import clear_checkpointer_cache
+
+    clear_checkpointer_cache()
+
+
+__all__ = [
+    "build_agent_graph",
+    "get_compiled_agent_graph",
+    "reset_agent_graph_runtime",
+]

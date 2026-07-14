@@ -11,6 +11,7 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 AGENT_RUNTIME_VALUES = {"legacy", "langgraph"}
+LANGGRAPH_CHECKPOINTER_VALUES = {"disabled", "memory", "sqlite"}
 
 
 def normalize_agent_runtime(value: str | None) -> str:
@@ -28,6 +29,34 @@ def validate_agent_runtime(value: str | None) -> str:
             f"AGENT_RUNTIME 配置无效: {value!r}，可选值为: {allowed}"
         )
     return normalized
+
+
+def normalize_langgraph_checkpointer(value: str | None) -> str:
+    """规整 LangGraph Checkpointer 模式，空值默认关闭。"""
+    normalized = (value or "").strip().lower()
+    return normalized or "disabled"
+
+
+def validate_langgraph_checkpointer(value: str | None) -> str:
+    """校验并返回规整后的 LangGraph Checkpointer 模式。"""
+    normalized = normalize_langgraph_checkpointer(value)
+    if normalized not in LANGGRAPH_CHECKPOINTER_VALUES:
+        allowed = ", ".join(sorted(LANGGRAPH_CHECKPOINTER_VALUES))
+        raise ValueError(
+            f"LANGGRAPH_CHECKPOINTER 配置无效: {value!r}，可选值为: {allowed}"
+        )
+    return normalized
+
+
+def validate_langgraph_checkpoint_db_path(value: str | Path) -> Path:
+    """解析并校验 Checkpoint SQLite 文件路径，但不创建文件或目录。"""
+    path = project_path(Path(value).expanduser())
+    if path.exists() and path.is_dir():
+        raise ValueError(
+            "LANGGRAPH_CHECKPOINT_DB_PATH 必须指向 SQLite 文件，"
+            f"不能是目录: {path}"
+        )
+    return path
 
 
 def env_bool(name: str, default: str = "false") -> bool:
@@ -104,6 +133,17 @@ class Settings:
 
     AGENT_RUNTIME = normalize_agent_runtime(os.getenv("AGENT_RUNTIME", "legacy"))
     AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "5"))
+    LANGGRAPH_CHECKPOINTER = normalize_langgraph_checkpointer(
+        os.getenv("LANGGRAPH_CHECKPOINTER", "disabled")
+    )
+    LANGGRAPH_CHECKPOINT_DB_PATH = project_path(
+        Path(
+            os.getenv(
+                "LANGGRAPH_CHECKPOINT_DB_PATH",
+                str(BASE_DIR / "data" / "langgraph_checkpoints.sqlite3"),
+            )
+        ).expanduser()
+    )
 
     ENABLE_AGENT_TRACE_STORE = env_bool("ENABLE_AGENT_TRACE_STORE", "false")
     SQLITE_DB_PATH = project_path(
@@ -140,6 +180,18 @@ class Settings:
     def validate(cls):
         """校验关键配置是否存在并可访问。"""
         cls.AGENT_RUNTIME = validate_agent_runtime(cls.AGENT_RUNTIME)
+        cls.LANGGRAPH_CHECKPOINTER = validate_langgraph_checkpointer(
+            cls.LANGGRAPH_CHECKPOINTER
+        )
+        if (
+            cls.AGENT_RUNTIME == "langgraph"
+            and cls.LANGGRAPH_CHECKPOINTER == "sqlite"
+        ):
+            cls.LANGGRAPH_CHECKPOINT_DB_PATH = (
+                validate_langgraph_checkpoint_db_path(
+                    cls.LANGGRAPH_CHECKPOINT_DB_PATH
+                )
+            )
         if not cls.LLM_API_KEY:
             raise ValueError("缺少 LLM_API_KEY 或 DEEPSEEK_API_KEY，请检查 .env")
         if not cls.RAG_FILE_PATH.exists():

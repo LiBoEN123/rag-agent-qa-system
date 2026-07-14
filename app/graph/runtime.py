@@ -10,6 +10,11 @@ from app.agent.runtime import (
 )
 from app.common.logging import get_logger
 from app.graph.builder import get_compiled_agent_graph
+from app.graph.checkpointing import (
+    build_checkpoint_thread_id,
+    get_checkpointer_mode,
+)
+from app.config import Settings, validate_agent_runtime
 
 
 logger = get_logger("chat_service")
@@ -36,12 +41,40 @@ def run_agent_langgraph(
         "session_id": session_id,
     }
 
-    logger.info(
-        "[trace_id=%s] [agent] agent_runtime=langgraph graph_start",
-        trace_id,
-    )
     try:
-        output = get_compiled_agent_graph().invoke(graph_input)
+        mode = get_checkpointer_mode()
+        checkpointer_enabled = (
+            validate_agent_runtime(Settings.AGENT_RUNTIME) == "langgraph"
+            and mode != "disabled"
+        )
+        checkpoint_thread_id = (
+            build_checkpoint_thread_id(
+                trace_id=trace_id,
+                session_id=session_id,
+            )
+            if checkpointer_enabled
+            else ""
+        )
+        logger.info(
+            "[trace_id=%s] [agent] agent_runtime=langgraph graph_start "
+            "session_id_present=%s checkpointer_mode=%s checkpoint_thread_id=%s",
+            trace_id,
+            bool((session_id or "").strip()),
+            mode if checkpointer_enabled else "disabled",
+            checkpoint_thread_id or "-",
+        )
+        graph = get_compiled_agent_graph()
+        if checkpointer_enabled:
+            output = graph.invoke(
+                graph_input,
+                config={
+                    "configurable": {
+                        "thread_id": checkpoint_thread_id,
+                    }
+                },
+            )
+        else:
+            output = graph.invoke(graph_input)
         result = output.get("result") if isinstance(output, dict) else None
         if not isinstance(result, dict):
             raise RuntimeError("LangGraph did not produce a valid result")

@@ -9,3 +9,6 @@ paraphrase-multilingual-MiniLM-L12-v2/
 /outputs/
 logs/
 .obsidian/
+langgraph_checkpoints.sqlite3
+langgraph_checkpoints.sqlite3-shm
+langgraph_checkpoints.sqlite3-wal

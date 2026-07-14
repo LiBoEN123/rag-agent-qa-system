@@ -56,3 +56,37 @@ def initialize_rag(deps: StartupDependencies) -> None:
         chunk_overlap=deps.settings.CHUNK_OVERLAP,
     )
     logger.info("[startup] %s", message)
+
+
+def initialize_agent_graph_runtime(settings: Any) -> None:
+    """仅为启用 Checkpointer 的 LangGraph Runtime 预初始化 Saver 和主图。"""
+    from app.config import (
+        validate_agent_runtime,
+        validate_langgraph_checkpointer,
+    )
+
+    runtime = validate_agent_runtime(settings.AGENT_RUNTIME)
+    mode = validate_langgraph_checkpointer(settings.LANGGRAPH_CHECKPOINTER)
+    if runtime != "langgraph" or mode == "disabled":
+        return
+
+    from app.graph.builder import get_compiled_agent_graph
+
+    get_compiled_agent_graph()
+    logger.info(
+        "[startup] agent_runtime=langgraph checkpointer_mode=%s initialized",
+        mode,
+    )
+
+
+def close_agent_graph_runtime() -> None:
+    """关闭 Agent Graph Runtime；关闭异常只记录日志，不阻塞其他清理。"""
+    try:
+        from app.graph.builder import reset_agent_graph_runtime
+
+        reset_agent_graph_runtime()
+    except Exception as exc:
+        logger.warning(
+            "[shutdown] langgraph_runtime_close_failed error=%s",
+            str(exc)[:200],
+        )

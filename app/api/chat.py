@@ -30,7 +30,12 @@ from app.api.diagnostics import (
     create_diagnostics_router,
 )
 from app.api.responses import ChatResponseBuilder
-from app.api.lifecycle import StartupDependencies, initialize_rag
+from app.api.lifecycle import (
+    StartupDependencies,
+    close_agent_graph_runtime,
+    initialize_agent_graph_runtime,
+    initialize_rag,
+)
 from app.api.schemas import (
     ChatData,
     ChatRequest,
@@ -47,9 +52,12 @@ from app.services.chat_service import (
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """在 FastAPI 生命周期开始时初始化 RAG，关闭时正常退出。"""
-    start_on_event()
-    yield
+    """启动时初始化 RAG/Graph，关闭时释放可选 Checkpointer。"""
+    try:
+        start_on_event()
+        yield
+    finally:
+        close_agent_graph_runtime()
 
 
 app = FastAPI(title='Mini Rag API', version='1.0.0', lifespan=lifespan)
@@ -112,7 +120,7 @@ def build_chat_response_from_outcome(
 # =========================
 
 def start_on_event():
-    """FastAPI 启动时校验配置并加载或重建 RAG 索引。"""
+    """启动时校验配置、初始化 RAG，并按需预编译 Agent Graph。"""
     initialize_rag(
         StartupDependencies(
             settings=Settings,
@@ -122,6 +130,7 @@ def start_on_event():
             rebuild_and_persist_index=rebuild_and_persist_index,
         )
     )
+    initialize_agent_graph_runtime(Settings)
 
 @app.get("/health")
 def health():
