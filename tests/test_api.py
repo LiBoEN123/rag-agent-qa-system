@@ -104,6 +104,76 @@ def test_internal_error_response_builder_does_not_expose_runtime_exception():
     ]
 
 
+def test_chat_langgraph_internal_error_result_returns_http_500(monkeypatch):
+    sensitive_message = (
+        "/home/test-user/project/checkpoints.sqlite: "
+        "model request failed with api_key=sk-test-secret"
+    )
+    decision = {
+        "decision": "direct_answer",
+        "action": "direct_answer",
+        "tool_name": "",
+        "tool_args": {},
+        "reason": "直接回答",
+        "router_source": "rule_based",
+        "router_llm_used": False,
+    }
+    runtime_calls = []
+
+    def fake_run_agent_langgraph(**kwargs):
+        runtime_calls.append(kwargs)
+        return build_internal_error_result(
+            RuntimeError(sensitive_message),
+            kwargs["decision"],
+            runtime_label="LangGraph Agent",
+            trace_step="agent_langgraph_error",
+        )
+
+    patch_app(monkeypatch)
+    install_chat_service(
+        monkeypatch,
+        rewrite_query_with_history=lambda question, history, trace_id="": {
+            "original_question": question,
+            "rewritten_question": question,
+            "history_used": False,
+            "rewritten": False,
+            "need_check": False,
+            "need_rewrite": False,
+            "reason": "no rewrite",
+            "rewrite_llm_used": False,
+            "error": "",
+        },
+        route_agent_action=lambda question, top_k, trace_id="": decision,
+        run_agent_langgraph=fake_run_agent_langgraph,
+    )
+
+    http_response = main.Response()
+    response_body = main.ask_api(
+        main.ChatRequest(question="触发 LangGraph 内部异常"),
+        DummyRequest(),
+        http_response,
+    )
+    payload = response_body.model_dump()
+    response_text = response_body.model_dump_json()
+
+    assert len(runtime_calls) == 1
+    assert runtime_calls[0]["decision"] is decision
+    assert http_response.status_code == 500
+    assert payload["code"] == "INTERNAL_ERROR"
+    assert payload["data"]["status"] == "error"
+    assert payload["data"]["reason"] == "Agent 内部执行异常，请稍后重试"
+    assert {
+        "step": "agent_langgraph_error",
+        "status": "error",
+        "error": "internal_error",
+    } in payload["data"]["tool_trace"]
+    assert "/home/test-user/project" not in response_text
+    assert "checkpoints.sqlite" not in response_text
+    assert "sk-test-secret" not in response_text
+    assert "RuntimeError" not in response_text
+    assert "model request failed" not in response_text
+
+
 def test_chat_basic(monkeypatch):
     """验证 /chat 在 mock Agent 结果下返回标准成功响应。"""
     get_rag_status = lambda: {

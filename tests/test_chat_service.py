@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.agent.runtime import build_internal_error_result
 from app.api.responses import CHAT_RESULT_RESPONSE_MAP
 from app.observability.metrics import (
     attach_query_rewrite_trace,
@@ -233,6 +234,8 @@ def test_rewrite_routes_and_runs_once_with_original_question_preserved():
     )
     assert calls["langgraph"][0]["decision"]["action"] == "direct_answer"
     assert outcome.question == "原始问题"
+    assert outcome.http_status == 200
+    assert outcome.code == 0
     assert outcome.response_status == "ok"
     assert [
         item["step"] for item in outcome.result["tool_trace"]
@@ -419,6 +422,42 @@ def test_known_runtime_statuses_reuse_existing_response_mapping(
     assert outcome.response_config is CHAT_RESULT_RESPONSE_MAP[status]
     assert len(calls["messages"]) == 2
     assert len(calls["metrics"]) == 1
+
+
+def test_langgraph_internal_error_result_maps_to_http_500():
+    decision = {
+        "decision": "direct_answer",
+        "action": "direct_answer",
+        "tool_name": "",
+        "tool_args": {},
+        "reason": "直接回答",
+        "router_source": "rule_based",
+        "router_llm_used": False,
+    }
+    result = build_internal_error_result(
+        RuntimeError("sensitive runtime failure"),
+        decision,
+        runtime_label="LangGraph Agent",
+        trace_step="agent_langgraph_error",
+    )
+    service, calls = build_service(
+        decision=decision,
+        runtime_result=result,
+    )
+
+    outcome = service.handle(make_request())
+
+    assert len(calls["langgraph"]) == 1
+    assert calls["langgraph"][0]["decision"] is decision
+    assert outcome.http_status == 500
+    assert outcome.code == "INTERNAL_ERROR"
+    assert outcome.response_status == "error"
+    assert outcome.result["reason"] == "Agent 内部执行异常，请稍后重试"
+    assert {
+        "step": "agent_langgraph_error",
+        "status": "error",
+        "error": "internal_error",
+    } in outcome.result["tool_trace"]
 
 
 def test_runtime_exception_returns_compatible_error_and_writes_bad_case_once():
