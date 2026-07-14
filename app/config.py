@@ -10,14 +10,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_AGENT_RUNTIME = "langgraph"
 AGENT_RUNTIME_VALUES = {"legacy", "langgraph"}
 LANGGRAPH_CHECKPOINTER_VALUES = {"disabled", "memory", "sqlite"}
 
 
 def normalize_agent_runtime(value: str | None) -> str:
-    """规整 Agent Runtime 配置值，空值默认使用旧运行时。"""
+    """规整 Agent Runtime 配置值，空值默认使用 LangGraph。"""
     normalized = (value or "").strip().lower()
-    return normalized or "legacy"
+    return normalized or DEFAULT_AGENT_RUNTIME
 
 
 def validate_agent_runtime(value: str | None) -> str:
@@ -131,7 +132,9 @@ class Settings:
     ROUTER_MAX_TOKENS = int(os.getenv("ROUTER_MAX_TOKENS", "512"))
     ROUTER_TEMPERATURE = float(os.getenv("ROUTER_TEMPERATURE", "0.0"))
 
-    AGENT_RUNTIME = normalize_agent_runtime(os.getenv("AGENT_RUNTIME", "legacy"))
+    AGENT_RUNTIME = normalize_agent_runtime(
+        os.getenv("AGENT_RUNTIME", DEFAULT_AGENT_RUNTIME)
+    )
     AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "5"))
     LANGGRAPH_CHECKPOINTER = normalize_langgraph_checkpointer(
         os.getenv("LANGGRAPH_CHECKPOINTER", "disabled")

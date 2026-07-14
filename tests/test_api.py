@@ -256,8 +256,8 @@ def test_chat_uses_rewritten_question_for_follow_up(monkeypatch):
     clear_session(session_id)
 
 
-def test_chat_defaults_to_legacy_agent_v2(monkeypatch):
-    """验证 /chat 默认调用旧 Agent v2 Runtime。"""
+def test_chat_explicit_legacy_uses_agent_v2(monkeypatch):
+    """验证显式 legacy 回滚配置调用旧 Agent v2 Runtime。"""
     called = {"v2": 0}
 
     patch_app(monkeypatch)

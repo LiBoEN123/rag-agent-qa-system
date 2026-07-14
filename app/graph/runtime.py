@@ -56,7 +56,7 @@ def run_agent_langgraph(
             else ""
         )
         logger.info(
-            "[trace_id=%s] [agent] agent_runtime=langgraph graph_start "
+            "[trace_id=%s] [agent] langgraph_graph_start "
             "session_id_present=%s checkpointer_mode=%s checkpoint_thread_id=%s",
             trace_id,
             bool((session_id or "").strip()),
@@ -80,14 +80,14 @@ def run_agent_langgraph(
             raise RuntimeError("LangGraph did not produce a valid result")
 
         logger.info(
-            "[trace_id=%s] [agent] agent_runtime=langgraph graph_end status=%s",
+            "[trace_id=%s] [agent] langgraph_graph_end status=%s",
             trace_id,
             result.get("status", ""),
         )
         return result
     except Exception as exc:
         logger.exception(
-            "[trace_id=%s] [agent] agent_runtime=langgraph graph_failed",
+            "[trace_id=%s] [agent] langgraph_graph_failed",
             trace_id,
         )
         _write_internal_bad_case(

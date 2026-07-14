@@ -255,18 +255,18 @@ def test_checkpoint_write_failure_returns_compatible_error_once(monkeypatch):
     [
         ("legacy", "memory", 0),
         ("legacy", "sqlite", 0),
-        ("langgraph", "disabled", 0),
+        ("langgraph", "disabled", 1),
         ("langgraph", "memory", 1),
         ("langgraph", "sqlite", 1),
     ],
 )
-def test_lifecycle_initializes_only_enabled_langgraph_mode(
+def test_lifecycle_compiles_every_langgraph_mode_only(
     monkeypatch,
     runtime,
     mode,
     expected_calls,
 ):
-    """启动预热不会让 legacy/disabled 创建 Saver 或编译 Graph。"""
+    """LangGraph 各模式都预编译；legacy 不导入或编译主图。"""
     calls: list[str] = []
 
     def fake_get_compiled_agent_graph():
@@ -285,6 +285,48 @@ def test_lifecycle_initializes_only_enabled_langgraph_mode(
 
     lifecycle.initialize_agent_graph_runtime(settings)
     assert len(calls) == expected_calls
+
+
+@pytest.mark.parametrize(
+    ("runtime", "mode", "error"),
+    [
+        ("invalid", "disabled", "AGENT_RUNTIME 配置无效"),
+        ("langgraph", "invalid", "LANGGRAPH_CHECKPOINTER 配置无效"),
+    ],
+)
+def test_lifecycle_rejects_invalid_runtime_configuration(
+    runtime,
+    mode,
+    error,
+):
+    """启动校验明确拒绝非法值，不静默回退。"""
+    settings = SimpleNamespace(
+        AGENT_RUNTIME=runtime,
+        LANGGRAPH_CHECKPOINTER=mode,
+    )
+
+    with pytest.raises(ValueError, match=error):
+        lifecycle.validate_agent_runtime_configuration(settings)
+
+
+def test_lifecycle_propagates_langgraph_compile_failure(monkeypatch):
+    """LangGraph 依赖或编译失败会阻止启动，不返回假成功。"""
+    def fail_compile():
+        raise RuntimeError("graph compile failed")
+
+    fail_compile.cache_clear = lambda: None
+    monkeypatch.setattr(
+        graph_builder,
+        "get_compiled_agent_graph",
+        fail_compile,
+    )
+    settings = SimpleNamespace(
+        AGENT_RUNTIME="langgraph",
+        LANGGRAPH_CHECKPOINTER="disabled",
+    )
+
+    with pytest.raises(RuntimeError, match="graph compile failed"):
+        lifecycle.validate_agent_runtime_configuration(settings)
 
 
 def test_lifecycle_close_is_idempotent(monkeypatch):

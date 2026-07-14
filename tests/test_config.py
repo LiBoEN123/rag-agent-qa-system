@@ -3,17 +3,26 @@
 import pytest
 
 from app.config import (
+    DEFAULT_AGENT_RUNTIME,
     Settings,
     normalize_agent_runtime,
+    normalize_langgraph_checkpointer,
     validate_agent_runtime,
 )
 
 
-def test_agent_runtime_defaults_to_legacy_when_unconfigured():
-    """空配置保持旧 Runtime 默认值。"""
-    assert normalize_agent_runtime(None) == "legacy"
-    assert normalize_agent_runtime("") == "legacy"
-    assert normalize_agent_runtime("   ") == "legacy"
+def test_agent_runtime_defaults_to_langgraph_when_unconfigured():
+    """未配置或空配置都使用正式默认的 LangGraph Runtime。"""
+    assert DEFAULT_AGENT_RUNTIME == "langgraph"
+    assert normalize_agent_runtime(None) == "langgraph"
+    assert normalize_agent_runtime("") == "langgraph"
+    assert normalize_agent_runtime("   ") == "langgraph"
+
+
+def test_default_runtime_does_not_enable_checkpointer():
+    """Runtime 默认切换不改变 Checkpointer 默认关闭策略。"""
+    assert normalize_agent_runtime(None) == "langgraph"
+    assert normalize_langgraph_checkpointer(None) == "disabled"
 
 
 @pytest.mark.parametrize(

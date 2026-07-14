@@ -2,7 +2,7 @@
 
 一个面向中文制度类文档的 Agentic RAG 问答系统，支持文档解析、混合检索、重排、引用生成、Agent 路由、多轮追问改写、可观测性和离线评测。
 
-本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。`/chat` 入口支持 legacy 与 LangGraph 两种 Agent Runtime，二者都复用 Router、Planner、Executor 和 Answer Composer 串联知识库问答、工具调用、直接回答和澄清追问；传入 `session_id` 时，还会结合 SQLite 中最近的会话历史对短追问做 Query Rewrite。
+本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。`/chat` 默认使用 LangGraph Agent Runtime，并保留 legacy 作为兼容验证和紧急回滚路径；二者复用 Router、Planner、Executor 和 Answer Composer，传入 `session_id` 时还会结合 SQLite 中最近的会话历史对短追问做 Query Rewrite。
 
 ## 项目亮点
 
@@ -11,7 +11,7 @@
 - CrossEncoder rerank：对候选 chunk 做二阶段重排，缓解初召回排序不准的问题。
 - ChromaDB 持久化：chunk 文本、metadata 和 embedding 持久化保存，服务重启可复用索引缓存。
 - LLM Router + 规则 fallback：可开启 LLM 路由，输出异常或参数非法时自动回退到规则路由。
-- 可切换 Agent Runtime：默认保留 legacy 编排；LangGraph 主图的知识库路径使用独立 RAG 子图，两条路径共享返回协议和底层算法。
+- 可切换 Agent Runtime：默认和推荐使用 LangGraph 主图；legacy 编排仅保留为兼容验证和紧急回滚路径，两条路径共享返回协议和底层算法。
 - 多轮追问改写：同一 `session_id` 下通过 SQLite 保留最近会话历史，短追问和指代问题会先改写成独立检索问题。
 - 工具调用：支持知识库检索、双文档内容对比、简单四则运算、列出知识库文档和查看指定 chunk 原文。
 - 引用绑定和拒答机制：模型输出的 `Reference N` 会绑定回真实文件与 chunk；证据不足或引用支撑不足时拒答。
@@ -24,11 +24,15 @@
 ```mermaid
 flowchart TD
     U[用户问题] --> API[FastAPI /chat]
-    API --> QR[SQLite Session History<br/>Query Rewrite]
+    API --> Service[ChatService]
+    Service --> QR[SQLite Session History<br/>Query Rewrite]
     QR --> Router[Agent Router]
-    Router --> Planner[Agent Planner]
+    Router --> Selector[Runtime Selector]
+    Selector -->|langgraph 默认| Graph[LangGraph Agent Graph]
+    Selector -->|legacy 回滚| Planner
+    Graph --> Planner[Agent Planner]
     Planner --> Executor[Agent Executor]
-    Executor -->|search_knowledge_base| RAG[RAG Pipeline]
+    Executor -->|search_knowledge_base| RAG[LangGraph RAG Subgraph]
     Executor -->|compare_documents / simple_calculator<br/>list_documents / get_chunk_text| Tools[Tools]
     Executor -->|clarify| Clarify[澄清追问]
     Executor -->|direct_answer| Direct[直接回答]
@@ -40,7 +44,7 @@ flowchart TD
     CB --> LLM[LLM Generation<br/>OpenAI-compatible Chat Completions]
     LLM --> RB[Reference Binding]
     RB --> Guard[Confidence / Refusal]
-    Guard --> Composer[Answer Composer]
+    Guard --> Finalize[Finalize]
 
     subgraph Indexing[索引构建流程]
         DL[Document Loader<br/>txt / md / pdf / docx] --> CL[Clean Documents]
@@ -57,7 +61,8 @@ flowchart TD
     Tools --> Composer
     Clarify --> Composer
     Direct --> Composer
-    Composer --> Resp[统一 ChatResponse]
+    Composer --> Finalize
+    Finalize --> Resp[统一 ChatResponse]
 ```
 
 ## 核心能力
@@ -140,29 +145,33 @@ API 请求与响应 Schema、HTTP 状态语义和 trace 响应头保持不变；
 
 ## Agent Runtime 切换
 
-当前支持 `legacy` 和 `langgraph` 两种运行时，默认继续使用 `legacy`。在 `.env` 中设置：
-
-```env
-AGENT_RUNTIME=legacy
-```
-
-或：
+当前支持 `langgraph` 和 `legacy` 两种运行时。默认值和推荐配置为：
 
 ```env
 AGENT_RUNTIME=langgraph
 ```
 
-LangGraph Runtime 按 `route/initialize → plan → execute` 组织主图。成功的 `search_knowledge_base` observation 会进入 RAG 子图并直接到 `finalize`；普通工具、澄清、直接回答和工具错误仍进入原有 `compose → finalize`，因此知识库路径不会再次调用旧 `rag.ask()`。
+需要紧急回滚时，显式修改配置并重启服务：
+
+```env
+AGENT_RUNTIME=legacy
+```
+
+请求选择链路为 `FastAPI → ChatService → Runtime Selector → run_agent_langgraph / run_agent_v2`。配置值会去除首尾空格并统一为小写；非法值会在配置校验阶段明确报错，不会静默切换到另一个 Runtime，也不会在生产请求中双跑。
+
+默认架构为 `FastAPI → ChatService → LangGraph Agent Graph → RAG Subgraph / 普通工具 Compose → Finalize`。LangGraph Runtime 按 `route/initialize → plan → execute` 组织主图。成功的 `search_knowledge_base` observation 会进入 RAG 子图并直接到 `finalize`；普通工具、澄清、直接回答和工具错误进入共享的 `compose → finalize`，因此知识库路径不会再次调用旧 `rag.ask()`。
+
+legacy Runtime 的 `run_agent_v2()` 和旧 `rag.ask()` 均继续保留，用于兼容验证和紧急回滚；新功能原则上只扩展 LangGraph 路径。Planner、Executor、Answer Composer 和 `AgentState` 是两种 Runtime 共享的业务模块，并不等同于 legacy 专属代码。
 
 ### LangGraph RAG 子图
 
 `AGENT_RUNTIME=langgraph` 时，知识库问答由独立子图依次执行问题歧义判断、Query Decompose、检索与重排、Evidence Gate、Context Build、回答生成、JSON 解析、引用绑定与验证。子图复用现有检索、Rerank、ChromaDB、模型网关、引用和置信度算法，API Schema 没有变化。
 
-`AGENT_RUNTIME=legacy` 仍沿用 `run_agent_v2 → compose_rag_answer → rag.ask()`，旧顺序编排和评测入口继续保留用于回归对比。当前两条 Runtime 都未启用 ToolNode、`bind_tools()`、Streaming 或 Interrupt，会话存储也未迁移。
+`AGENT_RUNTIME=legacy` 仍沿用 `run_agent_v2 → compose_rag_answer → rag.ask()`，旧顺序编排继续保留用于回归对比。`scripts/agent_eval.py` 使用同一个 Runtime Selector，可通过 `AGENT_RUNTIME` 分别进行离线验收。当前两条 Runtime 都未启用 ToolNode、`bind_tools()`、Streaming 或 Interrupt，会话存储也未迁移。
 
 ### LangGraph Checkpointer
 
-Checkpointer 默认关闭，并且只在 `AGENT_RUNTIME=langgraph` 时使用。它支持以下模式：
+Checkpointer 默认仍为 `disabled`，并且只在 `AGENT_RUNTIME=langgraph` 时使用；默认 Runtime 切换不会自动创建 Checkpoint 数据库。它支持以下模式：
 
 ```env
 LANGGRAPH_CHECKPOINTER=disabled
@@ -175,7 +184,7 @@ LANGGRAPH_CHECKPOINT_DB_PATH=./data/langgraph_checkpoints.sqlite3
 
 Checkpointer 只保存 Graph 节点执行快照，不替代应用级聊天历史。Query Rewrite 仍从 `SQLITE_DB_PATH` 指定的 session 数据库读取最近消息，用户和助手消息也仍写入该数据库。Checkpoint 文件可能包含用户问题、工具结果、模型回答、引用信息和 Graph 中间状态，不能提交到 Git 仓库，并应按敏感业务数据保护。
 
-当前尚未实现 Checkpoint 自动恢复、Replay、Time Travel、Interrupt、人工审批、Streaming 或 Checkpoint 管理 API。
+当前尚未实现 Checkpoint 自动恢复、Replay、Time Travel、Interrupt、人工审批、Streaming、Checkpoint 管理 API 或生产级分布式 Checkpointer。
 
 ## 快速启动
 
@@ -270,7 +279,7 @@ streamlit run demo/streamlit_app.py
 | `ROUTER_MAX_RETRIES` | 路由模型失败重试次数 |
 | `ROUTER_MAX_TOKENS` | 路由模型最大输出 token |
 | `ROUTER_TEMPERATURE` | 路由模型温度 |
-| `AGENT_RUNTIME` | Agent Runtime，支持 `legacy`（默认）或 `langgraph` |
+| `AGENT_RUNTIME` | Agent Runtime，支持 `langgraph`（默认、推荐）或 `legacy`（兼容验证和紧急回滚） |
 | `AGENT_MAX_STEPS` | Agent v2 单次请求最多执行的计划步骤数，默认 `5` |
 | `LANGGRAPH_CHECKPOINTER` | LangGraph Checkpointer，支持 `disabled`（默认）、`memory` 或 `sqlite` |
 | `LANGGRAPH_CHECKPOINT_DB_PATH` | SQLite Checkpoint 文件路径，默认 `./data/langgraph_checkpoints.sqlite3` |
@@ -566,11 +575,14 @@ python scripts/evaluate_rag_results_semantic_fixed.py \
 Agent 路由评测、压测和本地模型接口检查：
 
 ```bash
-python scripts/agent_eval.py
+AGENT_RUNTIME=legacy python scripts/agent_eval.py --output-dir outputs/agent_eval/legacy
+AGENT_RUNTIME=langgraph python scripts/agent_eval.py --output-dir outputs/agent_eval/langgraph
 python scripts/perf_test.py
 python scripts/concurrent_perf_test.py
 python scripts/test_local_llm.py
 ```
+
+两次 Agent 评测必须使用同一 cases 文件、`top_k` 和模型/索引配置。该评测会使用真实本地索引，并可能调用已配置的 Router、拆分和回答模型；没有可用模型/API Key 时应只运行 mock 等价性测试，不应把失败或空结果当作正式评测数据。
 
 ## 适合面试讲解的设计取舍
 
@@ -722,5 +734,5 @@ docker run --rm -p 8000:8000 --env-file .env \
 - embedding 和 rerank 模型首次加载较慢，可能需要下载权重。
 - 多轮历史使用本地 SQLite 持久化，适合单实例运行；多实例部署时需要额外规划共享存储和并发策略。
 - SQLite Checkpointer 适合单进程本地开发；高并发、多进程共享、数据持续增长和敏感状态留存需要额外的容量、权限及清理策略。
-- legacy 与 LangGraph Runtime 都已具备标准 Planner / Executor 链路，但当前计划仍以单次工具调用加最终回答为主，不是可自主循环的复杂多工具 Agent。
+- LangGraph 与 legacy Runtime 都复用标准 Planner / Executor 链路，但当前计划仍以单次工具调用加最终回答为主，不是可自主循环的复杂多工具 Agent；legacy 不再作为新功能扩展目标。
 - retrieval_confidence 和 answer_confidence 是启发式估计，不等同于严格概率。

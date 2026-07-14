@@ -24,6 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.observability.metrics import write_bad_cases
 from app.config import Settings
 from app.agent.runtime import run_agent_v2
+from app.services.runtime_selection import select_agent_runtime
 from app.rag import (
     get_rag_status,
     needs_rebuild,
@@ -38,6 +39,22 @@ from app.rag import (
 # =========================
 DEFAULT_CASES_PATH = PROJECT_ROOT / "data" / "eval" / "agent_eval_cases_nmgut_v1.json"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "outputs" / "agent_eval"
+
+
+def _run_agent_langgraph(*args, **kwargs):
+    """按需导入 LangGraph，保持显式 legacy 评测入口轻量。"""
+    from app.graph.runtime import run_agent_langgraph
+
+    return run_agent_langgraph(*args, **kwargs)
+
+
+def get_agent_runtime_runner():
+    """按统一选择规则返回当前离线评测使用的 Runtime。"""
+    return select_agent_runtime(
+        Settings.AGENT_RUNTIME,
+        legacy_runner=run_agent_v2,
+        langgraph_runner=_run_agent_langgraph,
+    )
 
 
 # =========================
@@ -344,7 +361,7 @@ def evaluate_one_case(case: dict, top_k: int) -> dict:
     started_at = time.time()
 
     try:
-        result = run_agent_v2(
+        result = get_agent_runtime_runner()(
             write_bad_cases=write_bad_cases,
             question=question,
             top_k=top_k,
@@ -799,7 +816,7 @@ def main() -> None:
         "--top-k",
         type=int,
         default=3,
-        help="传给 run_agent_v2 的 top_k"
+        help="传给当前 Agent Runtime 的 top_k"
     )
 
     parser.add_argument(

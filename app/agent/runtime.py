@@ -301,7 +301,7 @@ def run_agent_v2(
     session_id: str | None = None,
     bad_case: dict | None = None,
 ) -> dict:
-    """串联 Router、Planner、Executor 和 Answer Composer，执行一次 Agent v2 流程。"""
+    """执行兼容与紧急回滚 Runtime；签名和返回协议保持稳定。"""
     bad_case = bad_case or _default_bad_case(trace_id, question)
     decision_for_error = _safe_decision(decision)
 

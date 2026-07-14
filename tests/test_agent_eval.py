@@ -99,6 +99,7 @@ def test_evaluate_one_case_checks_tool_output_keys(monkeypatch):
         }
 
     monkeypatch.setattr(agent_eval, "run_agent_v2", fake_run_agent_v2)
+    monkeypatch.setattr(agent_eval.Settings, "AGENT_RUNTIME", "legacy")
 
     row = evaluate_one_case(
         {
@@ -123,3 +124,17 @@ def test_evaluate_one_case_checks_tool_output_keys(monkeypatch):
     assert row["passed"] is True
     assert row["error_type"] == "ok"
     assert row["tool_output_keys_pass"] is True
+
+
+def test_agent_eval_uses_unified_runtime_selector(monkeypatch):
+    """离线评测可按同一配置分别选择 legacy 或 LangGraph。"""
+    legacy = lambda **kwargs: {"runtime": "legacy"}
+    langgraph = lambda **kwargs: {"runtime": "langgraph"}
+    monkeypatch.setattr(agent_eval, "run_agent_v2", legacy)
+    monkeypatch.setattr(agent_eval, "_run_agent_langgraph", langgraph)
+
+    monkeypatch.setattr(agent_eval.Settings, "AGENT_RUNTIME", "legacy")
+    assert agent_eval.get_agent_runtime_runner() is legacy
+
+    monkeypatch.setattr(agent_eval.Settings, "AGENT_RUNTIME", "langgraph")
+    assert agent_eval.get_agent_runtime_runner() is langgraph

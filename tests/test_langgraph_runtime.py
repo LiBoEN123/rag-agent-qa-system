@@ -45,11 +45,11 @@ def isolate_graph_and_trace_store(monkeypatch):
 
 def _decision(action: str) -> dict:
     """为等价性测试构造确定性的合法路由决策。"""
-    if action == "search_knowledge_base":
+    if action.startswith("search_"):
         return {
             "decision": "use_knowledge_base",
-            "action": action,
-            "tool_name": action,
+            "action": "search_knowledge_base",
+            "tool_name": "search_knowledge_base",
             "tool_args": {"query": "测试知识库", "top_k": 5},
             "reason": "检索知识库",
             "router_llm_used": False,
@@ -61,6 +61,38 @@ def _decision(action: str) -> dict:
             "tool_name": "simple_calculator",
             "tool_args": {"expression": "1+2"},
             "reason": "执行计算",
+            "router_llm_used": False,
+        }
+    if action == "list_documents":
+        return {
+            "decision": "use_tool",
+            "action": action,
+            "tool_name": action,
+            "tool_args": {},
+            "reason": "列出文档",
+            "router_llm_used": False,
+        }
+    if action == "get_chunk_text":
+        return {
+            "decision": "use_tool",
+            "action": action,
+            "tool_name": action,
+            "tool_args": {"chunk_id": 1},
+            "reason": "读取 chunk",
+            "router_llm_used": False,
+        }
+    if action == "compare_documents":
+        return {
+            "decision": "use_tool",
+            "action": action,
+            "tool_name": action,
+            "tool_args": {
+                "query": "对比规定",
+                "doc_a": "a.md",
+                "doc_b": "b.md",
+                "top_k": 5,
+            },
+            "reason": "对比文档",
             "router_llm_used": False,
         }
     if action == "clarify":
@@ -183,8 +215,13 @@ def test_runtime_with_decision_initializes_existing_agent_state(monkeypatch):
 @pytest.mark.parametrize(
     "scenario",
     [
-        "search_knowledge_base",
+        "search_success",
+        "search_no_evidence",
+        "search_model_error",
         "simple_calculator",
+        "list_documents",
+        "get_chunk_text",
+        "compare_documents",
         "clarify",
         "direct_answer",
         "tool_error",
@@ -215,18 +252,51 @@ def test_langgraph_and_legacy_runtime_are_equivalent(monkeypatch, scenario):
                 },
                 "error": "",
             }
+        if step.tool_name == "list_documents":
+            output = {
+                "count": 2,
+                "documents": [
+                    {"file_name": "a.md"},
+                    {"file_name": "b.md"},
+                ],
+            }
+        elif step.tool_name == "get_chunk_text":
+            output = {"chunk_id": 1, "chunk": {"text": "chunk 证据"}}
+        elif step.tool_name == "compare_documents":
+            output = {"comparison": "两份文档存在差异"}
+        else:
+            output = {"expression": "1+2", "result": 3}
         return {
             "status": "success",
             "ok": True,
-            "output": {"expression": "1+2", "result": 3},
+            "output": output,
             "error": "",
         }
 
     monkeypatch.setattr(agent_executor, "_call_dispatch_tool", fake_dispatch)
-    monkeypatch.setattr(
-        agent_answer,
-        "_call_ask",
-        lambda **kwargs: {
+
+    if scenario == "search_no_evidence":
+        rag_result = {
+            "status": "NO_RELEVANT_INFO",
+            "answer": "没有足够证据",
+            "references": [],
+            "reason": "证据不足",
+            "decompose_llm_used": False,
+            "answer_llm_used": False,
+            "llm_call_count": 0,
+        }
+    elif scenario == "search_model_error":
+        rag_result = {
+            "status": "MODEL_ERROR",
+            "answer": "模型暂时不可用",
+            "references": [],
+            "reason": "模型暂时不可用",
+            "decompose_llm_used": False,
+            "answer_llm_used": True,
+            "llm_call_count": 1,
+        }
+    else:
+        rag_result = {
             "status": "OK",
             "answer": "知识库答案",
             "references": [{"reference_id": "Reference 1"}],
@@ -234,20 +304,16 @@ def test_langgraph_and_legacy_runtime_are_equivalent(monkeypatch, scenario):
             "decompose_llm_used": True,
             "answer_llm_used": True,
             "llm_call_count": 2,
-        },
+        }
+    monkeypatch.setattr(
+        agent_answer,
+        "_call_ask",
+        lambda **kwargs: dict(rag_result),
     )
     monkeypatch.setattr(
         graph_nodes,
         "run_rag_subgraph",
-        lambda **kwargs: {
-            "status": "OK",
-            "answer": "知识库答案",
-            "references": [{"reference_id": "Reference 1"}],
-            "reason": "证据充分",
-            "decompose_llm_used": True,
-            "answer_llm_used": True,
-            "llm_call_count": 2,
-        },
+        lambda **kwargs: dict(rag_result),
     )
 
     decision = _decision(scenario)
@@ -280,6 +346,42 @@ def test_langgraph_and_legacy_runtime_are_equivalent(monkeypatch, scenario):
         ]
         assert tool_steps[0]["success"] is False
         assert tool_steps[0]["error"] == "mock tool failure"
+
+
+def test_internal_runtime_errors_keep_business_fields_equivalent(monkeypatch):
+    """内部异常只允许 Runtime 标签和错误 trace step 名称不同。"""
+    decision = _decision("direct_answer")
+
+    def fail_plan(*args, **kwargs):
+        raise RuntimeError("shared orchestration failure")
+
+    monkeypatch.setattr(agent_runtime, "build_plan_from_decision", fail_plan)
+    monkeypatch.setattr(graph_nodes, "build_plan_from_decision", fail_plan)
+    kwargs = {
+        "write_bad_cases": lambda record: None,
+        "question": "异常问题",
+        "top_k": 5,
+        "decompose_top_k": 10,
+        "decision": decision,
+        "trace_id": "trace-internal-equivalence",
+    }
+
+    legacy_result = run_agent_v2(**kwargs)
+    graph_result = run_agent_langgraph(**kwargs)
+
+    for field in RESULT_FIELDS:
+        if field == "answer":
+            continue
+        assert graph_result[field] == legacy_result[field]
+    assert legacy_result["status"] == "INTERNAL_ERROR"
+    assert graph_result["status"] == "INTERNAL_ERROR"
+    assert legacy_result["reason"] == graph_result["reason"]
+    assert legacy_result["answer"].replace("Agent v2", "Runtime") == (
+        graph_result["answer"].replace("LangGraph Agent", "Runtime")
+    )
+    assert _trace_signature(legacy_result)[0][1:] == (
+        _trace_signature(graph_result)[0][1:]
+    )
 
 
 def test_knowledge_base_path_uses_rag_subgraph_without_legacy_compose(monkeypatch):
@@ -356,6 +458,69 @@ def test_knowledge_base_path_uses_rag_subgraph_without_legacy_compose(monkeypatc
         if step.get("step") == "compose_final_answer"
     ]
     assert len(compose_steps) == 1
+
+
+@pytest.mark.parametrize(
+    ("action", "output"),
+    [
+        ("simple_calculator", {"expression": "1+2", "result": 3}),
+        (
+            "list_documents",
+            {"count": 1, "documents": [{"file_name": "policy.md"}]},
+        ),
+        ("get_chunk_text", {"chunk_id": 1, "chunk": {"text": "证据"}}),
+        ("compare_documents", {"comparison": "两份文档存在差异"}),
+    ],
+)
+def test_regular_tool_path_dispatches_and_composes_once(
+    monkeypatch,
+    action,
+    output,
+):
+    """默认 Graph 普通工具路径不进入 RAG，且 dispatch/compose 各一次。"""
+    calls = {"dispatch": 0, "compose": 0, "rag": 0}
+
+    def dispatch(step, trace_id=""):
+        calls["dispatch"] += 1
+        assert step.tool_name == action
+        return {
+            "status": "success",
+            "ok": True,
+            "output": output,
+            "error": "",
+        }
+
+    original_compose = graph_nodes.compose_final_answer
+
+    def compose(state):
+        calls["compose"] += 1
+        return original_compose(state)
+
+    def fail_rag(**kwargs):
+        calls["rag"] += 1
+        raise AssertionError("普通工具不应进入 RAG 子图")
+
+    monkeypatch.setattr(agent_executor, "_call_dispatch_tool", dispatch)
+    monkeypatch.setattr(graph_nodes, "compose_final_answer", compose)
+    monkeypatch.setattr(graph_nodes, "run_rag_subgraph", fail_rag)
+
+    result = run_agent_langgraph(
+        write_bad_cases=lambda record: None,
+        question="普通工具问题",
+        top_k=5,
+        decompose_top_k=10,
+        decision=_decision(action),
+        trace_id=f"trace-{action}",
+    )
+
+    assert result["status"] == "OK"
+    assert calls == {"dispatch": 1, "compose": 1, "rag": 0}
+    assert [
+        item["step"] for item in result["tool_trace"]
+    ].count("tool_call") == 1
+    assert [
+        item["step"] for item in result["tool_trace"]
+    ].count("compose_final_answer") == 1
 
 
 def test_failed_knowledge_base_observation_does_not_enter_rag_subgraph(monkeypatch):

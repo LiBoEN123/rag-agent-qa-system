@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.api.responses import CHAT_RESULT_RESPONSE_MAP
-from app.config import validate_agent_runtime
+from app.config import normalize_agent_runtime
 from app.observability.metrics import (
     attach_query_rewrite_trace,
     build_query_rewrite_trace,
@@ -66,7 +66,7 @@ def build_service(
     decision=None,
     rag_status=None,
     runtime_result=None,
-    runtime_name="legacy",
+    runtime_name=None,
     append_error=False,
     metrics_error=False,
 ):
@@ -84,7 +84,11 @@ def build_service(
     settings = SimpleNamespace(
         TOP_K=5,
         DECOMPOSE_TOP_K=10,
-        AGENT_RUNTIME=runtime_name,
+        AGENT_RUNTIME=(
+            normalize_agent_runtime(runtime_name)
+            if runtime_name is None
+            else runtime_name
+        ),
     )
     history = list(history or [])
     rewrite_result = rewrite_result or {
@@ -165,7 +169,6 @@ def build_service(
         get_rag_status=fake_rag_status,
         run_agent_v2=lambda **kwargs: run_runtime("legacy", kwargs),
         run_agent_langgraph=lambda **kwargs: run_runtime("langgraph", kwargs),
-        validate_agent_runtime=validate_agent_runtime,
         build_query_rewrite_trace=build_query_rewrite_trace,
         attach_query_rewrite_trace=attach_query_rewrite_trace,
         collect_trace_metrics=collect_trace_metrics,
@@ -235,8 +238,8 @@ def test_rewrite_routes_and_runs_once_with_original_question_preserved():
     assert calls["history"] == ["session-1"]
     assert len(calls["rewrite"]) == 1
     assert calls["route"][0]["question"] == rewritten_question
-    assert calls["legacy"][0]["question"] == rewritten_question
-    assert calls["legacy"][0]["decision"]["action"] == "direct_answer"
+    assert calls["langgraph"][0]["question"] == rewritten_question
+    assert calls["langgraph"][0]["decision"]["action"] == "direct_answer"
     assert outcome.question == "原始问题"
     assert [
         item["step"] for item in outcome.result["tool_trace"]
@@ -256,7 +259,7 @@ def test_question_without_rewrite_is_passed_through_without_extra_llm_count():
     service.handle(make_request())
 
     assert calls["route"][0]["question"] == "原始问题"
-    assert calls["legacy"][0]["question"] == "原始问题"
+    assert calls["langgraph"][0]["question"] == "原始问题"
     assert calls["metrics"][0]["llm_call_count"] == 0
 
 
@@ -334,6 +337,27 @@ def test_runtime_selection_passes_complete_existing_protocol(
     assert kwargs["decision"]["action"] == "direct_answer"
     assert kwargs["bad_case"]["question"] == "原始问题"
     assert callable(kwargs["write_bad_cases"])
+
+
+def test_runtime_selection_is_logged_once_with_trace_id(monkeypatch):
+    """每次业务请求只记录一次带 trace_id 的关键 Runtime 选择日志。"""
+    service, _ = build_service()
+    messages = []
+
+    def record_log(message, *args, **kwargs):
+        rendered = message % args if args else message
+        messages.append(rendered)
+
+    monkeypatch.setattr("app.services.chat_service.logger.info", record_log)
+    service.handle(make_request())
+    selected_logs = [
+        message
+        for message in messages
+        if "runtime_selected agent_runtime=" in message
+    ]
+    assert selected_logs == [
+        "[trace_id=trace-1] [agent] runtime_selected agent_runtime=langgraph"
+    ]
 
 
 @pytest.mark.parametrize(

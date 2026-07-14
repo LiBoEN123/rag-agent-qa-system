@@ -15,7 +15,7 @@ from app.agent import route_agent_action
 from app.agent.query_rewrite import rewrite_query_with_history
 from app.agent.runtime import run_agent_v2
 from app.common.logging import get_logger
-from app.config import Settings, validate_agent_runtime
+from app.config import Settings
 from app.observability.metrics import (
     attach_query_rewrite_trace,
     build_query_rewrite_trace,
@@ -27,6 +27,7 @@ from app.observability.metrics import (
 )
 from app.rag import get_rag_status
 from app.storage.session import append_message, get_history
+from app.services.runtime_selection import select_agent_runtime
 
 
 logger = get_logger("chat_service")
@@ -154,7 +155,6 @@ class ChatServiceDependencies:
     get_rag_status: Callable[[], dict]
     run_agent_v2: Callable[..., dict[str, Any]]
     run_agent_langgraph: Callable[..., dict[str, Any]]
-    validate_agent_runtime: Callable[[str | None], str]
     build_query_rewrite_trace: Callable[[dict], dict]
     attach_query_rewrite_trace: Callable[[dict, dict], dict]
     collect_trace_metrics: Callable[[dict], dict]
@@ -206,7 +206,6 @@ def get_default_chat_service_dependencies() -> ChatServiceDependencies:
         get_rag_status=get_rag_status,
         run_agent_v2=run_agent_v2,
         run_agent_langgraph=_run_agent_langgraph,
-        validate_agent_runtime=validate_agent_runtime,
         build_query_rewrite_trace=build_query_rewrite_trace,
         attach_query_rewrite_trace=attach_query_rewrite_trace,
         collect_trace_metrics=collect_trace_metrics,
@@ -532,13 +531,20 @@ class ChatService:
 
     def _run_agent(self, context: _ChatContext) -> dict[str, Any]:
         agent_start = self._deps.perf_counter()
-        runtime_name = self._deps.validate_agent_runtime(
-            self._deps.settings.AGENT_RUNTIME
+        runtime_runner = select_agent_runtime(
+            self._deps.settings.AGENT_RUNTIME,
+            legacy_runner=self._deps.run_agent_v2,
+            langgraph_runner=self._deps.run_agent_langgraph,
         )
-        runtime_runner = (
-            self._deps.run_agent_langgraph
-            if runtime_name == "langgraph"
-            else self._deps.run_agent_v2
+        runtime_name = (
+            "langgraph"
+            if runtime_runner is self._deps.run_agent_langgraph
+            else "legacy"
+        )
+        logger.info(
+            "[trace_id=%s] [agent] runtime_selected agent_runtime=%s",
+            context.request.trace_id,
+            runtime_name,
         )
         result = runtime_runner(
             write_bad_cases=self._deps.write_bad_cases,
@@ -559,10 +565,9 @@ class ChatService:
         )
         context.metrics["agent_cost_ms"] = agent_cost_ms
         logger.info(
-            "[trace_id=%s] [agent] runtime_end agent_runtime=%s status=%s "
+            "[trace_id=%s] [agent] runtime_end status=%s "
             "agent_cost_ms=%s answer_len=%s reference_count=%s",
             context.request.trace_id,
-            runtime_name,
             result.get("status", ""),
             agent_cost_ms,
             len(result.get("answer", "") or ""),
