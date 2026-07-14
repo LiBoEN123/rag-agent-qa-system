@@ -5,7 +5,11 @@
 
 from typing import Any
 
-from app.agent.state import AgentObservation, AgentState
+from app.agent.state import (
+    AgentObservation,
+    AgentState,
+    get_effective_question,
+)
 
 
 ERROR_STATUSES = {"tool_error", "error", "model_error"}
@@ -117,7 +121,7 @@ def apply_rag_result_to_state(
 def compose_rag_answer(state: AgentState, observation: AgentObservation) -> AgentState:
     """基于知识库检索观察结果调用 RAG 流程并写回最终答案。"""
     retrieved_chunks = observation.output.get("chunks", []) if isinstance(observation.output, dict) else []
-    question = state.rewritten_question or state.original_question
+    question = get_effective_question(state)
 
     try:
         rag_result = _call_ask(

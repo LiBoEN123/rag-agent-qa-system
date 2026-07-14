@@ -14,6 +14,7 @@ from app.graph.checkpointing import (
     build_checkpoint_thread_id,
     get_checkpointer_mode,
 )
+from app.graph.state import resolve_question_inputs
 
 
 logger = get_logger("chat_service")
@@ -21,18 +22,30 @@ logger = get_logger("chat_service")
 
 def run_agent_langgraph(
     write_bad_cases: Callable[[dict[str, Any]], None] | None,
-    question: str,
+    question: str | None,
     top_k: int,
     decompose_top_k: int,
     decision: dict[str, Any] | None = None,
     trace_id: str = "",
     session_id: str | None = None,
     bad_case: dict[str, Any] | None = None,
+    *,
+    original_question: str | None = None,
+    effective_question: str | None = None,
 ) -> dict[str, Any]:
     """同步执行 LangGraph 主图，并返回 API 主流程使用的结果字典。"""
+    resolved_original_question, resolved_effective_question = (
+        resolve_question_inputs(
+            question,
+            original_question=original_question,
+            effective_question=effective_question,
+        )
+    )
     decision_for_error = decision if isinstance(decision, dict) else {}
     graph_input: dict[str, Any] = {
-        "question": question,
+        "question": resolved_effective_question,
+        "original_question": resolved_original_question,
+        "effective_question": resolved_effective_question,
         "top_k": top_k,
         "decompose_top_k": decompose_top_k,
         "decision": decision,
@@ -90,7 +103,7 @@ def run_agent_langgraph(
             write_bad_cases=write_bad_cases,
             bad_case=bad_case,
             trace_id=trace_id,
-            question=question,
+            question=resolved_original_question,
             exc=exc,
             runtime_route="agent_langgraph",
             runtime_label="LangGraph Agent",
@@ -104,7 +117,12 @@ def run_agent_langgraph(
         maybe_save_agent_trace(
             trace_id=trace_id,
             session_id=session_id,
-            question=question,
+            question=resolved_original_question,
+            rewritten_question=(
+                resolved_effective_question
+                if resolved_effective_question != resolved_original_question
+                else ""
+            ),
             final_answer=result.get("answer", ""),
             status=result.get("status", ""),
             reason=result.get("reason", ""),

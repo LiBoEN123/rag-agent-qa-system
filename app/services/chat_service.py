@@ -527,6 +527,8 @@ class ChatService:
         result = self._deps.run_agent_langgraph(
             write_bad_cases=self._deps.write_bad_cases,
             question=context.effective_question,
+            original_question=context.original_question,
+            effective_question=context.effective_question,
             top_k=context.final_top_k,
             decompose_top_k=context.decompose_top_k,
             decision=context.decision,

@@ -226,6 +226,11 @@ def test_rewrite_routes_and_runs_once_with_original_question_preserved():
     assert len(calls["rewrite"]) == 1
     assert calls["route"][0]["question"] == rewritten_question
     assert calls["langgraph"][0]["question"] == rewritten_question
+    assert calls["langgraph"][0]["original_question"] == "原始问题"
+    assert (
+        calls["langgraph"][0]["effective_question"]
+        == rewritten_question
+    )
     assert calls["langgraph"][0]["decision"]["action"] == "direct_answer"
     assert outcome.question == "原始问题"
     assert outcome.response_status == "ok"
@@ -248,6 +253,8 @@ def test_question_without_rewrite_is_passed_through_without_extra_llm_count():
 
     assert calls["route"][0]["question"] == "原始问题"
     assert calls["langgraph"][0]["question"] == "原始问题"
+    assert calls["langgraph"][0]["original_question"] == "原始问题"
+    assert calls["langgraph"][0]["effective_question"] == "原始问题"
     assert calls["metrics"][0]["llm_call_count"] == 0
 
 

@@ -17,9 +17,9 @@ from app.agent.runtime import (
     maybe_save_agent_trace,
     normalize_llm_call_count,
 )
-from app.agent.state import AgentState
+from app.agent.state import AgentState, get_effective_question
 from app.config import Settings
-from app.graph.state import AgentGraphState
+from app.graph.state import AgentGraphState, resolve_question_inputs
 from app.rag.graph import run_rag_subgraph
 
 
@@ -36,18 +36,29 @@ def _require_agent_state(state: AgentGraphState) -> AgentState:
     return agent_state
 
 
+def _resolve_state_questions(state: AgentGraphState) -> tuple[str, str]:
+    """读取 Graph 中的新字段，并兼容只包含旧 question 的输入。"""
+    return resolve_question_inputs(
+        state.get("question"),
+        original_question=state.get("original_question"),
+        effective_question=state.get("effective_question"),
+    )
+
+
 def route_node(state: AgentGraphState) -> dict[str, Any]:
     """调用现有 Router，并把决策写回 Graph State。"""
+    _, effective_question = _resolve_state_questions(state)
     decision = route_agent_action(
-        state.get("question", ""),
+        effective_question,
         state.get("top_k", Settings.TOP_K),
         trace_id=state.get("trace_id", ""),
     )
     return {"decision": decision}
 
 
-def initialize_agent_state_node(state: AgentGraphState) -> dict[str, AgentState]:
+def initialize_agent_state_node(state: AgentGraphState) -> dict[str, Any]:
     """按现有业务协议创建 AgentState。"""
+    original_question, effective_question = _resolve_state_questions(state)
     decision = _safe_decision(state.get("decision"))
     router_llm_used = bool(
         decision.get(
@@ -58,8 +69,12 @@ def initialize_agent_state_node(state: AgentGraphState) -> dict[str, AgentState]
     agent_state = AgentState(
         trace_id=state.get("trace_id", ""),
         session_id=state.get("session_id"),
-        original_question=state.get("question", ""),
-        rewritten_question="",
+        original_question=original_question,
+        rewritten_question=(
+            effective_question
+            if effective_question != original_question
+            else ""
+        ),
         top_k=state.get("top_k", Settings.TOP_K),
         decompose_top_k=state.get(
             "decompose_top_k",
@@ -69,7 +84,11 @@ def initialize_agent_state_node(state: AgentGraphState) -> dict[str, AgentState]
         router_llm_used=router_llm_used,
     )
     agent_state.tool_trace.append(build_decide_trace(decision, router_llm_used))
-    return {"agent_state": agent_state}
+    return {
+        "original_question": original_question,
+        "effective_question": effective_question,
+        "agent_state": agent_state,
+    }
 
 
 def plan_node(state: AgentGraphState) -> dict[str, AgentState]:
@@ -77,7 +96,7 @@ def plan_node(state: AgentGraphState) -> dict[str, AgentState]:
     agent_state = _require_agent_state(state)
     agent_state.plan = build_plan_from_decision(
         decision=_safe_decision(state.get("decision")),
-        question=state.get("question", ""),
+        question=get_effective_question(agent_state),
         top_k=state.get("top_k", Settings.TOP_K),
     )
     agent_state.tool_trace.append(build_plan_trace(agent_state))
@@ -112,9 +131,8 @@ def rag_subgraph_node(state: AgentGraphState) -> dict[str, AgentState]:
             "Knowledge base observation chunks must be a list"
         )
 
-    question = agent_state.rewritten_question or agent_state.original_question
     rag_result = run_rag_subgraph(
-        question=question,
+        question=get_effective_question(agent_state),
         top_k=agent_state.top_k,
         decompose_top_k=agent_state.decompose_top_k,
         retrieved_chunks=retrieved_chunks,

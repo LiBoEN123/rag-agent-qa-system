@@ -205,6 +205,162 @@ def test_runtime_with_decision_initializes_existing_agent_state(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    ("original_question", "effective_question"),
+    [
+        ("学校什么时候放假", "学校什么时候放假"),
+        ("  学校什么时候放假  ", "学校什么时候放假"),
+    ],
+)
+def test_explicit_questions_without_rewrite_keep_original_semantics(
+    monkeypatch,
+    original_question,
+    effective_question,
+):
+    """显式问题字段经 strip 后相同时，不生成虚假的 rewritten question。"""
+    observed: dict = {}
+
+    monkeypatch.setattr(
+        graph_nodes,
+        "route_agent_action",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("已有 decision 时不应再次执行 Router")
+        ),
+    )
+
+    def fake_plan(decision, question, top_k):
+        observed["planner_question"] = question
+        return [
+            AgentPlanStep(
+                step_id=1,
+                action="direct_answer",
+                reason="测试",
+            )
+        ]
+
+    def fake_execute(state):
+        observed["original_question"] = state.original_question
+        observed["rewritten_question"] = state.rewritten_question
+        state.status = "direct_answer"
+        state.final_answer = "测试回答"
+        return state
+
+    monkeypatch.setattr(graph_nodes, "build_plan_from_decision", fake_plan)
+    monkeypatch.setattr(graph_nodes, "execute_plan", fake_execute)
+    monkeypatch.setattr(graph_nodes, "compose_final_answer", lambda state: state)
+
+    result = run_agent_langgraph(
+        write_bad_cases=lambda record: None,
+        question=effective_question,
+        original_question=original_question,
+        effective_question=effective_question,
+        top_k=5,
+        decompose_top_k=10,
+        decision=_decision("direct_answer"),
+    )
+
+    assert result["status"] == "OK"
+    assert observed == {
+        "planner_question": "学校什么时候放假",
+        "original_question": "学校什么时候放假",
+        "rewritten_question": "",
+    }
+
+
+def test_rewritten_question_drives_plan_executor_rag_and_trace(monkeypatch):
+    """改写后问题贯穿执行链，原始问题仅用于 AgentState 与 trace。"""
+    original_question = "它什么时候开始"
+    effective_question = "研究生奖学金申请什么时候开始"
+    observed: dict = {"router_calls": 0}
+    trace_records: list[dict] = []
+    decision = {
+        "decision": "use_knowledge_base",
+        "action": "search_knowledge_base",
+        "tool_name": "search_knowledge_base",
+        "tool_args": {},
+        "reason": "检索知识库",
+        "router_source": "rule_based",
+        "router_llm_used": False,
+    }
+
+    def fail_route(*args, **kwargs):
+        observed["router_calls"] += 1
+        raise AssertionError("ChatService 已提供 Router decision，不应重复路由")
+
+    original_execute = graph_nodes.execute_plan
+
+    def capture_execute(state):
+        observed["agent_original_question"] = state.original_question
+        observed["agent_rewritten_question"] = state.rewritten_question
+        observed["planner_query"] = state.plan[0].tool_args["query"]
+        return original_execute(state)
+
+    def fake_dispatch(step, trace_id=""):
+        observed["executor_query"] = step.tool_args["query"]
+        return {
+            "status": "success",
+            "ok": True,
+            "output": {
+                "count": 1,
+                "chunks": [{"chunk_id": "chunk-1", "text": "证据"}],
+                "top_chunk_ids": ["chunk-1"],
+                "top_scores": [0.9],
+            },
+            "error": "",
+        }
+
+    def fake_rag_subgraph(**kwargs):
+        observed["rag_question"] = kwargs["question"]
+        return {
+            "status": "OK",
+            "answer": "申请将在九月开始",
+            "references": [{"reference_id": "Reference 1"}],
+            "reason": "证据充分",
+            "decompose_llm_used": False,
+            "answer_llm_used": True,
+            "llm_call_count": 1,
+            "timings": {},
+            "retrieval_confidence": 0.9,
+            "answer_confidence": 0.8,
+        }
+
+    monkeypatch.setattr(graph_nodes, "route_agent_action", fail_route)
+    monkeypatch.setattr(graph_nodes, "execute_plan", capture_execute)
+    monkeypatch.setattr(agent_executor, "_call_dispatch_tool", fake_dispatch)
+    monkeypatch.setattr(graph_nodes, "run_rag_subgraph", fake_rag_subgraph)
+    monkeypatch.setattr(agent_runtime.Settings, "ENABLE_AGENT_TRACE_STORE", True)
+    monkeypatch.setattr(
+        agent_runtime,
+        "save_agent_trace",
+        lambda **kwargs: trace_records.append(kwargs),
+    )
+
+    result = run_agent_langgraph(
+        write_bad_cases=lambda record: None,
+        question=effective_question,
+        original_question=original_question,
+        effective_question=effective_question,
+        top_k=5,
+        decompose_top_k=10,
+        decision=decision,
+        trace_id="trace-rewrite",
+        session_id="session-rewrite",
+    )
+
+    assert result["status"] == "OK"
+    assert observed == {
+        "router_calls": 0,
+        "agent_original_question": original_question,
+        "agent_rewritten_question": effective_question,
+        "planner_query": effective_question,
+        "executor_query": effective_question,
+        "rag_question": effective_question,
+    }
+    assert len(trace_records) == 1
+    assert trace_records[0]["question"] == original_question
+    assert trace_records[0]["rewritten_question"] == effective_question
+
+
+@pytest.mark.parametrize(
     "scenario",
     [
         "search_success",
@@ -651,7 +807,9 @@ def test_top_level_graph_error_is_sanitized_but_kept_for_internal_diagnostics(
     with caplog.at_level("ERROR", logger=graph_runtime.logger.name):
         result = run_agent_langgraph(
             write_bad_cases=lambda record: bad_cases.append(record),
-            question="测试异常",
+            question="研究生奖学金申请什么时候开始",
+            original_question="它什么时候开始",
+            effective_question="研究生奖学金申请什么时候开始",
             top_k=5,
             decompose_top_k=10,
             trace_id="trace-error",
@@ -687,7 +845,7 @@ def test_top_level_graph_error_is_sanitized_but_kept_for_internal_diagnostics(
     assert exception_records[0].exc_info[1] is sensitive_error
     assert len(bad_cases) == 1
     assert bad_cases[0]["trace_id"] == "trace-error"
-    assert bad_cases[0]["question"] == "测试异常"
+    assert bad_cases[0]["question"] == "它什么时候开始"
     assert bad_cases[0]["route"] == "agent_langgraph"
     assert bad_cases[0]["error_type"] == "internal_error"
     assert bad_cases[0]["note"] == sensitive_message

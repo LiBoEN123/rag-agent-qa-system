@@ -389,6 +389,8 @@ def test_chat_uses_langgraph_once_and_keeps_rewrite_route_api_protocol(monkeypat
         "langgraph": 1,
     }
     assert runtime_kwargs["question"] == "改写后的问题"
+    assert runtime_kwargs["original_question"] == "原始问题"
+    assert runtime_kwargs["effective_question"] == "改写后的问题"
     assert runtime_kwargs["top_k"] == 4
     assert runtime_kwargs["decompose_top_k"] == 8
     assert runtime_kwargs["decision"] is decision

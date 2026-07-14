@@ -74,10 +74,19 @@ class AgentState(BaseModel):
     tool_trace: list[dict[str, Any]] = Field(default_factory=list, description="兼容现有响应结构的工具执行 trace")
 
 
+def get_effective_question(state: AgentState) -> str:
+    """返回当前 Agent 真正用于规划、检索和回答的问题。"""
+    return (
+        (state.rewritten_question or "").strip()
+        or (state.original_question or "").strip()
+    )
+
+
 __all__ = [
     "AgentObservation",
     "AgentPlanStep",
     "AgentState",
     "AgentStatus",
     "StepStatus",
+    "get_effective_question",
 ]
