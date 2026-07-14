@@ -47,7 +47,11 @@ from app.rag.store import (
     save_index_cache as save_index_cache_impl,
     save_manifest,
 )
-from app.rag.results import build_evidence_gate_step, build_rag_result
+from app.rag.results import (
+    build_default_timings,
+    build_evidence_gate_step,
+    build_rag_result,
+)
 
 
 # RAG orchestration and in-process index state.
@@ -247,6 +251,24 @@ def rerank(candidates: list[dict], question: str=""):
     )
 
 
+def retrieve_with_sub_queries_from_current_index(
+    question: str,
+    sub_queries: list[dict],
+    final_top_k: int,
+) -> list[dict]:
+    """使用当前进程索引执行现有多查询检索，不复制索引或检索逻辑。"""
+    return retrieve_with_sub_queries(
+        question=question,
+        sub_queries=sub_queries,
+        chunks=chunks,
+        bm25=bm25,
+        doc_embeddings=doc_embeddings,
+        model=model,
+        rerank_model=rerank_model,
+        final_top_k=final_top_k,
+    )
+
+
 def search_relevant_chunks(question: str, top_k: int = 3) -> List[Dict[str, Any]]:
     """使用当前全局索引检索与问题相关的 chunk。"""
     return search_relevant_chunks_impl(
@@ -272,17 +294,7 @@ def ask(
     """执行完整 RAG 问答流程：澄清判断、可选拆分、重排、生成和引用绑定。"""
     question = (question or "").strip()
     # timings 只用于日志和性能观测，不参与业务判断。
-    timings = {
-        "decompose_cost_ms": 0,
-        "decompose_llm_used": False,
-        "decompose_rule_reason": "",
-        "decompose_skipped_reason": "",
-        "rerank_cost_ms": 0,
-        "retrieve_with_sub_queries_cost_ms": 0,
-        "context_build_cost_ms": 0,
-        "llm_cost_ms": 0,
-        "parse_cost_ms": 0,
-    }
+    timings = build_default_timings()
 
     if is_ambiguous_question(question):
         return build_rag_result(

@@ -121,6 +121,9 @@ def collect_trace_metrics(result: dict) -> dict:
     tool_success = False
     tool_name = ""
     real_tools = {"simple_calculator", "list_documents", "get_chunk_text"}
+    rag_timings = result.get("timings")
+    if not isinstance(rag_timings, dict):
+        rag_timings = {}
 
     for step in tool_trace:
         current_tool_name = step.get("tool_name", "")
@@ -130,6 +133,13 @@ def collect_trace_metrics(result: dict) -> dict:
             tool_name = current_tool_name
             tool_called = True
             tool_success = tool_success or step.get("tool_status") == "success"
+        if (
+            not rag_timings
+            and step.get("step") == "compose_final_answer"
+            and step.get("mode") == "rag"
+            and isinstance(step.get("timings"), dict)
+        ):
+            rag_timings = step["timings"]
 
     return {
         "retrieved_count": retrieved_count,
@@ -143,7 +153,7 @@ def collect_trace_metrics(result: dict) -> dict:
             answer_llm_used=bool(result.get("answer_llm_used", False)),
             llm_call_count=result.get("llm_call_count"),
         ),
-        "timings": result.get("timings") or {},
+        "timings": rag_timings,
     }
 
 

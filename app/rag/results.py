@@ -8,6 +8,21 @@ from typing import Any
 from app.rag.retrieval import safe_float
 
 
+def build_default_timings() -> dict[str, int | bool | str]:
+    """构造新旧 RAG 编排共同使用的默认阶段耗时结构。"""
+    return {
+        "decompose_cost_ms": 0,
+        "decompose_llm_used": False,
+        "decompose_rule_reason": "",
+        "decompose_skipped_reason": "",
+        "rerank_cost_ms": 0,
+        "retrieve_with_sub_queries_cost_ms": 0,
+        "context_build_cost_ms": 0,
+        "llm_cost_ms": 0,
+        "parse_cost_ms": 0,
+    }
+
+
 def build_evidence_gate_step(
     final_chunks: list[dict[str, Any]],
     refused: bool,

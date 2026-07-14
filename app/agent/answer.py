@@ -77,6 +77,43 @@ def _format_tool_answer(tool_name: str, output: dict) -> str:
     return format_tool_answer(tool_name, output)
 
 
+def apply_rag_result_to_state(
+    state: AgentState,
+    rag_result: dict[str, Any],
+) -> AgentState:
+    """将新旧 RAG 编排的统一结果映射回现有 AgentState。"""
+    state.status = map_rag_status(rag_result.get("status", ""))
+    state.final_answer = rag_result.get("answer", "") or ""
+    state.references = rag_result.get("references", []) or []
+    state.reason = rag_result.get("reason", "") or ""
+    state.decompose_llm_used = bool(
+        rag_result.get("decompose_llm_used", False)
+    )
+    state.answer_llm_used = bool(rag_result.get("answer_llm_used", False))
+    rag_llm_call_count = int(rag_result.get("llm_call_count", 0) or 0)
+    state.llm_call_count += rag_llm_call_count
+
+    timings = rag_result.get("timings")
+    state.tool_trace.append(
+        {
+            "step": "compose_final_answer",
+            "mode": "rag",
+            "status": state.status,
+            "answer_len": len(state.final_answer or ""),
+            "reference_count": len(state.references or []),
+            "reason": state.reason,
+            "retrieval_confidence": rag_result.get(
+                "retrieval_confidence",
+                0.0,
+            ),
+            "answer_confidence": rag_result.get("answer_confidence", 0.0),
+            "timings": dict(timings) if isinstance(timings, dict) else {},
+            "rag_llm_call_count": rag_llm_call_count,
+        }
+    )
+    return state
+
+
 def compose_rag_answer(state: AgentState, observation: AgentObservation) -> AgentState:
     """基于知识库检索观察结果调用 RAG 流程并写回最终答案。"""
     retrieved_chunks = observation.output.get("chunks", []) if isinstance(observation.output, dict) else []
@@ -104,25 +141,7 @@ def compose_rag_answer(state: AgentState, observation: AgentObservation) -> Agen
         )
         return state
 
-    state.status = map_rag_status(rag_result.get("status", ""))
-    state.final_answer = rag_result.get("answer", "") or ""
-    state.references = rag_result.get("references", []) or []
-    state.reason = rag_result.get("reason", "") or ""
-    state.decompose_llm_used = bool(rag_result.get("decompose_llm_used", False))
-    state.answer_llm_used = bool(rag_result.get("answer_llm_used", False))
-    state.llm_call_count += int(rag_result.get("llm_call_count", 0) or 0)
-
-    state.tool_trace.append(
-        {
-            "step": "compose_final_answer",
-            "mode": "rag",
-            "status": state.status,
-            "answer_len": len(state.final_answer or ""),
-            "reference_count": len(state.references or []),
-            "reason": state.reason,
-        }
-    )
-    return state
+    return apply_rag_result_to_state(state, rag_result)
 
 
 def compose_tool_answer(state: AgentState, observation: AgentObservation) -> AgentState:
@@ -222,6 +241,7 @@ def compose_final_answer(state: AgentState) -> AgentState:
 
 
 __all__ = [
+    "apply_rag_result_to_state",
     "compose_final_answer",
     "compose_rag_answer",
     "compose_tool_answer",

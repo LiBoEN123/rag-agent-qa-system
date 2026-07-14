@@ -11,6 +11,7 @@ from app.graph import builder as graph_builder
 from app.graph import nodes as graph_nodes
 from app.graph import runtime as graph_runtime
 from app.graph.runtime import run_agent_langgraph
+from app.observability.metrics import collect_trace_metrics
 
 
 RESULT_FIELDS = [
@@ -235,6 +236,19 @@ def test_langgraph_and_legacy_runtime_are_equivalent(monkeypatch, scenario):
             "llm_call_count": 2,
         },
     )
+    monkeypatch.setattr(
+        graph_nodes,
+        "run_rag_subgraph",
+        lambda **kwargs: {
+            "status": "OK",
+            "answer": "知识库答案",
+            "references": [{"reference_id": "Reference 1"}],
+            "reason": "证据充分",
+            "decompose_llm_used": True,
+            "answer_llm_used": True,
+            "llm_call_count": 2,
+        },
+    )
 
     decision = _decision(scenario)
     common_kwargs = {
@@ -266,6 +280,115 @@ def test_langgraph_and_legacy_runtime_are_equivalent(monkeypatch, scenario):
         ]
         assert tool_steps[0]["success"] is False
         assert tool_steps[0]["error"] == "mock tool failure"
+
+
+def test_knowledge_base_path_uses_rag_subgraph_without_legacy_compose(monkeypatch):
+    """成功知识库 observation 进入子图，并直接 finalize 而不调用旧 ask。"""
+    calls = {"subgraph": 0, "compose": 0}
+
+    monkeypatch.setattr(
+        agent_executor,
+        "_call_dispatch_tool",
+        lambda step, trace_id="": {
+            "status": "success",
+            "ok": True,
+            "output": {
+                "count": 1,
+                "chunks": [{"chunk_id": "chunk-1", "text": "证据"}],
+                "top_chunk_ids": ["chunk-1"],
+                "top_scores": [0.9],
+            },
+            "error": "",
+        },
+    )
+
+    def fake_subgraph(**kwargs):
+        calls["subgraph"] += 1
+        assert kwargs["retrieved_chunks"] == [
+            {"chunk_id": "chunk-1", "text": "证据"}
+        ]
+        return {
+            "status": "OK",
+            "answer": "子图答案",
+            "references": [{"reference_id": "Reference 1"}],
+            "reason": "证据充分",
+            "decompose_llm_used": False,
+            "answer_llm_used": True,
+            "llm_call_count": 1,
+            "timings": {"llm_cost_ms": 3},
+            "retrieval_confidence": 0.9,
+            "answer_confidence": 0.8,
+        }
+
+    def fail_compose(state):
+        calls["compose"] += 1
+        raise AssertionError("知识库子图路径不应进入普通 compose 节点")
+
+    monkeypatch.setattr(graph_nodes, "run_rag_subgraph", fake_subgraph)
+    monkeypatch.setattr(graph_nodes, "compose_final_answer", fail_compose)
+    monkeypatch.setattr(
+        agent_answer,
+        "_call_ask",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("LangGraph 路径不应调用旧 rag.ask")
+        ),
+    )
+
+    result = run_agent_langgraph(
+        write_bad_cases=lambda record: None,
+        question="测试知识库",
+        top_k=5,
+        decompose_top_k=10,
+        decision=_decision("search_knowledge_base"),
+        trace_id="trace-rag-subgraph",
+    )
+
+    assert result["status"] == "OK"
+    assert result["answer"] == "子图答案"
+    assert result["retrieval_confidence"] == 0.9
+    assert result["answer_confidence"] == 0.8
+    assert result["timings"] == {"llm_cost_ms": 3}
+    assert collect_trace_metrics(result)["timings"] == {"llm_cost_ms": 3}
+    assert calls == {"subgraph": 1, "compose": 0}
+    compose_steps = [
+        step
+        for step in result["tool_trace"]
+        if step.get("step") == "compose_final_answer"
+    ]
+    assert len(compose_steps) == 1
+
+
+def test_failed_knowledge_base_observation_does_not_enter_rag_subgraph(monkeypatch):
+    """知识库工具失败时保留 TOOL_ERROR，不能伪造 RAG 成功结果。"""
+    monkeypatch.setattr(
+        agent_executor,
+        "_call_dispatch_tool",
+        lambda step, trace_id="": {
+            "status": "error",
+            "ok": False,
+            "output": {},
+            "error": "mock knowledge base failure",
+        },
+    )
+    monkeypatch.setattr(
+        graph_nodes,
+        "run_rag_subgraph",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("失败 observation 不应进入 RAG 子图")
+        ),
+    )
+
+    result = run_agent_langgraph(
+        write_bad_cases=lambda record: None,
+        question="测试知识库",
+        top_k=5,
+        decompose_top_k=10,
+        decision=_decision("search_knowledge_base"),
+    )
+
+    assert result["status"] == "TOOL_ERROR"
+    assert result["reason"] == "mock knowledge base failure"
+    assert "mock knowledge base failure" in result["answer"]
 
 
 def test_llm_usage_is_normalized_and_appended_once(monkeypatch):

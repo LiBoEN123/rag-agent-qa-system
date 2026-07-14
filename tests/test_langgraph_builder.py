@@ -39,6 +39,7 @@ def test_build_and_compile_graph_has_expected_public_nodes(monkeypatch):
         "initialize",
         "plan",
         "execute",
+        "rag_subgraph",
         "compose",
         "finalize",
     } <= node_names

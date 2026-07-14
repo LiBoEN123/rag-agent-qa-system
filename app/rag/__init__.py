@@ -3,6 +3,8 @@
 统一暴露索引和问答能力，并动态转发可能在运行期间重建的索引状态。
 """
 
+from typing import Any
+
 from app.rag import pipeline as _pipeline
 
 
@@ -37,6 +39,7 @@ __all__ = [
     "rerank",
     "rerank_model",
     "retrieve",
+    "run_rag_subgraph",
     "save_index_cache",
     "search_relevant_chunks",
     "should_refuse",
@@ -103,3 +106,22 @@ def __getattr__(name: str):
     }:
         return getattr(_pipeline, name)
     raise AttributeError(name)
+
+
+def run_rag_subgraph(
+    question: str,
+    top_k: int = Settings.TOP_K,
+    decompose_top_k: int = Settings.DECOMPOSE_TOP_K,
+    retrieved_chunks: list[dict[str, Any]] | None = None,
+    trace_id: str = "",
+) -> dict[str, Any]:
+    """延迟调用 LangGraph RAG 子图，避免 RAG 门面导入时编译或执行图。"""
+    from app.rag.graph import run_rag_subgraph as graph_runner
+
+    return graph_runner(
+        question=question,
+        top_k=top_k,
+        decompose_top_k=decompose_top_k,
+        retrieved_chunks=retrieved_chunks,
+        trace_id=trace_id,
+    )

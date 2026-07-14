@@ -5,13 +5,14 @@ from functools import lru_cache
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from app.graph.conditions import route_condition
+from app.graph.conditions import after_execute_condition, route_condition
 from app.graph.nodes import (
     compose_node,
     execute_node,
     finalize_node,
     initialize_agent_state_node,
     plan_node,
+    rag_subgraph_node,
     route_node,
 )
 from app.graph.state import AgentGraphState
@@ -25,6 +26,7 @@ def build_agent_graph(
     builder.add_node("initialize", initialize_agent_state_node)
     builder.add_node("plan", plan_node)
     builder.add_node("execute", execute_node)
+    builder.add_node("rag_subgraph", rag_subgraph_node)
     builder.add_node("compose", compose_node)
     builder.add_node("finalize", finalize_node)
 
@@ -39,7 +41,15 @@ def build_agent_graph(
     builder.add_edge("route", "initialize")
     builder.add_edge("initialize", "plan")
     builder.add_edge("plan", "execute")
-    builder.add_edge("execute", "compose")
+    builder.add_conditional_edges(
+        "execute",
+        after_execute_condition,
+        {
+            "rag_subgraph": "rag_subgraph",
+            "compose": "compose",
+        },
+    )
+    builder.add_edge("rag_subgraph", "finalize")
     builder.add_edge("compose", "finalize")
     builder.add_edge("finalize", END)
     return builder

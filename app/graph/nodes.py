@@ -6,7 +6,7 @@
 from typing import Any
 
 from app.agent import route_agent_action
-from app.agent.answer import compose_final_answer
+from app.agent.answer import apply_rag_result_to_state, compose_final_answer
 from app.agent.executor import execute_plan
 from app.agent.planner import build_plan_from_decision
 from app.agent.runtime import (
@@ -20,6 +20,7 @@ from app.agent.runtime import (
 from app.agent.state import AgentState
 from app.config import Settings
 from app.graph.state import AgentGraphState
+from app.rag.graph import run_rag_subgraph
 
 
 def _safe_decision(decision: object) -> dict[str, Any]:
@@ -89,6 +90,41 @@ def execute_node(state: AgentGraphState) -> dict[str, AgentState]:
     return {"agent_state": agent_state}
 
 
+def rag_subgraph_node(state: AgentGraphState) -> dict[str, AgentState]:
+    """复用成功知识库观察结果执行 RAG 子图，并写回现有 AgentState。"""
+    agent_state = _require_agent_state(state)
+    observation = next(
+        (
+            item
+            for item in agent_state.observations
+            if item.tool_name == "search_knowledge_base" and item.success
+        ),
+        None,
+    )
+    if observation is None or not isinstance(observation.output, dict):
+        raise RuntimeError(
+            "LangGraph RAG path requires a successful knowledge base observation"
+        )
+
+    retrieved_chunks = observation.output.get("chunks")
+    if not isinstance(retrieved_chunks, list):
+        raise RuntimeError(
+            "Knowledge base observation chunks must be a list"
+        )
+
+    question = agent_state.rewritten_question or agent_state.original_question
+    rag_result = run_rag_subgraph(
+        question=question,
+        top_k=agent_state.top_k,
+        decompose_top_k=agent_state.decompose_top_k,
+        retrieved_chunks=retrieved_chunks,
+        trace_id=agent_state.trace_id,
+    )
+    return {
+        "agent_state": apply_rag_result_to_state(agent_state, rag_result)
+    }
+
+
 def compose_node(state: AgentGraphState) -> dict[str, AgentState]:
     """调用现有 Answer Composer，并显式返回最终业务状态。"""
     agent_state = compose_final_answer(_require_agent_state(state))
@@ -122,5 +158,6 @@ __all__ = [
     "finalize_node",
     "initialize_agent_state_node",
     "plan_node",
+    "rag_subgraph_node",
     "route_node",
 ]

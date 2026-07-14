@@ -11,7 +11,7 @@
 - CrossEncoder rerank：对候选 chunk 做二阶段重排，缓解初召回排序不准的问题。
 - ChromaDB 持久化：chunk 文本、metadata 和 embedding 持久化保存，服务重启可复用索引缓存。
 - LLM Router + 规则 fallback：可开启 LLM 路由，输出异常或参数非法时自动回退到规则路由。
-- 可切换 Agent Runtime：默认保留 legacy 编排，也可使用最小 LangGraph 主图；两者共享同一套业务节点和返回协议。
+- 可切换 Agent Runtime：默认保留 legacy 编排；LangGraph 主图的知识库路径使用独立 RAG 子图，两条路径共享返回协议和底层算法。
 - 多轮追问改写：同一 `session_id` 下通过 SQLite 保留最近会话历史，短追问和指代问题会先改写成独立检索问题。
 - 工具调用：支持知识库检索、双文档内容对比、简单四则运算、列出知识库文档和查看指定 chunk 原文。
 - 引用绑定和拒答机制：模型输出的 `Reference N` 会绑定回真实文件与 chunk；证据不足或引用支撑不足时拒答。
@@ -146,7 +146,13 @@ AGENT_RUNTIME=legacy
 AGENT_RUNTIME=langgraph
 ```
 
-LangGraph Runtime 当前按 `route/initialize → plan → execute → compose → finalize` 组织最小主图，并复用现有 Router、Planner、Executor、Answer Composer、状态映射与 trace 构造。它尚未使用 ToolNode、RAG 子图、Checkpointer 或 streaming；API Schema、会话存储和现有调用方式保持不变。遇到兼容问题时可切回 `legacy`。
+LangGraph Runtime 按 `route/initialize → plan → execute` 组织主图。成功的 `search_knowledge_base` observation 会进入 RAG 子图并直接到 `finalize`；普通工具、澄清、直接回答和工具错误仍进入原有 `compose → finalize`，因此知识库路径不会再次调用旧 `rag.ask()`。
+
+### LangGraph RAG 子图
+
+`AGENT_RUNTIME=langgraph` 时，知识库问答由独立子图依次执行问题歧义判断、Query Decompose、检索与重排、Evidence Gate、Context Build、回答生成、JSON 解析、引用绑定与验证。子图复用现有检索、Rerank、ChromaDB、模型网关、引用和置信度算法，API Schema 没有变化。
+
+`AGENT_RUNTIME=legacy` 仍沿用 `run_agent_v2 → compose_rag_answer → rag.ask()`，旧顺序编排和评测入口继续保留用于回归对比。当前两条 Runtime 都未启用 ToolNode、`bind_tools()`、Checkpointer、Streaming 或 Interrupt，会话存储也未迁移。
 
 ## 快速启动
 
@@ -583,6 +589,7 @@ python scripts/test_local_llm.py
 │   ├── rag/
 │   │   ├── __init__.py          # RAG 公共门面和依赖注入
 │   │   ├── pipeline.py          # 索引状态与问答流程编排
+│   │   ├── graph/               # LangGraph RAG 子图状态、节点、条件、构建和运行入口
 │   │   ├── ingest.py            # 文档读取、清洗、切分
 │   │   ├── retrieval.py         # 混合召回与重排
 │   │   ├── decomposition.py     # 复杂问题识别、拆分调用和解析

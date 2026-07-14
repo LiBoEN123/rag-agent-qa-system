@@ -154,13 +154,23 @@ def build_v2_result(state: AgentState, decision: dict) -> dict:
     """将 AgentState 转换成 API 主流程使用的结果字典。"""
     public_status = map_agent_status_to_public_status(state.status)
     need_clarification = state.status == "clarify"
+    rag_trace = next(
+        (
+            step
+            for step in reversed(state.tool_trace or [])
+            if step.get("step") == "compose_final_answer"
+            and step.get("mode") == "rag"
+        ),
+        {},
+    )
+    timings = rag_trace.get("timings")
 
     return {
         "status": public_status,
         "answer": state.final_answer or "",
         "references": state.references or [],
-        "retrieval_confidence": 0.0,
-        "answer_confidence": 0.0,
+        "retrieval_confidence": rag_trace.get("retrieval_confidence", 0.0),
+        "answer_confidence": rag_trace.get("answer_confidence", 0.0),
         "need_clarification": need_clarification,
         "clarification_question": state.final_answer if need_clarification else "",
         "reason": state.reason or "",
@@ -171,6 +181,7 @@ def build_v2_result(state: AgentState, decision: dict) -> dict:
         "decompose_llm_used": bool(state.decompose_llm_used),
         "answer_llm_used": bool(state.answer_llm_used),
         "llm_call_count": int(state.llm_call_count or 0),
+        "timings": dict(timings) if isinstance(timings, dict) else {},
     }
 
 
