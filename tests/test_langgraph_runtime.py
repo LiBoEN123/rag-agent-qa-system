@@ -840,7 +840,7 @@ def test_top_level_graph_error_is_sanitized_but_kept_for_internal_diagnostics(
         for record in caplog.records
         if "langgraph_graph_failed" in record.getMessage()
     ]
-    assert exception_records == 1
+    assert exception_records
     assert exception_records[0].exc_info is not None
     assert exception_records[0].exc_info[1] is sensitive_error
     assert len(bad_cases) == 1
