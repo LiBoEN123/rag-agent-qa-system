@@ -657,7 +657,11 @@ class ChatService:
                 or result.get("reason", response_config["default_reason"])
             )
             return ChatServiceOutcome(
-                http_status=200,
+                http_status=(
+                    500
+                    if response_config["code"] == "INTERNAL_ERROR"
+                    else 200
+                ),
                 code=response_config["code"],
                 message=response_config["message"],
                 question=context.original_question,
