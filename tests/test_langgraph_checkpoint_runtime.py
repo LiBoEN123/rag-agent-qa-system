@@ -245,7 +245,7 @@ def test_checkpoint_write_failure_returns_compatible_error_once(monkeypatch):
     )
 
     assert result["status"] == "INTERNAL_ERROR"
-    assert result["reason"] == "checkpoint write failed"
+    assert result["reason"] == "Agent 内部执行异常，请稍后重试"
     assert len(bad_cases) == 1
 
 

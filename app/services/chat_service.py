@@ -267,8 +267,7 @@ class ChatService:
                 message="服务器内部错误",
                 question=context.original_question,
                 result=self._response_result(),
-                # 保留重构前未知异常分支未显式覆盖的默认 API status。
-                response_status="ok",
+                response_status="error",
             )
         finally:
             self._finalize(context)

@@ -228,6 +228,7 @@ def test_rewrite_routes_and_runs_once_with_original_question_preserved():
     assert calls["langgraph"][0]["question"] == rewritten_question
     assert calls["langgraph"][0]["decision"]["action"] == "direct_answer"
     assert outcome.question == "原始问题"
+    assert outcome.response_status == "ok"
     assert [
         item["step"] for item in outcome.result["tool_trace"]
     ].count("query_rewrite") == 1
@@ -381,6 +382,23 @@ def test_runtime_exception_returns_compatible_error_and_writes_bad_case_once():
     assert calls["bad_cases"][0]["error_type"] == "internal_error"
     assert calls["messages"] == []
     assert len(calls["metrics"]) == 1
+    assert calls["metrics"][0]["status"] == "internal_error"
+
+
+def test_unknown_exception_returns_internal_error_with_error_status(monkeypatch):
+    service, calls = build_service()
+
+    def fail_rewrite(_context):
+        raise RuntimeError("unexpected chat failure")
+
+    monkeypatch.setattr(service, "_rewrite_question", fail_rewrite)
+
+    outcome = service.handle(make_request())
+
+    assert outcome.http_status == 500
+    assert outcome.code == "INTERNAL_ERROR"
+    assert outcome.response_status == "error"
+    assert calls["langgraph"] == []
     assert calls["metrics"][0]["status"] == "internal_error"
 
 

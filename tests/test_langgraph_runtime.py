@@ -1,5 +1,7 @@
 """LangGraph Runtime 兼容性与异常行为测试。"""
 
+import json
+
 import pytest
 
 from app.agent import answer as agent_answer
@@ -354,9 +356,15 @@ def test_internal_runtime_errors_keep_compatible_business_fields(monkeypatch):
     graph_result = run_agent_langgraph(**kwargs)
 
     assert graph_result["status"] == "INTERNAL_ERROR"
-    assert graph_result["reason"] == "shared orchestration failure"
-    assert "LangGraph Agent" in graph_result["answer"]
-    assert graph_result["tool_trace"][0]["step"] == "agent_langgraph_error"
+    assert graph_result["answer"] == "Agent 内部执行异常，请稍后重试"
+    assert graph_result["reason"] == "Agent 内部执行异常，请稍后重试"
+    assert graph_result["tool_trace"] == [
+        {
+            "step": "agent_langgraph_error",
+            "status": "error",
+            "error": "internal_error",
+        }
+    ]
 
 
 def test_knowledge_base_path_uses_rag_subgraph_without_sequential_rag_compose(monkeypatch):
@@ -600,16 +608,24 @@ def test_runtime_rejects_missing_or_invalid_graph_result(monkeypatch, malformed_
     assert result["status"] == "INTERNAL_ERROR"
     assert result["references"] == []
     assert result["tool_trace"][0]["step"] == "agent_langgraph_error"
-    assert "valid result" in result["reason"]
+    assert result["reason"] == "Agent 内部执行异常，请稍后重试"
 
 
-def test_top_level_graph_error_writes_bad_case_and_survives_trace_failure(monkeypatch):
-    """节点异常转为兼容错误，bad case 与 trace 失败均不破坏主响应。"""
+def test_top_level_graph_error_is_sanitized_but_kept_for_internal_diagnostics(
+    monkeypatch,
+    caplog,
+):
+    """节点异常对外脱敏，同时由异常日志和 bad case 保留诊断信息。"""
     bad_cases: list[dict] = []
+    sensitive_message = (
+        "/home/test-user/project/checkpoints.sqlite: "
+        "model request failed with api_key=sk-test-secret"
+    )
+    sensitive_error = RuntimeError(sensitive_message)
 
     class BrokenGraph:
         def invoke(self, graph_input):
-            raise RuntimeError("node exploded")
+            raise sensitive_error
 
     monkeypatch.setattr(graph_runtime, "get_compiled_agent_graph", lambda: BrokenGraph())
     monkeypatch.setattr(agent_runtime.Settings, "ENABLE_AGENT_TRACE_STORE", True)
@@ -619,28 +635,59 @@ def test_top_level_graph_error_writes_bad_case_and_survives_trace_failure(monkey
         lambda **kwargs: (_ for _ in ()).throw(RuntimeError("trace store failed")),
     )
 
-    result = run_agent_langgraph(
-        write_bad_cases=lambda record: bad_cases.append(record),
-        question="测试异常",
-        top_k=5,
-        decompose_top_k=10,
-        trace_id="trace-error",
-        session_id="session-error",
+    exception_calls = []
+    original_logger_exception = graph_runtime.logger.exception
+
+    def record_logger_exception(*args, **kwargs):
+        exception_calls.append((args, kwargs))
+        return original_logger_exception(*args, **kwargs)
+
+    monkeypatch.setattr(
+        graph_runtime.logger,
+        "exception",
+        record_logger_exception,
     )
+    monkeypatch.setattr(graph_runtime.logger, "propagate", True)
+    with caplog.at_level("ERROR", logger=graph_runtime.logger.name):
+        result = run_agent_langgraph(
+            write_bad_cases=lambda record: bad_cases.append(record),
+            question="测试异常",
+            top_k=5,
+            decompose_top_k=10,
+            trace_id="trace-error",
+            session_id="session-error",
+        )
 
     assert result["status"] == "INTERNAL_ERROR"
-    assert "LangGraph Agent" in result["answer"]
-    assert result["reason"] == "node exploded"
+    assert result["answer"] == "Agent 内部执行异常，请稍后重试"
+    assert result["reason"] == "Agent 内部执行异常，请稍后重试"
     assert result["tool_trace"] == [
         {
             "step": "agent_langgraph_error",
             "status": "error",
-            "error": "node exploded",
+            "error": "internal_error",
         }
     ]
+    response_text = json.dumps(result, ensure_ascii=False)
+    assert "Agent 内部执行异常，请稍后重试" in response_text
+    assert "/home/test-user/project" not in response_text
+    assert "checkpoints.sqlite" not in response_text
+    assert "sk-test-secret" not in response_text
+    assert "RuntimeError" not in response_text
+    assert "model request failed" not in response_text
+
+    assert len(exception_calls) == 1
+    exception_records = [
+        record
+        for record in caplog.records
+        if "langgraph_graph_failed" in record.getMessage()
+    ]
+    assert len(exception_records) == 1
+    assert exception_records[0].exc_info is not None
+    assert exception_records[0].exc_info[1] is sensitive_error
     assert len(bad_cases) == 1
     assert bad_cases[0]["trace_id"] == "trace-error"
     assert bad_cases[0]["question"] == "测试异常"
     assert bad_cases[0]["route"] == "agent_langgraph"
     assert bad_cases[0]["error_type"] == "internal_error"
-    assert bad_cases[0]["note"] == "node exploded"
+    assert bad_cases[0]["note"] == sensitive_message

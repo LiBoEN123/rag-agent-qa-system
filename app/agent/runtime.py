@@ -10,6 +10,9 @@ from app.common.logging import get_logger
 
 logger = get_logger("chat_service")
 
+_INTERNAL_ERROR_MESSAGE = "Agent 内部执行异常，请稍后重试"
+_INTERNAL_ERROR_MARKER = "internal_error"
+
 
 def _safe_decision(decision: dict | None) -> dict:
     """把外部传入的路由决策规整为可安全读取的字典。"""
@@ -179,24 +182,27 @@ def build_internal_error_result(
     runtime_label: str = "Agent Runtime",
     trace_step: str = "agent_runtime_error",
 ) -> dict:
-    """构造 Agent Runtime 顶层异常时的兼容错误结果。"""
+    """构造 Agent Runtime 顶层异常时的脱敏兼容错误结果。
+
+    ``exc`` 仅供调用方写入内部日志和 bad case；其内容不得进入返回结果。
+    """
     decision = _safe_decision(decision)
     return {
         "status": "INTERNAL_ERROR",
-        "answer": f"系统内部执行 {runtime_label} 时发生错误，无法生成可靠回答。",
+        "answer": _INTERNAL_ERROR_MESSAGE,
         "references": [],
         "retrieval_confidence": 0.0,
         "answer_confidence": 0.0,
         "need_clarification": False,
         "clarification_question": "",
-        "reason": str(exc),
+        "reason": _INTERNAL_ERROR_MESSAGE,
         "action": decision.get("action", ""),
         "tool_result_summary": "",
         "tool_trace": [
             {
                 "step": trace_step,
                 "status": "error",
-                "error": str(exc),
+                "error": _INTERNAL_ERROR_MARKER,
             }
         ],
         "router_llm_used": False,
