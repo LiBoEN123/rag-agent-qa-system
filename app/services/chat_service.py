@@ -33,6 +33,7 @@ logger = get_logger("chat_service")
 
 RAG_READY_ACTIONS = {
     "search_knowledge_base",
+    "compare_documents",
     "list_documents",
     "get_chunk_text",
 }
