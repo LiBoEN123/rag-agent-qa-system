@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 ARG TORCH_CUDA_INDEX_URL=https://download.pytorch.org/whl/cu121
 
@@ -10,10 +10,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY requirements.lock .
 
-RUN pip install --no-cache-dir --index-url ${TORCH_CUDA_INDEX_URL} torch
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir ----extra-index-url ${TORCH_CUDA_INDEX_URL} torch
+RUN pip install --no-cache-dir -r requirements.lock
 
 COPY . .
 
