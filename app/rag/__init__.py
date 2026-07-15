@@ -1,10 +1,11 @@
 """RAG 公共门面。
 
-统一暴露索引和问答能力，并动态转发可能在运行期间重建的索引状态。
+暴露索引、检索和 LangGraph 问答能力，并动态转发运行时索引状态。
 """
 
 from typing import Any
 
+from app.config import Settings as _Settings
 from app.rag import pipeline as _pipeline
 
 
@@ -13,25 +14,16 @@ __all__ = [
     "NO_DOCUMENTS_MESSAGE",
     "RAG_INIT_MESSAGE",
     "RAG_READY",
-    "STOP_WORD",
-    "Settings",
-    "ask",
     "bm25",
-    "build_evidence_gate_step",
-    "build_rag_result",
-    "call_llm",
     "chunks",
-    "decompose_query_with_llm",
     "doc_embeddings",
     "docs_registry",
-    "format_reference",
     "get_chunk_full_text",
     "get_rag_status",
     "index_cache_exists",
     "load_index_cache",
     "model",
     "needs_rebuild",
-    "parse_llm_output",
     "preview_chunks",
     "preview_docs",
     "rebuild_and_persist_index",
@@ -42,18 +34,12 @@ __all__ = [
     "run_rag_subgraph",
     "save_index_cache",
     "search_relevant_chunks",
-    "should_refuse",
     "texts",
-    "verify_answer_citations",
 ]
 
 
 NO_DOCUMENTS_MESSAGE = _pipeline.NO_DOCUMENTS_MESSAGE
-STOP_WORD = _pipeline.STOP_WORD
-Settings = _pipeline.Settings
 
-build_evidence_gate_step = _pipeline.build_evidence_gate_step
-build_rag_result = _pipeline.build_rag_result
 get_rag_status = _pipeline.get_rag_status
 rebuild_index = _pipeline.rebuild_index
 rebuild_and_persist_index = _pipeline.rebuild_and_persist_index
@@ -67,26 +53,6 @@ search_relevant_chunks = _pipeline.search_relevant_chunks
 preview_docs = _pipeline.preview_docs
 preview_chunks = _pipeline.preview_chunks
 get_chunk_full_text = _pipeline.get_chunk_full_text
-
-# 这些别名有意设计成可以修改，测试代码或调用者可以替换门面层上的函数。
-decompose_query_with_llm = _pipeline.decompose_query_with_llm
-call_llm = _pipeline.call_llm
-should_refuse = _pipeline.should_refuse
-parse_llm_output = _pipeline.parse_llm_output
-format_reference = _pipeline.format_reference
-verify_answer_citations = _pipeline.verify_answer_citations
-
-
-def ask(*args, **kwargs):
-    """执行 RAG 问答流程，并应用门面层注入的可替换依赖。"""
-    _pipeline.decompose_query_with_llm = decompose_query_with_llm
-    _pipeline.call_llm = call_llm
-    _pipeline.rerank = rerank
-    _pipeline.should_refuse = should_refuse
-    _pipeline.parse_llm_output = parse_llm_output
-    _pipeline.format_reference = format_reference
-    _pipeline.verify_answer_citations = verify_answer_citations
-    return _pipeline.ask(*args, **kwargs)
 
 
 def __getattr__(name: str):
@@ -110,8 +76,8 @@ def __getattr__(name: str):
 
 def run_rag_subgraph(
     question: str,
-    top_k: int = Settings.TOP_K,
-    decompose_top_k: int = Settings.DECOMPOSE_TOP_K,
+    top_k: int = _Settings.TOP_K,
+    decompose_top_k: int = _Settings.DECOMPOSE_TOP_K,
     retrieved_chunks: list[dict[str, Any]] | None = None,
     trace_id: str = "",
 ) -> dict[str, Any]:

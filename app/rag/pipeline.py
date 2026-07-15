@@ -1,41 +1,22 @@
-"""RAG 主流程编排模块。
+"""RAG 索引与检索门面模块。
 
-维护内存索引状态，组织索引生命周期、检索、重排、生成、引用和拒答流程。
+维护内存索引状态，并组织索引生命周期、检索、重排和调试能力。
 """
 
 from typing import Any, Dict, List
-import time
 
-from app.common.logging import get_logger
 from app.config import Settings
-from app.llm.errors import ModelCallError
-from app.rag.citations import verify_answer_citations
-from app.prompts import NO_ANSWER_FALLBACK
 from app.rag.debug import (
     get_chunk_full_text as get_chunk_full_text_impl,
     preview_chunks as preview_chunks_impl,
     preview_docs as preview_docs_impl,
 )
-from app.rag.generation import (
-    build_context,
-    call_llm,
-    estimate_answer_confidence,
-    estimate_retrieval_confidence,
-    format_reference,
-    parse_llm_output,
-)
 from app.rag.ingest import clean_documents, load_files, split_chunks
 from app.rag.retrieval import (
-    build_clarification_question,
-    is_ambiguous_question,
     retrieve as retrieve_impl,
     rerank as rerank_impl,
     search_relevant_chunks as search_relevant_chunks_impl,
-    should_refuse,
-    should_decompose_query,
-    default_decompose_result,
-    decompose_query_with_llm,
-    retrieve_with_sub_queries
+    retrieve_with_sub_queries,
 )
 from app.rag.store import (
     build_current_manifest,
@@ -47,16 +28,7 @@ from app.rag.store import (
     save_index_cache as save_index_cache_impl,
     save_manifest,
 )
-from app.rag.results import (
-    build_default_timings,
-    build_evidence_gate_step,
-    build_rag_result,
-)
-
-
-# RAG orchestration and in-process index state.
-logger = get_logger('chat_service')
-
+# In-process index state.
 chunks: list[dict] = []
 texts: list[str] = []
 docs_registry: list[dict] = []
@@ -278,268 +250,6 @@ def search_relevant_chunks(question: str, top_k: int = 3) -> List[Dict[str, Any]
         doc_embeddings=doc_embeddings,
         model=model,
         top_k=top_k
-    )
-
-
-# =========================
-# 查询阶段：总控
-# =========================
-def ask(
-    question: str,
-    top_k: int = 5,
-    decompose_top_k: int = 10,
-    retrieved_chunks: List[Dict[str, Any]] | None = None,
-    trace_id : str = ""
-):
-    """执行完整 RAG 问答流程：澄清判断、可选拆分、重排、生成和引用绑定。"""
-    question = (question or "").strip()
-    # timings 只用于日志和性能观测，不参与业务判断。
-    timings = build_default_timings()
-
-    if is_ambiguous_question(question):
-        return build_rag_result(
-            status="NEED_CLARIFICATION",
-            need_clarification=True,
-            clarification_question=build_clarification_question(question),
-            reason="问题存在指代不明或缺少关键限定信息",
-            timings=timings,
-        )
-
-    decompose_result = None
-    decompose_cost_ms = 0
-    decompose_llm_used = False
-
-    if not Settings.ENABLE_QUERY_DECOMPOSE:
-        decompose_result = default_decompose_result("query decomposition disabled")
-        timings["decompose_skipped_reason"] = "disabled"
-        logger.info(
-            f"[trace_id={trace_id}] [retrieve] decompose_skipped reason=disabled"
-        )
-    else:
-        should_decompose, decompose_rule_reason = should_decompose_query(question)
-        timings["decompose_rule_reason"] = decompose_rule_reason
-
-        if not should_decompose:
-            decompose_result = default_decompose_result(
-                f"decompose skipped by rule: {decompose_rule_reason}"
-            )
-            timings["decompose_skipped_reason"] = decompose_rule_reason
-            logger.info(
-                f"[trace_id={trace_id}] [retrieve] decompose_skipped "
-                f"reason={decompose_rule_reason}"
-            )
-        elif not Settings.DECOMPOSE_MODEL_NAME or not Settings.DECOMPOSE_API_URL:
-            decompose_result = default_decompose_result("query decomposition not configured")
-            timings["decompose_skipped_reason"] = "not_configured"
-            logger.info(
-                f"[trace_id={trace_id}] [retrieve] decompose_skipped reason=not_configured"
-            )
-        else:
-            strat_decompose = time.perf_counter()
-            decompose_llm_used = True
-            try:
-                decompose_result = decompose_query_with_llm(question)
-            except Exception as e:
-                logger.warning(
-                    f"[trace_id={trace_id}] [retrieve] decompose_failed fallback_to_single_query error={e}"
-                )
-                decompose_result = default_decompose_result("decompose failed, fallback to original question")
-
-            decompose_cost_ms = int((time.perf_counter() - strat_decompose) * 1000)
-
-    logger.info(
-        f"[trace_id={trace_id}] [retrieve] decompose_cost_ms={decompose_cost_ms} "
-        f"decompose_llm_used={decompose_llm_used} "
-        f"need_decompose={decompose_result.get('need_decompose')} "
-        f"reason={decompose_result.get('reason', '')}"
-    )
-    timings["decompose_cost_ms"] = decompose_cost_ms
-    timings["decompose_llm_used"] = decompose_llm_used
-
-    if retrieved_chunks is None:
-        retrieved_chunks = retrieve(question, top_k)
-
-    start_rerank = time.perf_counter()
-
-    if not decompose_result["need_decompose"]:
-        candidates = retrieved_chunks
-        reranked = rerank(candidates, question)
-        final_chunks = reranked[:top_k]
-        rerank_cost_ms = int((time.perf_counter() - start_rerank) * 1000)
-        logger.info(f"[trace_id={trace_id}] [retrieve] rerank_cost_ms={rerank_cost_ms}")
-        timings["rerank_cost_ms"] = rerank_cost_ms
-    else:
-        final_chunks = retrieve_with_sub_queries(
-            question=question,
-            sub_queries=decompose_result["sub_queries"],
-            chunks=chunks,
-            bm25=bm25,
-            doc_embeddings=doc_embeddings,
-            model=model,
-            rerank_model=rerank_model,
-            final_top_k=decompose_top_k
-        )
-        retrieve_with_sub_queries_cost_ms = int((time.perf_counter() - start_rerank) * 1000)
-        logger.info(f"[trace_id={trace_id}] [retrieve] retrieve_with_sub_queries_cost_ms={retrieve_with_sub_queries_cost_ms}")
-        timings["retrieve_with_sub_queries_cost_ms"] = retrieve_with_sub_queries_cost_ms
-
-    hit_brief = [
-        {
-            "chunk_id": chunk.get("chunk_id"),
-            "rerank": round(chunk.get("rerank_score", 0), 4),
-            "score": round(chunk.get("hybrid_score", 0), 4),
-            "bm25": round(chunk.get("bm25_score", 0), 4),
-            "vector": round(chunk.get("vector_score", 0), 4),
-            "file_name": chunk.get("file_name"),
-        }
-        for chunk in final_chunks
-    ]
-
-    final_chunk_count = len(final_chunks)
-    top_chunk_ids = [chunk.get("chunk_id") for chunk in final_chunks]
-    top_scores = [
-        round(chunk.get("hybrid_score", 0), 4)
-        for chunk in final_chunks]
-
-    logger.info(
-        f"[trace_id={trace_id}] [retrieve] final_chunk_count={final_chunk_count} "
-        f"top_chunk_ids={top_chunk_ids} top_scores={top_scores} hits={hit_brief}"
-    )
-
-    logger.info(f"[trace_id={trace_id}] [rag] 开始问答流程 top_k={top_k}")
-
-    retrieval_confidence = estimate_retrieval_confidence(final_chunks)
-    answer_llm_used = False
-
-    if should_refuse(final_chunks):
-        refuse_reason = "检索结果为空或证据分数低于阈值"
-        return build_rag_result(
-            status="NO_RELEVANT_INFO",
-            answer=NO_ANSWER_FALLBACK,
-            retrieval_confidence=retrieval_confidence,
-            reason=refuse_reason,
-            timings=timings,
-            decompose_llm_used=decompose_llm_used,
-            evidence_gate=build_evidence_gate_step(
-                final_chunks,
-                refused=True,
-                reason=refuse_reason,
-            ),
-        )
-
-    context_start = time.perf_counter()
-    context = build_context(final_chunks, Settings.MAX_CONTEXT_CHARS)
-    context_build_cost_ms = int((time.perf_counter() - context_start) * 1000)
-    timings["context_build_cost_ms"] = context_build_cost_ms
-
-    logger.info(
-        f"[trace_id={trace_id}] [rag] context 构造完成 context_len={len(context)} "
-        f"context_build_cost_ms={context_build_cost_ms}"
-    )
-    logger.info(f"[trace_id={trace_id}] [llm] 开始调用模型")
-
-    llm_start = time.perf_counter()
-    answer_llm_used = True
-    try:
-        llm_out = call_llm(question, context, trace_id)
-    except ModelCallError as e:
-        timings["llm_cost_ms"] = int((time.perf_counter() - llm_start) * 1000)
-        return build_rag_result(
-            status="MODEL_ERROR",
-            answer=e.user_message,
-            final_chunks=final_chunks,
-            retrieval_confidence=retrieval_confidence,
-            reason=e.user_message,
-            timings=timings,
-            decompose_llm_used=decompose_llm_used,
-            answer_llm_used=answer_llm_used,
-        )
-
-    timings["llm_cost_ms"] = int((time.perf_counter() - llm_start) * 1000)
-
-    logger.info(
-        f"[trace_id={trace_id}] [llm] 模型调用完成 output_len={len(llm_out or '')}"
-    )
-
-    parse_start = time.perf_counter()
-    parsed = parse_llm_output(llm_out)
-    parse_cost_ms = int((time.perf_counter() - parse_start) * 1000)
-    timings["parse_cost_ms"] = parse_cost_ms
-
-    logger.info(
-        f"[trace_id={trace_id}] [parse] 模型输出解析完成 ok={parsed.get('ok')} "
-        f"parse_cost_ms={parse_cost_ms}"
-    )
-
-    if not parsed["ok"]:
-        return build_rag_result(
-            status="MODEL_BAD_OUTPUT",
-            answer=NO_ANSWER_FALLBACK,
-            retrieval_confidence=retrieval_confidence,
-            reason="模型未按约定 JSON 格式返回",
-            timings=timings,
-            decompose_llm_used=decompose_llm_used,
-            answer_llm_used=answer_llm_used,
-        )
-
-    final_references = format_reference(final_chunks, parsed["references"])
-    citation_verification = verify_answer_citations(
-        question=question,
-        answer=parsed["answer"],
-        references=final_references,
-        min_overlap_ratio=0.1,
-    )
-
-    if not citation_verification["supported"]:
-        return build_rag_result(
-            status="NO_RELEVANT_INFO",
-            answer=NO_ANSWER_FALLBACK,
-            references=final_references,
-            final_chunks=final_chunks,
-            retrieval_confidence=retrieval_confidence,
-            answer_confidence=0.0,
-            need_clarification=False,
-            clarification_question="",
-            reason=citation_verification["reason"],
-            timings=timings,
-            decompose_llm_used=decompose_llm_used,
-            answer_llm_used=answer_llm_used,
-            citation_verification=citation_verification,
-        )
-
-    if not final_references or STOP_WORD in parsed["answer"]:
-        return build_rag_result(
-            status="NO_RELEVANT_INFO",
-            answer=parsed["answer"],
-            references=final_references,
-            final_chunks=final_chunks,
-            retrieval_confidence=retrieval_confidence,
-            reason="模型给出的答案没有足够的引用支撑",
-            timings=timings,
-            decompose_llm_used=decompose_llm_used,
-            answer_llm_used=answer_llm_used,
-            citation_verification=citation_verification,
-        )
-
-    answer_confidence = estimate_answer_confidence(
-        retrieved_chunks=final_chunks,
-        final_references=final_references,
-        status="OK",
-        retrieval_confidence=retrieval_confidence
-    )
-
-    return build_rag_result(
-        status="OK",
-        answer=parsed["answer"],
-        references=final_references,
-        final_chunks=final_chunks,
-        retrieval_confidence=retrieval_confidence,
-        answer_confidence=answer_confidence,
-        reason="检索命中有效证据，且答案成功绑定引用",
-        timings=timings,
-        decompose_llm_used=decompose_llm_used,
-        answer_llm_used=answer_llm_used,
-        citation_verification=citation_verification,
     )
 
 

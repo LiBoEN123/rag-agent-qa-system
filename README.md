@@ -134,7 +134,7 @@ flowchart TD
 
 `/chat` 控制器现在只负责读取 HTTP 请求上下文、调用 `ChatService`、设置状态码，并使用现有 Response Builder 构造响应。Query Rewrite、Router、RAG Ready Check、Runtime 调用、metrics 和 session 存储由 `app/services/chat_service.py` 统一编排，因此聊天业务可以脱离 FastAPI 进行单元测试。
 
-API 请求与响应 Schema、HTTP 状态语义和 trace 响应头保持不变；ChatService 固定调用 LangGraph 主图。本次清理没有修改 Agent Graph、RAG Subgraph 或独立 `rag.ask()` 公共门面的业务行为。
+API 请求与响应 Schema、HTTP 状态语义和 trace 响应头保持不变；ChatService 固定调用 LangGraph 主图，知识库回答统一进入 RAG 子图。
 
 ## LangChain Tool 适配层
 
@@ -148,7 +148,7 @@ LangGraph Agent Runtime 仍沿用 Executor → `dispatch_tool()` → `ToolRegist
 
 当前请求链路为 `FastAPI → ChatService → Query Rewrite → Router → LangGraph Agent Graph → RAG Subgraph / 普通工具 → Finalize → Session / Metrics → API Response`。ChatService 会把已经生成的 Router decision 传给主图，因此 Query Rewrite、Router 和 LangGraph Runtime 在单次请求中各执行一次。成功的 `search_knowledge_base` observation 会进入 RAG 子图并直接到 `finalize`；普通工具、澄清、直接回答和工具错误进入共享的 `compose → finalize`。
 
-旧手写 Agent 编排入口已经删除。Planner、Executor、Answer Composer、`AgentState`、Router 和 Query Rewrite 仍由 LangGraph 节点或 ChatService 复用，它们属于共享业务层。`rag.ask()` 继续作为独立顺序式 RAG 公共门面供脚本、直接 RAG 测试和兼容 API 使用，不属于已删除的 Agent 编排。
+旧手写 Agent 编排入口已经删除。Planner、Executor、Answer Composer、`AgentState`、Router 和 Query Rewrite 仍由 LangGraph 节点或 ChatService 复用，它们属于共享业务层。完整 RAG 问答不再提供独立顺序式入口，脚本和测试统一调用 `app.rag.graph.run_rag_subgraph()`。
 
 ### LangGraph RAG 子图
 

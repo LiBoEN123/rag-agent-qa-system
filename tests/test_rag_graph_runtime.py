@@ -12,7 +12,7 @@ from app.rag.graph.runtime import RAGGraphError, run_rag_subgraph
 
 
 def make_chunk(index: int = 1, **overrides) -> dict:
-    """构造包含旧 RAG 全部必要字段的受控候选 chunk。"""
+    """构造包含 RAG 子图各阶段必要字段的受控候选 chunk。"""
     chunk = {
         "reference_id": f"Reference {index}",
         "file_name": "policy.md",
@@ -126,6 +126,99 @@ def test_single_query_without_candidates_retrieves_once(monkeypatch):
     assert result["status"] == "OK"
     assert result["final_chunks"] == chunks
     assert calls == {"retrieve": 1, "rerank": 1}
+
+
+def test_rule_selected_single_query_skips_decompose_and_answer_on_weak_evidence(
+    monkeypatch,
+):
+    """规则判定单查询时不调用拆分模型，弱证据也不调用回答模型。"""
+    calls = {"decompose": 0, "answer": 0}
+    monkeypatch.setattr(rag_graph_nodes.Settings, "ENABLE_QUERY_DECOMPOSE", True)
+    monkeypatch.setattr(rag_graph_nodes.Settings, "DECOMPOSE_MODEL_NAME", "fake")
+    monkeypatch.setattr(
+        rag_graph_nodes.Settings,
+        "DECOMPOSE_API_URL",
+        "http://example.test",
+    )
+    monkeypatch.setattr(
+        rag_graph_nodes,
+        "should_decompose_query",
+        lambda question: (False, "single intent"),
+    )
+
+    def fail_decompose(question):
+        calls["decompose"] += 1
+        raise AssertionError("规则判定单查询后不应调用拆分模型")
+
+    def fail_answer(*args, **kwargs):
+        calls["answer"] += 1
+        raise AssertionError("证据不足时不应调用回答模型")
+
+    monkeypatch.setattr(rag_graph_nodes, "decompose_query_with_llm", fail_decompose)
+    monkeypatch.setattr(rag_graph_nodes, "rerank", lambda candidates, question: candidates)
+    monkeypatch.setattr(rag_graph_nodes, "should_refuse", lambda chunks: True)
+    monkeypatch.setattr(rag_graph_nodes, "call_llm", fail_answer)
+
+    result = run_rag_subgraph(
+        question="最长学习年限是几年？",
+        top_k=1,
+        retrieved_chunks=[make_chunk(vector_score=0.1, rerank_score=0.1)],
+        trace_id="test-single-rule",
+    )
+
+    assert result["status"] == "NO_RELEVANT_INFO"
+    assert result["decompose_llm_used"] is False
+    assert result["answer_llm_used"] is False
+    assert result["llm_call_count"] == 0
+    assert result["timings"]["decompose_rule_reason"] == "single intent"
+    assert calls == {"decompose": 0, "answer": 0}
+
+
+def test_decompose_model_can_keep_single_query(monkeypatch):
+    """复杂问题调用拆分模型后仍可判定为无需拆分的单查询。"""
+    calls = {"decompose": 0, "answer": 0}
+    monkeypatch.setattr(rag_graph_nodes.Settings, "ENABLE_QUERY_DECOMPOSE", True)
+    monkeypatch.setattr(rag_graph_nodes.Settings, "DECOMPOSE_MODEL_NAME", "fake")
+    monkeypatch.setattr(
+        rag_graph_nodes.Settings,
+        "DECOMPOSE_API_URL",
+        "http://example.test",
+    )
+    monkeypatch.setattr(
+        rag_graph_nodes,
+        "should_decompose_query",
+        lambda question: (True, "comparison intent"),
+    )
+
+    def fake_decompose(question):
+        calls["decompose"] += 1
+        return {
+            "need_decompose": False,
+            "reason": "拆分模型判定为单查询",
+            "sub_queries": [],
+        }
+
+    def fail_answer(*args, **kwargs):
+        calls["answer"] += 1
+        raise AssertionError("证据不足时不应调用回答模型")
+
+    monkeypatch.setattr(rag_graph_nodes, "decompose_query_with_llm", fake_decompose)
+    monkeypatch.setattr(rag_graph_nodes, "rerank", lambda candidates, question: candidates)
+    monkeypatch.setattr(rag_graph_nodes, "should_refuse", lambda chunks: True)
+    monkeypatch.setattr(rag_graph_nodes, "call_llm", fail_answer)
+
+    result = run_rag_subgraph(
+        question="请对比新旧政策的变化。",
+        top_k=1,
+        retrieved_chunks=[make_chunk(vector_score=0.1, rerank_score=0.1)],
+        trace_id="test-single-after-decompose",
+    )
+
+    assert result["status"] == "NO_RELEVANT_INFO"
+    assert result["decompose_llm_used"] is True
+    assert result["answer_llm_used"] is False
+    assert result["llm_call_count"] == 1
+    assert calls == {"decompose": 1, "answer": 0}
 
 
 def test_multi_query_uses_current_index_facade_only(monkeypatch):
