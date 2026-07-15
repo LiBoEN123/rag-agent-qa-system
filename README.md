@@ -119,6 +119,7 @@ flowchart TD
 
 - 配置通过 `.env` 管理，`.env.example` 提供默认模板，回答模型、路由模型、追问改写模型、拆分模型和评测 Judge 均使用 OpenAI-compatible Chat Completions 配置。
 - 应用内部模型调用统一由 LangChain `ChatOpenAI(base_url=...)` 访问 OpenAI-compatible 服务，各角色原有模型环境变量仍然有效。
+- `requirements.txt` 保留顶层依赖声明，`requirements.lock` 固定 Python 3.12 验证过的版本；Docker 和 CI 均使用 lock 文件安装依赖。
 - 支持 embedding / rerank 模型本地缓存，默认缓存目录为 `./.cache/huggingface/hub`，也可通过 `MODEL_CACHE_DIR`、`HF_HOME` 等环境变量调整。
 - 支持 ChromaDB 持久化，默认将向量、chunk 文本、metadata 和文档注册信息保存到 `data/chroma/`。
 - 启动时基于 manifest 判断是否需要重建索引；知识库文件、chunk 参数、embedding/rerank 模型或 pipeline 版本变化会触发重建。
@@ -173,12 +174,12 @@ Checkpointer 只保存 Graph 节点执行快照，不替代应用级聊天历史
 
 ## 快速启动
 
-建议使用 Python 3.10+。
+建议使用 Python 3.12，与 Docker 和 CI 环境保持一致。
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.lock
 cp .env.example .env
 ```
 
@@ -187,7 +188,7 @@ Windows PowerShell 可使用：
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r requirements.lock
 copy .env.example .env
 ```
 
@@ -290,6 +291,7 @@ RAG_FILE_PATH=./data/kb
 INDEX_STORE_DIR=./data/manifest
 CHROMA_PERSIST_DIR=./data/chroma
 CHROMA_COLLECTION_NAME=mini_rag_chunks
+AUTO_REBUILD_ON_STARTUP=false
 
 TOP_K=5
 DECOMPOSE_TOP_K=10
@@ -481,6 +483,8 @@ GET /metrics-summary?limit=20
 
 以下变化会触发重建：新增/删除/修改知识库文件、修改 `CHUNK_SIZE`、修改 `CHUNK_OVERLAP`、修改 embedding 模型、修改 rerank 模型、pipeline 版本变化。修改 `TOP_K`、Prompt、回答模型名称、温度等通常不需要重建索引。
 
+设置 `AUTO_REBUILD_ON_STARTUP=true` 会忽略可复用缓存并在每次服务启动时强制重建；默认 `false` 仍会在文档或索引参数变化时自动重建。
+
 如需在启动 API 前先下载模型权重，可以运行：
 
 ```bash
@@ -513,10 +517,12 @@ python scripts/summarize_logs.py
 
 ## 测试与评测
 
-运行测试：
+执行与 CI 一致的静态检查和测试：
 
 ```bash
-pytest
+python -m compileall -q app scripts
+ruff check app tests scripts
+python -m pytest -q
 ```
 
 生成 RAG 预测结果：
@@ -579,7 +585,7 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 ├── app/
 │   ├── main.py                  # 正式 ASGI 入口：app.main:app
 │   ├── api/
-│   │   ├── chat.py              # FastAPI 组装和 /chat 主流程
+│   │   ├── chat.py              # FastAPI 组装和 /chat HTTP 适配
 │   │   ├── schemas.py           # 请求、响应和引用数据模型
 │   │   ├── diagnostics.py       # 检索、知识库和指标诊断接口
 │   │   ├── responses.py         # 响应构造和业务状态映射
@@ -589,21 +595,23 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   │   ├── router.py            # 路由决策与结果校验
 │   │   ├── rules.py             # 数学、chunk 和文档对比规则
 │   │   ├── llm_router.py        # LLM Router 调用与解析
+│   │   ├── query_rewrite.py     # 多轮追问识别和 Query Rewrite
 │   │   ├── formatting.py        # 普通工具答案格式化
 │   │   ├── state.py             # Agent 状态模型
 │   │   ├── planner.py           # 执行计划构造
 │   │   ├── executor.py          # 工具步骤执行
 │   │   ├── answer.py            # 最终答案合成
-│   │   └── runtime.py           # Agent 主流程编排
+│   │   └── runtime.py           # Agent 结果、统计和 trace 辅助逻辑
 │   ├── graph/
 │   │   ├── state.py             # LangGraph 状态 Schema
 │   │   ├── nodes.py             # 复用现有 Agent 业务函数的节点
 │   │   ├── conditions.py        # Router 条件入口
+│   │   ├── checkpointing.py      # Checkpointer 配置、缓存和 thread_id
 │   │   ├── builder.py           # StateGraph 构建、连接与缓存编译
 │   │   └── runtime.py           # LangGraph 兼容 Runtime 门面
 │   ├── rag/
 │   │   ├── __init__.py          # RAG 公共门面和依赖注入
-│   │   ├── pipeline.py          # 索引状态与问答流程编排
+│   │   ├── pipeline.py          # 索引状态、生命周期与检索门面
 │   │   ├── graph/               # LangGraph RAG 子图状态、节点、条件、构建和运行入口
 │   │   ├── ingest.py            # 文档读取、清洗、切分
 │   │   ├── retrieval.py         # 混合召回与重排
@@ -622,17 +630,20 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   │   ├── calculator.py        # 安全四则运算
 │   │   ├── knowledge_base.py    # 文档、chunk 和检索工具
 │   │   ├── compare_documents.py # 双文档证据对比
+│   │   ├── context.py           # 请求级工具调用上下文
 │   │   ├── dispatch.py          # 工具分发与调用日志
 │   │   ├── langchain_tools.py   # LangChain StructuredTool 适配层
 │   │   ├── registry.py          # 工具注册和分发
 │   │   └── schemas.py           # 工具参数模型
+│   ├── services/
+│   │   └── chat_service.py      # Query Rewrite、路由、Runtime、会话和 metrics 编排
+│   ├── llm/                     # 统一模型工厂、调用网关、Schema 和错误类型
 │   ├── storage/                 # SQLite、session 和 Agent trace 存储
 │   ├── observability/
 │   │   ├── __init__.py          # trace_id 生成
 │   │   ├── middleware.py        # HTTP trace 和端到端耗时
 │   │   └── metrics.py           # 指标、bad case 和 trace 汇总
 │   ├── common/logging.py        # 公共日志配置
-│   ├── agent/query_rewrite.py   # 多轮追问识别和 Query Rewrite
 │   ├── prompts.py               # RAG、问题拆分、路由 Prompt
 │   └── config.py                # 环境变量配置
 ├── data/
@@ -655,10 +666,13 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 ├── tests/                       # 单元测试和接口测试
 ├── logs/                        # metrics、bad_cases、tool_calls
 ├── outputs/                     # 评测和日志汇总输出
+├── .github/workflows/tests.yml  # 编译、Ruff 和 pytest CI
 ├── .env.example
 ├── Dockerfile
 ├── docker-compose.yml
+├── requirements.lock            # Python 3.12 已验证的固定依赖
 ├── requirements.txt
+├── ruff.toml
 └── README.md
 ```
 
@@ -702,7 +716,7 @@ docker run --rm -p 8000:8000 --env-file .env \
 - 优化 `partial_answer` 场景的 prompt，让模型在只能回答部分问题时更清晰地说明已回答和未覆盖部分。
 - 强化新旧政策冲突判断，提升 `trap` 类问题中对时间、版本和政策优先级的识别能力。
 - 继续优化 Query Rewrite 对跨轮限定、复杂指代和历史冲突的处理能力。
-- 增加更完整的 CI，覆盖格式检查、单元测试、接口测试和关键评测脚本。
+- 继续扩展现有 CI，在编译、Ruff 和 pytest 之外增加 Docker 构建检查与关键评测脚本。
 - 为 Streamlit Demo 增加更多调试视图，例如 Query Rewrite、Router 决策和检索命中对比。
 
 ## 已知限制
