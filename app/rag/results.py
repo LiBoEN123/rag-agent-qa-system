@@ -9,7 +9,7 @@ from app.rag.retrieval import safe_float
 
 
 def build_default_timings() -> dict[str, int | bool | str]:
-    """构造新旧 RAG 编排共同使用的默认阶段耗时结构。"""
+    """构造 RAG 子图使用的默认阶段耗时结构。"""
     return {
         "decompose_cost_ms": 0,
         "decompose_llm_used": False,

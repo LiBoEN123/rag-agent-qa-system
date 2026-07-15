@@ -4,7 +4,6 @@ import json
 
 import pytest
 
-from app.agent import answer as agent_answer
 from app.agent import executor as agent_executor
 from app.agent import runtime as agent_runtime
 from app.agent.state import AgentPlanStep, AgentState
@@ -524,7 +523,7 @@ def test_internal_runtime_errors_keep_compatible_business_fields(monkeypatch):
 
 
 def test_knowledge_base_path_uses_rag_subgraph_without_sequential_rag_compose(monkeypatch):
-    """成功知识库 observation 进入子图，并直接 finalize 而不调用旧 ask。"""
+    """成功知识库 observation 进入子图，并直接 finalize 而不进入 compose。"""
     calls = {"subgraph": 0, "compose": 0}
 
     monkeypatch.setattr(
@@ -567,13 +566,6 @@ def test_knowledge_base_path_uses_rag_subgraph_without_sequential_rag_compose(mo
 
     monkeypatch.setattr(graph_nodes, "run_rag_subgraph", fake_subgraph)
     monkeypatch.setattr(graph_nodes, "compose_final_answer", fail_compose)
-    monkeypatch.setattr(
-        agent_answer,
-        "_call_ask",
-        lambda **kwargs: (_ for _ in ()).throw(
-            AssertionError("LangGraph 路径不应调用旧 rag.ask")
-        ),
-    )
 
     result = run_agent_langgraph(
         write_bad_cases=lambda record: None,

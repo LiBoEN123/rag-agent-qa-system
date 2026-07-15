@@ -1,19 +1,26 @@
-from app.agent.answer import DIRECT_ANSWER_TEXT, compose_final_answer, map_rag_status
+import pytest
+
+from app.agent.answer import (
+    DIRECT_ANSWER_TEXT,
+    apply_rag_result_to_state,
+    compose_final_answer,
+    map_rag_status,
+)
 from app.agent.state import AgentObservation, AgentState
 
 
-def test_compose_rag_answer_calls_ask(monkeypatch):
-    """验证 RAG 观察结果会调用 ask 并写回答案、引用和 trace。"""
-    called = {}
-
-    def fake_call_ask(*, question, top_k, decompose_top_k, retrieved_chunks, trace_id):
-        """模拟 ask 调用，并记录 Composer 传入的关键参数。"""
-        called["question"] = question
-        called["top_k"] = top_k
-        called["decompose_top_k"] = decompose_top_k
-        called["retrieved_chunks"] = retrieved_chunks
-        called["trace_id"] = trace_id
-        return {
+def test_apply_rag_result_to_state_maps_graph_result():
+    """验证 RAG 子图结果会完整写回答案、引用、计数和 trace。"""
+    state = AgentState(
+        trace_id="trace_001",
+        original_question="原始问题",
+        rewritten_question="改写问题",
+        top_k=5,
+        decompose_top_k=10,
+    )
+    result = apply_rag_result_to_state(
+        state,
+        {
             "status": "OK",
             "answer": "这是 RAG 答案",
             "references": [{"reference_id": "Reference 1"}],
@@ -21,34 +28,12 @@ def test_compose_rag_answer_calls_ask(monkeypatch):
             "decompose_llm_used": False,
             "answer_llm_used": True,
             "llm_call_count": 1,
-        }
-
-    monkeypatch.setattr("app.agent.answer._call_ask", fake_call_ask)
-
-    chunks = [{"chunk_id": 1, "text": "测试 chunk"}]
-    state = AgentState(
-        trace_id="trace_001",
-        original_question="原始问题",
-        rewritten_question="改写问题",
-        top_k=5,
-        decompose_top_k=10,
-        observations=[
-            AgentObservation(
-                step_id=1,
-                tool_name="search_knowledge_base",
-                success=True,
-                output={"count": 1, "chunks": chunks},
-            )
-        ],
+            "retrieval_confidence": 0.9,
+            "answer_confidence": 0.8,
+            "timings": {"llm_cost_ms": 3},
+        },
     )
 
-    result = compose_final_answer(state)
-
-    assert called["question"] == "改写问题"
-    assert called["top_k"] == 5
-    assert called["decompose_top_k"] == 10
-    assert called["retrieved_chunks"] == chunks
-    assert called["trace_id"] == "trace_001"
     assert result.status == "ok"
     assert result.final_answer == "这是 RAG 答案"
     assert result.references == [{"reference_id": "Reference 1"}]
@@ -56,83 +41,33 @@ def test_compose_rag_answer_calls_ask(monkeypatch):
     assert result.llm_call_count == 1
     assert result.tool_trace[-1]["step"] == "compose_final_answer"
     assert result.tool_trace[-1]["mode"] == "rag"
+    assert result.tool_trace[-1]["retrieval_confidence"] == 0.9
+    assert result.tool_trace[-1]["answer_confidence"] == 0.8
+    assert result.tool_trace[-1]["timings"] == {"llm_cost_ms": 3}
 
 
-def test_compose_rag_answer_uses_original_question_when_no_rewrite(monkeypatch):
-    """验证没有改写问题时，RAG 回答会回退使用原始问题。"""
-    called = {}
-
-    def fake_call_ask(*, question, top_k, decompose_top_k, retrieved_chunks, trace_id):
-        """模拟 ask 调用，并记录最终使用的问题文本。"""
-        called["question"] = question
-        return {
-            "status": "OK",
-            "answer": "答案",
-            "references": [],
-            "reason": "ok",
-            "llm_call_count": 1,
-            "answer_llm_used": True,
-        }
-
-    monkeypatch.setattr("app.agent.answer._call_ask", fake_call_ask)
-
+def test_apply_rag_result_to_state_maps_no_relevant_info():
+    """验证 RAG 子图的无证据状态映射为 Agent no_evidence。"""
     state = AgentState(
-        original_question="原始问题",
-        observations=[
-            AgentObservation(
-                step_id=1,
-                tool_name="search_knowledge_base",
-                success=True,
-                output={"chunks": []},
-            )
-        ],
+        original_question="测试问题",
     )
-
-    compose_final_answer(state)
-
-    assert called["question"] == "原始问题"
-
-
-def test_compose_rag_answer_maps_no_relevant_info(monkeypatch):
-    """验证 RAG 的 NO_RELEVANT_INFO 状态会映射为 no_evidence。"""
-    def fake_call_ask(**kwargs):
-        """模拟 ask 返回无相关证据结果。"""
-        return {
+    result = apply_rag_result_to_state(
+        state,
+        {
             "status": "NO_RELEVANT_INFO",
             "answer": "我无法根据提供的文档确定答案",
             "references": [],
             "reason": "检索结果为空或证据分数低于阈值",
             "llm_call_count": 0,
-        }
-
-    monkeypatch.setattr("app.agent.answer._call_ask", fake_call_ask)
-
-    state = AgentState(
-        original_question="测试问题",
-        observations=[
-            AgentObservation(
-                step_id=1,
-                tool_name="search_knowledge_base",
-                success=True,
-                output={"chunks": []},
-            )
-        ],
+        },
     )
-
-    result = compose_final_answer(state)
 
     assert result.status == "no_evidence"
     assert result.final_answer == "我无法根据提供的文档确定答案"
 
 
-def test_compose_rag_answer_handles_ask_exception(monkeypatch):
-    """验证 ask 抛异常时 Composer 会转为 model_error。"""
-    def fake_call_ask(**kwargs):
-        """模拟 ask 在生成阶段抛出异常。"""
-        raise RuntimeError("LLM failed")
-
-    monkeypatch.setattr("app.agent.answer._call_ask", fake_call_ask)
-
+def test_compose_rejects_successful_knowledge_base_observation():
+    """成功知识库 observation 必须由 LangGraph RAG 子图处理。"""
     state = AgentState(
         original_question="测试问题",
         observations=[
@@ -145,12 +80,11 @@ def test_compose_rag_answer_handles_ask_exception(monkeypatch):
         ],
     )
 
-    result = compose_final_answer(state)
-
-    assert result.status == "model_error"
-    assert "LLM failed" in result.reason
-    assert result.final_answer == "模型生成回答失败，无法生成可靠回答。"
-    assert result.tool_trace[-1]["mode"] == "rag"
+    with pytest.raises(
+        RuntimeError,
+        match="Successful knowledge-base observations must be handled",
+    ):
+        compose_final_answer(state)
 
 
 def test_compose_tool_answer_uses_format_tool_answer(monkeypatch):

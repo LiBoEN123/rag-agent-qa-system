@@ -1,15 +1,11 @@
 """Agent 答案合成模块。
 
-根据工具观察结果选择 RAG 或普通工具格式化路径，并生成最终回答状态。
+映射 RAG 子图结果，或根据普通工具观察结果生成最终回答状态。
 """
 
 from typing import Any
 
-from app.agent.state import (
-    AgentObservation,
-    AgentState,
-    get_effective_question,
-)
+from app.agent.state import AgentObservation, AgentState
 
 
 ERROR_STATUSES = {"tool_error", "error", "model_error"}
@@ -38,40 +34,12 @@ def map_rag_status(status: str) -> str:
     return mapping.get(normalized, "error")
 
 
-def find_first_observation(state: AgentState, tool_name: str) -> AgentObservation | None:
-    """从状态中查找指定工具产生的第一条观察结果。"""
-    for observation in state.observations:
-        if observation.tool_name == tool_name:
-            return observation
-    return None
-
-
 def find_last_successful_observation(state: AgentState) -> AgentObservation | None:
     """从状态中查找最后一条成功的工具观察结果。"""
     for observation in reversed(state.observations):
         if observation.success:
             return observation
     return None
-
-
-def _call_ask(
-    *,
-    question: str,
-    top_k: int,
-    decompose_top_k: int,
-    retrieved_chunks: list,
-    trace_id: str,
-) -> dict[str, Any]:
-    """调用现有 RAG ask 流程，局部导入用于避免循环依赖。"""
-    from app.rag import ask
-
-    return ask(
-        question=question,
-        top_k=top_k,
-        decompose_top_k=decompose_top_k,
-        retrieved_chunks=retrieved_chunks,
-        trace_id=trace_id,
-    )
 
 
 def _format_tool_answer(tool_name: str, output: dict) -> str:
@@ -85,7 +53,7 @@ def apply_rag_result_to_state(
     state: AgentState,
     rag_result: dict[str, Any],
 ) -> AgentState:
-    """将新旧 RAG 编排的统一结果映射回现有 AgentState。"""
+    """将 RAG 子图的统一结果映射回现有 AgentState。"""
     state.status = map_rag_status(rag_result.get("status", ""))
     state.final_answer = rag_result.get("answer", "") or ""
     state.references = rag_result.get("references", []) or []
@@ -116,36 +84,6 @@ def apply_rag_result_to_state(
         }
     )
     return state
-
-
-def compose_rag_answer(state: AgentState, observation: AgentObservation) -> AgentState:
-    """基于知识库检索观察结果调用 RAG 流程并写回最终答案。"""
-    retrieved_chunks = observation.output.get("chunks", []) if isinstance(observation.output, dict) else []
-    question = get_effective_question(state)
-
-    try:
-        rag_result = _call_ask(
-            question=question,
-            top_k=state.top_k,
-            decompose_top_k=state.decompose_top_k,
-            retrieved_chunks=retrieved_chunks,
-            trace_id=state.trace_id,
-        )
-    except Exception as exc:
-        state.status = "model_error"
-        state.reason = f"RAG answer generation failed: {exc}"
-        state.final_answer = "模型生成回答失败，无法生成可靠回答。"
-        state.tool_trace.append(
-            {
-                "step": "compose_final_answer",
-                "mode": "rag",
-                "status": state.status,
-                "reason": state.reason,
-            }
-        )
-        return state
-
-    return apply_rag_result_to_state(state, rag_result)
 
 
 def compose_tool_answer(state: AgentState, observation: AgentObservation) -> AgentState:
@@ -209,7 +147,7 @@ def compose_final_answer(state: AgentState) -> AgentState:
             else:
                 state.final_answer = "工具执行失败，无法生成可靠回答。"
         return state
-
+    
     if not state.observations:
         state.status = "error"
         state.reason = "No observations available for final answer"
@@ -223,9 +161,16 @@ def compose_final_answer(state: AgentState) -> AgentState:
         )
         return state
 
-    rag_observation = find_first_observation(state, "search_knowledge_base")
-    if rag_observation is not None and rag_observation.success:
-        return compose_rag_answer(state, rag_observation)
+    successful_rag_observation = any(
+        observation.tool_name == "search_knowledge_base"
+        and observation.success
+        for observation in state.observations
+    )
+    if successful_rag_observation:
+        raise RuntimeError(
+            "Successful knowledge-base observations must be handled "
+            "by the LangGraph RAG subgraph."
+        )
 
     observation = find_last_successful_observation(state)
     if observation is None:
@@ -247,9 +192,7 @@ def compose_final_answer(state: AgentState) -> AgentState:
 __all__ = [
     "apply_rag_result_to_state",
     "compose_final_answer",
-    "compose_rag_answer",
     "compose_tool_answer",
-    "find_first_observation",
     "find_last_successful_observation",
     "map_rag_status",
 ]

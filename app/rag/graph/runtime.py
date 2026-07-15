@@ -35,7 +35,7 @@ def run_rag_subgraph(
     retrieved_chunks: list[dict[str, Any]] | None = None,
     trace_id: str = "",
 ) -> dict[str, Any]:
-    """同步执行 RAG 子图，只返回与旧 ``rag.ask()`` 一致的结果字典。"""
+    """同步执行 RAG 子图，并返回统一的 RAG 结果字典。"""
     graph_input = {
         "question": question,
         "top_k": top_k,

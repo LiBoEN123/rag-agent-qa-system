@@ -1,20 +1,41 @@
 # # 启动命令：python scripts/predictions.py --eval-file data/eval/rag_eval_questions_nmgut_graduate_v1.json --out-file outputs/predictions.csv
 
-import json
-import csv
 import argparse
+import csv
+import json
 from pathlib import Path
 import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.rag import retrieve, ask, init_rag, retrieve_with_sub_queries
-from app.config import Settings
+from app.api.lifecycle import StartupDependencies, initialize_rag  # noqa: E402
+from app.config import Settings  # noqa: E402
+from app.rag import (  # noqa: E402
+    get_rag_status,
+    index_cache_exists,
+    load_index_cache,
+    needs_rebuild,
+    rebuild_and_persist_index,
+    retrieve,
+)
+from app.rag.graph import run_rag_subgraph  # noqa: E402
 
-init_rag(data_dir=str(Settings.RAG_FILE_PATH),
-         chunk_size=Settings.CHUNK_SIZE,
-         chunk_overlap=Settings.CHUNK_OVERLAP)
+
+def initialize_rag_for_predictions() -> None:
+    """使用与 API 启动流程相同的索引生命周期初始化 RAG。"""
+    initialize_rag(
+        StartupDependencies(
+            settings=Settings,
+            needs_rebuild=needs_rebuild,
+            index_cache_exists=index_cache_exists,
+            load_index_cache=load_index_cache,
+            rebuild_and_persist_index=rebuild_and_persist_index,
+        )
+    )
+    status = get_rag_status()
+    if not status.get("ready"):
+        raise RuntimeError(f"RAG 未准备好：{status}")
 
 def load_eval_questions(eval_file):
     """读取评测题列表，兼容 list 和带 items 的 JSON 对象。"""
@@ -33,10 +54,10 @@ def load_eval_questions(eval_file):
 def run_rag_once(question: str, top_k: int):
     """对单个问题运行 RAG 并返回答案及召回 chunk_id。"""
     retrieved_chunks = retrieve(question, top_k)
-    result = ask(
-        question,
+    result = run_rag_subgraph(
+        question=question,
         top_k=top_k,
-        retrieved_chunks=retrieved_chunks
+        retrieved_chunks=retrieved_chunks,
     )
     final_chunks = result.get("final_chunks")
     answer = result["answer"]
@@ -56,6 +77,7 @@ def main():
     parser.add_argument("--out-file", required=True)
     args = parser.parse_args()
 
+    initialize_rag_for_predictions()
     eval_items = load_eval_questions(args.eval_file)
 
     rows = []
