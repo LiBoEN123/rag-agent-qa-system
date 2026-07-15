@@ -1,6 +1,6 @@
 import inspect
 
-import app.main as main
+import app.api.chat as chat_api
 from app.services.chat_service import ChatServiceOutcome, ChatServiceRequest
 
 
@@ -45,11 +45,11 @@ def test_chat_controller_only_adapts_http_context(monkeypatch):
         response_status="empty_index",
     )
     service = FakeChatService(outcome)
-    monkeypatch.setattr(main, "chat_service", service)
-    response = main.Response()
+    monkeypatch.setattr(chat_api, "chat_service", service)
+    response = chat_api.Response()
 
-    api_result = main.ask_api(
-        main.ChatRequest(
+    api_result = chat_api.ask_api(
+        chat_api.ChatRequest(
             question="原始问题",
             top_k=4,
             decompose_top_k=8,
@@ -96,7 +96,7 @@ def test_chat_controller_only_adapts_http_context(monkeypatch):
 
 
 def test_chat_controller_contains_no_business_orchestration_calls():
-    source = inspect.getsource(main.ask_api)
+    source = inspect.getsource(chat_api.ask_api)
 
     assert "route_agent_action" not in source
     assert "rewrite_query_with_history" not in source

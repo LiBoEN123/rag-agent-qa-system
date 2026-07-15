@@ -2,7 +2,7 @@ from dataclasses import replace
 
 import pytest
 
-import app.main as main
+import app.api.chat as chat_api
 from app.agent.runtime import build_internal_error_result
 from app.services.chat_service import (
     CHAT_RESULT_RESPONSE_MAP,
@@ -17,7 +17,7 @@ from app.storage.session import clear_session, get_history
 def use_temporary_sqlite_database(monkeypatch, tmp_path):
     """让每个 API 测试使用独立的临时 SQLite 数据库。"""
     monkeypatch.setattr(
-        main.Settings,
+        chat_api.Settings,
         "SQLITE_DB_PATH",
         tmp_path / "api.sqlite",
         raising=False,
@@ -26,14 +26,14 @@ def use_temporary_sqlite_database(monkeypatch, tmp_path):
 
 def patch_app(monkeypatch):
     """隔离索引、路由和指标依赖，让 API 测试只关注响应结构。"""
-    monkeypatch.setattr(main.Settings, "validate", lambda : None, raising=False)
-    monkeypatch.setattr(main.Settings, "RAG_FILE_PATH", "data", raising=False)
-    monkeypatch.setattr(main.Settings, "CHUNK_SIZE", 800, raising=False)
-    monkeypatch.setattr(main.Settings, "CHUNK_OVERLAP", 120, raising=False)
-    monkeypatch.setattr(main.Settings, "AUTO_REBUILD_ON_STARTUP", False, raising=False)
-    monkeypatch.setattr(main, "needs_rebuild", lambda data_dir: (False, "test"), raising=False)
-    monkeypatch.setattr(main, "index_cache_exists", lambda : True, raising=False)
-    monkeypatch.setattr(main, "load_index_cache", lambda : (True, "test"), raising=False)
+    monkeypatch.setattr(chat_api.Settings, "validate", lambda : None, raising=False)
+    monkeypatch.setattr(chat_api.Settings, "RAG_FILE_PATH", "data", raising=False)
+    monkeypatch.setattr(chat_api.Settings, "CHUNK_SIZE", 800, raising=False)
+    monkeypatch.setattr(chat_api.Settings, "CHUNK_OVERLAP", 120, raising=False)
+    monkeypatch.setattr(chat_api.Settings, "AUTO_REBUILD_ON_STARTUP", False, raising=False)
+    monkeypatch.setattr(chat_api, "needs_rebuild", lambda data_dir: (False, "test"), raising=False)
+    monkeypatch.setattr(chat_api, "index_cache_exists", lambda : True, raising=False)
+    monkeypatch.setattr(chat_api, "load_index_cache", lambda : (True, "test"), raising=False)
 
 
 def install_chat_service(monkeypatch, **overrides):
@@ -43,7 +43,7 @@ def install_chat_service(monkeypatch, **overrides):
         log_and_write_metrics=lambda record: None,
         **overrides,
     )
-    monkeypatch.setattr(main, "chat_service", ChatService(dependencies))
+    monkeypatch.setattr(chat_api, "chat_service", ChatService(dependencies))
 
 
 class DummyState:
@@ -57,7 +57,7 @@ class DummyRequest:
 def test_health(monkeypatch):
     """验证 /health 接口返回成功状态。"""
     patch_app(monkeypatch)
-    resp = main.health()
+    resp = chat_api.health()
 
     assert resp["code"] == 0
     assert resp["data"]["status"] == "ok"
@@ -84,7 +84,7 @@ def test_internal_error_response_builder_does_not_expose_runtime_exception():
         response_config=CHAT_RESULT_RESPONSE_MAP["INTERNAL_ERROR"],
     )
 
-    response = main.build_chat_response_from_outcome(outcome, "trace-error")
+    response = chat_api.build_chat_response_from_outcome(outcome, "trace-error")
     body = response.model_dump()
     response_text = response.model_dump_json()
 
@@ -147,9 +147,9 @@ def test_chat_langgraph_internal_error_result_returns_http_500(monkeypatch):
         run_agent_langgraph=fake_run_agent_langgraph,
     )
 
-    http_response = main.Response()
-    response_body = main.ask_api(
-        main.ChatRequest(question="触发 LangGraph 内部异常"),
+    http_response = chat_api.Response()
+    response_body = chat_api.ask_api(
+        chat_api.ChatRequest(question="触发 LangGraph 内部异常"),
         DummyRequest(),
         http_response,
     )
@@ -219,13 +219,13 @@ def test_chat_basic(monkeypatch):
         route_agent_action=route_agent_action,
         run_agent_langgraph=run_agent_langgraph,
     )
-    resp = main.ask_api(
-        main.ChatRequest(
+    resp = chat_api.ask_api(
+        chat_api.ChatRequest(
             question="DevHub 支持哪些 macOS 版本？",
             top_k=5
         ),
         DummyRequest(),
-        main.Response()
+        chat_api.Response()
     )
 
     body = resp.model_dump()
@@ -329,23 +329,23 @@ def test_chat_uses_rewritten_question_for_follow_up(monkeypatch):
         run_agent_langgraph=fake_run_agent_langgraph,
     )
 
-    main.ask_api(
-        main.ChatRequest(
+    chat_api.ask_api(
+        chat_api.ChatRequest(
             session_id=session_id,
             question="普通本科四年制专业最长学习年限是多少？",
             top_k=5,
         ),
         DummyRequest(),
-        main.Response(),
+        chat_api.Response(),
     )
-    second_resp = main.ask_api(
-        main.ChatRequest(
+    second_resp = chat_api.ask_api(
+        chat_api.ChatRequest(
             session_id=session_id,
             question="那休学创业呢？",
             top_k=5,
         ),
         DummyRequest(),
-        main.Response(),
+        chat_api.Response(),
     )
 
     body = second_resp.model_dump()
@@ -441,15 +441,15 @@ def test_chat_uses_langgraph_once_and_keeps_rewrite_route_api_protocol(monkeypat
         run_agent_langgraph=fake_langgraph_runner,
     )
 
-    response = main.ask_api(
-        main.ChatRequest(
+    response = chat_api.ask_api(
+        chat_api.ChatRequest(
             session_id="runtime-switch-session",
             question="原始问题",
             top_k=4,
             decompose_top_k=8,
         ),
         DummyRequest(),
-        main.Response(),
+        chat_api.Response(),
     )
     body = response.model_dump()
 

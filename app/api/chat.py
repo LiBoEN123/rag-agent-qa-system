@@ -169,7 +169,7 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
     response.status_code = outcome.http_status
     return build_chat_response_from_outcome(outcome, trace_id)
 
-_diagnostics_router, _diagnostics_handlers = create_diagnostics_router(
+_diagnostics_router = create_diagnostics_router(
     DiagnosticsDependencies(
         settings=Settings,
         search_result=SearchResult,
@@ -191,9 +191,3 @@ _diagnostics_router, _diagnostics_handlers = create_diagnostics_router(
     )
 )
 app.include_router(_diagnostics_router)
-docs_preview = _diagnostics_handlers["docs_preview"]
-chunks_preview = _diagnostics_handlers["chunks_preview"]
-search_api = _diagnostics_handlers["search_api"]
-kb_summary = _diagnostics_handlers["kb_summary"]
-decide_api = _diagnostics_handlers["decide_api"]
-metrics_summary = _diagnostics_handlers["metrics_summary"]

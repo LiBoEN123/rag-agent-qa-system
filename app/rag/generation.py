@@ -20,10 +20,6 @@ from app.common.logging import get_logger
 logger = get_logger('chat_service')
 
 
-# 保留旧导入路径 app.rag.generation.LLMCallError 的兼容性。
-LLMCallError = ModelCallError
-
-
 # =========================
 # 上下文构造
 # =========================
@@ -152,7 +148,7 @@ def _legacy_call_llm(question: str, context: str, trace_id: str = "") -> str:
                     )
 
                 # 400 / 401 / 403 / 404 / 429 这类通常重试没意义，直接抛出
-                raise LLMCallError(
+                raise ModelCallError(
                     user_message=error_message,
                     detail=response.text[:500],
                     provider="legacy",
@@ -164,7 +160,7 @@ def _legacy_call_llm(question: str, context: str, trace_id: str = "") -> str:
             try:
                 data = response.json()
             except Exception as e:
-                raise LLMCallError(
+                raise ModelCallError(
                     user_message="模型返回内容不是合法 JSON。",
                     detail=str(e),
                     provider="legacy",
@@ -176,7 +172,7 @@ def _legacy_call_llm(question: str, context: str, trace_id: str = "") -> str:
             try:
                 return data["choices"][0]["message"]["content"]
             except Exception as e:
-                raise LLMCallError(
+                raise ModelCallError(
                     user_message="模型返回格式不符合预期，缺少 choices/message/content 字段。",
                     detail=str(e),
                     provider="legacy",
@@ -184,7 +180,7 @@ def _legacy_call_llm(question: str, context: str, trace_id: str = "") -> str:
                     retryable=False,
                 )
 
-        except LLMCallError:
+        except ModelCallError:
             # 已经是可读错误，直接抛给上层
             raise
 
@@ -218,7 +214,7 @@ def _legacy_call_llm(question: str, context: str, trace_id: str = "") -> str:
             f"error={error_message}"
         )
 
-        raise LLMCallError(
+        raise ModelCallError(
             user_message=error_message,
             detail=str(last_error),
             provider="legacy",

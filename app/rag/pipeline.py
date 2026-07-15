@@ -8,6 +8,7 @@ import time
 
 from app.common.logging import get_logger
 from app.config import Settings
+from app.llm.errors import ModelCallError
 from app.rag.citations import verify_answer_citations
 from app.prompts import NO_ANSWER_FALLBACK
 from app.rag.debug import (
@@ -22,7 +23,6 @@ from app.rag.generation import (
     estimate_retrieval_confidence,
     format_reference,
     parse_llm_output,
-    LLMCallError
 )
 from app.rag.ingest import clean_documents, load_files, split_chunks
 from app.rag.retrieval import (
@@ -442,7 +442,7 @@ def ask(
     answer_llm_used = True
     try:
         llm_out = call_llm(question, context, trace_id)
-    except LLMCallError as e:
+    except ModelCallError as e:
         timings["llm_cost_ms"] = int((time.perf_counter() - llm_start) * 1000)
         return build_rag_result(
             status="MODEL_ERROR",
