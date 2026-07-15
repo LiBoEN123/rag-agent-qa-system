@@ -8,6 +8,15 @@ from typing import Callable
 
 from pydantic import BaseModel, ValidationError
 
+from app.tools.calculator import simple_calculator
+from app.tools.compare_documents import compare_documents_tool
+from app.tools.context import ToolInvocationContext
+from app.tools.knowledge_base import (
+    get_chunk_text,
+    list_documents,
+    search_knowledge_base,
+)
+from app.tools.result import tool_error
 from app.tools.schemas import (
     CompareDocumentsArgs,
     GetChunkTextArgs,
@@ -15,7 +24,6 @@ from app.tools.schemas import (
     SearchKnowledgeBaseArgs,
     SimpleCalculatorArgs,
 )
-import app.tools as tools
 
 
 @dataclass
@@ -25,7 +33,7 @@ class ToolSpec:
     description: str
     args_schema: dict
     output_schema: dict
-    handler: Callable[[dict], dict]
+    handler: Callable[[dict, ToolInvocationContext], dict]
     timeout: int = 10
     safe_level: str = "safe"
     args_model: type[BaseModel] | None = None
@@ -64,13 +72,20 @@ class ToolRegistry:
             for spec in self._tools.values()
         ]
 
-    def dispatch(self, name: str, args: dict | None = None) -> dict:
+    def dispatch(
+        self,
+        name: str,
+        args: dict | None = None,
+        *,
+        context: ToolInvocationContext | None = None,
+    ) -> dict:
         """按名称分发工具调用。"""
         tool_args = args or {}
+        invocation_context = context or ToolInvocationContext()
         spec = self.get(name)
 
         if spec is None:
-            return tools.tool_error(
+            return tool_error(
                 tool_name=name,
                 tool_input=tool_args,
                 error=f"unknown tool: {name}"
@@ -80,7 +95,7 @@ class ToolRegistry:
             try:
                 validated_args = spec.args_model.model_validate(tool_args).model_dump()
             except ValidationError as e:
-                return tools.tool_error(
+                return tool_error(
                     tool_name=name,
                     tool_input=tool_args,
                     error=f"invalid tool args: {e}"
@@ -89,38 +104,53 @@ class ToolRegistry:
             validated_args = tool_args
 
         try:
-            return spec.handler(validated_args)
+            return spec.handler(validated_args, invocation_context)
         except Exception as e:
-            return tools.tool_error(
+            return tool_error(
                 tool_name=name,
                 tool_input=validated_args,
                 error=str(e)
             )
 
 
-def _handle_simple_calculator(args: dict) -> dict:
+def _handle_simple_calculator(
+    args: dict,
+    context: ToolInvocationContext,
+) -> dict:
     """适配计算器工具的参数格式。"""
-    return tools.simple_calculator(args.get("expression", ""))
+    return simple_calculator(args.get("expression", ""))
 
 
-def _handle_list_documents(args: dict) -> dict:
+def _handle_list_documents(
+    args: dict,
+    context: ToolInvocationContext,
+) -> dict:
     """适配文档列表工具的参数格式。"""
-    return tools.list_documents()
+    return list_documents()
 
 
-def _handle_get_chunk_text(args: dict) -> dict:
+def _handle_get_chunk_text(
+    args: dict,
+    context: ToolInvocationContext,
+) -> dict:
     """适配 chunk 原文工具的参数格式。"""
-    return tools.get_chunk_text(args.get("chunk_id"))
+    return get_chunk_text(args.get("chunk_id"))
 
 
-def _handle_search_knowledge_base(args: dict) -> dict:
+def _handle_search_knowledge_base(
+    args: dict,
+    context: ToolInvocationContext,
+) -> dict:
     """适配知识库检索工具的参数格式。"""
-    return tools.search_knowledge_base(args)
+    return search_knowledge_base(args)
 
 
-def _handle_compare_documents(args: dict) -> dict:
+def _handle_compare_documents(
+    args: dict,
+    context: ToolInvocationContext,
+) -> dict:
     """适配文档对比工具的参数格式。"""
-    return tools.compare_documents_tool(args)
+    return compare_documents_tool(args, trace_id=context.trace_id)
 
 
 def register_default_tools(registry: ToolRegistry) -> None:

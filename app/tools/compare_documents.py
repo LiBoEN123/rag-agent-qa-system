@@ -10,8 +10,7 @@ from app.llm.factory import get_compare_model
 from app.llm.gateway import ModelGateway
 from app.tools.result import tool_error, tool_success
 
-# Document comparison implementation. Public compatibility wrappers live in
-# app.tools.__init__.
+
 def _normalize_doc_label(value: Any) -> str:
     """标准化文档名，便于文件名精确或模糊匹配。"""
     import re
@@ -192,6 +191,7 @@ def _call_compare_documents_llm(
     doc_b: str,
     doc_a_evidence: list[dict],
     doc_b_evidence: list[dict],
+    trace_id: str = "",
 ) -> dict:
     """调用 LLM 根据两份文档 evidence 生成差异总结。"""
     system_prompt = (
@@ -234,11 +234,12 @@ doc_b evidence：
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
+        trace_id=trace_id,
     )
     return _parse_compare_llm_output(content)
 
 
-def compare_documents_tool(args: dict) -> dict:
+def compare_documents_tool(args: dict, trace_id: str = "") -> dict:
     """对比两个知识库文档中关于同一问题的相关证据差异。"""
     tool_name = "compare_documents"
     args = args or {}
@@ -304,6 +305,7 @@ def compare_documents_tool(args: dict) -> dict:
                 doc_b=doc_b,
                 doc_a_evidence=doc_a_evidence,
                 doc_b_evidence=doc_b_evidence,
+                trace_id=trace_id,
             )
             comparison = str(llm_result.get("comparison") or "").strip()
             summary = str(llm_result.get("summary") or "").strip()

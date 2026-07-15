@@ -247,7 +247,6 @@ streamlit run demo/streamlit_app.py
 | `LLM_MAX_TOKENS` | 回答模型最大输出 token |
 | `LLM_TIMEOUT` | 单次回答模型请求超时秒数 |
 | `LLM_MAX_RETRIES` | 回答模型失败重试次数 |
-| `LLM_RETRY_SLEEP` | 回答模型失败重试间隔秒数 |
 | `USE_LLM_JUDGE` | 评测脚本是否启用 LLM Judge，默认 `false` |
 | `JUDGE_API_KEY` | 评测 Judge 模型 API Key；为空时可复用回答模型 Key |
 | `JUDGE_MODEL` | 评测 Judge 模型名称 |
@@ -309,7 +308,6 @@ TEMPERATURE=0.1
 LLM_MAX_TOKENS=1024
 LLM_TIMEOUT=60
 LLM_MAX_RETRIES=2
-LLM_RETRY_SLEEP=1
 
 ENABLE_LLM_ROUTER=false
 ROUTER_API_KEY=

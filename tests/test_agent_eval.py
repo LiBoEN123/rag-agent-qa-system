@@ -145,4 +145,5 @@ def test_agent_eval_calls_langgraph_runtime_once(monkeypatch):
     evaluate_one_case({"id": "one", "question": "测试"}, top_k=3)
 
     assert len(calls) == 1
-    assert calls[0]["question"] == "测试"
+    assert calls[0]["original_question"] == "测试"
+    assert calls[0]["effective_question"] == "测试"

@@ -121,7 +121,10 @@ def decompose_node(state: RAGGraphState) -> dict[str, Any]:
             start_decompose = time.perf_counter()
             decompose_llm_used = True
             try:
-                decompose_result = decompose_query_with_llm(question)
+                decompose_result = decompose_query_with_llm(
+                    question,
+                    trace_id=trace_id,
+                )
             except Exception as exc:
                 logger.warning(
                     "[trace_id=%s] [rag_graph] node=decompose failed "

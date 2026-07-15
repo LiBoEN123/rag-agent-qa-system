@@ -108,7 +108,8 @@ def test_compiled_graph_invokes_each_stage_once(monkeypatch, provide_decision):
     monkeypatch.setattr(graph_nodes, "maybe_save_agent_trace", lambda **kwargs: None)
 
     graph_input = {
-        "question": "你能做什么？",
+        "original_question": "你能做什么？",
+        "effective_question": "你能做什么？",
         "top_k": 5,
         "decompose_top_k": 10,
         "decision": decision if provide_decision else None,

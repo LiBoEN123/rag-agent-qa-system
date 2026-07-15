@@ -29,7 +29,6 @@ class LLMJudgeConfig:
     api_key: str
     timeout: int
     max_retries: int
-    retry_sleep: float
     max_tokens: int
     temperature: float = 0.0
 
@@ -64,7 +63,6 @@ def make_judge_config(
         api_key=api_key or "",
         timeout=Settings.JUDGE_TIMEOUT,
         max_retries=Settings.JUDGE_MAX_RETRIES,
-        retry_sleep=Settings.JUDGE_RETRY_SLEEP,
         max_tokens=Settings.JUDGE_MAX_TOKENS,
     )
 

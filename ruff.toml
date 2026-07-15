@@ -1,0 +1,12 @@
+target-version = "py312"
+
+[lint.per-file-ignores]
+# Existing script path bootstraps, compatibility exports, and lambda fixtures.
+"app/api/diagnostics.py" = ["E731"]
+"app/api/responses.py" = ["F401"]
+"scripts/agent_eval.py" = ["E402"]
+"scripts/cache_models.py" = ["E402"]
+"scripts/evaluate_rag_results_semantic_fixed.py" = ["E402", "F401"]
+"tests/test_api.py" = ["E731"]
+"tests/test_evaluate_rag_judge.py" = ["E402"]
+"tests/test_rag_eval_retrieval.py" = ["E402"]

@@ -1,5 +1,6 @@
 """LangGraph Runtime 兼容性与异常行为测试。"""
 
+import inspect
 import json
 
 import pytest
@@ -120,6 +121,15 @@ def _decision(action: str) -> dict:
     }
 
 
+def test_runtime_signature_removes_legacy_question_parameter():
+    """Runtime 只接受两个明确、仅关键字的问题字段。"""
+    parameters = inspect.signature(run_agent_langgraph).parameters
+
+    assert "question" not in parameters
+    assert parameters["original_question"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters["effective_question"].kind is inspect.Parameter.KEYWORD_ONLY
+
+
 def test_runtime_without_decision_routes_once_and_forwards_trace_id(monkeypatch):
     """decision=None 时由 Graph 调用现有 Router，且只调用一次。"""
     calls: list[tuple] = []
@@ -133,7 +143,8 @@ def test_runtime_without_decision_routes_once_and_forwards_trace_id(monkeypatch)
 
     result = run_agent_langgraph(
         write_bad_cases=lambda record: None,
-        question="你能做什么？",
+        original_question="你能做什么？",
+        effective_question="你能做什么？",
         top_k=5,
         decompose_top_k=10,
         decision=None,
@@ -181,7 +192,8 @@ def test_runtime_with_decision_initializes_existing_agent_state(monkeypatch):
 
     result = run_agent_langgraph(
         write_bad_cases=lambda record: None,
-        question="你能做什么？",
+        original_question="你能做什么？",
+        effective_question="你能做什么？",
         top_k=4,
         decompose_top_k=9,
         decision=decision,
@@ -249,7 +261,6 @@ def test_explicit_questions_without_rewrite_keep_original_semantics(
 
     result = run_agent_langgraph(
         write_bad_cases=lambda record: None,
-        question=effective_question,
         original_question=original_question,
         effective_question=effective_question,
         top_k=5,
@@ -335,7 +346,6 @@ def test_rewritten_question_drives_plan_executor_rag_and_trace(monkeypatch):
 
     result = run_agent_langgraph(
         write_bad_cases=lambda record: None,
-        question=effective_question,
         original_question=original_question,
         effective_question=effective_question,
         top_k=5,
@@ -461,7 +471,8 @@ def test_langgraph_business_scenarios_preserve_result_protocol(monkeypatch, scen
     decision = _decision(scenario)
     common_kwargs = {
         "write_bad_cases": lambda record: None,
-        "question": "测试问题",
+        "original_question": "测试问题",
+        "effective_question": "测试问题",
         "top_k": 5,
         "decompose_top_k": 10,
         "decision": decision,
@@ -501,7 +512,8 @@ def test_internal_runtime_errors_keep_compatible_business_fields(monkeypatch):
     monkeypatch.setattr(graph_nodes, "build_plan_from_decision", fail_plan)
     kwargs = {
         "write_bad_cases": lambda record: None,
-        "question": "异常问题",
+        "original_question": "异常问题",
+        "effective_question": "异常问题",
         "top_k": 5,
         "decompose_top_k": 10,
         "decision": decision,
@@ -569,7 +581,8 @@ def test_knowledge_base_path_uses_rag_subgraph_without_sequential_rag_compose(mo
 
     result = run_agent_langgraph(
         write_bad_cases=lambda record: None,
-        question="测试知识库",
+        original_question="测试知识库",
+        effective_question="测试知识库",
         top_k=5,
         decompose_top_k=10,
         decision=_decision("search_knowledge_base"),
@@ -637,7 +650,8 @@ def test_regular_tool_path_dispatches_and_composes_once(
 
     result = run_agent_langgraph(
         write_bad_cases=lambda record: None,
-        question="普通工具问题",
+        original_question="普通工具问题",
+        effective_question="普通工具问题",
         top_k=5,
         decompose_top_k=10,
         decision=_decision(action),
@@ -676,7 +690,8 @@ def test_failed_knowledge_base_observation_does_not_enter_rag_subgraph(monkeypat
 
     result = run_agent_langgraph(
         write_bad_cases=lambda record: None,
-        question="测试知识库",
+        original_question="测试知识库",
+        effective_question="测试知识库",
         top_k=5,
         decompose_top_k=10,
         decision=_decision("search_knowledge_base"),
@@ -716,7 +731,8 @@ def test_llm_usage_is_normalized_and_appended_once(monkeypatch):
 
     result = run_agent_langgraph(
         write_bad_cases=lambda record: None,
-        question="测试",
+        original_question="测试",
+        effective_question="测试",
         top_k=5,
         decompose_top_k=10,
         decision=decision,
@@ -748,7 +764,8 @@ def test_runtime_rejects_missing_or_invalid_graph_result(monkeypatch, malformed_
 
     result = run_agent_langgraph(
         write_bad_cases=lambda record: None,
-        question="测试",
+        original_question="测试",
+        effective_question="测试",
         top_k=5,
         decompose_top_k=10,
     )
@@ -799,7 +816,6 @@ def test_top_level_graph_error_is_sanitized_but_kept_for_internal_diagnostics(
     with caplog.at_level("ERROR", logger=graph_runtime.logger.name):
         result = run_agent_langgraph(
             write_bad_cases=lambda record: bad_cases.append(record),
-            question="研究生奖学金申请什么时候开始",
             original_question="它什么时候开始",
             effective_question="研究生奖学金申请什么时候开始",
             top_k=5,

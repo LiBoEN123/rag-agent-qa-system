@@ -7,6 +7,8 @@ import json
 import time
 from pathlib import Path
 
+from app.tools.context import ToolInvocationContext
+from app.tools.registry import tool_registry
 from app.tools.result import tool_error
 
 
@@ -29,9 +31,11 @@ def dispatch_tool(
     tool_args = tool_args or {}
     start = time.time()
     try:
-        from app.tools.registry import tool_registry
-
-        result = tool_registry.dispatch(tool_name, tool_args)
+        result = tool_registry.dispatch(
+            tool_name,
+            tool_args,
+            context=ToolInvocationContext(trace_id=trace_id),
+        )
     except Exception as exc:
         result = tool_error(tool_name, tool_args, str(exc))
 

@@ -209,17 +209,60 @@ def test_structured_incompatibility_degrades_to_same_model_text_json():
     assert len(model.calls) == 1
 
 
-def test_structured_auth_error_does_not_retry_as_text():
-    """认证错误不会通过普通文本调用重复发送同一请求。"""
+def test_missing_structured_method_degrades_to_same_model_text_json():
+    """模型缺少 structured 方法时退回同一模型的文本 JSON。"""
+    model = RecordingModel(
+        response=AIMessage(content='{"answer":"attribute fallback","references":[]}')
+    )
+    gateway = ModelGateway(role="answer", langchain_model=model)
+
+    result = gateway.invoke_structured(MESSAGES, AnswerOutput)
+
+    assert result.answer == "attribute fallback"
+    assert len(model.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "exception",
+    [
+        FakeStatusError(401),
+        FakeStatusError(429),
+        FakeStatusError(503),
+        TimeoutError("slow"),
+        ConnectionError("offline"),
+    ],
+)
+def test_structured_transport_errors_do_not_retry_as_text(exception):
+    """认证、限流、服务端和网络错误不会重复发送文本请求。"""
 
     class StructuredModel(RecordingModel):
         def with_structured_output(self, schema):
-            raise FakeStatusError(401)
+            raise exception
 
     model = StructuredModel(response=AIMessage(content="must not run"))
     gateway = ModelGateway(role="answer", langchain_model=model)
 
-    with pytest.raises(ModelCallError, match="未授权"):
+    with pytest.raises(ModelCallError):
+        gateway.invoke_structured(MESSAGES, AnswerOutput)
+
+    assert model.calls == []
+
+
+def test_invalid_native_structured_result_does_not_retry_as_text():
+    """原生 structured 返回值校验失败时不再执行文本模型。"""
+
+    class InvalidStructuredRunnable:
+        def invoke(self, messages):
+            return {"answer": 123, "references": "not-a-list"}
+
+    class StructuredModel(RecordingModel):
+        def with_structured_output(self, schema):
+            return InvalidStructuredRunnable()
+
+    model = StructuredModel(response=AIMessage(content="must not run"))
+    gateway = ModelGateway(role="answer", langchain_model=model)
+
+    with pytest.raises(ModelCallError):
         gateway.invoke_structured(MESSAGES, AnswerOutput)
 
     assert model.calls == []

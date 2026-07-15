@@ -346,7 +346,8 @@ def evaluate_one_case(case: dict, top_k: int) -> dict:
     try:
         result = run_agent_langgraph(
             write_bad_cases=write_bad_cases,
-            question=question,
+            original_question=question,
+            effective_question=question,
             top_k=top_k,
             decompose_top_k=Settings.DECOMPOSE_TOP_K,
         )

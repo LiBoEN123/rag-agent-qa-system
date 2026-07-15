@@ -20,3 +20,4 @@ python-docx
 huggingface-hub
 streamlit
 pytest
+ruff

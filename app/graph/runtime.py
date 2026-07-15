@@ -14,7 +14,6 @@ from app.graph.checkpointing import (
     build_checkpoint_thread_id,
     get_checkpointer_mode,
 )
-from app.graph.state import resolve_question_inputs
 
 
 logger = get_logger("chat_service")
@@ -22,7 +21,6 @@ logger = get_logger("chat_service")
 
 def run_agent_langgraph(
     write_bad_cases: Callable[[dict[str, Any]], None] | None,
-    question: str | None,
     top_k: int,
     decompose_top_k: int,
     decision: dict[str, Any] | None = None,
@@ -30,20 +28,14 @@ def run_agent_langgraph(
     session_id: str | None = None,
     bad_case: dict[str, Any] | None = None,
     *,
-    original_question: str | None = None,
-    effective_question: str | None = None,
+    original_question: str,
+    effective_question: str,
 ) -> dict[str, Any]:
     """同步执行 LangGraph 主图，并返回 API 主流程使用的结果字典。"""
-    resolved_original_question, resolved_effective_question = (
-        resolve_question_inputs(
-            question,
-            original_question=original_question,
-            effective_question=effective_question,
-        )
-    )
+    resolved_original_question = (original_question or "").strip()
+    resolved_effective_question = (effective_question or "").strip()
     decision_for_error = decision if isinstance(decision, dict) else {}
     graph_input: dict[str, Any] = {
-        "question": resolved_effective_question,
         "original_question": resolved_original_question,
         "effective_question": resolved_effective_question,
         "top_k": top_k,

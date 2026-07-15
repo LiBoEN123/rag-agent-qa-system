@@ -146,7 +146,7 @@ def test_rule_selected_single_query_skips_decompose_and_answer_on_weak_evidence(
         lambda question: (False, "single intent"),
     )
 
-    def fail_decompose(question):
+    def fail_decompose(question, trace_id=""):
         calls["decompose"] += 1
         raise AssertionError("规则判定单查询后不应调用拆分模型")
 
@@ -177,6 +177,7 @@ def test_rule_selected_single_query_skips_decompose_and_answer_on_weak_evidence(
 def test_decompose_model_can_keep_single_query(monkeypatch):
     """复杂问题调用拆分模型后仍可判定为无需拆分的单查询。"""
     calls = {"decompose": 0, "answer": 0}
+    received = {}
     monkeypatch.setattr(rag_graph_nodes.Settings, "ENABLE_QUERY_DECOMPOSE", True)
     monkeypatch.setattr(rag_graph_nodes.Settings, "DECOMPOSE_MODEL_NAME", "fake")
     monkeypatch.setattr(
@@ -190,8 +191,10 @@ def test_decompose_model_can_keep_single_query(monkeypatch):
         lambda question: (True, "comparison intent"),
     )
 
-    def fake_decompose(question):
+    def fake_decompose(question, trace_id=""):
         calls["decompose"] += 1
+        received["question"] = question
+        received["trace_id"] = trace_id
         return {
             "need_decompose": False,
             "reason": "拆分模型判定为单查询",
@@ -219,6 +222,10 @@ def test_decompose_model_can_keep_single_query(monkeypatch):
     assert result["answer_llm_used"] is False
     assert result["llm_call_count"] == 1
     assert calls == {"decompose": 1, "answer": 0}
+    assert received == {
+        "question": "请对比新旧政策的变化。",
+        "trace_id": "test-single-after-decompose",
+    }
 
 
 def test_multi_query_uses_current_index_facade_only(monkeypatch):
@@ -234,7 +241,7 @@ def test_multi_query_uses_current_index_facade_only(monkeypatch):
         lambda question: (True, "multiple intents"),
     )
 
-    def fake_decompose(question):
+    def fake_decompose(question, trace_id=""):
         calls["decompose"] += 1
         return {
             "need_decompose": True,

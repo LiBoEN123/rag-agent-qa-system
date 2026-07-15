@@ -1,9 +1,5 @@
-"""Agent 公共入口。
+"""Agent 公共入口，静态导出路由与格式化能力。"""
 
-对外暴露路由能力，并负责把可替换的 LLM 路由依赖同步到具体实现。
-"""
-
-from app.agent import router as _router
 from app.agent.formatting import format_tool_answer
 from app.agent.llm_router import (
     call_router_llm,
@@ -20,6 +16,7 @@ from app.agent.router import (
     normalize_chunk_id_value,
     normalize_router_confidence,
     normalize_router_reason,
+    route_agent_action,
     route_agent_action_by_llm,
     route_agent_action_rule_based,
     validate_route_decision,
@@ -63,14 +60,3 @@ __all__ = [
     "route_agent_action_rule_based",
     "validate_route_decision",
 ]
-
-
-def route_agent_action(
-    question: str,
-    top_k: int,
-    trace_id: str = "",
-) -> dict:
-    """执行 Agent 路由，并同步门面层可能被替换的 LLM 路由函数。"""
-    # Preserve monkeypatching app.agent.route_agent_action_by_llm.
-    _router.route_agent_action_by_llm = route_agent_action_by_llm
-    return _router.route_agent_action(question, top_k, trace_id=trace_id)

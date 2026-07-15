@@ -325,7 +325,6 @@ def main() -> None:
             api_key="",
             timeout=0,
             max_retries=0,
-            retry_sleep=0,
             max_tokens=0,
         )
         rows, summary, judge_details = _evaluation.evaluate(

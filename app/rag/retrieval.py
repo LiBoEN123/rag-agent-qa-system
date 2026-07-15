@@ -17,43 +17,21 @@ from app.rag.policy import (
     should_refuse,
 )
 from app.rag.scoring import safe_float
-from app.rag import decomposition as _decomposition
-
-default_decompose_result = _decomposition.default_decompose_result
-should_decompose_query = _decomposition.should_decompose_query
-parse_decompose_bool = _decomposition.parse_decompose_bool
-compact_text = _decomposition.compact_text
-normalize_decompose_result = _decomposition.normalize_decompose_result
-compact_error_preview = _decomposition.compact_error_preview
-strip_json_code_fence = _decomposition.strip_json_code_fence
-extract_first_json_object = _decomposition.extract_first_json_object
-parse_decompose_llm_json = _decomposition.parse_decompose_llm_json
-decompose_query_with_llm = _decomposition.decompose_query_with_llm
 
 
 __all__ = [
     "Settings",
     "build_clarification_question",
     "clamp01",
-    "compact_error_preview",
-    "compact_text",
-    "decompose_query_with_llm",
-    "default_decompose_result",
-    "extract_first_json_object",
     "is_ambiguous_question",
     "make_snippet",
     "minmax_score",
-    "normalize_decompose_result",
-    "parse_decompose_bool",
-    "parse_decompose_llm_json",
     "rerank",
     "retrieve",
     "retrieve_with_sub_queries",
     "safe_float",
     "search_relevant_chunks",
-    "should_decompose_query",
     "should_refuse",
-    "strip_json_code_fence",
     "tokenize",
 ]
 
