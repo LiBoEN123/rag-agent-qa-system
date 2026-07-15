@@ -35,7 +35,7 @@ class DiagnosticsDependencies:
 
 def create_diagnostics_router(
     deps: DiagnosticsDependencies,
-) -> tuple[APIRouter, dict[str, Callable]]:
+) -> APIRouter:
     """根据注入的依赖创建知识库与诊断接口路由。"""
     router = APIRouter()
 
@@ -258,12 +258,4 @@ def create_diagnostics_router(
             },
         }
 
-    handlers = {
-        "docs_preview": docs_preview,
-        "chunks_preview": chunks_preview,
-        "search_api": search_api,
-        "kb_summary": kb_summary,
-        "decide_api": decide_api,
-        "metrics_summary": metrics_summary,
-    }
-    return router, handlers
+    return router

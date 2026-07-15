@@ -9,6 +9,7 @@ from typing import Any
 
 from app.common.logging import get_logger
 from app.config import Settings
+from app.llm.errors import ModelCallError
 from app.prompts import NO_ANSWER_FALLBACK
 from app.rag.citations import verify_answer_citations
 from app.rag.decomposition import (
@@ -17,7 +18,6 @@ from app.rag.decomposition import (
     should_decompose_query,
 )
 from app.rag.generation import (
-    LLMCallError,
     build_context,
     call_llm,
     estimate_answer_confidence,
@@ -285,7 +285,7 @@ def generate_node(state: RAGGraphState) -> dict[str, Any]:
             state.get("context", ""),
             state.get("trace_id", ""),
         )
-    except LLMCallError as exc:
+    except ModelCallError as exc:
         timings["llm_cost_ms"] = int((time.perf_counter() - start) * 1000)
         updates.update(
             {

@@ -301,7 +301,7 @@ def test_generation_timeout_message_remains_readable(monkeypatch):
         lambda *args, **kwargs: (_ for _ in ()).throw(requests.Timeout("slow")),
     )
 
-    with pytest.raises(generation.LLMCallError, match="模型调用超时"):
+    with pytest.raises(ModelCallError, match="模型调用超时"):
         generation.call_llm("question", "context")
 
 
@@ -324,7 +324,7 @@ def test_generation_non_retryable_status_is_not_retried(monkeypatch, status_code
         lambda *args, **kwargs: calls.append(1) or FakeResponse(),
     )
 
-    with pytest.raises(generation.LLMCallError):
+    with pytest.raises(ModelCallError):
         generation.call_llm("question", "context")
 
     assert len(calls) == 1
