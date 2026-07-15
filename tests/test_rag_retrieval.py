@@ -1,5 +1,7 @@
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from app.rag import decomposition
 import app.rag.retrieval as rag_retrieval
 from app.rag.retrieval import (
     parse_decompose_llm_json,
@@ -165,45 +167,29 @@ def test_parse_decompose_llm_json_reports_truncated_object():
         )
 
 
-def test_decompose_query_with_llm_uses_configured_max_tokens(monkeypatch):
-    """验证调用拆分模型时使用可配置的输出 token 上限。"""
-    captured = {}
+def test_decompose_query_with_llm_uses_role_factory_and_parses_result(monkeypatch):
+    """拆分模型通过对应工厂调用，并保留消息顺序与业务解析。"""
 
-    class FakeResponse:
-        def raise_for_status(self):
-            return None
+    class FakeDecomposeModel:
+        def __init__(self):
+            self.calls = []
 
-        def json(self):
-            return {
-                "choices": [
-                    {
-                        "message": {
-                            "content": (
-                                '{"need_decompose":false,'
-                                '"reason":"单一问题","sub_queries":[]}'
-                            )
-                        }
-                    }
-                ]
-            }
+        def invoke(self, messages):
+            self.calls.append(messages)
+            return AIMessage(
+                content=(
+                    '{"need_decompose":false,'
+                    '"reason":"单一问题","sub_queries":[]}'
+                )
+            )
 
-    def fake_post(api_url, headers, json, timeout):
-        captured["api_url"] = api_url
-        captured["headers"] = headers
-        captured["payload"] = json
-        captured["timeout"] = timeout
-        return FakeResponse()
-
-    monkeypatch.setattr(rag_retrieval.Settings, "DECOMPOSE_MODEL_NAME", "fake-model")
-    monkeypatch.setattr(rag_retrieval.Settings, "DECOMPOSE_API_URL", "http://example.test/v1/chat/completions")
-    monkeypatch.setattr(rag_retrieval.Settings, "DECOMPOSE_API_KEY", "")
-    monkeypatch.setattr(rag_retrieval.Settings, "DECOMPOSE_TIMEOUT", 3)
-    monkeypatch.setattr(rag_retrieval.Settings, "DECOMPOSE_MAX_TOKENS", 777)
-    monkeypatch.setattr(rag_retrieval.requests, "post", fake_post)
+    model = FakeDecomposeModel()
+    monkeypatch.setattr(decomposition, "get_decompose_model", lambda: model)
 
     result = rag_retrieval.decompose_query_with_llm("缓考和免考入口是什么？")
 
     assert result["need_decompose"] is False
-    assert captured["payload"]["max_tokens"] == 777
-    assert captured["payload"]["stream"] is False
-    assert captured["timeout"] == 3
+    assert result["reason"] == "单一问题"
+    assert isinstance(model.calls[0][0], SystemMessage)
+    assert isinstance(model.calls[0][1], HumanMessage)
+    assert model.calls[0][1].content == "缓考和免考入口是什么？"

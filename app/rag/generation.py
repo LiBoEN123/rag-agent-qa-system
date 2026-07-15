@@ -4,20 +4,13 @@
 """
 
 import json
-import time
 from typing import List
 
-import requests
-
 from app.config import Settings
-from app.llm.errors import ModelCallError
 from app.llm.factory import get_answer_model
 from app.llm.gateway import ModelGateway
 from app.prompts import SYSTEM_PROMPT_B, USER_PROMPT, NO_ANSWER_FALLBACK
 from app.rag.retrieval import clamp01, make_snippet, safe_float
-from app.common.logging import get_logger
-
-logger = get_logger('chat_service')
 
 
 # =========================
@@ -50,45 +43,6 @@ def build_context(retrieved_chunks, max_chars: int | None=None):
     return "\n".join(parts)
 
 
-# =========================
-# 模型调用
-# =========================
-def build_llm_header() -> dict:
-    """构造调用回答模型所需的 HTTP 请求头。"""
-    headers = {
-        "Content-Type": "application/json"
-    }
-
-    if Settings.LLM_API_KEY:
-        headers["Authorization"] = f"Bearer {Settings.LLM_API_KEY}"
-
-    return headers
-
-
-def get_http_error_message(status_code: int) -> str:
-    """把 HTTP 状态码转换成用户能看懂的提示。"""
-
-    if status_code == 400:
-        return "模型请求参数错误，请检查 model、messages、max_tokens 等配置。"
-
-    if status_code == 401:
-        return "模型调用未授权，请检查 API Key 是否正确。"
-
-    if status_code == 403:
-        return "模型调用被拒绝，请检查账号权限或模型访问权限。"
-
-    if status_code == 404:
-        return "模型接口地址或模型名称不存在，请检查 LLM_API_URL 和 MODEL_NAME。"
-
-    if status_code == 429:
-        return "模型请求过于频繁或额度不足，请稍后重试或检查账户额度。"
-
-    if status_code >= 500:
-        return "模型服务端异常，可能是模型服务暂时不可用。"
-
-    return f"模型服务返回异常状态码：{status_code}"
-
-
 def _build_answer_messages(question: str, context: str) -> list[dict[str, str]]:
     """使用原有 Prompt 内容构造统一消息列表。"""
     return [
@@ -103,156 +57,16 @@ def _build_answer_messages(question: str, context: str) -> list[dict[str, str]]:
     ]
 
 
-def _legacy_call_llm(question: str, context: str, trace_id: str = "") -> str:
-    """保留原 requests 调用、重试和 OpenAI-compatible 解析逻辑。"""
-    model_name = Settings.MODEL_NAME
-    api_url = Settings.LLM_API_URL
-    temperature = Settings.TEMPERATURE
-    max_tokens = Settings.LLM_MAX_TOKENS
-
-    payload = {
-        "model": model_name,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "messages": _build_answer_messages(question, context),
-    }
-
-    headers = build_llm_header()
-
-    total_attempts = Settings.LLM_MAX_RETRIES + 1
-
-    for attempt in range(total_attempts):
-        try:
-            logger.info(
-                f"[trace_id={trace_id}] [llm] attempt={attempt + 1}/{total_attempts}, "
-                f"url={Settings.LLM_API_URL}, "
-                f"model={Settings.MODEL_NAME}, "
-                f"timeout={Settings.LLM_TIMEOUT}"
-            )
-
-            response = requests.post(
-                api_url,
-                headers=headers,
-                json=payload,
-                timeout=Settings.LLM_TIMEOUT
-            )
-
-            # 优先处理非 200 状态码
-            if response.status_code != 200:
-                error_message = get_http_error_message(response.status_code)
-
-                # 5xx可以重试
-                if response.status_code >= 500:
-                    raise  requests.HTTPError(
-                        f"{error_message} response={response.text[:300]}"
-                    )
-
-                # 400 / 401 / 403 / 404 / 429 这类通常重试没意义，直接抛出
-                raise ModelCallError(
-                    user_message=error_message,
-                    detail=response.text[:500],
-                    provider="legacy",
-                    model_name=model_name,
-                    retryable=False,
-                )
-
-            # 解析JSON
-            try:
-                data = response.json()
-            except Exception as e:
-                raise ModelCallError(
-                    user_message="模型返回内容不是合法 JSON。",
-                    detail=str(e),
-                    provider="legacy",
-                    model_name=model_name,
-                    retryable=False,
-                )
-
-            # 解析 OpenAI-compatible 格式
-            try:
-                return data["choices"][0]["message"]["content"]
-            except Exception as e:
-                raise ModelCallError(
-                    user_message="模型返回格式不符合预期，缺少 choices/message/content 字段。",
-                    detail=str(e),
-                    provider="legacy",
-                    model_name=model_name,
-                    retryable=False,
-                )
-
-        except ModelCallError:
-            # 已经是可读错误，直接抛给上层
-            raise
-
-        except requests.exceptions.Timeout as e:
-            last_error = e
-            error_message = "模型调用超时，请检查模型服务是否响应过慢，或适当调大 LLM_TIMEOUT。"
-
-        except requests.exceptions.ConnectionError as e:
-            last_error = e
-            error_message = "无法连接模型服务，请检查 LLM_API_URL 是否正确，以及模型服务是否已启动。"
-
-        except requests.exceptions.HTTPError as e:
-            last_error = e
-            error_message = "模型服务端异常，请稍后重试。"
-
-        except requests.exceptions.RequestException as e:
-            last_error = e
-            error_message = "模型请求失败，请检查模型服务和网络配置。"
-
-            # 走到这里说明是可重试类错误
-        if attempt < Settings.LLM_MAX_RETRIES:
-            logger.warning(
-                f"[trace_id={trace_id}] [llm] 调用失败，准备重试 attempt={attempt + 1}/{total_attempts}, "
-                f"error={error_message}"
-            )
-            time.sleep(Settings.LLM_RETRY_SLEEP)
-            continue
-
-        logger.error(
-            f"[trace_id={trace_id}] [llm] 调用最终失败 attempts={total_attempts}, "
-            f"error={error_message}"
-        )
-
-        raise ModelCallError(
-            user_message=error_message,
-            detail=str(last_error),
-            provider="legacy",
-            model_name=model_name,
-            retryable=True,
-        )
-
-
 def call_llm(question: str, context: str, trace_id: str = "") -> str:
-    """通过统一 Gateway 调用回答模型，必要时回退原 requests 客户端。"""
-    messages = _build_answer_messages(question, context)
-    mode = (Settings.LLM_CLIENT_MODE or "langchain").strip().lower()
-    langchain_model = None
-    if mode != "legacy":
-        try:
-            langchain_model = get_answer_model()
-        except ModelCallError as exc:
-            logger.warning(
-                "[trace_id=%s] [llm] langchain_factory_unavailable "
-                "error_type=%s fallback=true",
-                trace_id,
-                type(exc).__name__,
-            )
-
-    def legacy_invoke(
-        _messages: list[dict[str, str]],
-        *,
-        trace_id: str = "",
-    ) -> str:
-        return _legacy_call_llm(question, context, trace_id=trace_id)
-
+    """通过统一 Gateway 调用回答模型。"""
     gateway = ModelGateway(
         role="answer",
-        langchain_model=langchain_model,
-        legacy_invoke=legacy_invoke,
-        client_mode=mode,
+        langchain_model=get_answer_model(),
     )
-    return gateway.invoke_text(messages, trace_id=trace_id)
+    return gateway.invoke_text(
+        _build_answer_messages(question, context),
+        trace_id=trace_id,
+    )
 
 
 # =========================

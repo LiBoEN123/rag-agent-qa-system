@@ -6,10 +6,10 @@
 import json
 import re
 
-import requests
-
 from app.config import Settings
 from app.common.logging import get_logger
+from app.llm.factory import get_query_rewrite_model
+from app.llm.gateway import ModelGateway
 
 
 logger = get_logger("chat_service")
@@ -216,38 +216,17 @@ def _query_rewrite_llm_configured() -> bool:
 
 def call_query_rewrite_llm(prompt: str, trace_id: str = "") -> str:
     """调用追问改写模型并返回原始文本。"""
-    headers = {"Content-Type": "application/json"}
-    if Settings.QUERY_REWRITE_API_KEY:
-        headers["Authorization"] = f"Bearer {Settings.QUERY_REWRITE_API_KEY}"
-
-    payload = {
-        "model": Settings.QUERY_REWRITE_MODEL_NAME,
-        "temperature": Settings.QUERY_REWRITE_TEMPERATURE,
-        "max_tokens": Settings.QUERY_REWRITE_MAX_TOKENS,
-        "messages": [
+    gateway = ModelGateway(
+        role="query_rewrite",
+        langchain_model=get_query_rewrite_model(),
+    )
+    return gateway.invoke_text(
+        [
             {"role": "system", "content": "你只输出合法 JSON。"},
             {"role": "user", "content": prompt},
         ],
-    }
-
-    logger.info(
-        f"[trace_id={trace_id}] [query_rewrite_llm] "
-        f"url={Settings.QUERY_REWRITE_API_URL} "
-        f"model={Settings.QUERY_REWRITE_MODEL_NAME} "
-        f"timeout={Settings.QUERY_REWRITE_TIMEOUT}"
+        trace_id=trace_id,
     )
-
-    response = requests.post(
-        Settings.QUERY_REWRITE_API_URL,
-        headers=headers,
-        json=payload,
-        timeout=Settings.QUERY_REWRITE_TIMEOUT,
-    )
-    if response.status_code != 200:
-        raise RuntimeError(f"HTTP {response.status_code}: {response.text[:300]}")
-
-    data = response.json()
-    return data["choices"][0]["message"]["content"]
 
 
 def rewrite_query_with_history(

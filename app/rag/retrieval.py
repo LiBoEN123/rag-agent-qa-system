@@ -7,7 +7,6 @@ from typing import Any, Dict, List
 
 import jieba
 import numpy as np
-import requests
 
 from app.config import Settings
 from app.rag.chroma import ChromaUnavailableError, query_chroma
@@ -29,6 +28,7 @@ compact_error_preview = _decomposition.compact_error_preview
 strip_json_code_fence = _decomposition.strip_json_code_fence
 extract_first_json_object = _decomposition.extract_first_json_object
 parse_decompose_llm_json = _decomposition.parse_decompose_llm_json
+decompose_query_with_llm = _decomposition.decompose_query_with_llm
 
 
 __all__ = [
@@ -57,12 +57,6 @@ __all__ = [
     "tokenize",
 ]
 
-
-def decompose_query_with_llm(question: str):
-    """转发问题拆分调用，并同步可替换的 HTTP 客户端。"""
-    # Preserve monkeypatching app.rag.retrieval.requests.post.
-    _decomposition.requests = requests
-    return _decomposition.decompose_query_with_llm(question)
 
 logger = get_logger('chat_service')
 

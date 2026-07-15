@@ -67,7 +67,7 @@ def _create_model(
         return None
     if ChatOpenAI is None:
         raise ModelCallError(
-            "LangChain 模型客户端不可用，请安装 langchain-openai 或切换到 legacy 模式。",
+            "LangChain 模型客户端不可用，请安装 langchain-openai。",
             detail=type(_LANGCHAIN_IMPORT_ERROR).__name__ if _LANGCHAIN_IMPORT_ERROR else "ImportError",
             provider="langchain",
             model_name=model_name,
@@ -156,17 +156,47 @@ def get_decompose_model() -> Any | None:
 
 
 @lru_cache(maxsize=1)
-def get_judge_model() -> Any | None:
-    """返回离线评测 Judge 模型。"""
+def get_compare_model() -> Any | None:
+    """返回文档对比模型，并保留其独立推理参数。"""
+    return _create_model(
+        role="compare",
+        api_key=Settings.LLM_API_KEY,
+        api_url=Settings.LLM_API_URL,
+        model_name=Settings.MODEL_NAME,
+        temperature=0.0,
+        max_tokens=min(Settings.LLM_MAX_TOKENS, 1024),
+        timeout=Settings.LLM_TIMEOUT,
+        max_retries=Settings.LLM_MAX_RETRIES,
+    )
+
+
+@lru_cache(maxsize=8)
+def get_judge_model(
+    *,
+    api_key: str | None = None,
+    api_url: str | None = None,
+    model_name: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    timeout: int | float | None = None,
+    max_retries: int | None = None,
+) -> Any | None:
+    """返回离线评测 Judge 模型，并允许保留 CLI 配置覆盖。"""
     return _create_model(
         role="judge",
-        api_key=Settings.JUDGE_API_KEY or Settings.LLM_API_KEY,
-        api_url=Settings.JUDGE_API_URL,
-        model_name=Settings.JUDGE_MODEL,
-        temperature=0.0,
-        max_tokens=Settings.JUDGE_MAX_TOKENS,
-        timeout=Settings.JUDGE_TIMEOUT,
-        max_retries=Settings.JUDGE_MAX_RETRIES,
+        api_key=(
+            Settings.JUDGE_API_KEY or Settings.LLM_API_KEY
+            if api_key is None
+            else api_key
+        ),
+        api_url=Settings.JUDGE_API_URL if api_url is None else api_url,
+        model_name=Settings.JUDGE_MODEL if model_name is None else model_name,
+        temperature=0.0 if temperature is None else temperature,
+        max_tokens=Settings.JUDGE_MAX_TOKENS if max_tokens is None else max_tokens,
+        timeout=Settings.JUDGE_TIMEOUT if timeout is None else timeout,
+        max_retries=(
+            Settings.JUDGE_MAX_RETRIES if max_retries is None else max_retries
+        ),
     )
 
 
@@ -176,4 +206,5 @@ def clear_model_factory_cache() -> None:
     get_router_model.cache_clear()
     get_query_rewrite_model.cache_clear()
     get_decompose_model.cache_clear()
+    get_compare_model.cache_clear()
     get_judge_model.cache_clear()

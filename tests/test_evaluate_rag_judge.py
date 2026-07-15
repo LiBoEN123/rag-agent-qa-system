@@ -2,6 +2,8 @@ import json
 import sys
 from pathlib import Path
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -33,6 +35,60 @@ def patch_judge(monkeypatch, key_point_result=None, forbidden_result=None):
         raise AssertionError("unexpected judge prompt")
 
     monkeypatch.setattr(evaluator, "call_judge_json", fake_call_judge_json)
+
+
+def test_call_judge_llm_uses_factory_gateway_and_cli_config(monkeypatch):
+    """离线 Judge 通过统一工厂和 Gateway 调用并保留 CLI 配置。"""
+    captured = {}
+
+    class FakeJudgeModel:
+        def __init__(self):
+            self.calls = []
+
+        def invoke(self, messages):
+            self.calls.append(messages)
+            return AIMessage(content='{"score": 1}')
+
+    model = FakeJudgeModel()
+
+    def fake_get_judge_model(**kwargs):
+        captured.update(kwargs)
+        return model
+
+    monkeypatch.setattr(evaluator._judge, "get_judge_model", fake_get_judge_model)
+    config = evaluator.LLMJudgeConfig(
+        enabled=True,
+        model="cli-judge",
+        api_url="https://judge.example.test/v1/chat/completions",
+        api_key="cli-key",
+        timeout=7,
+        max_retries=3,
+        retry_sleep=0.5,
+        max_tokens=456,
+        temperature=0.2,
+    )
+
+    result = evaluator._judge.call_judge_llm(
+        "judge system",
+        "judge user",
+        config,
+        trace_id="judge-trace",
+    )
+
+    assert result == '{"score": 1}'
+    assert captured == {
+        "api_key": "cli-key",
+        "api_url": "https://judge.example.test/v1/chat/completions",
+        "model_name": "cli-judge",
+        "temperature": 0.2,
+        "max_tokens": 456,
+        "timeout": 7,
+        "max_retries": 3,
+    }
+    assert isinstance(model.calls[0][0], SystemMessage)
+    assert isinstance(model.calls[0][1], HumanMessage)
+    assert model.calls[0][0].content == "judge system"
+    assert model.calls[0][1].content == "judge user"
 
 
 def test_synonym_expression_can_be_covered_by_llm_judge(monkeypatch):
