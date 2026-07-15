@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
-import requests
-
 from app.config import Settings
-from app.prompts import FORBIDDEN_JUDGE_SYSTEM_PROMPT, KEY_POINT_JUDGE_SYSTEM_PROMPT
 from app.common.logging import get_logger
+from app.llm.factory import get_judge_model
+from app.llm.gateway import ModelGateway
+from app.prompts import FORBIDDEN_JUDGE_SYSTEM_PROMPT, KEY_POINT_JUDGE_SYSTEM_PROMPT
 from scripts.rag_eval.common import json_dumps, point_texts, warn
 
 
@@ -213,49 +212,35 @@ def call_judge_llm(
     judge_config: LLMJudgeConfig,
     trace_id: str = "",
 ) -> str:
-    """调用 OpenAI-compatible judge 模型并返回原始 content。"""
-    headers = {"Content-Type": "application/json"}
-    if judge_config.api_key:
-        headers["Authorization"] = f"Bearer {judge_config.api_key}"
-
-    payload = {
-        "model": judge_config.model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "stream": False,
-        "temperature": judge_config.temperature,
-        "max_tokens": judge_config.max_tokens,
-    }
-
-    last_error: Exception | None = None
-    total_attempts = judge_config.max_retries + 1
-    for attempt in range(total_attempts):
-        try:
-            logger.info(
-                f"[judge] trace_id={trace_id} attempt={attempt + 1}/{total_attempts} "
-                f"model={judge_config.model} timeout={judge_config.timeout}"
-            )
-            response = requests.post(
-                judge_config.api_url,
-                headers=headers,
-                json=payload,
-                timeout=judge_config.timeout,
-            )
-            if response.status_code != 200:
-                raise LLMJudgeError(f"HTTP {response.status_code}: {response.text[:500]}")
-            data = response.json()
-            return str(data["choices"][0]["message"]["content"])
-        except Exception as exc:
-            last_error = exc
-            if attempt < judge_config.max_retries:
-                logger.warning(f"[judge] trace_id={trace_id} call failed, retrying: {exc}")
-                time.sleep(judge_config.retry_sleep)
-                continue
-            raise LLMJudgeError(str(last_error)) from exc
-
-    raise LLMJudgeError(str(last_error or "unknown judge error"))
+    """通过统一 Gateway 调用 judge 模型并返回原始 content。"""
+    try:
+        model = get_judge_model(
+            api_key=judge_config.api_key,
+            api_url=judge_config.api_url,
+            model_name=judge_config.model,
+            temperature=judge_config.temperature,
+            max_tokens=judge_config.max_tokens,
+            timeout=judge_config.timeout,
+            max_retries=judge_config.max_retries,
+        )
+        gateway = ModelGateway(role="judge", langchain_model=model)
+        logger.info(
+            "[judge] trace_id=%s model=%s timeout=%s",
+            trace_id,
+            judge_config.model,
+            judge_config.timeout,
+        )
+        return gateway.invoke_text(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            trace_id=trace_id,
+        )
+    except LLMJudgeError:
+        raise
+    except Exception as exc:
+        raise LLMJudgeError(str(exc)) from exc
 
 
 def call_judge_json(

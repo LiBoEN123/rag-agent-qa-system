@@ -15,6 +15,12 @@ def test_agent_runtime_has_no_configuration_switch():
     assert not hasattr(Settings, removed_name)
 
 
+def test_llm_transport_has_no_configuration_switch():
+    """应用内部固定使用统一 LangChain transport。"""
+    removed_name = "LLM_CLIENT" + "_MODE"
+    assert not hasattr(Settings, removed_name)
+
+
 def test_checkpointer_defaults_to_disabled():
     assert normalize_langgraph_checkpointer(None) == "disabled"
     assert normalize_langgraph_checkpointer("") == "disabled"

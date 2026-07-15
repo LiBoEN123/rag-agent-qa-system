@@ -1,10 +1,40 @@
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app import agent
 from app.agent import executor as agent_executor
+from app.agent import llm_router
 from app.graph import nodes as graph_nodes
 from app.graph import runtime as graph_runtime
 from app.tools.registry import tool_registry
+
+
+def test_router_llm_uses_router_factory_and_keeps_allowed_actions(monkeypatch):
+    """Router 通过对应模型工厂调用，并保留工具白名单 Prompt。"""
+
+    class FakeRouterModel:
+        def __init__(self):
+            self.calls = []
+
+        def invoke(self, messages):
+            self.calls.append(messages)
+            return AIMessage(
+                content='{"action":"search_knowledge_base","reason":"需要检索"}'
+            )
+
+    model = FakeRouterModel()
+    monkeypatch.setattr(llm_router, "get_router_model", lambda: model)
+
+    output = llm_router.call_router_llm("测试问题", 4, trace_id="router-trace")
+    parsed = llm_router.parse_router_json_output(output)
+
+    assert parsed["action"] == "search_knowledge_base"
+    assert isinstance(model.calls[0][0], SystemMessage)
+    assert isinstance(model.calls[0][1], HumanMessage)
+    user_prompt = model.calls[0][1].content
+    assert "search_knowledge_base" in user_prompt
+    assert "compare_documents" in user_prompt
+    assert "direct_answer" in user_prompt
 
 
 def test_agent_allowed_tools_from_registry():

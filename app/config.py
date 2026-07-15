@@ -93,7 +93,6 @@ class Settings:
     LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", 60))
     LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", 2))
     LLM_RETRY_SLEEP = int(os.getenv("LLM_RETRY_SLEEP", 1))
-    LLM_CLIENT_MODE = os.getenv("LLM_CLIENT_MODE", "langchain").strip().lower()
 
     USE_LLM_JUDGE = env_bool("USE_LLM_JUDGE", "false")
     JUDGE_API_KEY = os.getenv("JUDGE_API_KEY") or LLM_API_KEY

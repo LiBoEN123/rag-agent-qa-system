@@ -4,9 +4,10 @@
 """
 
 import json
-import time
 from typing import Any
 
+from app.llm.factory import get_compare_model
+from app.llm.gateway import ModelGateway
 from app.tools.result import tool_error, tool_success
 
 # Document comparison implementation. Public compatibility wrappers live in
@@ -193,11 +194,6 @@ def _call_compare_documents_llm(
     doc_b_evidence: list[dict],
 ) -> dict:
     """调用 LLM 根据两份文档 evidence 生成差异总结。"""
-    import requests
-
-    from app.config import Settings
-    from app.rag.generation import build_llm_header, get_http_error_message
-
     system_prompt = (
         "你是制度类文档差异对比助手。"
         "你只能依据用户提供的 evidence 对比两份文档中同一问题的规定，"
@@ -229,44 +225,17 @@ doc_b evidence：
 }}
 """.strip()
 
-    payload = {
-        "model": Settings.MODEL_NAME,
-        "temperature": 0.0,
-        "max_tokens": min(Settings.LLM_MAX_TOKENS, 1024),
-        "messages": [
+    gateway = ModelGateway(
+        role="compare_documents",
+        langchain_model=get_compare_model(),
+    )
+    content = gateway.invoke_text(
+        [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-    }
-
-    last_error = ""
-    total_attempts = Settings.LLM_MAX_RETRIES + 1
-    for attempt in range(total_attempts):
-        try:
-            response = requests.post(
-                Settings.LLM_API_URL,
-                headers=build_llm_header(),
-                json=payload,
-                timeout=Settings.LLM_TIMEOUT,
-            )
-            if response.status_code != 200:
-                last_error = get_http_error_message(response.status_code)
-                if response.status_code >= 500 and attempt < total_attempts - 1:
-                    time.sleep(Settings.LLM_RETRY_SLEEP)
-                    continue
-                raise RuntimeError(f"{last_error}: {response.text[:300]}")
-
-            data = response.json()
-            content = data["choices"][0]["message"]["content"]
-            return _parse_compare_llm_output(content)
-        except Exception as e:
-            last_error = str(e)
-            if attempt < total_attempts - 1:
-                time.sleep(Settings.LLM_RETRY_SLEEP)
-                continue
-            raise RuntimeError(last_error)
-
-    raise RuntimeError(last_error or "compare_documents LLM 调用失败")
+    )
+    return _parse_compare_llm_output(content)
 
 
 def compare_documents_tool(args: dict) -> dict:

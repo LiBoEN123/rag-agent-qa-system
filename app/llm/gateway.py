@@ -1,27 +1,22 @@
-"""LangChain 优先、legacy 可回退的统一模型调用网关。"""
+"""基于 LangChain 的统一模型调用网关。"""
 
 from __future__ import annotations
 
 import json
-import inspect
 import re
-from typing import Any, Callable
+from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel
 
 from app.common.logging import get_logger
-from app.config import Settings
 from app.llm.errors import ModelCallError
 
 
 logger = get_logger("chat_service")
 
-LegacyInvoke = Callable[..., str]
-
-
 def _status_code(exc: BaseException) -> int | None:
-    """从 OpenAI、httpx 或 requests 风格异常中提取 HTTP 状态码。"""
+    """从 OpenAI 或 httpx 风格异常中提取 HTTP 状态码。"""
     value = getattr(exc, "status_code", None)
     if isinstance(value, int):
         return value
@@ -42,14 +37,6 @@ def _is_retryable(exc: BaseException) -> bool:
     """判断异常是否属于可重试的临时服务故障。"""
     status = _status_code(exc)
     return bool((status is not None and status >= 500) or _is_timeout_or_connection_error(exc))
-
-
-def _should_fallback(exc: BaseException) -> bool:
-    """决定 LangChain 失败后是否值得再尝试 legacy 客户端。"""
-    status = _status_code(exc)
-    if status in {400, 401, 403, 404, 429}:
-        return False
-    return True
 
 
 def _user_error_message(exc: BaseException) -> str:
@@ -87,13 +74,22 @@ def _extract_text_content(response: Any) -> str:
     content = getattr(response, "content", response)
     if isinstance(content, str):
         return content
+    if isinstance(content, dict):
+        for key in ("text", "content"):
+            value = content.get(key)
+            if isinstance(value, str):
+                return value
     if isinstance(content, list):
         parts: list[str] = []
         for item in content:
             if isinstance(item, str):
                 parts.append(item)
-            elif isinstance(item, dict) and isinstance(item.get("text"), str):
-                parts.append(item["text"])
+            elif isinstance(item, dict):
+                for key in ("text", "content"):
+                    value = item.get(key)
+                    if isinstance(value, str):
+                        parts.append(value)
+                        break
         if parts:
             return "".join(parts)
     raise ValueError("模型返回格式不符合预期，缺少文本 content。")
@@ -143,64 +139,23 @@ def _parse_json_object(text: str) -> dict[str, Any]:
     return value
 
 
-def _call_legacy_callable(
-    legacy_invoke: LegacyInvoke,
-    messages: list[dict[str, str]],
-    trace_id: str,
-) -> Any:
-    """兼容 legacy callable 的无参、仅 messages 和 messages+trace_id 签名。"""
-    try:
-        parameters = inspect.signature(legacy_invoke).parameters
-    except (TypeError, ValueError):
-        return legacy_invoke(messages, trace_id=trace_id)
-
-    if not parameters:
-        return legacy_invoke()
-    if "trace_id" in parameters or any(
-        item.kind is inspect.Parameter.VAR_KEYWORD
-        for item in parameters.values()
-    ):
-        return legacy_invoke(messages, trace_id=trace_id)
-    positional = [
-        item
-        for item in parameters.values()
-        if item.kind
-        in {inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
-    ]
-    if len(positional) >= 2:
-        return legacy_invoke(messages, trace_id)
-    return legacy_invoke(messages)
-
-
 class ModelGateway:
-    """在统一消息协议上执行 LangChain 调用并按错误类型回退 legacy。"""
+    """在统一消息协议上执行 LangChain 调用并规整结果与异常。"""
 
     def __init__(
         self,
         *,
         role: str,
         langchain_model: Any = None,
-        legacy_invoke: LegacyInvoke | None = None,
-        client_mode: str | None = None,
     ) -> None:
         self.role = str(role)
         self.langchain_model = langchain_model
-        self.legacy_invoke = legacy_invoke
-        self.client_mode = (client_mode or Settings.LLM_CLIENT_MODE or "langchain").strip().lower()
-        if self.client_mode not in {"langchain", "legacy"}:
-            raise ModelCallError(
-                "LLM_CLIENT_MODE 配置无效，仅支持 langchain 或 legacy。",
-                detail="invalid client mode",
-                provider="configuration",
-                model_name=_model_name(langchain_model),
-                retryable=False,
-            )
 
     def _log_call(
         self,
         *,
         trace_id: str,
-        client_mode: str,
+        invocation: str,
         prompt_chars: int,
         fallback: bool,
         error: BaseException | None = None,
@@ -208,53 +163,15 @@ class ModelGateway:
         """记录不含 Prompt、响应和凭据的安全调用元数据。"""
         logger.info(
             "[trace_id=%s] [model_gateway] role=%s model=%s attempt=1 "
-            "client_mode=%s fallback=%s prompt_chars=%s error_type=%s",
+            "invocation=%s fallback=%s prompt_chars=%s error_type=%s",
             trace_id,
             self.role,
             _model_name(self.langchain_model),
-            client_mode,
+            invocation,
             fallback,
             prompt_chars,
             type(error).__name__ if error is not None else "",
         )
-
-    def _invoke_legacy(
-        self,
-        messages: list[dict[str, str]],
-        *,
-        trace_id: str,
-        fallback: bool,
-    ) -> str:
-        """调用注入的 legacy 客户端并统一其异常。"""
-        if self.legacy_invoke is None:
-            raise ModelCallError(
-                "模型客户端不可用，请检查 LLM 配置。",
-                detail="legacy fallback is not configured",
-                provider="legacy",
-                model_name=_model_name(self.langchain_model),
-                retryable=False,
-            )
-        prompt_chars = sum(len(str(item.get("content", ""))) for item in messages)
-        self._log_call(
-            trace_id=trace_id,
-            client_mode="legacy",
-            prompt_chars=prompt_chars,
-            fallback=fallback,
-        )
-        try:
-            return _extract_text_content(
-                _call_legacy_callable(self.legacy_invoke, messages, trace_id)
-            )
-        except ModelCallError:
-            raise
-        except Exception as exc:
-            raise ModelCallError(
-                _user_error_message(exc),
-                detail=type(exc).__name__,
-                provider="legacy",
-                model_name=_model_name(self.langchain_model),
-                retryable=_is_retryable(exc),
-            ) from exc
 
     def invoke_text(
         self,
@@ -262,19 +179,22 @@ class ModelGateway:
         *,
         trace_id: str = "",
     ) -> str:
-        """调用文本模型，临时故障或兼容性故障时按策略回退 legacy。"""
-        if self.client_mode == "legacy":
-            return self._invoke_legacy(messages, trace_id=trace_id, fallback=False)
-
+        """调用 LangChain 文本模型并统一转换异常。"""
         if self.langchain_model is None:
-            return self._invoke_legacy(messages, trace_id=trace_id, fallback=True)
+            raise ModelCallError(
+                "模型客户端不可用，请检查 LLM 配置。",
+                detail="langchain model is not configured",
+                provider="langchain",
+                model_name="",
+                retryable=False,
+            )
 
         prompt_chars = sum(len(str(item.get("content", ""))) for item in messages)
         try:
             converted = _to_langchain_messages(messages)
             self._log_call(
                 trace_id=trace_id,
-                client_mode="langchain",
+                invocation="text",
                 prompt_chars=prompt_chars,
                 fallback=False,
             )
@@ -285,13 +205,11 @@ class ModelGateway:
         except Exception as exc:
             self._log_call(
                 trace_id=trace_id,
-                client_mode="langchain",
+                invocation="text",
                 prompt_chars=prompt_chars,
                 fallback=False,
                 error=exc,
             )
-            if self.legacy_invoke is not None and _should_fallback(exc):
-                return self._invoke_legacy(messages, trace_id=trace_id, fallback=True)
             raise ModelCallError(
                 _user_error_message(exc),
                 detail=type(exc).__name__,
@@ -308,13 +226,13 @@ class ModelGateway:
         trace_id: str = "",
     ) -> BaseModel:
         """优先使用 LangChain 结构化输出，不兼容时降级为文本 JSON 解析。"""
-        if self.client_mode == "langchain" and self.langchain_model is not None:
+        if self.langchain_model is not None:
             prompt_chars = sum(len(str(item.get("content", ""))) for item in messages)
             try:
                 structured_model = self.langchain_model.with_structured_output(schema)
                 self._log_call(
                     trace_id=trace_id,
-                    client_mode="langchain_structured",
+                    invocation="structured",
                     prompt_chars=prompt_chars,
                     fallback=False,
                 )
@@ -323,7 +241,7 @@ class ModelGateway:
             except Exception as exc:
                 self._log_call(
                     trace_id=trace_id,
-                    client_mode="langchain_structured",
+                    invocation="structured",
                     prompt_chars=prompt_chars,
                     fallback=True,
                     error=exc,
@@ -344,7 +262,7 @@ class ModelGateway:
             raise ModelCallError(
                 "模型返回的结构化内容不符合预期。",
                 detail=type(exc).__name__,
-                provider=self.client_mode,
+                provider="langchain",
                 model_name=_model_name(self.langchain_model),
                 retryable=False,
             ) from exc

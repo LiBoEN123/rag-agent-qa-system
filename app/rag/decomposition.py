@@ -6,9 +6,8 @@
 import json
 import re
 
-import requests
-
-from app.config import Settings
+from app.llm.factory import get_decompose_model
+from app.llm.gateway import ModelGateway
 from app.prompts import DECOMPOSE_PROMPT
 
 
@@ -164,27 +163,17 @@ def parse_decompose_llm_json(content: str) -> dict:
     return normalize_decompose_result(result)
 
 
-def decompose_query_with_llm(question: str):
+def decompose_query_with_llm(question: str, trace_id: str = ""):
     """调用问题拆分模型并返回规范化的子查询结果。"""
-    headers = {"Content-Type": "application/json"}
-    if Settings.DECOMPOSE_API_KEY:
-        headers["Authorization"] = f"Bearer {Settings.DECOMPOSE_API_KEY}"
-    response = requests.post(
-        Settings.DECOMPOSE_API_URL,
-        headers=headers,
-        json={
-            "model": Settings.DECOMPOSE_MODEL_NAME,
-            "messages": [
-                {"role": "system", "content": DECOMPOSE_PROMPT},
-                {"role": "user", "content": question},
-            ],
-            "stream": False,
-            "temperature": 0,
-            "max_tokens": Settings.DECOMPOSE_MAX_TOKENS,
-        },
-        timeout=Settings.DECOMPOSE_TIMEOUT,
+    gateway = ModelGateway(
+        role="decompose",
+        langchain_model=get_decompose_model(),
     )
-    response.raise_for_status()
-    return parse_decompose_llm_json(
-        response.json()["choices"][0]["message"]["content"]
+    content = gateway.invoke_text(
+        [
+            {"role": "system", "content": DECOMPOSE_PROMPT},
+            {"role": "user", "content": question},
+        ],
+        trace_id=trace_id,
     )
+    return parse_decompose_llm_json(content)

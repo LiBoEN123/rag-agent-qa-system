@@ -96,9 +96,58 @@ def test_decompose_model_keeps_independent_key_semantics(monkeypatch):
     assert model.kwargs["temperature"] == 0.0
 
 
+def test_compare_model_uses_answer_provider_with_independent_parameters(monkeypatch):
+    """文档对比复用 Answer 供应商配置，但保持零温度和独立 token 上限。"""
+    monkeypatch.setattr(factory.Settings, "LLM_API_KEY", "compare-key")
+    monkeypatch.setattr(
+        factory.Settings,
+        "LLM_API_URL",
+        "https://models.example.test/v1/chat/completions",
+    )
+    monkeypatch.setattr(factory.Settings, "MODEL_NAME", "compare-model")
+    monkeypatch.setattr(factory.Settings, "LLM_MAX_TOKENS", 4096)
+    monkeypatch.setattr(factory.Settings, "LLM_TIMEOUT", 21)
+    monkeypatch.setattr(factory.Settings, "LLM_MAX_RETRIES", 2)
+
+    model = factory.get_compare_model()
+
+    assert model.kwargs == {
+        "model": "compare-model",
+        "api_key": "compare-key",
+        "base_url": "https://models.example.test/v1",
+        "temperature": 0.0,
+        "max_tokens": 1024,
+        "timeout": 21,
+        "max_retries": 2,
+    }
+
+
+def test_judge_model_accepts_cli_configuration_overrides():
+    """离线 Judge 的 CLI 配置覆盖会完整传入 ChatOpenAI。"""
+    model = factory.get_judge_model(
+        api_key="cli-key",
+        api_url="https://judge.example.test/v1/chat/completions",
+        model_name="cli-judge",
+        temperature=0.15,
+        max_tokens=333,
+        timeout=9,
+        max_retries=4,
+    )
+
+    assert model.kwargs == {
+        "model": "cli-judge",
+        "api_key": "cli-key",
+        "base_url": "https://judge.example.test/v1",
+        "temperature": 0.15,
+        "max_tokens": 333,
+        "timeout": 9,
+        "max_retries": 4,
+    }
+
+
 @pytest.mark.parametrize("missing_field", ["LLM_API_URL", "MODEL_NAME"])
 def test_missing_answer_model_configuration_returns_none(monkeypatch, missing_field):
-    """模型名或 URL 缺失时返回 None，便于 Gateway 清晰地选择 fallback。"""
+    """模型名或 URL 缺失时返回 None，供 Gateway 生成清晰配置错误。"""
     monkeypatch.setattr(factory.Settings, "LLM_API_URL", "https://models.example.test/v1")
     monkeypatch.setattr(factory.Settings, "MODEL_NAME", "answer-model")
     monkeypatch.setattr(factory.Settings, missing_field, "")

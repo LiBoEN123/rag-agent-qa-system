@@ -1,4 +1,5 @@
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.agent import query_rewrite
 
@@ -7,6 +8,40 @@ HISTORY = [
     {"role": "user", "content": "普通本科四年制专业最长学习年限是多少？"},
     {"role": "assistant", "content": "一般学生为 3～6 年，休学创业学生最长为 8 年。"},
 ]
+
+
+def test_query_rewrite_llm_uses_role_factory_and_preserves_messages(monkeypatch):
+    """Query Rewrite 通过对应工厂调用并保持 system/user 顺序。"""
+
+    class FakeRewriteModel:
+        def __init__(self):
+            self.calls = []
+
+        def invoke(self, messages):
+            self.calls.append(messages)
+            return AIMessage(
+                content=(
+                    '{"need_rewrite":false,'
+                    '"rewritten_question":"独立问题",'
+                    '"reason":"无需改写"}'
+                )
+            )
+
+    model = FakeRewriteModel()
+    monkeypatch.setattr(query_rewrite, "get_query_rewrite_model", lambda: model)
+
+    output = query_rewrite.call_query_rewrite_llm("rewrite prompt", trace_id="rw")
+    parsed = query_rewrite._parse_rewrite_json(output)
+
+    assert parsed == {
+        "need_rewrite": False,
+        "rewritten_question": "独立问题",
+        "reason": "无需改写",
+    }
+    assert isinstance(model.calls[0][0], SystemMessage)
+    assert isinstance(model.calls[0][1], HumanMessage)
+    assert model.calls[0][0].content == "你只输出合法 JSON。"
+    assert model.calls[0][1].content == "rewrite prompt"
 
 
 def test_should_not_rewrite_without_history():

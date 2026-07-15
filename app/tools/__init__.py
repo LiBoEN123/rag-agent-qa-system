@@ -1,6 +1,6 @@
 """工具系统公共入口。
 
-统一暴露内置工具、分发器和文档对比能力，并同步可替换的运行时依赖。
+统一暴露内置工具、分发器和文档对比能力。
 """
 
 from pathlib import Path
@@ -36,7 +36,6 @@ __all__ = [
 
 
 TOOL_CALLS_PATH = Path("logs") / "tool_calls.jsonl"
-_call_compare_documents_llm = _compare._call_compare_documents_llm
 
 
 def append_tool_log(record: dict) -> None:
@@ -56,9 +55,7 @@ def dispatch_tool(
 
 
 def compare_documents_tool(args: dict) -> dict:
-    """执行文档对比工具，并应用门面层替换的 LLM 调用函数。"""
-    # Keep monkeypatching app.tools._call_compare_documents_llm compatible.
-    _compare._call_compare_documents_llm = _call_compare_documents_llm
+    """执行文档对比工具。"""
     return _compare.compare_documents_tool(args)
 
 

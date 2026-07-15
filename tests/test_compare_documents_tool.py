@@ -1,6 +1,10 @@
 import app.rag as rag
-import app.tools as tools
-from app.tools import compare_documents_tool
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+from app.tools import compare_documents as compare_documents_module
+
+
+compare_documents_tool = compare_documents_module.compare_documents_tool
 
 
 def test_compare_documents_query_empty_returns_error():
@@ -88,7 +92,7 @@ def test_compare_documents_success(monkeypatch):
     ]
     monkeypatch.setattr(rag, "chunks", fake_chunks, raising=False)
     monkeypatch.setattr(
-        tools,
+        compare_documents_module,
         "_call_compare_documents_llm",
         lambda **kwargs: {
             "comparison": "旧文档规定为 3 至 8 年，新文档调整为 3 至 6 年。",
@@ -136,7 +140,7 @@ def test_compare_documents_same_numeric_terms_not_conflict(monkeypatch):
     ]
     monkeypatch.setattr(rag, "chunks", fake_chunks, raising=False)
     monkeypatch.setattr(
-        tools,
+        compare_documents_module,
         "_call_compare_documents_llm",
         lambda **kwargs: {
             "comparison": "两份文档均规定普通本科四年制最长学习年限为 3 至 6 年。",
@@ -176,7 +180,11 @@ def test_compare_documents_returns_error_when_llm_fails(monkeypatch):
         """模拟 LLM 调用失败。"""
         raise RuntimeError("llm down")
 
-    monkeypatch.setattr(tools, "_call_compare_documents_llm", fake_llm)
+    monkeypatch.setattr(
+        compare_documents_module,
+        "_call_compare_documents_llm",
+        fake_llm,
+    )
 
     result = compare_documents_tool({
         "query": "\u666e\u901a\u672c\u79d1\u56db\u5e74\u5236\u6700\u957f\u5b66\u4e60\u5e74\u9650",
@@ -187,3 +195,46 @@ def test_compare_documents_returns_error_when_llm_fails(monkeypatch):
     assert result["ok"] is False
     assert result["status"] == "error"
     assert "LLM \u5bf9\u6bd4\u751f\u6210\u5931\u8d25" in result["error"]
+
+
+def test_compare_llm_uses_compare_factory_and_parses_business_fields(monkeypatch):
+    """文档对比通过独立工厂调用，并保留 JSON 字段解析。"""
+
+    class FakeCompareModel:
+        def __init__(self):
+            self.calls = []
+
+        def invoke(self, messages):
+            self.calls.append(messages)
+            return AIMessage(
+                content=(
+                    '{"comparison":"存在差异",'
+                    '"conflict_detected":true,'
+                    '"summary":"摘要"}'
+                )
+            )
+
+    model = FakeCompareModel()
+    monkeypatch.setattr(
+        compare_documents_module,
+        "get_compare_model",
+        lambda: model,
+    )
+
+    result = compare_documents_module._call_compare_documents_llm(
+        query="对比主题",
+        doc_a="a.md",
+        doc_b="b.md",
+        doc_a_evidence=[{"chunk_id": 1, "snippet": "证据 A"}],
+        doc_b_evidence=[{"chunk_id": 2, "snippet": "证据 B"}],
+    )
+
+    assert result == {
+        "comparison": "存在差异",
+        "conflict_detected": True,
+        "summary": "摘要",
+    }
+    assert isinstance(model.calls[0][0], SystemMessage)
+    assert isinstance(model.calls[0][1], HumanMessage)
+    assert "证据 A" in model.calls[0][1].content
+    assert "证据 B" in model.calls[0][1].content

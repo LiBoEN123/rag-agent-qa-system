@@ -1,28 +1,14 @@
 """LLM 路由调用模块。
 
-负责构造路由模型请求、处理重试，并解析模型返回的 JSON 决策。
+负责构造路由模型请求，并解析模型返回的 JSON 决策。
 """
 
 import json
-import time
 
-import requests
-
-from app.common.logging import get_logger
-from app.config import Settings
+from app.llm.factory import get_router_model
+from app.llm.gateway import ModelGateway
 from app.prompts import ROUTER_SYSTEM_PROMPT, ROUTER_USER_PROMPT
 from app.tools.registry import tool_registry
-
-
-logger = get_logger("chat_service")
-
-
-def build_router_headers() -> dict:
-    """构造调用路由模型所需的 HTTP 请求头。"""
-    headers = {"Content-Type": "application/json"}
-    if Settings.ROUTER_API_KEY:
-        headers["Authorization"] = f"Bearer {Settings.ROUTER_API_KEY}"
-    return headers
 
 
 def parse_router_json_output(llm_output: str) -> dict:
@@ -43,53 +29,26 @@ def parse_router_json_output(llm_output: str) -> dict:
 
 
 def call_router_llm(question: str, top_k: int, trace_id: str = "") -> str:
-    """调用 LLM Router，并按配置执行失败重试。"""
+    """通过统一 Gateway 调用 LLM Router。"""
     allowed_actions = set(tool_registry.names()) | {"clarify", "direct_answer"}
-    payload = {
-        "model": Settings.ROUTER_MODEL_NAME,
-        "temperature": Settings.ROUTER_TEMPERATURE,
-        "max_tokens": Settings.ROUTER_MAX_TOKENS,
-        "messages": [
-            {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": ROUTER_USER_PROMPT.format(
-                    question=question,
-                    top_k=top_k,
-                    available_actions=json.dumps(
-                        sorted(allowed_actions), ensure_ascii=False
-                    ),
-                    tool_specs=json.dumps(
-                        tool_registry.router_specs(), ensure_ascii=False, indent=2
-                    ),
+    messages = [
+        {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": ROUTER_USER_PROMPT.format(
+                question=question,
+                top_k=top_k,
+                available_actions=json.dumps(
+                    sorted(allowed_actions), ensure_ascii=False
                 ),
-            },
-        ],
-    }
-    total_attempts = Settings.ROUTER_MAX_RETRIES + 1
-    last_error = ""
-    for attempt in range(total_attempts):
-        try:
-            response = requests.post(
-                Settings.ROUTER_API_URL,
-                headers=build_router_headers(),
-                json=payload,
-                timeout=Settings.ROUTER_TIMEOUT,
-            )
-            if response.status_code != 200:
-                raise RuntimeError(
-                    f"HTTP {response.status_code}: {response.text[:300]}"
-                )
-            return response.json()["choices"][0]["message"]["content"]
-        except Exception as exc:
-            last_error = str(exc)
-            if attempt < Settings.ROUTER_MAX_RETRIES:
-                logger.warning(
-                    "[trace_id=%s] [router_llm] retry attempt=%s/%s error=%s",
-                    trace_id,
-                    attempt + 1,
-                    total_attempts,
-                    last_error,
-                )
-                time.sleep(Settings.LLM_RETRY_SLEEP)
-    raise RuntimeError(f"路由模型调用失败：{last_error}")
+                tool_specs=json.dumps(
+                    tool_registry.router_specs(), ensure_ascii=False, indent=2
+                ),
+            ),
+        },
+    ]
+    gateway = ModelGateway(
+        role="router",
+        langchain_model=get_router_model(),
+    )
+    return gateway.invoke_text(messages, trace_id=trace_id)
