@@ -19,7 +19,6 @@ def judge_config() -> evaluator.LLMJudgeConfig:
         api_key="",
         timeout=1,
         max_retries=0,
-        retry_sleep=0,
         max_tokens=1024,
     )
 
@@ -63,7 +62,6 @@ def test_call_judge_llm_uses_factory_gateway_and_cli_config(monkeypatch):
         api_key="cli-key",
         timeout=7,
         max_retries=3,
-        retry_sleep=0.5,
         max_tokens=456,
         temperature=0.2,
     )

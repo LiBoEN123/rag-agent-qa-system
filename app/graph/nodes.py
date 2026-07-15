@@ -19,7 +19,7 @@ from app.agent.runtime import (
 )
 from app.agent.state import AgentState, get_effective_question
 from app.config import Settings
-from app.graph.state import AgentGraphState, resolve_question_inputs
+from app.graph.state import AgentGraphState
 from app.rag.graph import run_rag_subgraph
 
 
@@ -37,11 +37,10 @@ def _require_agent_state(state: AgentGraphState) -> AgentState:
 
 
 def _resolve_state_questions(state: AgentGraphState) -> tuple[str, str]:
-    """读取 Graph 中的新字段，并兼容只包含旧 question 的输入。"""
-    return resolve_question_inputs(
-        state.get("question"),
-        original_question=state.get("original_question"),
-        effective_question=state.get("effective_question"),
+    """读取并清理 Graph 中的原始问题与执行问题。"""
+    return (
+        (state.get("original_question") or "").strip(),
+        (state.get("effective_question") or "").strip(),
     )
 
 

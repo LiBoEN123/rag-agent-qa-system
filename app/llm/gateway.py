@@ -15,6 +15,7 @@ from app.llm.errors import ModelCallError
 
 logger = get_logger("chat_service")
 
+
 def _status_code(exc: BaseException) -> int | None:
     """从 OpenAI 或 httpx 风格异常中提取 HTTP 状态码。"""
     value = getattr(exc, "status_code", None)
@@ -67,6 +68,40 @@ def _model_name(model: Any) -> str:
         if value:
             return str(value)
     return ""
+
+
+def _build_model_call_error(exc: BaseException, model: Any) -> ModelCallError:
+    """将底层模型异常统一映射为 ModelCallError。"""
+    if isinstance(exc, ModelCallError):
+        return exc
+    return ModelCallError(
+        _user_error_message(exc),
+        detail=type(exc).__name__,
+        provider="langchain",
+        model_name=_model_name(model),
+        retryable=_is_retryable(exc),
+    )
+
+
+def _is_structured_output_unsupported(exc: BaseException) -> bool:
+    """仅识别明确的 structured output 能力不兼容错误。"""
+    if _status_code(exc) is not None or _is_timeout_or_connection_error(exc):
+        return False
+    if isinstance(exc, NotImplementedError):
+        return True
+
+    message = str(exc).strip().lower()
+    if isinstance(exc, AttributeError) and "with_structured_output" in message:
+        return True
+
+    normalized = re.sub(r"[\s_-]+", " ", message)
+    return bool(
+        "structured output" in normalized
+        and any(
+            marker in normalized
+            for marker in ("unsupported", "not supported", "unavailable")
+        )
+    )
 
 
 def _extract_text_content(response: Any) -> str:
@@ -210,13 +245,7 @@ class ModelGateway:
                 fallback=False,
                 error=exc,
             )
-            raise ModelCallError(
-                _user_error_message(exc),
-                detail=type(exc).__name__,
-                provider="langchain",
-                model_name=_model_name(self.langchain_model),
-                retryable=_is_retryable(exc),
-            ) from exc
+            raise _build_model_call_error(exc, self.langchain_model) from exc
 
     def invoke_structured(
         self,
@@ -239,20 +268,18 @@ class ModelGateway:
                 value = structured_model.invoke(_to_langchain_messages(messages))
                 return _validate_schema(schema, value)
             except Exception as exc:
+                fallback = _is_structured_output_unsupported(exc)
                 self._log_call(
                     trace_id=trace_id,
                     invocation="structured",
                     prompt_chars=prompt_chars,
-                    fallback=True,
+                    fallback=fallback,
                     error=exc,
                 )
-                if _status_code(exc) in {401, 403, 404, 429}:
-                    raise ModelCallError(
-                        _user_error_message(exc),
-                        detail=type(exc).__name__,
-                        provider="langchain",
-                        model_name=_model_name(self.langchain_model),
-                        retryable=_is_retryable(exc),
+                if not fallback:
+                    raise _build_model_call_error(
+                        exc,
+                        self.langchain_model,
                     ) from exc
 
         raw_text = self.invoke_text(messages, trace_id=trace_id)

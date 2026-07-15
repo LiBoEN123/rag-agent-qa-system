@@ -1,4 +1,5 @@
 from app.tools.registry import ToolRegistry, ToolSpec, tool_registry
+from app.tools.context import ToolInvocationContext
 from app.tools.schemas import SearchKnowledgeBaseArgs
 from app.tools import dispatch_tool
 
@@ -125,8 +126,9 @@ def test_dispatch_validates_args_before_handler():
     registry = ToolRegistry()
     seen = {}
 
-    def fake_handler(args):
+    def fake_handler(args, context):
         seen["args"] = args
+        seen["context"] = context
         return {
             "status": "success",
             "ok": True,
@@ -147,13 +149,16 @@ def test_dispatch_validates_args_before_handler():
         )
     )
 
+    context = ToolInvocationContext(trace_id="trace-registry")
     result = registry.dispatch(
         "search_knowledge_base",
         {"query": "测试", "top_k": 5},
+        context=context,
     )
 
     assert result["status"] == "success"
     assert seen["args"] == {"query": "测试", "top_k": 5}
+    assert seen["context"] is context
 
 
 def test_dispatch_returns_tool_error_when_args_invalid():
@@ -161,7 +166,7 @@ def test_dispatch_returns_tool_error_when_args_invalid():
     registry = ToolRegistry()
     called = {"count": 0}
 
-    def fake_handler(args):
+    def fake_handler(args, context):
         called["count"] += 1
         return {"status": "success", "ok": True, "tool_name": "search_knowledge_base"}
 
@@ -199,10 +204,10 @@ def test_dispatch_unknown_tool_still_returns_error():
 
 def test_dispatch_tool_keeps_compatible_entrypoint(monkeypatch, tmp_path):
     """验证旧的 dispatch_tool 入口仍可调用注册工具。"""
-    import app.tools as tools
+    from app.tools import dispatch as tool_dispatch
 
     monkeypatch.setattr(
-        tools,
+        tool_dispatch,
         "TOOL_CALLS_PATH",
         tmp_path / "tool_calls.jsonl",
         raising=False

@@ -2,12 +2,11 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.rag import decomposition
-import app.rag.retrieval as rag_retrieval
-from app.rag.retrieval import (
+from app.rag.decomposition import (
     parse_decompose_llm_json,
     should_decompose_query,
-    should_refuse,
 )
+from app.rag.retrieval import should_refuse
 
 
 def test_should_refuse_empty_results():
@@ -186,7 +185,7 @@ def test_decompose_query_with_llm_uses_role_factory_and_parses_result(monkeypatc
     model = FakeDecomposeModel()
     monkeypatch.setattr(decomposition, "get_decompose_model", lambda: model)
 
-    result = rag_retrieval.decompose_query_with_llm("缓考和免考入口是什么？")
+    result = decomposition.decompose_query_with_llm("缓考和免考入口是什么？")
 
     assert result["need_decompose"] is False
     assert result["reason"] == "单一问题"

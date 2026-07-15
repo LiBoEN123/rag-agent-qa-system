@@ -47,12 +47,12 @@ def _run(
     original_question: str | None = None,
     effective_question: str | None = None,
 ) -> dict:
-    question = effective_question or f"问题-{trace_id}"
+    resolved_effective_question = effective_question or f"问题-{trace_id}"
+    resolved_original_question = original_question or resolved_effective_question
     return graph_runtime.run_agent_langgraph(
         write_bad_cases=lambda record: None,
-        question=question,
-        original_question=original_question,
-        effective_question=effective_question,
+        original_question=resolved_original_question,
+        effective_question=resolved_effective_question,
         top_k=5,
         decompose_top_k=10,
         decision=_decision(trace_id),
@@ -292,7 +292,8 @@ def test_checkpoint_write_failure_returns_compatible_error_once(monkeypatch):
     )
     result = graph_runtime.run_agent_langgraph(
         write_bad_cases=bad_cases.append,
-        question="失败问题",
+        original_question="失败问题",
+        effective_question="失败问题",
         top_k=5,
         decompose_top_k=10,
         trace_id="trace-failed",

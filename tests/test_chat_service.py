@@ -226,7 +226,7 @@ def test_rewrite_routes_and_runs_once_with_original_question_preserved():
     assert calls["history"] == ["session-1"]
     assert len(calls["rewrite"]) == 1
     assert calls["route"][0]["question"] == rewritten_question
-    assert calls["langgraph"][0]["question"] == rewritten_question
+    assert "question" not in calls["langgraph"][0]
     assert calls["langgraph"][0]["original_question"] == "原始问题"
     assert (
         calls["langgraph"][0]["effective_question"]
@@ -255,7 +255,7 @@ def test_question_without_rewrite_is_passed_through_without_extra_llm_count():
     service.handle(make_request())
 
     assert calls["route"][0]["question"] == "原始问题"
-    assert calls["langgraph"][0]["question"] == "原始问题"
+    assert "question" not in calls["langgraph"][0]
     assert calls["langgraph"][0]["original_question"] == "原始问题"
     assert calls["langgraph"][0]["effective_question"] == "原始问题"
     assert calls["metrics"][0]["llm_call_count"] == 0
@@ -362,7 +362,9 @@ def test_langgraph_runtime_receives_complete_existing_protocol_once():
 
     assert len(calls["langgraph"]) == 1
     kwargs = calls["langgraph"][0]
-    assert kwargs["question"] == "原始问题"
+    assert "question" not in kwargs
+    assert kwargs["original_question"] == "原始问题"
+    assert kwargs["effective_question"] == "原始问题"
     assert kwargs["top_k"] == 4
     assert kwargs["decompose_top_k"] == 8
     assert kwargs["trace_id"] == "trace-1"

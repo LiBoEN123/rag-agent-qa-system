@@ -4,6 +4,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from app import agent
 from app.agent import executor as agent_executor
 from app.agent import llm_router
+from app.agent import router as agent_router
 from app.graph import nodes as graph_nodes
 from app.graph import runtime as graph_runtime
 from app.tools.registry import tool_registry
@@ -192,7 +193,7 @@ def test_tool_route_uses_rules_before_llm_when_router_enabled(monkeypatch):
         called["count"] += 1
         raise AssertionError("工具类问题不应调用 LLM Router")
 
-    monkeypatch.setattr(agent, "route_agent_action_by_llm", fake_llm)
+    monkeypatch.setattr(agent_router, "route_agent_action_by_llm", fake_llm)
 
     decision = agent.route_agent_action("知识库有哪些文档？", 5)
 
@@ -207,7 +208,7 @@ def test_default_kb_route_can_use_llm_when_enabled(monkeypatch):
     """验证默认知识库问题在启用 Router 时仍可走 LLM 路由。"""
     monkeypatch.setattr(agent.Settings, "ENABLE_LLM_ROUTER", True, raising=False)
     monkeypatch.setattr(
-        agent,
+        agent_router,
         "route_agent_action_by_llm",
         lambda question, top_k, trace_id="": {
             "decision": "use_knowledge_base",
@@ -229,7 +230,7 @@ def test_route_falls_back_to_rules_when_llm_is_invalid(monkeypatch):
     """验证 LLM 路由非法时会回退到规则路由。"""
     monkeypatch.setattr(agent.Settings, "ENABLE_LLM_ROUTER", True, raising=False)
     monkeypatch.setattr(
-        agent,
+        agent_router,
         "route_agent_action_by_llm",
         lambda question, top_k, trace_id="": {"action": "unknown_tool"},
     )
@@ -314,7 +315,8 @@ def test_langgraph_uses_search_knowledge_base_tool_once(monkeypatch):
 
     result = graph_runtime.run_agent_langgraph(
         write_bad_cases=lambda record: None,
-        question="测试问题",
+        original_question="测试问题",
+        effective_question="测试问题",
         top_k=5,
         decompose_top_k=10,
         decision={

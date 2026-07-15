@@ -2,6 +2,7 @@ import app.rag as rag
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.tools import compare_documents as compare_documents_module
+from app.tools import dispatch as tool_dispatch
 
 
 compare_documents_tool = compare_documents_module.compare_documents_tool
@@ -238,3 +239,52 @@ def test_compare_llm_uses_compare_factory_and_parses_business_fields(monkeypatch
     assert isinstance(model.calls[0][1], HumanMessage)
     assert "证据 A" in model.calls[0][1].content
     assert "证据 B" in model.calls[0][1].content
+
+
+def test_dispatch_compare_documents_propagates_trace_id(monkeypatch, tmp_path):
+    """请求 trace_id 经分发器和注册表传到文档对比模型网关。"""
+    fake_chunks = [
+        {
+            "chunk_id": 1,
+            "text": "普通本科四年制最长学习年限为 3 至 8 年。",
+            "metadata": {"file_name": "old.md", "chunk_id": 1},
+        },
+        {
+            "chunk_id": 2,
+            "text": "普通本科四年制最长学习年限为 3 至 6 年。",
+            "metadata": {"file_name": "new.md", "chunk_id": 2},
+        },
+    ]
+    received = {}
+
+    def fake_invoke_text(self, messages, *, trace_id=""):
+        received["trace_id"] = trace_id
+        return (
+            '{"comparison":"存在差异",'
+            '"conflict_detected":true,"summary":"摘要"}'
+        )
+
+    monkeypatch.setattr(rag, "chunks", fake_chunks, raising=False)
+    monkeypatch.setattr(
+        compare_documents_module.ModelGateway,
+        "invoke_text",
+        fake_invoke_text,
+    )
+    monkeypatch.setattr(
+        tool_dispatch,
+        "TOOL_CALLS_PATH",
+        tmp_path / "tool_calls.jsonl",
+    )
+
+    result = tool_dispatch.dispatch_tool(
+        "compare_documents",
+        {
+            "query": "普通本科四年制最长学习年限",
+            "doc_a": "old.md",
+            "doc_b": "new.md",
+        },
+        trace_id="trace-tool",
+    )
+
+    assert result["ok"] is True
+    assert received["trace_id"] == "trace-tool"

@@ -296,7 +296,7 @@ def test_chat_uses_rewritten_question_for_follow_up(monkeypatch):
 
     def fake_run_agent_langgraph(**kwargs):
         """模拟 LangGraph 并记录收到的改写后问题。"""
-        question = kwargs["question"]
+        question = kwargs["effective_question"]
         agent_questions.append(question)
         return {
             "status": "OK",
@@ -458,7 +458,7 @@ def test_chat_uses_langgraph_once_and_keeps_rewrite_route_api_protocol(monkeypat
         "route": 1,
         "langgraph": 1,
     }
-    assert runtime_kwargs["question"] == "改写后的问题"
+    assert "question" not in runtime_kwargs
     assert runtime_kwargs["original_question"] == "原始问题"
     assert runtime_kwargs["effective_question"] == "改写后的问题"
     assert runtime_kwargs["top_k"] == 4
