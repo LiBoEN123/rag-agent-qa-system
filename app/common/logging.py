@@ -5,6 +5,47 @@
 
 import logging
 import sys
+from urllib.parse import unquote
+
+
+class DecodedUvicornAccessFilter(logging.Filter):
+    """仅在访问日志展示阶段解码 URL，不修改实际请求。"""
+
+    marker = "decoded_uvicorn_access"
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if not isinstance(args, tuple) or len(args) != 5:
+            return True
+
+        client_addr, method, path, http_version, status_code = args
+        decoded_path = unquote(str(path), errors="replace")
+        safe_path = "".join(
+            char if char.isprintable() else f"\\x{ord(char):02x}"
+            for char in decoded_path
+        )
+        record.args = (
+            client_addr,
+            method,
+            safe_path,
+            http_version,
+            status_code,
+        )
+        return True
+
+
+def configure_uvicorn_access_log() -> None:
+    """让 Uvicorn access logger 以可读文本展示百分号编码的 URL。"""
+    access_logger = logging.getLogger("uvicorn.access")
+    if any(
+        getattr(log_filter, "marker", "") == DecodedUvicornAccessFilter.marker
+        for log_filter in access_logger.filters
+    ):
+        return
+    access_logger.addFilter(DecodedUvicornAccessFilter())
+
+
+configure_uvicorn_access_log()
 
 def get_logger(name:str = "app"):
     """创建或复用统一格式的 stdout 日志记录器。"""
@@ -28,7 +69,6 @@ def get_logger(name:str = "app"):
     logger.propagate = False
 
     return logger
-
 
 
 
