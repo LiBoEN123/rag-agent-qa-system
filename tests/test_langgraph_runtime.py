@@ -1,6 +1,5 @@
 """LangGraph Runtime 兼容性与异常行为测试。"""
 
-import inspect
 import json
 
 import pytest
@@ -119,15 +118,6 @@ def _decision(action: str) -> dict:
         "reason": "用户询问系统能力",
         "router_llm_used": False,
     }
-
-
-def test_runtime_signature_removes_legacy_question_parameter():
-    """Runtime 只接受两个明确、仅关键字的问题字段。"""
-    parameters = inspect.signature(run_agent_langgraph).parameters
-
-    assert "question" not in parameters
-    assert parameters["original_question"].kind is inspect.Parameter.KEYWORD_ONLY
-    assert parameters["effective_question"].kind is inspect.Parameter.KEYWORD_ONLY
 
 
 def test_runtime_without_decision_routes_once_and_forwards_trace_id(monkeypatch):

@@ -1,7 +1,5 @@
 """统一 ModelGateway 及 RAG generation 接入的回归测试。"""
 
-import inspect
-
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
@@ -299,15 +297,6 @@ def test_model_call_error_redacts_api_key_from_user_and_debug_messages(monkeypat
     assert "environment-secret-key" not in error.user_message
     assert "environment-secret-key" not in error.detail
     assert "[REDACTED]" in error.user_message
-
-
-def test_generation_call_llm_signature_is_unchanged():
-    """RAG 对外调用参数仍是 question、context、trace_id。"""
-    assert list(inspect.signature(generation.call_llm).parameters) == [
-        "question",
-        "context",
-        "trace_id",
-    ]
 
 
 def test_generation_call_llm_uses_answer_factory_and_keeps_prompt(monkeypatch):

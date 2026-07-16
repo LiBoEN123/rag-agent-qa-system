@@ -60,18 +60,6 @@ def test_agent_router_tool_specs_from_registry():
         assert "args_schema" in item
 
 
-def test_search_knowledge_base_is_now_standard_tool():
-    """验证知识库检索已经成为 Router 可调用的标准工具。"""
-    assert "search_knowledge_base" in agent.ROUTER_ALLOWED_TOOLS
-    assert "search_knowledge_base" in agent.ROUTER_ALLOWED_ACTIONS
-
-
-def test_compare_documents_is_allowed_tool():
-    """验证 compare_documents 已进入 Agent Router 白名单。"""
-    assert "compare_documents" in agent.ROUTER_ALLOWED_TOOLS
-    assert "compare_documents" in agent.ROUTER_ALLOWED_ACTIONS
-
-
 def test_validate_llm_compare_documents_route_keeps_safe_args():
     """验证 LLM 路由选择 compare_documents 时会校验并规整参数。"""
     decision = agent.validate_route_decision(

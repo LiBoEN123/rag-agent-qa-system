@@ -38,6 +38,16 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
         "router_source": "rule_based",
         "router_llm_used": False,
     }
+    reference = {
+        "reference_id": "Reference 1",
+        "file_name": "policy.md",
+        "source_path": "/kb/policy.md",
+        "chunk_id": 1,
+        "position": 1,
+        "snippet": "默认路径证据",
+        "score": 0.9,
+        "rerank_score": 0.8,
+    }
 
     def rewrite(question, history, trace_id=""):
         calls["rewrite"] += 1
@@ -67,18 +77,7 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
         return {
             "status": "OK",
             "answer": "LangGraph 默认回答",
-            "references": [
-                {
-                    "reference_id": "Reference 1",
-                    "file_name": "policy.md",
-                    "source_path": "/kb/policy.md",
-                    "chunk_id": 1,
-                    "position": 1,
-                    "snippet": "默认路径证据",
-                    "score": 0.9,
-                    "rerank_score": 0.8,
-                }
-            ],
+            "references": [reference],
             "retrieval_confidence": 0.9,
             "answer_confidence": 0.8,
             "need_clarification": False,
@@ -162,8 +161,15 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
         "metrics": 1,
     }
     assert result["code"] == 0
+    assert result["message"] == "success"
     assert result["data"]["status"] == "ok"
-    assert result["data"]["references"][0]["reference_id"] == "Reference 1"
+    assert result["data"]["answer"] == "LangGraph 默认回答"
+    assert result["data"]["references"] == [reference]
+    assert result["data"]["retrieval_confidence"] == 0.9
+    assert result["data"]["answer_confidence"] == 0.8
+    assert result["data"]["router_llm_used"] is False
+    assert result["data"]["decompose_llm_used"] is False
+    assert result["data"]["answer_llm_used"] is True
     assert result["data"]["llm_call_count"] == 1
     assert [
         step["step"] for step in result["data"]["tool_trace"]
