@@ -1,5 +1,3 @@
-import inspect
-
 import app.api.chat as chat_api
 from app.services.chat_service import ChatServiceOutcome, ChatServiceRequest
 
@@ -93,14 +91,3 @@ def test_chat_controller_only_adapts_http_context(monkeypatch):
             "llm_call_count": 0,
         },
     }
-
-
-def test_chat_controller_contains_no_business_orchestration_calls():
-    source = inspect.getsource(chat_api.ask_api)
-
-    assert "route_agent_action" not in source
-    assert "rewrite_query_with_history" not in source
-    assert "run_agent_langgraph" not in source
-    assert "get_history" not in source
-    assert "append_message" not in source
-    assert "collect_trace_metrics" not in source

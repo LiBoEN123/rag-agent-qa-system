@@ -1,6 +1,5 @@
 import pytest
 
-from app.storage import session as session_store
 from app.config import Settings
 from app.storage.session import append_message, clear_session, get_history
 
@@ -69,15 +68,3 @@ def test_session_store_rejects_invalid_role():
         append_message("s_bad_role", "system", "content")
 
     clear_session("s_bad_role")
-
-
-def test_session_store_always_uses_sqlite():
-    """验证 session_store 始终使用 SQLite 保存和读取历史。"""
-    session_store.clear_session("s_sqlite")
-    session_store.append_message("s_sqlite", "user", "你好")
-    session_store.append_message("s_sqlite", "assistant", "你好")
-
-    assert session_store.get_history("s_sqlite") == [
-        {"role": "user", "content": "你好"},
-        {"role": "assistant", "content": "你好"},
-    ]

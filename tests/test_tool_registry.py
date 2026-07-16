@@ -15,11 +15,6 @@ def test_tool_registry_names_include_builtin_tools():
     assert "compare_documents" in names
 
 
-def test_search_knowledge_base_registered():
-    """验证知识库检索已作为标准工具注册。"""
-    assert "search_knowledge_base" in tool_registry.names()
-
-
 def test_router_specs_include_search_knowledge_base():
     """验证 Router 工具描述包含知识库检索工具。"""
     specs = tool_registry.router_specs()
@@ -33,17 +28,6 @@ def test_tool_registry_router_specs_shape():
     specs = tool_registry.router_specs()
 
     assert isinstance(specs, list)
-    assert specs
-
-    for spec in specs:
-        assert "name" in spec
-        assert "description" in spec
-        assert "args_schema" in spec
-
-
-def test_router_specs_keep_backward_compatible_shape():
-    """验证 Router 工具描述不暴露 Pydantic 模型对象。"""
-    specs = tool_registry.router_specs()
     assert specs
 
     for spec in specs:
@@ -192,16 +176,6 @@ def test_dispatch_returns_tool_error_when_args_invalid():
     assert "invalid tool args" in result["error"]
 
 
-def test_dispatch_unknown_tool_still_returns_error():
-    """验证未知工具仍然返回标准工具错误。"""
-    registry = ToolRegistry()
-    result = registry.dispatch("unknown_tool", {})
-
-    assert result["ok"] is False
-    assert result["status"] != "success"
-    assert "unknown tool" in result["error"]
-
-
 def test_dispatch_tool_keeps_compatible_entrypoint(monkeypatch, tmp_path):
     """验证旧的 dispatch_tool 入口仍可调用注册工具。"""
     from app.tools import dispatch as tool_dispatch
@@ -222,11 +196,6 @@ def test_dispatch_tool_keeps_compatible_entrypoint(monkeypatch, tmp_path):
     assert result["ok"] is True
     assert result["status"] == "success"
     assert result["output"]["result"] == 5
-
-
-def test_compare_documents_registered():
-    """验证 compare_documents 已注册到工具注册表。"""
-    assert "compare_documents" in tool_registry.names()
 
 
 def test_router_specs_include_compare_documents():

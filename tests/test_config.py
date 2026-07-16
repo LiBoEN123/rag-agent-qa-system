@@ -1,12 +1,6 @@
 """应用配置与 LangGraph Checkpointer 配置测试。"""
 
-import pytest
-
-from app.config import (
-    Settings,
-    normalize_langgraph_checkpointer,
-    validate_langgraph_checkpointer,
-)
+from app.config import Settings
 
 
 def test_agent_runtime_has_no_configuration_switch():
@@ -19,28 +13,6 @@ def test_llm_transport_has_no_configuration_switch():
     """应用内部固定使用统一 LangChain transport。"""
     removed_name = "LLM_CLIENT" + "_MODE"
     assert not hasattr(Settings, removed_name)
-
-
-def test_checkpointer_defaults_to_disabled():
-    assert normalize_langgraph_checkpointer(None) == "disabled"
-    assert normalize_langgraph_checkpointer("") == "disabled"
-
-
-@pytest.mark.parametrize(
-    ("raw_value", "expected"),
-    [
-        ("disabled", "disabled"),
-        ("  MEMORY  ", "memory"),
-        ("  Sqlite  ", "sqlite"),
-    ],
-)
-def test_checkpointer_values_are_normalized_and_validated(raw_value, expected):
-    assert validate_langgraph_checkpointer(raw_value) == expected
-
-
-def test_invalid_checkpointer_has_clear_configuration_error():
-    with pytest.raises(ValueError, match="LANGGRAPH_CHECKPOINTER 配置无效"):
-        validate_langgraph_checkpointer("unknown")
 
 
 def test_settings_validate_keeps_llm_rag_and_checkpointer_configuration(

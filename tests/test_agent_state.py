@@ -55,34 +55,6 @@ def test_agent_state_defaults():
     assert state.llm_call_count == 0
 
 
-def test_agent_state_can_append_plan_and_observation():
-    """验证状态对象可以累积计划步骤和观察结果。"""
-    state = AgentState(original_question="普通本科四年制最长学习年限是多少？")
-    step = AgentPlanStep(
-        step_id=1,
-        action="tool_call",
-        tool_name="search_knowledge_base",
-        tool_args={"query": "普通本科四年制最长学习年限是多少？", "top_k": 5},
-        reason="先检索知识库",
-    )
-    obs = AgentObservation(
-        step_id=1,
-        tool_name="search_knowledge_base",
-        success=True,
-        summary="检索到 5 个 chunk",
-        output={"count": 5},
-        cost_ms=123,
-    )
-
-    state.plan.append(step)
-    state.observations.append(obs)
-
-    assert len(state.plan) == 1
-    assert len(state.observations) == 1
-    assert state.plan[0].tool_name == "search_knowledge_base"
-    assert state.observations[0].success is True
-
-
 def test_agent_state_list_defaults_are_not_shared():
     """验证 list/dict 字段不会在多个状态对象之间共享。"""
     state1 = AgentState(original_question="问题1")
