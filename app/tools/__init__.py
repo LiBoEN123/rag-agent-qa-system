@@ -2,6 +2,7 @@
 
 from app.tools.calculator import safe_eval_expr, simple_calculator
 from app.tools.compare_documents import compare_documents_tool
+from app.tools.contracts import ToolRiskLevel, ToolSpec
 from app.tools.dispatch import (
     TOOL_CALLS_PATH,
     append_tool_log,
@@ -23,6 +24,8 @@ from app.tools.langchain_tools import (
 
 __all__ = [
     "TOOL_CALLS_PATH",
+    "ToolRiskLevel",
+    "ToolSpec",
     "append_tool_log",
     "compare_documents_tool",
     "dispatch_tool",

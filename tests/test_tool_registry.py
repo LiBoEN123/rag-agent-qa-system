@@ -1,3 +1,5 @@
+import json
+
 from app.tools.registry import ToolRegistry, ToolSpec, tool_registry
 from app.tools.context import ToolInvocationContext
 from app.tools.schemas import SearchKnowledgeBaseArgs
@@ -31,10 +33,58 @@ def test_tool_registry_router_specs_shape():
     assert specs
 
     for spec in specs:
-        assert "name" in spec
-        assert "description" in spec
-        assert "args_schema" in spec
+        assert set(spec) == {
+            "name",
+            "version",
+            "description",
+            "args_schema",
+            "risk_level",
+            "requires_approval",
+        }
+        assert "handler" not in spec
         assert "args_model" not in spec
+        assert "output_model" not in spec
+        assert "required_permissions" not in spec
+        assert "timeout" not in spec
+        assert "max_retries" not in spec
+
+    json.dumps(specs)
+
+
+def test_builtin_tools_publish_v2_contract_metadata():
+    """验证五个内置工具发布完整且符合要求的 V2 契约。"""
+    specs = tool_registry.contract_specs()
+    specs_by_name = {spec["name"]: spec for spec in specs}
+    expected_permissions = {
+        "search_knowledge_base": ["knowledge_base:read"],
+        "compare_documents": ["knowledge_base:read"],
+        "simple_calculator": [],
+        "list_documents": ["knowledge_base:read"],
+        "get_chunk_text": ["knowledge_base:read"],
+    }
+    expected_timeouts = {
+        "search_knowledge_base": 10.0,
+        "compare_documents": 20.0,
+        "simple_calculator": 3.0,
+        "list_documents": 5.0,
+        "get_chunk_text": 5.0,
+    }
+
+    assert len(specs) == len(tool_registry.names())
+    assert set(specs_by_name) == set(tool_registry.names())
+    assert [spec["name"] for spec in specs] == tool_registry.names()
+    json.dumps(specs)
+
+    for name, spec in specs_by_name.items():
+        assert spec["version"] == "1.0.0"
+        assert spec["risk_level"] == "read_only"
+        assert spec["required_permissions"] == expected_permissions[name]
+        assert spec["timeout"] == expected_timeouts[name]
+        assert spec["max_retries"] == 0
+        assert spec["idempotent"] is True
+        assert spec["requires_approval"] is False
+        assert spec["output_model"] is None
+        assert "handler" not in spec
 
 
 def test_tool_registry_dispatch_simple_calculator():
@@ -125,6 +175,7 @@ def test_dispatch_validates_args_before_handler():
     registry.register(
         ToolSpec(
             name="search_knowledge_base",
+            version="1.0.0",
             description="检索知识库",
             args_schema={"query": "string", "top_k": "integer"},
             output_schema={},
@@ -157,6 +208,7 @@ def test_dispatch_returns_tool_error_when_args_invalid():
     registry.register(
         ToolSpec(
             name="search_knowledge_base",
+            version="1.0.0",
             description="检索知识库",
             args_schema={"query": "string", "top_k": "integer"},
             output_schema={},

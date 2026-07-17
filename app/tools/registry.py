@@ -1,15 +1,13 @@
 """工具注册表模块。
 
-定义工具描述、参数校验和分发协议，并注册系统内置工具集合。
+管理工具查询和分发，并注册系统内置工具集合。
 """
 
-from dataclasses import dataclass
-from typing import Callable
-
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from app.tools.calculator import simple_calculator
 from app.tools.compare_documents import compare_documents_tool
+from app.tools.contracts import ToolRiskLevel, ToolSpec
 from app.tools.context import ToolInvocationContext
 from app.tools.knowledge_base import (
     get_chunk_text,
@@ -26,19 +24,6 @@ from app.tools.schemas import (
 )
 
 
-@dataclass
-class ToolSpec:
-    """描述一个可注册工具的基础信息。"""
-    name: str
-    description: str
-    args_schema: dict
-    output_schema: dict
-    handler: Callable[[dict, ToolInvocationContext], dict]
-    timeout: int = 10
-    safe_level: str = "safe"
-    args_model: type[BaseModel] | None = None
-
-
 class ToolRegistry:
     """统一管理工具注册、查询和分发。"""
 
@@ -48,8 +33,11 @@ class ToolRegistry:
 
     def register(self, spec: ToolSpec) -> None:
         """注册一个工具定义。"""
-        if not spec.name:
-            raise ValueError("tool name 不能为空")
+        if not isinstance(spec, ToolSpec):
+            raise TypeError("spec 必须是 ToolSpec")
+
+        if spec.name in self._tools:
+            raise ValueError(f"tool {spec.name!r} 已注册，禁止静默覆盖")
 
         self._tools[spec.name] = spec
 
@@ -63,14 +51,11 @@ class ToolRegistry:
 
     def router_specs(self) -> list[dict]:
         """返回 Router 可读取的工具描述。"""
-        return [
-            {
-                "name": spec.name,
-                "description": spec.description,
-                "args_schema": spec.args_schema,
-            }
-            for spec in self._tools.values()
-        ]
+        return [spec.to_router_spec() for spec in self._tools.values()]
+
+    def contract_specs(self) -> list[dict]:
+        """返回完整且可序列化的工具契约。"""
+        return [spec.to_contract_dict() for spec in self._tools.values()]
 
     def dispatch(
         self,
@@ -158,6 +143,7 @@ def register_default_tools(registry: ToolRegistry) -> None:
     registry.register(
         ToolSpec(
             name="search_knowledge_base",
+            version="1.0.0",
             description="检索知识库并返回相关证据 chunk",
             args_schema={
                 "query": "string, 必填，用户问题或检索问题",
@@ -170,11 +156,18 @@ def register_default_tools(registry: ToolRegistry) -> None:
             },
             handler=_handle_search_knowledge_base,
             args_model=SearchKnowledgeBaseArgs,
+            risk_level=ToolRiskLevel.READ_ONLY,
+            required_permissions=("knowledge_base:read",),
+            timeout=10.0,
+            max_retries=0,
+            idempotent=True,
+            requires_approval=False,
         )
     )
     registry.register(
         ToolSpec(
             name="compare_documents",
+            version="1.0.0",
             description="对比两个知识库文档中关于同一问题的相关规定差异",
             args_schema={
                 "query": "string, 必填，对比主题或问题",
@@ -194,39 +187,75 @@ def register_default_tools(registry: ToolRegistry) -> None:
             },
             handler=_handle_compare_documents,
             args_model=CompareDocumentsArgs,
+            risk_level=ToolRiskLevel.READ_ONLY,
+            required_permissions=("knowledge_base:read",),
+            timeout=20.0,
+            max_retries=0,
+            idempotent=True,
+            requires_approval=False,
         )
     )
     registry.register(
         ToolSpec(
             name="simple_calculator",
+            version="1.0.0",
             description="执行简单数字四则运算",
             args_schema={"expression": "string, 必填，例如 '1 + 2 * 3'"},
             output_schema={"expression": "string", "result": "number"},
             handler=_handle_simple_calculator,
             args_model=SimpleCalculatorArgs,
+            risk_level=ToolRiskLevel.READ_ONLY,
+            required_permissions=(),
+            timeout=3.0,
+            max_retries=0,
+            idempotent=True,
+            requires_approval=False,
         )
     )
     registry.register(
         ToolSpec(
             name="list_documents",
+            version="1.0.0",
             description="列出知识库文档及数量",
             args_schema={},
             output_schema={"count": "integer", "documents": "list"},
             handler=_handle_list_documents,
             args_model=ListDocumentsArgs,
+            risk_level=ToolRiskLevel.READ_ONLY,
+            required_permissions=("knowledge_base:read",),
+            timeout=5.0,
+            max_retries=0,
+            idempotent=True,
+            requires_approval=False,
         )
     )
     registry.register(
         ToolSpec(
             name="get_chunk_text",
+            version="1.0.0",
             description="查看指定 chunk_id 的完整原文",
             args_schema={"chunk_id": "integer|string, 必填"},
             output_schema={"chunk_id": "integer|string", "chunk": "dict"},
             handler=_handle_get_chunk_text,
             args_model=GetChunkTextArgs,
+            risk_level=ToolRiskLevel.READ_ONLY,
+            required_permissions=("knowledge_base:read",),
+            timeout=5.0,
+            max_retries=0,
+            idempotent=True,
+            requires_approval=False,
         )
     )
 
 
 tool_registry = ToolRegistry()
 register_default_tools(tool_registry)
+
+
+__all__ = [
+    "ToolRegistry",
+    "ToolRiskLevel",
+    "ToolSpec",
+    "register_default_tools",
+    "tool_registry",
+]
