@@ -89,3 +89,16 @@ def close_agent_graph_runtime() -> None:
             "[shutdown] langgraph_runtime_close_failed error=%s",
             str(exc)[:200],
         )
+
+
+def close_tool_runtime() -> None:
+    """关闭工具线程池；关闭异常只记录日志，不阻塞其他资源清理。"""
+    try:
+        from app.tools.runtime import close_tool_runtime as close_runtime
+
+        close_runtime()
+    except Exception as exc:
+        logger.warning(
+            "[shutdown] tool_runtime_close_failed error=%s",
+            str(exc)[:200],
+        )

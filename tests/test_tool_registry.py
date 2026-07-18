@@ -153,6 +153,9 @@ def test_tool_registry_dispatch_unknown_tool():
     assert result["tool_input"] == {}
     assert result["output"] is None
     assert result["error"] == "unknown tool: unknown_tool"
+    assert result["error_code"] == "unknown_tool"
+    assert result["retryable"] is False
+    assert result["runtime"]["attempt_count"] == 0
 
 
 def test_dispatch_validates_args_before_handler():
@@ -226,6 +229,8 @@ def test_dispatch_returns_tool_error_when_args_invalid():
     assert result["status"] != "success"
     assert result["ok"] is False
     assert "invalid tool args" in result["error"]
+    assert result["error_code"] == "invalid_arguments"
+    assert result["runtime"]["attempt_count"] == 0
 
 
 def test_dispatch_tool_keeps_compatible_entrypoint(monkeypatch, tmp_path):

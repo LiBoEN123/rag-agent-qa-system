@@ -3,8 +3,11 @@
 集中读取环境变量、解析项目路径，并提供模型、索引和服务运行参数。
 """
 
+import math
 import os
 from pathlib import Path
+from typing import Any
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -44,6 +47,77 @@ def validate_langgraph_checkpoint_db_path(value: str | Path) -> Path:
 def env_bool(name: str, default: str = "false") -> bool:
     """从环境变量读取布尔配置，支持常见真值字符串。"""
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_int(name: str, default: str) -> int:
+    """读取整数环境变量，并在格式非法时给出明确配置名。"""
+    raw_value = os.getenv(name, default)
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} 配置无效: {raw_value!r}，必须是整数") from exc
+
+
+def env_float(name: str, default: str) -> float:
+    """读取浮点环境变量，并在格式非法时给出明确配置名。"""
+    raw_value = os.getenv(name, default)
+    try:
+        return float(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} 配置无效: {raw_value!r}，必须是数字") from exc
+
+
+def validate_tool_runtime_config(
+    *,
+    max_workers: int,
+    retry_base_delay_ms: int,
+    retry_max_delay_ms: int,
+    retry_jitter_ratio: float,
+) -> None:
+    """校验工具运行时线程池与退避参数。"""
+    if isinstance(max_workers, bool) or not isinstance(max_workers, int):
+        raise ValueError("TOOL_RUNTIME_MAX_WORKERS 必须是整数")
+    if max_workers < 1:
+        raise ValueError("TOOL_RUNTIME_MAX_WORKERS 必须大于或等于 1")
+
+    if isinstance(retry_base_delay_ms, bool) or not isinstance(
+        retry_base_delay_ms,
+        int,
+    ):
+        raise ValueError("TOOL_RETRY_BASE_DELAY_MS 必须是整数")
+    if retry_base_delay_ms < 0:
+        raise ValueError("TOOL_RETRY_BASE_DELAY_MS 必须大于或等于 0")
+
+    if isinstance(retry_max_delay_ms, bool) or not isinstance(
+        retry_max_delay_ms,
+        int,
+    ):
+        raise ValueError("TOOL_RETRY_MAX_DELAY_MS 必须是整数")
+    if retry_max_delay_ms < retry_base_delay_ms:
+        raise ValueError(
+            "TOOL_RETRY_MAX_DELAY_MS 必须大于或等于 "
+            "TOOL_RETRY_BASE_DELAY_MS"
+        )
+
+    if isinstance(retry_jitter_ratio, bool) or not isinstance(
+        retry_jitter_ratio,
+        (int, float),
+    ):
+        raise ValueError("TOOL_RETRY_JITTER_RATIO 必须是数字")
+    if not math.isfinite(float(retry_jitter_ratio)) or not (
+        0 <= retry_jitter_ratio <= 1
+    ):
+        raise ValueError("TOOL_RETRY_JITTER_RATIO 必须在 0 到 1 之间")
+
+
+def validate_tool_runtime_settings(settings: Any) -> None:
+    """从 Settings 类读取并校验工具运行时配置。"""
+    validate_tool_runtime_config(
+        max_workers=settings.TOOL_RUNTIME_MAX_WORKERS,
+        retry_base_delay_ms=settings.TOOL_RETRY_BASE_DELAY_MS,
+        retry_max_delay_ms=settings.TOOL_RETRY_MAX_DELAY_MS,
+        retry_jitter_ratio=settings.TOOL_RETRY_JITTER_RATIO,
+    )
 
 
 def project_path(path: Path) -> Path:
@@ -92,6 +166,11 @@ class Settings:
 
     LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", 60))
     LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", 2))
+
+    TOOL_RUNTIME_MAX_WORKERS = env_int("TOOL_RUNTIME_MAX_WORKERS", "8")
+    TOOL_RETRY_BASE_DELAY_MS = env_int("TOOL_RETRY_BASE_DELAY_MS", "100")
+    TOOL_RETRY_MAX_DELAY_MS = env_int("TOOL_RETRY_MAX_DELAY_MS", "2000")
+    TOOL_RETRY_JITTER_RATIO = env_float("TOOL_RETRY_JITTER_RATIO", "0.2")
 
     USE_LLM_JUDGE = env_bool("USE_LLM_JUDGE", "false")
     JUDGE_API_KEY = os.getenv("JUDGE_API_KEY") or LLM_API_KEY
@@ -157,6 +236,7 @@ class Settings:
     @classmethod
     def validate(cls):
         """校验关键配置是否存在并可访问。"""
+        validate_tool_runtime_settings(cls)
         cls.LANGGRAPH_CHECKPOINTER = validate_langgraph_checkpointer(
             cls.LANGGRAPH_CHECKPOINTER
         )

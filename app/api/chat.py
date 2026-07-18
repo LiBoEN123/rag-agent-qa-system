@@ -33,6 +33,7 @@ from app.api.responses import ChatResponseBuilder
 from app.api.lifecycle import (
     StartupDependencies,
     close_agent_graph_runtime,
+    close_tool_runtime,
     initialize_agent_graph_runtime,
     initialize_rag,
 )
@@ -57,6 +58,7 @@ async def lifespan(_app: FastAPI):
         start_on_event()
         yield
     finally:
+        close_tool_runtime()
         close_agent_graph_runtime()
 
 

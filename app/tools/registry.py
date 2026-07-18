@@ -3,8 +3,6 @@
 管理工具查询和分发，并注册系统内置工具集合。
 """
 
-from pydantic import ValidationError
-
 from app.tools.calculator import simple_calculator
 from app.tools.compare_documents import compare_documents_tool
 from app.tools.contracts import ToolRiskLevel, ToolSpec
@@ -14,7 +12,6 @@ from app.tools.knowledge_base import (
     list_documents,
     search_knowledge_base,
 )
-from app.tools.result import tool_error
 from app.tools.schemas import (
     CompareDocumentsArgs,
     GetChunkTextArgs,
@@ -64,38 +61,15 @@ class ToolRegistry:
         *,
         context: ToolInvocationContext | None = None,
     ) -> dict:
-        """按名称分发工具调用。"""
-        tool_args = args or {}
-        invocation_context = context or ToolInvocationContext()
-        spec = self.get(name)
+        """按名称通过统一 ToolRuntime 分发工具调用。"""
+        from app.tools.runtime import execute_registered_tool
 
-        if spec is None:
-            return tool_error(
-                tool_name=name,
-                tool_input=tool_args,
-                error=f"unknown tool: {name}"
-            )
-
-        if spec.args_model is not None:
-            try:
-                validated_args = spec.args_model.model_validate(tool_args).model_dump()
-            except ValidationError as e:
-                return tool_error(
-                    tool_name=name,
-                    tool_input=tool_args,
-                    error=f"invalid tool args: {e}"
-                )
-        else:
-            validated_args = tool_args
-
-        try:
-            return spec.handler(validated_args, invocation_context)
-        except Exception as e:
-            return tool_error(
-                tool_name=name,
-                tool_input=validated_args,
-                error=str(e)
-            )
+        return execute_registered_tool(
+            registry=self,
+            tool_name=name,
+            tool_args=args,
+            context=context,
+        )
 
 
 def _handle_simple_calculator(

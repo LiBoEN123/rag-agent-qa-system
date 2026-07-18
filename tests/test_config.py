@@ -1,6 +1,8 @@
-"""应用配置与 LangGraph Checkpointer 配置测试。"""
+"""应用配置、Tool Runtime 与 LangGraph Checkpointer 配置测试。"""
 
-from app.config import Settings
+import pytest
+
+from app.config import Settings, validate_tool_runtime_config
 
 
 def test_agent_runtime_has_no_configuration_switch():
@@ -29,3 +31,32 @@ def test_settings_validate_keeps_llm_rag_and_checkpointer_configuration(
     assert Settings.LANGGRAPH_CHECKPOINTER == "disabled"
     assert Settings.LLM_API_KEY == "test-key"
     assert Settings.RAG_FILE_PATH == tmp_path
+
+
+@pytest.mark.parametrize(
+    "overrides,expected_message",
+    [
+        ({"max_workers": 0}, "TOOL_RUNTIME_MAX_WORKERS"),
+        ({"retry_base_delay_ms": -1}, "TOOL_RETRY_BASE_DELAY_MS"),
+        (
+            {"retry_base_delay_ms": 200, "retry_max_delay_ms": 100},
+            "TOOL_RETRY_MAX_DELAY_MS",
+        ),
+        ({"retry_jitter_ratio": 1.1}, "TOOL_RETRY_JITTER_RATIO"),
+    ],
+)
+def test_tool_runtime_configuration_rejects_invalid_values(
+    overrides,
+    expected_message,
+):
+    """工具 Runtime 配置非法时明确指出对应环境变量。"""
+    values = {
+        "max_workers": 8,
+        "retry_base_delay_ms": 100,
+        "retry_max_delay_ms": 2000,
+        "retry_jitter_ratio": 0.2,
+    }
+    values.update(overrides)
+
+    with pytest.raises(ValueError, match=expected_message):
+        validate_tool_runtime_config(**values)
