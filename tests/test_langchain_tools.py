@@ -199,11 +199,12 @@ def test_unknown_langchain_tool_returns_none_and_registry_behavior_is_unchanged(
     assert get_langchain_tool("unknown_tool") is None
 
     result = tool_registry.dispatch("unknown_tool", {"value": 1})
-    assert result == {
-        "status": "error",
-        "ok": False,
-        "tool_name": "unknown_tool",
-        "tool_input": {"value": 1},
-        "output": None,
-        "error": "unknown tool: unknown_tool",
-    }
+    assert result["status"] == "error"
+    assert result["ok"] is False
+    assert result["tool_name"] == "unknown_tool"
+    assert result["tool_input"] == {"value": 1}
+    assert result["output"] is None
+    assert result["error"] == "unknown tool: unknown_tool"
+    assert result["error_code"] == "unknown_tool"
+    assert result["retryable"] is False
+    assert result["runtime"]["attempt_count"] == 0

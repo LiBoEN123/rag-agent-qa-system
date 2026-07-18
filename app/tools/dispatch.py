@@ -10,6 +10,7 @@ from pathlib import Path
 from app.tools.context import ToolInvocationContext
 from app.tools.registry import tool_registry
 from app.tools.result import tool_error
+from app.tools.runtime import execute_registered_tool
 
 
 TOOL_CALLS_PATH = Path("logs") / "tool_calls.jsonl"
@@ -26,18 +27,23 @@ def dispatch_tool(
     tool_name: str,
     tool_args: dict | None = None,
     trace_id: str = "",
-):
+) -> dict:
     """调用注册工具并记录耗时、结果和追踪编号。"""
     tool_args = tool_args or {}
-    start = time.time()
+    start = time.perf_counter()
     try:
-        result = tool_registry.dispatch(
-            tool_name,
-            tool_args,
+        result = execute_registered_tool(
+            registry=tool_registry,
+            tool_name=tool_name,
+            tool_args=tool_args,
             context=ToolInvocationContext(trace_id=trace_id),
         )
     except Exception as exc:
         result = tool_error(tool_name, tool_args, str(exc))
+
+    runtime = result.get("runtime")
+    runtime = runtime if isinstance(runtime, dict) else {}
+    elapsed_ms = max(0, int((time.perf_counter() - start) * 1000))
 
     append_tool_log(
         {
@@ -46,7 +52,14 @@ def dispatch_tool(
             "tool_name": tool_name,
             "tool_args": tool_args,
             "tool_result": result,
-            "elapsed_ms": int((time.time() - start) * 1000),
+            "tool_version": runtime.get("tool_version", ""),
+            "error_code": result.get("error_code", ""),
+            "retryable": result.get("retryable", False),
+            "attempt_count": runtime.get("attempt_count", 0),
+            "max_attempts": runtime.get("max_attempts", 0),
+            "timed_out": runtime.get("timed_out", False),
+            "timeout": runtime.get("timeout"),
+            "elapsed_ms": elapsed_ms,
             "success": result.get("ok", False),
         }
     )

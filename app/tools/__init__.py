@@ -3,6 +3,7 @@
 from app.tools.calculator import safe_eval_expr, simple_calculator
 from app.tools.compare_documents import compare_documents_tool
 from app.tools.contracts import ToolRiskLevel, ToolSpec
+from app.tools.errors import ToolErrorCode, ToolExecutionError
 from app.tools.dispatch import (
     TOOL_CALLS_PATH,
     append_tool_log,
@@ -14,6 +15,11 @@ from app.tools.knowledge_base import (
     search_knowledge_base,
 )
 from app.tools.result import tool_error, tool_success
+from app.tools.runtime import (
+    ToolRuntime,
+    close_tool_runtime,
+    get_tool_runtime,
+)
 from app.tools.langchain_tools import (
     get_langchain_tool,
     get_langchain_tool_map,
@@ -26,14 +32,19 @@ __all__ = [
     "TOOL_CALLS_PATH",
     "ToolRiskLevel",
     "ToolSpec",
+    "ToolErrorCode",
+    "ToolExecutionError",
+    "ToolRuntime",
     "append_tool_log",
     "compare_documents_tool",
+    "close_tool_runtime",
     "dispatch_tool",
     "get_chunk_text",
     "get_langchain_tool",
     "get_langchain_tool_map",
     "get_langchain_tool_names",
     "get_langchain_tools",
+    "get_tool_runtime",
     "list_documents",
     "safe_eval_expr",
     "search_knowledge_base",

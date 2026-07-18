@@ -15,8 +15,14 @@ class ToolResult(BaseModel):
     ok: bool = Field(..., description="工具是否执行成功")
     tool_name: str = Field(..., description="工具名称")
     tool_input: dict[str, Any] = Field(default_factory=dict, description="工具输入参数")
-    output: dict[str, Any] = Field(default_factory=dict, description="工具输出")
+    output: Any | None = Field(default=None, description="工具输出")
     error: str = Field(default="", description="错误信息")
+    error_code: str = Field(default="", description="稳定的工具错误码")
+    retryable: bool = Field(default=False, description="错误本身是否可重试")
+    runtime: dict[str, Any] = Field(
+        default_factory=dict,
+        description="工具运行时元数据",
+    )
     cost_ms: int = Field(default=0, ge=0, description="工具执行耗时，单位毫秒")
 
 

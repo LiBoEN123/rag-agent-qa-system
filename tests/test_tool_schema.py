@@ -21,8 +21,11 @@ def test_tool_result_defaults():
     assert result.ok is True
     assert result.tool_name == "simple_calculator"
     assert result.tool_input == {}
-    assert result.output == {}
+    assert result.output is None
     assert result.error == ""
+    assert result.error_code == ""
+    assert result.retryable is False
+    assert result.runtime == {}
     assert result.cost_ms == 0
 
 
