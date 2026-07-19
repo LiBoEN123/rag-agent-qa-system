@@ -172,6 +172,13 @@ Checkpointer 只保存 Graph 节点执行快照，不替代应用级聊天历史
 
 当前尚未实现 Checkpoint 自动恢复、Replay、Time Travel、Interrupt、人工审批、Streaming、Checkpoint 管理 API 或生产级分布式 Checkpointer。
 
+## Agent 演进文档
+
+- [当前演进基线](docs/agent-evolution-baseline.md)
+- [ADR 0001：开源 Agent 技术栈](docs/adr/0001-open-source-agent-stack.md)
+- [ADR 0002：迭代式 Agent Loop](docs/adr/0002-iterative-agent-loop.md)
+- [ADR 0003：工具治理边界](docs/adr/0003-tool-governance-boundary.md)
+
 ## 快速启动
 
 建议使用 Python 3.12，与 Docker 和 CI 环境保持一致。
