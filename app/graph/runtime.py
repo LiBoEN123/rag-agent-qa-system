@@ -14,6 +14,10 @@ from app.graph.checkpointing import (
     build_checkpoint_thread_id,
     get_checkpointer_mode,
 )
+from app.tools.context import (
+    ToolInvocationContext,
+    build_default_tool_context,
+)
 
 
 logger = get_logger("chat_service")
@@ -30,13 +34,7 @@ def run_agent_langgraph(
     *,
     original_question: str,
     effective_question: str,
-    principal_id: str = "chat_api",
-    principal_type: str = "service",
-    roles: tuple[str, ...] = ("reader",),
-    permissions: tuple[str, ...] = ("knowledge_base:read",),
-    tenant_id: str = "",
-    request_source: str = "chat_api",
-    idempotency_key: str = "",
+    tool_context: ToolInvocationContext | None = None,
 ) -> dict[str, Any]:
     """同步执行 LangGraph 主图，并返回 API 主流程使用的结果字典。"""
     resolved_original_question = (original_question or "").strip()
@@ -50,14 +48,12 @@ def run_agent_langgraph(
         "decision": decision,
         "trace_id": trace_id,
         "session_id": session_id,
-        "principal_id": principal_id,
-        "principal_type": principal_type,
-        "roles": list(roles),
-        "permissions": list(permissions),
-        "tenant_id": tenant_id,
-        "request_source": request_source,
-        "idempotency_key": idempotency_key,
     }
+    resolved_tool_context = tool_context or build_default_tool_context(
+        trace_id=trace_id,
+        session_id=session_id or "",
+        source="chat_api",
+    )
 
     try:
         mode = get_checkpointer_mode()
@@ -87,9 +83,13 @@ def run_agent_langgraph(
                         "thread_id": checkpoint_thread_id,
                     }
                 },
+                context=resolved_tool_context,
             )
         else:
-            output = graph.invoke(graph_input)
+            output = graph.invoke(
+                graph_input,
+                context=resolved_tool_context,
+            )
         result = output.get("result") if isinstance(output, dict) else None
         if not isinstance(result, dict):
             raise RuntimeError("LangGraph did not produce a valid result")

@@ -490,16 +490,8 @@ def test_registry_dispatch_uses_runtime_protocol():
     assert result["runtime"]["attempt_count"] == 1
 
 
-def test_langchain_tool_returns_runtime_extensions(monkeypatch, tmp_path):
+def test_langchain_tool_returns_runtime_extensions():
     """LangChain Tool 继续走 dispatch_tool 并获得 Runtime 扩展字段。"""
-    from app.tools import dispatch as tool_dispatch
-
-    monkeypatch.setattr(
-        tool_dispatch,
-        "TOOL_CALLS_PATH",
-        tmp_path / "tool_calls.jsonl",
-    )
-
     tool = get_langchain_tool("simple_calculator", trace_id="runtime-trace")
     assert tool is not None
     result = tool.invoke({"expression": "1 + 2"})

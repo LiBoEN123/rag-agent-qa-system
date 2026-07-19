@@ -5,6 +5,7 @@ import pytest
 from app.agent.state import AgentPlanStep, AgentState
 from app.graph import builder as graph_builder
 from app.graph import nodes as graph_nodes
+from app.tools.context import ToolInvocationContext
 
 
 @pytest.fixture(autouse=True)
@@ -81,10 +82,17 @@ def test_compiled_graph_invokes_each_stage_once(monkeypatch, provide_decision):
             )
         ]
 
-    def fake_execute(state):
+    tool_context = ToolInvocationContext(
+        trace_id="trace-graph",
+        principal_id="graph-test",
+        permissions=("knowledge_base:read",),
+    )
+
+    def fake_execute(state, *, context):
         calls["execute"] += 1
         assert isinstance(state, AgentState)
         assert state.session_id == "session-graph"
+        assert context is tool_context
         state.status = "direct_answer"
         state.reason = "能力说明"
         return state
@@ -116,7 +124,10 @@ def test_compiled_graph_invokes_each_stage_once(monkeypatch, provide_decision):
         "trace_id": "trace-graph",
         "session_id": "session-graph",
     }
-    output = graph_builder.build_agent_graph().compile().invoke(graph_input)
+    output = graph_builder.build_agent_graph().compile().invoke(
+        graph_input,
+        context=tool_context,
+    )
 
     assert output["result"]["status"] == "OK"
     assert output["result"]["answer"] == "Graph answer"

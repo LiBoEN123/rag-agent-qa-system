@@ -19,11 +19,7 @@ from app.tools.contracts import (
     ToolSpec,
 )
 from app.tools.errors import ToolErrorCode, ToolExecutionError
-from app.tools.dispatch import (
-    TOOL_CALLS_PATH,
-    append_tool_log,
-    dispatch_tool,
-)
+from app.tools.dispatch import dispatch_tool
 from app.tools.knowledge_base import (
     get_chunk_text,
     list_documents,
@@ -51,7 +47,6 @@ from app.tools.langchain_tools import (
 
 
 __all__ = [
-    "TOOL_CALLS_PATH",
     "JsonlToolAuditSink",
     "PrincipalType",
     "ToolAuditEvent",
@@ -67,7 +62,6 @@ __all__ = [
     "ToolErrorCode",
     "ToolExecutionError",
     "ToolRuntime",
-    "append_tool_log",
     "build_default_tool_context",
     "build_tool_args_fingerprint",
     "compare_documents_tool",

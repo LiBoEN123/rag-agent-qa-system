@@ -211,11 +211,10 @@ def test_unknown_langchain_tool_returns_none_and_registry_behavior_is_unchanged(
     assert result["runtime"]["attempt_count"] == 0
 
 
-def test_langchain_tool_forwards_complete_governance_context(monkeypatch):
+def test_langchain_tool_forwards_retained_governance_context(monkeypatch):
     calls = []
     context = ToolInvocationContext(
         trace_id="context-trace",
-        request_id="request-1",
         principal_id="service-1",
         permissions=("knowledge_base:read",),
         source="langchain-test",

@@ -2,6 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.agent.state import AgentObservation, AgentPlanStep, AgentState
+from app.graph.state import AgentGraphState
 
 
 def test_agent_plan_step_defaults():
@@ -107,24 +108,42 @@ def test_agent_state_serialization_round_trip():
     assert restored.observations[0].summary == state.observations[0].summary
 
 
-def test_agent_state_governance_fields_are_checkpoint_serializable():
+def test_agent_state_excludes_static_governance_fields_from_checkpoints():
     state = AgentState(
         original_question="问题",
-        principal_id="chat_api",
-        principal_type="service",
-        roles=["reader"],
-        permissions=["knowledge_base:read"],
-        tenant_id="tenant-1",
-        request_source="chat_api",
-        idempotency_key="idem-1",
     )
     payload = state.model_dump(mode="json")
     restored = AgentState.model_validate(payload)
-    assert restored.permissions == ["knowledge_base:read"]
-    assert restored.request_source == "chat_api"
+    static_governance_fields = {
+        "principal_id",
+        "principal_type",
+        "roles",
+        "permissions",
+        "tenant_id",
+        "request_source",
+        "idempotency_key",
+    }
+    assert static_governance_fields.isdisjoint(AgentState.model_fields)
+    assert static_governance_fields.isdisjoint(payload)
+    assert restored.original_question == "问题"
     assert all(
         not hasattr(value, "write")
         for value in payload.values()
+    )
+
+
+def test_graph_state_excludes_static_governance_fields():
+    static_governance_fields = {
+        "principal_id",
+        "principal_type",
+        "roles",
+        "permissions",
+        "tenant_id",
+        "request_source",
+        "idempotency_key",
+    }
+    assert static_governance_fields.isdisjoint(
+        AgentGraphState.__annotations__
     )
 
 

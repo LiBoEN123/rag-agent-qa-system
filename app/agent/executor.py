@@ -3,16 +3,20 @@
 按顺序执行工具、澄清和直接回答步骤，并把观察结果写回 Agent 状态。
 """
 
-import inspect
 import time
 from typing import Any
 
 from app.agent.state import AgentObservation, AgentPlanStep, AgentState
-from app.tools import dispatch_tool
 from app.tools.audit import sanitize_tool_input, summarize_tool_output
-from app.tools.context import ToolInvocationContext
+from app.tools.context import (
+    ToolInvocationContext,
+    build_default_tool_context,
+)
+from app.tools.errors import ToolErrorCode
+from app.tools.langchain_tools import get_langchain_tool
 from app.tools.redaction import redact_sensitive_data
 from app.tools.registry import tool_registry
+from app.tools.result import tool_error
 
 
 def summarize_tool_result(tool_name: str, tool_result: dict) -> str:
@@ -174,70 +178,63 @@ def build_tool_trace_step(
     return trace
 
 
-def _call_dispatch_tool(
+def _call_langchain_tool(
     step: AgentPlanStep,
-    trace_id: str = "",
     *,
-    context: ToolInvocationContext | None = None,
+    context: ToolInvocationContext,
 ) -> dict:
-    """调用工具分发入口并优先传递完整治理上下文。"""
-    if context is not None and "context" in inspect.signature(
-        dispatch_tool
-    ).parameters:
-        return dispatch_tool(step.tool_name, step.tool_args, context=context)
-    return dispatch_tool(step.tool_name, step.tool_args, trace_id=trace_id)
+    """通过请求级 LangChain StructuredTool 调用统一分发入口。"""
+    tool = get_langchain_tool(step.tool_name, context=context)
+    if tool is None:
+        return tool_error(
+            step.tool_name,
+            step.tool_args,
+            f"unknown tool: {step.tool_name}",
+            error_code=ToolErrorCode.UNKNOWN_TOOL.value,
+        )
+
+    result = tool.invoke(step.tool_args)
+    if not isinstance(result, dict):
+        return tool_error(
+            step.tool_name,
+            step.tool_args,
+            "LangChain tool returned a non-dict result",
+            error_code=ToolErrorCode.INVALID_RESULT.value,
+        )
+    return result
 
 
-def _execute_tool_step(state: AgentState, step: AgentPlanStep) -> bool:
+def _execute_tool_step(
+    state: AgentState,
+    step: AgentPlanStep,
+    *,
+    context: ToolInvocationContext,
+) -> bool:
     """执行单个 tool_call 步骤，返回是否可以继续执行后续计划。"""
     step.status = "running"
     start = time.perf_counter()
 
-    invocation_context = ToolInvocationContext(
-        trace_id=state.trace_id,
-        request_id=state.trace_id,
-        session_id=state.session_id or "",
-        principal_id=state.principal_id,
-        principal_type=state.principal_type,
-        roles=tuple(state.roles),
-        permissions=tuple(state.permissions),
-        tenant_id=state.tenant_id,
-        source=state.request_source or "langgraph_agent",
-        idempotency_key=state.idempotency_key,
-    )
-
     try:
-        if "context" in inspect.signature(_call_dispatch_tool).parameters:
-            tool_result = _call_dispatch_tool(
-                step,
-                trace_id=state.trace_id,
-                context=invocation_context,
-            )
-        else:
-            tool_result = _call_dispatch_tool(step, trace_id=state.trace_id)
+        tool_result = _call_langchain_tool(step, context=context)
     except Exception as exc:
         cost_ms = int((time.perf_counter() - start) * 1000)
-        tool_result = {
-            "status": "error",
-            "ok": False,
-            "tool_name": step.tool_name,
-            "tool_input": step.tool_args,
-            "output": {},
-            "error": str(exc),
-        }
+        tool_result = tool_error(
+            step.tool_name,
+            step.tool_args,
+            str(exc),
+            error_code=ToolErrorCode.EXECUTION_ERROR.value,
+        )
     else:
         cost_ms = int((time.perf_counter() - start) * 1000)
 
     # Executor 只接受 dict 形态的工具结果；异常形态统一转成工具失败观察。
     if not isinstance(tool_result, dict):
-        tool_result = {
-            "status": "error",
-            "ok": False,
-            "tool_name": step.tool_name,
-            "tool_input": step.tool_args,
-            "output": {},
-            "error": f"工具返回值类型异常：{type(tool_result)}",
-        }
+        tool_result = tool_error(
+            step.tool_name,
+            step.tool_args,
+            f"工具返回值类型异常：{type(tool_result)}",
+            error_code=ToolErrorCode.INVALID_RESULT.value,
+        )
 
     observation = build_observation(step, tool_result, cost_ms)
     state.observations.append(observation)
@@ -254,7 +251,11 @@ def _execute_tool_step(state: AgentState, step: AgentPlanStep) -> bool:
     return False
 
 
-def execute_plan(state: AgentState) -> AgentState:
+def execute_plan(
+    state: AgentState,
+    *,
+    context: ToolInvocationContext | None = None,
+) -> AgentState:
     """按 AgentState.plan 顺序执行计划，并直接更新传入的 state。"""
     if not state.plan:
         state.status = "error"
@@ -267,6 +268,12 @@ def execute_plan(state: AgentState) -> AgentState:
             }
         )
         return state
+
+    resolved_context = context or build_default_tool_context(
+        trace_id=state.trace_id,
+        session_id=state.session_id or "",
+        source="agent_executor",
+    )
 
     for index, step in enumerate(state.plan):
         # 最多处理 max_steps 个步骤；已经短路停止的状态不再覆盖成超限错误。
@@ -286,7 +293,11 @@ def execute_plan(state: AgentState) -> AgentState:
             return state
 
         if step.action == "tool_call":
-            ok = _execute_tool_step(state, step)
+            ok = _execute_tool_step(
+                state,
+                step,
+                context=resolved_context,
+            )
             if not ok:
                 return state
             continue

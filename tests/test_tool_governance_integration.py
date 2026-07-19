@@ -86,14 +86,7 @@ def test_external_write_returns_structured_approval_without_handler_execution():
     runtime.close()
 
 
-def test_legacy_dispatch_uses_default_read_only_service_context(monkeypatch, tmp_path):
-    from app.tools import dispatch as tool_dispatch
-
-    monkeypatch.setattr(
-        tool_dispatch,
-        "TOOL_CALLS_PATH",
-        tmp_path / "tool_calls.jsonl",
-    )
+def test_legacy_dispatch_uses_default_read_only_service_context():
     result = dispatch_tool(
         "simple_calculator",
         {"expression": "1 + 2"},

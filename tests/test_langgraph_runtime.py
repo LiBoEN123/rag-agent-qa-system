@@ -157,7 +157,7 @@ def test_runtime_with_decision_initializes_existing_agent_state(monkeypatch):
     def fake_plan(decision, question, top_k):
         return [AgentPlanStep(step_id=1, action="direct_answer", reason="能力说明")]
 
-    def fake_execute(state):
+    def fake_execute(state, *, context):
         observed.update(
             {
                 "type": type(state),
@@ -238,7 +238,7 @@ def test_explicit_questions_without_rewrite_keep_original_semantics(
             )
         ]
 
-    def fake_execute(state):
+    def fake_execute(state, *, context):
         observed["original_question"] = state.original_question
         observed["rewritten_question"] = state.rewritten_question
         state.status = "direct_answer"
@@ -288,13 +288,13 @@ def test_rewritten_question_drives_plan_executor_rag_and_trace(monkeypatch):
 
     original_execute = graph_nodes.execute_plan
 
-    def capture_execute(state):
+    def capture_execute(state, *, context):
         observed["agent_original_question"] = state.original_question
         observed["agent_rewritten_question"] = state.rewritten_question
         observed["planner_query"] = state.plan[0].tool_args["query"]
-        return original_execute(state)
+        return original_execute(state, context=context)
 
-    def fake_dispatch(step, trace_id=""):
+    def fake_dispatch(step, *, context):
         observed["executor_query"] = step.tool_args["query"]
         return {
             "status": "success",
@@ -325,7 +325,7 @@ def test_rewritten_question_drives_plan_executor_rag_and_trace(monkeypatch):
 
     monkeypatch.setattr(graph_nodes, "route_agent_action", fail_route)
     monkeypatch.setattr(graph_nodes, "execute_plan", capture_execute)
-    monkeypatch.setattr(agent_executor, "_call_dispatch_tool", fake_dispatch)
+    monkeypatch.setattr(agent_executor, "_call_langchain_tool", fake_dispatch)
     monkeypatch.setattr(graph_nodes, "run_rag_subgraph", fake_rag_subgraph)
     monkeypatch.setattr(agent_runtime.Settings, "ENABLE_AGENT_TRACE_STORE", True)
     monkeypatch.setattr(
@@ -378,7 +378,7 @@ def test_langgraph_business_scenarios_preserve_result_protocol(monkeypatch, scen
     """确定性 RAG、工具、短路和错误场景保持既有结果协议。"""
     dispatch_calls: list[str] = []
 
-    def fake_dispatch(step, trace_id=""):
+    def fake_dispatch(step, *, context):
         dispatch_calls.append(step.tool_name)
         if scenario == "tool_error":
             return {
@@ -420,7 +420,7 @@ def test_langgraph_business_scenarios_preserve_result_protocol(monkeypatch, scen
             "error": "",
         }
 
-    monkeypatch.setattr(agent_executor, "_call_dispatch_tool", fake_dispatch)
+    monkeypatch.setattr(agent_executor, "_call_langchain_tool", fake_dispatch)
 
     if scenario == "search_no_evidence":
         rag_result = {
@@ -530,8 +530,8 @@ def test_knowledge_base_path_uses_rag_subgraph_without_sequential_rag_compose(mo
 
     monkeypatch.setattr(
         agent_executor,
-        "_call_dispatch_tool",
-        lambda step, trace_id="": {
+        "_call_langchain_tool",
+        lambda step, context: {
             "status": "success",
             "ok": True,
             "output": {
@@ -614,7 +614,7 @@ def test_regular_tool_path_dispatches_and_composes_once(
     """默认 Graph 普通工具路径不进入 RAG，且 dispatch/compose 各一次。"""
     calls = {"dispatch": 0, "compose": 0, "rag": 0}
 
-    def dispatch(step, trace_id=""):
+    def dispatch(step, *, context):
         calls["dispatch"] += 1
         assert step.tool_name == action
         return {
@@ -634,7 +634,7 @@ def test_regular_tool_path_dispatches_and_composes_once(
         calls["rag"] += 1
         raise AssertionError("普通工具不应进入 RAG 子图")
 
-    monkeypatch.setattr(agent_executor, "_call_dispatch_tool", dispatch)
+    monkeypatch.setattr(agent_executor, "_call_langchain_tool", dispatch)
     monkeypatch.setattr(graph_nodes, "compose_final_answer", compose)
     monkeypatch.setattr(graph_nodes, "run_rag_subgraph", fail_rag)
 
@@ -662,8 +662,8 @@ def test_failed_knowledge_base_observation_does_not_enter_rag_subgraph(monkeypat
     """知识库工具失败时保留 TOOL_ERROR，不能伪造 RAG 成功结果。"""
     monkeypatch.setattr(
         agent_executor,
-        "_call_dispatch_tool",
-        lambda step, trace_id="": {
+        "_call_langchain_tool",
+        lambda step, context: {
             "status": "error",
             "ok": False,
             "output": {},
@@ -705,7 +705,7 @@ def test_llm_usage_is_normalized_and_appended_once(monkeypatch):
         lambda **kwargs: [AgentPlanStep(step_id=1, action="direct_answer")],
     )
 
-    def fake_execute(state):
+    def fake_execute(state, *, context):
         state.status = "direct_answer"
         return state
 
@@ -743,7 +743,7 @@ def test_llm_usage_is_normalized_and_appended_once(monkeypatch):
 def test_runtime_rejects_missing_or_invalid_graph_result(monkeypatch, malformed_output):
     """Graph 未生成合法结果时返回明确兼容错误，不暴露原始 Graph State。"""
     class MalformedGraph:
-        def invoke(self, graph_input):
+        def invoke(self, graph_input, *, context):
             return malformed_output
 
     monkeypatch.setattr(
@@ -779,7 +779,7 @@ def test_top_level_graph_error_is_sanitized_but_kept_for_internal_diagnostics(
     sensitive_error = RuntimeError(sensitive_message)
 
     class BrokenGraph:
-        def invoke(self, graph_input):
+        def invoke(self, graph_input, *, context):
             raise sensitive_error
 
     monkeypatch.setattr(graph_runtime, "get_compiled_agent_graph", lambda: BrokenGraph())

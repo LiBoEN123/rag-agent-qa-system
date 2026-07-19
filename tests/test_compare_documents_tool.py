@@ -270,12 +270,6 @@ def test_dispatch_compare_documents_propagates_trace_id(monkeypatch, tmp_path):
         "invoke_text",
         fake_invoke_text,
     )
-    monkeypatch.setattr(
-        tool_dispatch,
-        "TOOL_CALLS_PATH",
-        tmp_path / "tool_calls.jsonl",
-    )
-
     result = tool_dispatch.dispatch_tool(
         "compare_documents",
         {

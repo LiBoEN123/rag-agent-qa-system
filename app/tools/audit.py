@@ -40,13 +40,11 @@ class ToolAuditEvent:
 
     tool_call_id: str
     trace_id: str
-    request_id: str
     session_id: str
 
     principal_id: str
     principal_type: str
     source: str
-    tenant_id: str
 
     tool_name: str
     tool_version: str
