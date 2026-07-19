@@ -5,6 +5,8 @@
 
 from typing import Any
 
+from langgraph.runtime import Runtime
+
 from app.agent import route_agent_action
 from app.agent.answer import apply_rag_result_to_state, compose_final_answer
 from app.agent.executor import execute_plan
@@ -21,6 +23,7 @@ from app.agent.state import AgentState, get_effective_question
 from app.config import Settings
 from app.graph.state import AgentGraphState
 from app.rag.graph import run_rag_subgraph
+from app.tools.context import ToolInvocationContext
 
 
 def _safe_decision(decision: object) -> dict[str, Any]:
@@ -68,13 +71,6 @@ def initialize_agent_state_node(state: AgentGraphState) -> dict[str, Any]:
     agent_state = AgentState(
         trace_id=state.get("trace_id", ""),
         session_id=state.get("session_id"),
-        principal_id=state.get("principal_id", ""),
-        principal_type=state.get("principal_type", "service"),
-        roles=list(state.get("roles") or []),
-        permissions=list(state.get("permissions") or []),
-        tenant_id=state.get("tenant_id", ""),
-        request_source=state.get("request_source", ""),
-        idempotency_key=state.get("idempotency_key", ""),
         original_question=original_question,
         rewritten_question=(
             effective_question
@@ -109,9 +105,15 @@ def plan_node(state: AgentGraphState) -> dict[str, AgentState]:
     return {"agent_state": agent_state}
 
 
-def execute_node(state: AgentGraphState) -> dict[str, AgentState]:
+def execute_node(
+    state: AgentGraphState,
+    runtime: Runtime[ToolInvocationContext],
+) -> dict[str, AgentState]:
     """调用现有 Executor，并显式返回其更新后的 AgentState。"""
-    agent_state = execute_plan(_require_agent_state(state))
+    agent_state = execute_plan(
+        _require_agent_state(state),
+        context=runtime.context,
+    )
     return {"agent_state": agent_state}
 
 

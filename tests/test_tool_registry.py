@@ -233,17 +233,8 @@ def test_dispatch_returns_tool_error_when_args_invalid():
     assert result["runtime"]["attempt_count"] == 0
 
 
-def test_dispatch_tool_keeps_compatible_entrypoint(monkeypatch, tmp_path):
+def test_dispatch_tool_keeps_compatible_entrypoint():
     """验证旧的 dispatch_tool 入口仍可调用注册工具。"""
-    from app.tools import dispatch as tool_dispatch
-
-    monkeypatch.setattr(
-        tool_dispatch,
-        "TOOL_CALLS_PATH",
-        tmp_path / "tool_calls.jsonl",
-        raising=False
-    )
-
     result = dispatch_tool(
         "simple_calculator",
         {"expression": "2 + 3"},

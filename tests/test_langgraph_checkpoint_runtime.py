@@ -11,6 +11,7 @@ from app.config import Settings
 from app.graph import builder as graph_builder
 from app.graph import checkpointing
 from app.graph import runtime as graph_runtime
+from app.tools.context import ToolInvocationContext
 
 
 @pytest.fixture(autouse=True)
@@ -107,13 +108,13 @@ def test_reset_recompiles_graph_and_replaces_memory_saver(monkeypatch):
     assert first_saver is not second_saver
 
 
-def test_disabled_runtime_invokes_graph_without_config(monkeypatch):
-    """默认关闭时保持旧的单参数 invoke 调用协议。"""
-    calls: list[tuple] = []
+def test_disabled_runtime_invokes_graph_with_context_without_config(monkeypatch):
+    """默认关闭时仍传请求级 Runtime Context，但不传 checkpoint config。"""
+    calls: list[dict] = []
 
     class RecordingGraph:
-        def invoke(self, graph_input):
-            calls.append((graph_input,))
+        def invoke(self, graph_input, *, context):
+            calls.append({"input": graph_input, "context": context})
             return {"result": {"status": "OK"}}
 
     monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "disabled")
@@ -126,6 +127,14 @@ def test_disabled_runtime_invokes_graph_without_config(monkeypatch):
     result = _run("trace-disabled")
     assert result == {"status": "OK"}
     assert len(calls) == 1
+    assert calls[0]["context"] == ToolInvocationContext(
+        trace_id="trace-disabled",
+        session_id="session-1",
+        principal_id=Settings.TOOL_DEFAULT_PRINCIPAL_ID,
+        permissions=Settings.TOOL_DEFAULT_PERMISSIONS,
+        source="chat_api",
+    )
+    assert "permissions" not in calls[0]["input"]
 
 
 @pytest.mark.parametrize("mode", ["memory", "sqlite"])
@@ -137,8 +146,10 @@ def test_enabled_runtime_passes_request_scoped_thread_id(
     calls: list[dict] = []
 
     class RecordingGraph:
-        def invoke(self, graph_input, config):
-            calls.append({"input": graph_input, "config": config})
+        def invoke(self, graph_input, config, *, context):
+            calls.append(
+                {"input": graph_input, "config": config, "context": context}
+            )
             return {"result": {"status": "OK"}}
 
     monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", mode)
@@ -157,7 +168,10 @@ def test_enabled_runtime_passes_request_scoped_thread_id(
     assert calls[0]["config"] == {
         "configurable": {"thread_id": expected}
     }
+    assert calls[0]["context"].trace_id == "trace-enabled"
+    assert calls[0]["context"].session_id == "private-session"
     assert "thread_id" not in calls[0]["input"]
+    assert "permissions" not in calls[0]["input"]
 
 
 def test_memory_checkpoint_serializes_real_agent_state(monkeypatch):
@@ -181,6 +195,10 @@ def test_memory_checkpoint_serializes_real_agent_state(monkeypatch):
     assert values["agent_state"].trace_id == "trace-memory"
     assert values["agent_state"].original_question == "问题-trace-memory"
     assert values["agent_state"].rewritten_question == ""
+    assert "permissions" not in values
+    assert "principal_id" not in values
+    assert "permissions" not in values["agent_state"].model_dump()
+    assert "principal_id" not in values["agent_state"].model_dump()
 
 
 def test_memory_checkpoint_keeps_rewrite_fields_request_scoped(monkeypatch):
@@ -273,7 +291,12 @@ def test_sqlite_agent_checkpoint_survives_runtime_reset(monkeypatch, tmp_path):
     saved = second.get_tuple({"configurable": {"thread_id": thread_id}})
     assert isinstance(second, SqliteSaver)
     assert second is not first
-    assert saved.checkpoint["channel_values"]["result"]["status"] == "OK"
+    values = saved.checkpoint["channel_values"]
+    assert values["result"]["status"] == "OK"
+    assert "permissions" not in values
+    assert "principal_id" not in values
+    assert "permissions" not in values["agent_state"].model_dump()
+    assert "principal_id" not in values["agent_state"].model_dump()
 
 
 def test_checkpoint_write_failure_returns_compatible_error_once(monkeypatch):
@@ -281,7 +304,7 @@ def test_checkpoint_write_failure_returns_compatible_error_once(monkeypatch):
     bad_cases: list[dict] = []
 
     class BrokenGraph:
-        def invoke(self, graph_input, config):
+        def invoke(self, graph_input, config, *, context):
             raise RuntimeError("checkpoint write failed")
 
     monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "memory")

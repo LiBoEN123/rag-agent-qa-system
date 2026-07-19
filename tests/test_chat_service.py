@@ -1,3 +1,4 @@
+from dataclasses import fields
 from types import SimpleNamespace
 
 import pytest
@@ -186,6 +187,18 @@ def make_request(**overrides):
     return ChatServiceRequest(**values)
 
 
+def test_chat_service_request_contains_only_chat_business_fields():
+    assert {field.name for field in fields(ChatServiceRequest)} == {
+        "question",
+        "top_k",
+        "decompose_top_k",
+        "session_id",
+        "trace_id",
+        "request_enter_time",
+        "request_enter_perf",
+    }
+
+
 def test_empty_question_skips_business_dependencies_and_writes_metrics_once():
     service, calls = build_service()
 
@@ -372,6 +385,15 @@ def test_langgraph_runtime_receives_complete_existing_protocol_once():
     assert kwargs["decision"]["action"] == "direct_answer"
     assert kwargs["bad_case"]["question"] == "原始问题"
     assert callable(kwargs["write_bad_cases"])
+    assert {
+        "principal_id",
+        "principal_type",
+        "roles",
+        "permissions",
+        "tenant_id",
+        "request_source",
+        "idempotency_key",
+    }.isdisjoint(kwargs)
 
 
 def test_langgraph_runtime_start_is_logged_once_with_trace_id(monkeypatch):

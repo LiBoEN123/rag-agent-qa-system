@@ -1,37 +1,52 @@
-from app.agent.executor import execute_plan
+from app.agent.executor import _call_langchain_tool, execute_plan
 from app.agent.state import AgentPlanStep, AgentState
+from app.tools.context import ToolInvocationContext
 
 
 def test_execute_single_tool_success(monkeypatch):
-    def fake_dispatch_tool(tool_name, tool_args=None, trace_id=""):
-        assert tool_name == "search_knowledge_base"
-        assert tool_args == {"query": "测试问题", "top_k": 5}
-        assert trace_id == "trace_001"
-        return {
-            "status": "success",
-            "ok": True,
-            "tool_name": tool_name,
-            "tool_input": tool_args,
-            "output": {
-                "count": 1,
-                "chunks": [
-                    {
-                        "chunk_id": 1,
-                        "text": "测试 chunk",
-                        "hybrid_score": 0.9,
-                        "bm25_score": 1.0,
-                        "vector_score": 0.8,
-                        "rerank_score": 0.7,
-                        "file_name": "test.md",
-                    }
-                ],
-                "top_chunk_ids": [1],
-                "top_scores": [0.9],
-            },
-            "error": "",
-        }
+    class FakeStructuredTool:
+        def invoke(self, tool_args):
+            assert tool_args == {"query": "测试问题", "top_k": 5}
+            return {
+                "status": "success",
+                "ok": True,
+                "tool_name": "search_knowledge_base",
+                "tool_input": tool_args,
+                "output": {
+                    "count": 1,
+                    "chunks": [
+                        {
+                            "chunk_id": 1,
+                            "text": "测试 chunk",
+                            "hybrid_score": 0.9,
+                            "bm25_score": 1.0,
+                            "vector_score": 0.8,
+                            "rerank_score": 0.7,
+                            "file_name": "test.md",
+                        }
+                    ],
+                    "top_chunk_ids": [1],
+                    "top_scores": [0.9],
+                },
+                "error": "",
+            }
 
-    monkeypatch.setattr("app.agent.executor.dispatch_tool", fake_dispatch_tool)
+    context = ToolInvocationContext(
+        trace_id="trace_001",
+        principal_id="test-service",
+        permissions=("knowledge_base:read",),
+    )
+
+    def fake_get_langchain_tool(name, *, context):
+        assert name == "search_knowledge_base"
+        assert context is context_for_call
+        return FakeStructuredTool()
+
+    context_for_call = context
+    monkeypatch.setattr(
+        "app.agent.executor.get_langchain_tool",
+        fake_get_langchain_tool,
+    )
 
     state = AgentState(
         trace_id="trace_001",
@@ -51,7 +66,7 @@ def test_execute_single_tool_success(monkeypatch):
         ],
     )
 
-    result = execute_plan(state)
+    result = execute_plan(state, context=context)
 
     assert result.status == "ok"
     assert result.reason == "Agent plan executed"
@@ -69,17 +84,17 @@ def test_execute_single_tool_success(monkeypatch):
 
 
 def test_execute_tool_failure_stops_plan(monkeypatch):
-    def fake_dispatch_tool(tool_name, tool_args=None, trace_id=""):
+    def fake_call(step, *, context):
         return {
             "status": "error",
             "ok": False,
-            "tool_name": tool_name,
-            "tool_input": tool_args or {},
+            "tool_name": step.tool_name,
+            "tool_input": step.tool_args,
             "output": {},
             "error": "mock tool failed",
         }
 
-    monkeypatch.setattr("app.agent.executor.dispatch_tool", fake_dispatch_tool)
+    monkeypatch.setattr("app.agent.executor._call_langchain_tool", fake_call)
 
     state = AgentState(
         original_question="测试问题",
@@ -110,10 +125,10 @@ def test_execute_tool_failure_stops_plan(monkeypatch):
 
 
 def test_execute_tool_exception_becomes_tool_error(monkeypatch):
-    def fake_dispatch_tool(tool_name, tool_args=None, trace_id=""):
+    def fake_call(step, *, context):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("app.agent.executor.dispatch_tool", fake_dispatch_tool)
+    monkeypatch.setattr("app.agent.executor._call_langchain_tool", fake_call)
 
     state = AgentState(
         original_question="测试问题",
@@ -130,9 +145,55 @@ def test_execute_tool_exception_becomes_tool_error(monkeypatch):
     result = execute_plan(state)
 
     assert result.status == "tool_error"
-    assert "boom" in result.reason
+    assert result.reason == "工具执行失败（execution_error）"
     assert result.plan[0].status == "failed"
     assert result.observations[0].success is False
+
+
+def test_execute_unknown_tool_returns_compatible_error():
+    state = AgentState(
+        original_question="测试问题",
+        plan=[
+            AgentPlanStep(
+                step_id=1,
+                action="tool_call",
+                tool_name="unknown_tool",
+                tool_args={"value": 1},
+            )
+        ],
+    )
+
+    result = execute_plan(state)
+
+    assert result.status == "tool_error"
+    assert result.plan[0].status == "failed"
+    assert result.tool_trace[0]["error_code"] == "unknown_tool"
+    assert result.observations[0].output == {}
+
+
+def test_langchain_tool_non_dict_result_is_rejected(monkeypatch):
+    class NonDictTool:
+        def invoke(self, tool_args):
+            return "invalid"
+
+    monkeypatch.setattr(
+        "app.agent.executor.get_langchain_tool",
+        lambda name, *, context: NonDictTool(),
+    )
+    step = AgentPlanStep(
+        step_id=1,
+        action="tool_call",
+        tool_name="list_documents",
+    )
+
+    result = _call_langchain_tool(
+        step,
+        context=ToolInvocationContext(trace_id="trace-invalid-result"),
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "invalid_result"
+    assert result["output"] is None
 
 
 def test_execute_clarify_step_stops():
@@ -234,17 +295,17 @@ def test_execute_unknown_action_returns_error():
 
 
 def test_execute_respects_max_steps(monkeypatch):
-    def fake_dispatch_tool(tool_name, tool_args=None, trace_id=""):
+    def fake_call(step, *, context):
         return {
             "status": "success",
             "ok": True,
-            "tool_name": tool_name,
-            "tool_input": tool_args or {},
+            "tool_name": step.tool_name,
+            "tool_input": step.tool_args,
             "output": {"count": 0},
             "error": "",
         }
 
-    monkeypatch.setattr("app.agent.executor.dispatch_tool", fake_dispatch_tool)
+    monkeypatch.setattr("app.agent.executor._call_langchain_tool", fake_call)
 
     state = AgentState(
         original_question="测试问题",
@@ -272,17 +333,17 @@ def test_execute_respects_max_steps(monkeypatch):
 
 
 def test_execute_tool_trace_handles_missing_fields(monkeypatch):
-    def fake_dispatch_tool(tool_name, tool_args=None, trace_id=""):
+    def fake_call(step, *, context):
         return {
             "status": "success",
             "ok": True,
-            "tool_name": tool_name,
-            "tool_input": tool_args or {},
+            "tool_name": step.tool_name,
+            "tool_input": step.tool_args,
             "output": {},
             "error": "",
         }
 
-    monkeypatch.setattr("app.agent.executor.dispatch_tool", fake_dispatch_tool)
+    monkeypatch.setattr("app.agent.executor._call_langchain_tool", fake_call)
 
     state = AgentState(
         original_question="测试问题",

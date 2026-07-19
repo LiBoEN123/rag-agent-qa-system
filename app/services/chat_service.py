@@ -129,13 +129,6 @@ class ChatServiceRequest:
     trace_id: str
     request_enter_time: str = ""
     request_enter_perf: float | None = None
-    principal_id: str = Settings.TOOL_DEFAULT_PRINCIPAL_ID
-    principal_type: str = "service"
-    roles: tuple[str, ...] = ("reader",)
-    permissions: tuple[str, ...] = Settings.TOOL_DEFAULT_PERMISSIONS
-    tenant_id: str = ""
-    request_source: str = "chat_api"
-    idempotency_key: str = ""
 
 
 @dataclass(frozen=True)
@@ -542,13 +535,6 @@ class ChatService:
             trace_id=context.request.trace_id,
             session_id=context.session_id or None,
             bad_case=context.bad_case,
-            principal_id=context.request.principal_id,
-            principal_type=context.request.principal_type,
-            roles=context.request.roles,
-            permissions=context.request.permissions,
-            tenant_id=context.request.tenant_id,
-            request_source=context.request.request_source,
-            idempotency_key=context.request.idempotency_key,
         )
         result = self._deps.attach_query_rewrite_trace(
             result,

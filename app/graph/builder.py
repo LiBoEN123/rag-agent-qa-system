@@ -17,12 +17,21 @@ from app.graph.nodes import (
     route_node,
 )
 from app.graph.state import AgentGraphState
+from app.tools.context import ToolInvocationContext
 
 
 def build_agent_graph(
-) -> StateGraph[AgentGraphState, None, AgentGraphState, AgentGraphState]:
+) -> StateGraph[
+    AgentGraphState,
+    ToolInvocationContext,
+    AgentGraphState,
+    AgentGraphState,
+]:
     """创建尚未编译的最小 Agent StateGraph，不触发任何业务调用。"""
-    builder = StateGraph(AgentGraphState)
+    builder = StateGraph(
+        AgentGraphState,
+        context_schema=ToolInvocationContext,
+    )
     builder.add_node("route", route_node)
     builder.add_node("initialize", initialize_agent_state_node)
     builder.add_node("plan", plan_node)
@@ -58,7 +67,12 @@ def build_agent_graph(
 
 @lru_cache(maxsize=1)
 def get_compiled_agent_graph(
-) -> CompiledStateGraph[AgentGraphState, None, AgentGraphState, AgentGraphState]:
+) -> CompiledStateGraph[
+    AgentGraphState,
+    ToolInvocationContext,
+    AgentGraphState,
+    AgentGraphState,
+]:
     """按配置注入 Checkpointer，并返回进程内复用的已编译 Agent Graph。"""
     checkpointer = get_checkpointer()
     builder = build_agent_graph()

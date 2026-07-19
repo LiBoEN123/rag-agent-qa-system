@@ -243,7 +243,7 @@ def test_route_uses_rules_when_router_disabled(monkeypatch):
 
 
 def test_langgraph_uses_search_knowledge_base_tool_once(monkeypatch):
-    """验证 LangGraph 知识库路径通过 dispatch_tool 调用标准检索工具。"""
+    """验证 LangGraph 知识库路径通过 LangChain Tool 调用标准检索工具。"""
     called = {"count": 0}
     fake_chunk = {
         "chunk_id": 1,
@@ -260,16 +260,17 @@ def test_langgraph_uses_search_knowledge_base_tool_once(monkeypatch):
         },
     }
 
-    def fake_dispatch_tool(tool_name, tool_args=None, trace_id=""):
-        """模拟 search_knowledge_base 工具分发结果。"""
+    def fake_langchain_call(step, *, context):
+        """模拟 search_knowledge_base 的 StructuredTool 调用结果。"""
         called["count"] += 1
-        assert tool_name == "search_knowledge_base"
-        assert tool_args == {"query": "测试问题", "top_k": 5}
+        assert step.tool_name == "search_knowledge_base"
+        assert step.tool_args == {"query": "测试问题", "top_k": 5}
+        assert context.trace_id == "test_trace"
         return {
             "status": "success",
             "ok": True,
-            "tool_name": tool_name,
-            "tool_input": tool_args,
+            "tool_name": step.tool_name,
+            "tool_input": step.tool_args,
             "output": {
                 "count": 1,
                 "chunks": [fake_chunk],
@@ -298,7 +299,11 @@ def test_langgraph_uses_search_knowledge_base_tool_once(monkeypatch):
             "llm_call_count": 1,
         }
 
-    monkeypatch.setattr(agent_executor, "dispatch_tool", fake_dispatch_tool)
+    monkeypatch.setattr(
+        agent_executor,
+        "_call_langchain_tool",
+        fake_langchain_call,
+    )
     monkeypatch.setattr(graph_nodes, "run_rag_subgraph", fake_ask)
 
     result = graph_runtime.run_agent_langgraph(

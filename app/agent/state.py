@@ -50,17 +50,6 @@ class AgentState(BaseModel):
     trace_id: str = Field(default="", description="请求追踪 ID")
     session_id: str | None = Field(default=None, description="多轮会话 ID")
 
-    principal_id: str = Field(default="", description="内部调用主体标识")
-    principal_type: str = Field(default="service", description="内部调用主体类型")
-    roles: list[str] = Field(default_factory=list, description="内部主体角色")
-    permissions: list[str] = Field(
-        default_factory=list,
-        description="已经由服务端授予的精确权限",
-    )
-    tenant_id: str = Field(default="", description="内部租户标识")
-    request_source: str = Field(default="", description="内部请求来源")
-    idempotency_key: str = Field(default="", description="写工具幂等键")
-
     original_question: str = Field(..., description="用户原始问题")
     rewritten_question: str = Field(default="", description="多轮改写后的问题")
 
