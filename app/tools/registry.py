@@ -5,7 +5,11 @@
 
 from app.tools.calculator import simple_calculator
 from app.tools.compare_documents import compare_documents_tool
-from app.tools.contracts import ToolRiskLevel, ToolSpec
+from app.tools.contracts import (
+    ToolAuditOutputMode,
+    ToolRiskLevel,
+    ToolSpec,
+)
 from app.tools.context import ToolInvocationContext
 from app.tools.knowledge_base import (
     get_chunk_text,
@@ -136,6 +140,7 @@ def register_default_tools(registry: ToolRegistry) -> None:
             max_retries=0,
             idempotent=True,
             requires_approval=False,
+            audit_output_mode=ToolAuditOutputMode.SUMMARY,
         )
     )
     registry.register(
@@ -167,6 +172,7 @@ def register_default_tools(registry: ToolRegistry) -> None:
             max_retries=0,
             idempotent=True,
             requires_approval=False,
+            audit_output_mode=ToolAuditOutputMode.SUMMARY,
         )
     )
     registry.register(
@@ -184,6 +190,7 @@ def register_default_tools(registry: ToolRegistry) -> None:
             max_retries=0,
             idempotent=True,
             requires_approval=False,
+            audit_output_mode=ToolAuditOutputMode.SANITIZED,
         )
     )
     registry.register(
@@ -201,6 +208,7 @@ def register_default_tools(registry: ToolRegistry) -> None:
             max_retries=0,
             idempotent=True,
             requires_approval=False,
+            audit_output_mode=ToolAuditOutputMode.SUMMARY,
         )
     )
     registry.register(
@@ -218,6 +226,7 @@ def register_default_tools(registry: ToolRegistry) -> None:
             max_retries=0,
             idempotent=True,
             requires_approval=False,
+            audit_output_mode=ToolAuditOutputMode.NONE,
         )
     )
 
@@ -228,6 +237,7 @@ register_default_tools(tool_registry)
 
 __all__ = [
     "ToolRegistry",
+    "ToolAuditOutputMode",
     "ToolRiskLevel",
     "ToolSpec",
     "register_default_tools",

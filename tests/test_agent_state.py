@@ -107,6 +107,27 @@ def test_agent_state_serialization_round_trip():
     assert restored.observations[0].summary == state.observations[0].summary
 
 
+def test_agent_state_governance_fields_are_checkpoint_serializable():
+    state = AgentState(
+        original_question="问题",
+        principal_id="chat_api",
+        principal_type="service",
+        roles=["reader"],
+        permissions=["knowledge_base:read"],
+        tenant_id="tenant-1",
+        request_source="chat_api",
+        idempotency_key="idem-1",
+    )
+    payload = state.model_dump(mode="json")
+    restored = AgentState.model_validate(payload)
+    assert restored.permissions == ["knowledge_base:read"]
+    assert restored.request_source == "chat_api"
+    assert all(
+        not hasattr(value, "write")
+        for value in payload.values()
+    )
+
+
 def test_agent_state_field_constraints():
     """验证关键数字字段的约束生效。"""
     with pytest.raises(ValidationError):

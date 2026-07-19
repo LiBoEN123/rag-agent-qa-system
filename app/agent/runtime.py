@@ -6,12 +6,24 @@ from app.agent.state import AgentState
 from app.config import Settings
 from app.storage.traces import save_agent_trace
 from app.common.logging import get_logger
+from app.tools.audit import sanitize_tool_input
+from app.tools.redaction import redact_sensitive_data
+from app.tools.registry import tool_registry
 
 
 logger = get_logger("chat_service")
 
 _INTERNAL_ERROR_MESSAGE = "Agent 内部执行异常，请稍后重试"
 _INTERNAL_ERROR_MARKER = "internal_error"
+
+
+def _safe_trace_tool_args(tool_name: str, value: object) -> object:
+    """按工具契约脱敏并截断 Router/Planner trace 中的参数。"""
+    args = value if isinstance(value, dict) else {}
+    spec = tool_registry.get(tool_name)
+    if spec is None:
+        return redact_sensitive_data(args)
+    return sanitize_tool_input(spec, args)
 
 
 def _safe_decision(decision: dict | None) -> dict:
@@ -78,13 +90,19 @@ def summarize_observations_for_result(state: AgentState) -> str:
 
 def build_decide_trace(decision: dict, router_llm_used: bool) -> dict[str, Any]:
     """构造 Agent 开始阶段的路由决策 trace。"""
+    tool_name = str(decision.get("tool_name") or "")
+    sanitized_args = _safe_trace_tool_args(
+        tool_name,
+        decision.get("tool_args", {}),
+    )
     return {
         "step": "decide",
         "route_decision": get_route_decision_for_trace(decision),
         "decision_type": decision.get("decision", ""),
         "action": decision.get("action", ""),
-        "tool_name": decision.get("tool_name", ""),
-        "tool_args": decision.get("tool_args", {}),
+        "tool_name": tool_name,
+        "tool_args": sanitized_args,
+        "sanitized_tool_args": sanitized_args,
         "reason": decision.get("reason", ""),
         "router_source": decision.get("router_source", ""),
         "router_confidence": decision.get("router_confidence"),
@@ -104,7 +122,14 @@ def build_plan_trace(state: AgentState) -> dict[str, Any]:
                 "step_id": step.step_id,
                 "action": step.action,
                 "tool_name": step.tool_name,
-                "tool_args": step.tool_args,
+                "tool_args": _safe_trace_tool_args(
+                    step.tool_name,
+                    step.tool_args,
+                ),
+                "sanitized_tool_args": _safe_trace_tool_args(
+                    step.tool_name,
+                    step.tool_args,
+                ),
                 "reason": step.reason,
                 "status": step.status,
             }

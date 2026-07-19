@@ -15,6 +15,13 @@ class AgentGraphState(TypedDict, total=False):
     decision: dict[str, Any] | None
     trace_id: str
     session_id: str | None
+    principal_id: str
+    principal_type: str
+    roles: list[str]
+    permissions: list[str]
+    tenant_id: str
+    request_source: str
+    idempotency_key: str
     agent_state: AgentState
     result: dict[str, Any]
 

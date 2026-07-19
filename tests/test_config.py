@@ -2,7 +2,11 @@
 
 import pytest
 
-from app.config import Settings, validate_tool_runtime_config
+from app.config import (
+    Settings,
+    validate_tool_governance_config,
+    validate_tool_runtime_config,
+)
 
 
 def test_agent_runtime_has_no_configuration_switch():
@@ -60,3 +64,57 @@ def test_tool_runtime_configuration_rejects_invalid_values(
 
     with pytest.raises(ValueError, match=expected_message):
         validate_tool_runtime_config(**values)
+
+
+def test_tool_governance_configuration_accepts_safe_defaults(tmp_path):
+    validate_tool_governance_config(
+        default_principal_id="chat_api",
+        default_permissions=("knowledge_base:read",),
+        audit_path=tmp_path / "tool_audit.jsonl",
+        max_depth=6,
+        max_items=20,
+        max_string_chars=500,
+        max_serialized_chars=5000,
+    )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_message"),
+    [
+        ({"default_permissions": ("knowledge_base:*",)}, "PERMISSIONS"),
+        ({"max_depth": 0}, "MAX_DEPTH"),
+        ({"max_items": 0}, "MAX_ITEMS"),
+        ({"max_string_chars": 0}, "MAX_STRING_CHARS"),
+        ({"max_serialized_chars": 0}, "MAX_SERIALIZED_CHARS"),
+    ],
+)
+def test_tool_governance_configuration_rejects_invalid_values(
+    tmp_path,
+    overrides,
+    expected_message,
+):
+    values = {
+        "default_principal_id": "chat_api",
+        "default_permissions": ("knowledge_base:read",),
+        "audit_path": tmp_path / "tool_audit.jsonl",
+        "max_depth": 6,
+        "max_items": 20,
+        "max_string_chars": 500,
+        "max_serialized_chars": 5000,
+    }
+    values.update(overrides)
+    with pytest.raises(ValueError, match=expected_message):
+        validate_tool_governance_config(**values)
+
+
+def test_tool_governance_configuration_rejects_directory_audit_path(tmp_path):
+    with pytest.raises(ValueError, match="TOOL_AUDIT_PATH"):
+        validate_tool_governance_config(
+            default_principal_id="chat_api",
+            default_permissions=("knowledge_base:read",),
+            audit_path=tmp_path,
+            max_depth=6,
+            max_items=20,
+            max_string_chars=500,
+            max_serialized_chars=5000,
+        )
