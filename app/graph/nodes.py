@@ -68,6 +68,13 @@ def initialize_agent_state_node(state: AgentGraphState) -> dict[str, Any]:
     agent_state = AgentState(
         trace_id=state.get("trace_id", ""),
         session_id=state.get("session_id"),
+        principal_id=state.get("principal_id", ""),
+        principal_type=state.get("principal_type", "service"),
+        roles=list(state.get("roles") or []),
+        permissions=list(state.get("permissions") or []),
+        tenant_id=state.get("tenant_id", ""),
+        request_source=state.get("request_source", ""),
+        idempotency_key=state.get("idempotency_key", ""),
         original_question=original_question,
         rewritten_question=(
             effective_question

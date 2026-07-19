@@ -41,6 +41,14 @@ class ToolRiskLevel(str, Enum):
     DESTRUCTIVE = "destructive"
 
 
+class ToolAuditOutputMode(str, Enum):
+    """工具输出允许进入审计事件的安全模式。"""
+
+    NONE = "none"
+    SUMMARY = "summary"
+    SANITIZED = "sanitized"
+
+
 @dataclass(frozen=True, slots=True)
 class ToolSpec:
     """描述工具的完整、可校验契约。"""
@@ -64,6 +72,10 @@ class ToolSpec:
 
     idempotent: bool = True
     requires_approval: bool = False
+
+    sensitive_arg_fields: tuple[str, ...] = ()
+    sensitive_output_fields: tuple[str, ...] = ()
+    audit_output_mode: ToolAuditOutputMode = ToolAuditOutputMode.SUMMARY
 
     def __post_init__(self) -> None:
         """规范化契约字段，并在注册前拒绝非法配置。"""
@@ -156,6 +168,32 @@ class ToolSpec:
         if not isinstance(self.requires_approval, bool):
             self._raise_field_error("requires_approval", "必须是 bool")
 
+        object.__setattr__(
+            self,
+            "sensitive_arg_fields",
+            self._normalize_sensitive_fields(
+                "sensitive_arg_fields",
+                self.sensitive_arg_fields,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "sensitive_output_fields",
+            self._normalize_sensitive_fields(
+                "sensitive_output_fields",
+                self.sensitive_output_fields,
+            ),
+        )
+        try:
+            audit_output_mode = ToolAuditOutputMode(self.audit_output_mode)
+        except (TypeError, ValueError) as exc:
+            self._raise_field_error(
+                "audit_output_mode",
+                "必须是 NONE、SUMMARY 或 SANITIZED",
+                cause=exc,
+            )
+        object.__setattr__(self, "audit_output_mode", audit_output_mode)
+
         if not self.idempotent and self.max_retries > 0:
             self._raise_field_error(
                 "max_retries",
@@ -202,6 +240,9 @@ class ToolSpec:
             "max_retries": self.max_retries,
             "idempotent": self.idempotent,
             "requires_approval": self.requires_approval,
+            "sensitive_arg_fields": list(self.sensitive_arg_fields),
+            "sensitive_output_fields": list(self.sensitive_output_fields),
+            "audit_output_mode": self.audit_output_mode.value,
         }
 
     @staticmethod
@@ -236,6 +277,30 @@ class ToolSpec:
                 normalized_permissions.append(normalized_permission)
         return tuple(normalized_permissions)
 
+    def _normalize_sensitive_fields(
+        self,
+        field_name: str,
+        value: object,
+    ) -> tuple[str, ...]:
+        """规范化额外敏感字段名，禁止单个字符串和空字段。"""
+        if isinstance(value, str) or not isinstance(value, Sequence):
+            self._raise_field_error(
+                field_name,
+                "必须是字符串序列，不能是单个字符串",
+            )
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            if not isinstance(item, str):
+                self._raise_field_error(field_name, "每个字段名都必须是字符串")
+            cleaned = item.strip()
+            if not cleaned:
+                self._raise_field_error(field_name, "不允许包含空字段名")
+            if cleaned not in seen:
+                seen.add(cleaned)
+                normalized.append(cleaned)
+        return tuple(normalized)
+
     def _raise_field_error(
         self,
         field_name: str,
@@ -254,4 +319,9 @@ class ToolSpec:
         raise error from cause
 
 
-__all__ = ["ToolHandler", "ToolRiskLevel", "ToolSpec"]
+__all__ = [
+    "ToolAuditOutputMode",
+    "ToolHandler",
+    "ToolRiskLevel",
+    "ToolSpec",
+]

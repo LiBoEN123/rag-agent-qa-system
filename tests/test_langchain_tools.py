@@ -11,6 +11,7 @@ from app.tools import (
     get_langchain_tools,
 )
 from app.tools.registry import tool_registry
+from app.tools.context import ToolInvocationContext
 from app.tools.schemas import (
     CompareDocumentsArgs,
     GetChunkTextArgs,
@@ -208,3 +209,24 @@ def test_unknown_langchain_tool_returns_none_and_registry_behavior_is_unchanged(
     assert result["error_code"] == "unknown_tool"
     assert result["retryable"] is False
     assert result["runtime"]["attempt_count"] == 0
+
+
+def test_langchain_tool_forwards_complete_governance_context(monkeypatch):
+    calls = []
+    context = ToolInvocationContext(
+        trace_id="context-trace",
+        request_id="request-1",
+        principal_id="service-1",
+        permissions=("knowledge_base:read",),
+        source="langchain-test",
+    )
+
+    def fake_dispatch(tool_name, tool_args=None, trace_id="", *, context=None):
+        calls.append((tool_name, tool_args, trace_id, context))
+        return {"status": "success", "ok": True}
+
+    monkeypatch.setattr("app.tools.langchain_tools.dispatch_tool", fake_dispatch)
+    tool = get_langchain_tool("list_documents", context=context)
+    assert tool is not None
+    tool.invoke({})
+    assert calls == [("list_documents", {}, "", context)]

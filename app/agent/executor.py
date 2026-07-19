@@ -3,11 +3,16 @@
 按顺序执行工具、澄清和直接回答步骤，并把观察结果写回 Agent 状态。
 """
 
+import inspect
 import time
 from typing import Any
 
 from app.agent.state import AgentObservation, AgentPlanStep, AgentState
 from app.tools import dispatch_tool
+from app.tools.audit import sanitize_tool_input, summarize_tool_output
+from app.tools.context import ToolInvocationContext
+from app.tools.redaction import redact_sensitive_data
+from app.tools.registry import tool_registry
 
 
 def summarize_tool_result(tool_name: str, tool_result: dict) -> str:
@@ -48,7 +53,23 @@ def build_observation(
     """将一次工具调用结果规整为 AgentObservation。"""
     success = bool(tool_result.get("ok", tool_result.get("status") == "success"))
     output = tool_result.get("output") or {}
-    error = str(tool_result.get("error") or "")
+    error_code = str(tool_result.get("error_code") or "")
+    raw_error = str(tool_result.get("error") or "")
+    safe_policy_codes = {
+        "permission_denied",
+        "approval_required",
+        "missing_idempotency_key",
+        "invalid_invocation_context",
+        "policy_denied",
+        "audit_write_failed",
+    }
+    if error_code in safe_policy_codes:
+        error = raw_error
+    elif error_code:
+        error = f"工具执行失败（{error_code}）"
+    else:
+        # 无错误码只用于兼容旧测试替身和旧工具结果。
+        error = raw_error
     if not success and not error:
         error = "Tool execution failed"
 
@@ -69,17 +90,38 @@ def build_tool_trace_step(
     observation: AgentObservation,
 ) -> dict[str, Any]:
     """构造兼容现有响应结构的单步工具 trace。"""
+    spec = tool_registry.get(step.tool_name)
+    sanitized_args = (
+        sanitize_tool_input(spec, step.tool_args)
+        if spec is not None
+        else redact_sensitive_data(step.tool_args)
+    )
+    governance = tool_result.get("governance")
+    governance = governance if isinstance(governance, dict) else {}
+    runtime = tool_result.get("runtime")
+    runtime = runtime if isinstance(runtime, dict) else {}
     trace: dict[str, Any] = {
         "step": "tool_call",
         "step_id": step.step_id,
         "action": step.action,
         "tool_name": step.tool_name,
-        "tool_args": step.tool_args,
+        # tool_args 是旧 trace 消费方的兼容别名，内容已经递归脱敏和截断。
+        "tool_args": sanitized_args,
+        "sanitized_tool_args": sanitized_args,
         "tool_status": tool_result.get("status", ""),
         "success": observation.success,
-        "summary": observation.summary,
-        "error": observation.error,
+        "summary": redact_sensitive_data(observation.summary),
+        "error": redact_sensitive_data(observation.error),
         "cost_ms": observation.cost_ms,
+        "error_code": tool_result.get("error_code", ""),
+        "tool_call_id": tool_result.get("tool_call_id", ""),
+        "policy_decision": governance.get("decision", ""),
+        "risk_level": governance.get("risk_level", ""),
+        "approval_required": governance.get("approval_required", False),
+        "args_fingerprint": governance.get("args_fingerprint", ""),
+        "attempt_count": runtime.get("attempt_count", 0),
+        "max_attempts": runtime.get("max_attempts", 0),
+        "timed_out": runtime.get("timed_out", False),
     }
 
     if step.tool_name == "search_knowledge_base":
@@ -88,8 +130,12 @@ def build_tool_trace_step(
         trace.update(
             {
                 "final_chunk_count": output.get("count", 0),
-                "top_chunk_ids": output.get("top_chunk_ids", []),
-                "top_scores": output.get("top_scores", []),
+                "top_chunk_ids": list(output.get("top_chunk_ids", []))[:10]
+                if isinstance(output.get("top_chunk_ids"), (list, tuple))
+                else [],
+                "top_scores": list(output.get("top_scores", []))[:10]
+                if isinstance(output.get("top_scores"), (list, tuple))
+                else [],
             }
         )
 
@@ -112,15 +158,33 @@ def build_tool_trace_step(
                 }
             )
         trace["hits"] = hits
+        trace["top_chunk_ids"] = redact_sensitive_data(
+            trace["top_chunk_ids"]
+        )
+        trace["top_scores"] = redact_sensitive_data(trace["top_scores"])
+        trace["hits"] = redact_sensitive_data(trace["hits"])
+    elif spec is not None:
+        trace["output_summary"] = summarize_tool_output(
+            spec,
+            observation.output,
+        )
     else:
-        # 普通工具输出体量较小，保留原始结果供评测和故障排查使用。
-        trace["tool_output"] = observation.output
+        trace["output_summary"] = redact_sensitive_data(observation.output)
 
     return trace
 
 
-def _call_dispatch_tool(step: AgentPlanStep, trace_id: str = "") -> dict:
-    """调用工具分发入口并传递当前 trace_id。"""
+def _call_dispatch_tool(
+    step: AgentPlanStep,
+    trace_id: str = "",
+    *,
+    context: ToolInvocationContext | None = None,
+) -> dict:
+    """调用工具分发入口并优先传递完整治理上下文。"""
+    if context is not None and "context" in inspect.signature(
+        dispatch_tool
+    ).parameters:
+        return dispatch_tool(step.tool_name, step.tool_args, context=context)
     return dispatch_tool(step.tool_name, step.tool_args, trace_id=trace_id)
 
 
@@ -129,8 +193,28 @@ def _execute_tool_step(state: AgentState, step: AgentPlanStep) -> bool:
     step.status = "running"
     start = time.perf_counter()
 
+    invocation_context = ToolInvocationContext(
+        trace_id=state.trace_id,
+        request_id=state.trace_id,
+        session_id=state.session_id or "",
+        principal_id=state.principal_id,
+        principal_type=state.principal_type,
+        roles=tuple(state.roles),
+        permissions=tuple(state.permissions),
+        tenant_id=state.tenant_id,
+        source=state.request_source or "langgraph_agent",
+        idempotency_key=state.idempotency_key,
+    )
+
     try:
-        tool_result = _call_dispatch_tool(step, trace_id=state.trace_id)
+        if "context" in inspect.signature(_call_dispatch_tool).parameters:
+            tool_result = _call_dispatch_tool(
+                step,
+                trace_id=state.trace_id,
+                context=invocation_context,
+            )
+        else:
+            tool_result = _call_dispatch_tool(step, trace_id=state.trace_id)
     except Exception as exc:
         cost_ms = int((time.perf_counter() - start) * 1000)
         tool_result = {

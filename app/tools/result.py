@@ -12,6 +12,7 @@ def tool_success(
     output: Any,
     *,
     runtime: dict | None = None,
+    governance: dict | None = None,
 ) -> dict:
     """构造统一的工具成功返回结构。"""
     return {
@@ -24,6 +25,7 @@ def tool_success(
         "error_code": "",
         "retryable": False,
         "runtime": runtime or {},
+        "governance": governance or {},
     }
 
 
@@ -35,6 +37,7 @@ def tool_error(
     error_code: str = "execution_error",
     retryable: bool = False,
     runtime: dict | None = None,
+    governance: dict | None = None,
 ) -> dict:
     """构造统一的工具失败返回结构。"""
     return {
@@ -47,4 +50,5 @@ def tool_error(
         "error_code": error_code,
         "retryable": retryable,
         "runtime": runtime or {},
+        "governance": governance or {},
     }

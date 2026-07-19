@@ -5,6 +5,7 @@
 
 import math
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,9 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 LANGGRAPH_CHECKPOINTER_VALUES = {"disabled", "memory", "sqlite"}
+_TOOL_PERMISSION_PATTERN = re.compile(
+    r"^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*$"
+)
 
 
 def normalize_langgraph_checkpointer(value: str | None) -> str:
@@ -120,6 +124,74 @@ def validate_tool_runtime_settings(settings: Any) -> None:
     )
 
 
+def env_csv(name: str, default: str) -> tuple[str, ...]:
+    """读取逗号分隔且保持顺序的非空配置项。"""
+    raw_value = os.getenv(name, default)
+    return tuple(item.strip() for item in raw_value.split(",") if item.strip())
+
+
+def validate_tool_governance_config(
+    *,
+    default_principal_id: str,
+    default_permissions: object,
+    audit_path: str | Path,
+    max_depth: int,
+    max_items: int,
+    max_string_chars: int,
+    max_serialized_chars: int,
+) -> None:
+    """校验工具默认主体和审计体量限制。"""
+    if not isinstance(default_principal_id, str) or not default_principal_id.strip():
+        raise ValueError("TOOL_DEFAULT_PRINCIPAL_ID 不能为空")
+
+    if isinstance(default_permissions, str):
+        permissions = tuple(
+            item.strip()
+            for item in default_permissions.split(",")
+            if item.strip()
+        )
+    elif isinstance(default_permissions, (tuple, list)):
+        permissions = tuple(default_permissions)
+    else:
+        raise ValueError("TOOL_DEFAULT_PERMISSIONS 必须是权限序列")
+    if not permissions:
+        raise ValueError("TOOL_DEFAULT_PERMISSIONS 至少需要一个精确权限")
+    for permission in permissions:
+        if not isinstance(permission, str) or not _TOOL_PERMISSION_PATTERN.fullmatch(
+            permission.strip()
+        ):
+            raise ValueError(
+                "TOOL_DEFAULT_PERMISSIONS 必须使用 resource:action 格式"
+            )
+
+    resolved_audit_path = project_path(Path(audit_path).expanduser())
+    if resolved_audit_path.exists() and resolved_audit_path.is_dir():
+        raise ValueError("TOOL_AUDIT_PATH 必须指向文件，不能是目录")
+
+    limits = {
+        "TOOL_AUDIT_MAX_DEPTH": max_depth,
+        "TOOL_AUDIT_MAX_ITEMS": max_items,
+        "TOOL_AUDIT_MAX_STRING_CHARS": max_string_chars,
+        "TOOL_AUDIT_MAX_SERIALIZED_CHARS": max_serialized_chars,
+    }
+    for name, value in limits.items():
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"{name} 必须是大于或等于 1 的整数")
+
+
+def validate_tool_governance_settings(settings: Any) -> None:
+    """从 Settings 类读取并校验工具治理配置。"""
+    validate_tool_governance_config(
+        default_principal_id=settings.TOOL_DEFAULT_PRINCIPAL_ID,
+        default_permissions=settings.TOOL_DEFAULT_PERMISSIONS,
+        audit_path=settings.TOOL_AUDIT_PATH,
+        max_depth=settings.TOOL_AUDIT_MAX_DEPTH,
+        max_items=settings.TOOL_AUDIT_MAX_ITEMS,
+        max_string_chars=settings.TOOL_AUDIT_MAX_STRING_CHARS,
+        max_serialized_chars=settings.TOOL_AUDIT_MAX_SERIALIZED_CHARS,
+    )
+
+
 def project_path(path: Path) -> Path:
     """把相对路径解析为项目根目录下的绝对路径。"""
     return path if path.is_absolute() else BASE_DIR / path
@@ -171,6 +243,30 @@ class Settings:
     TOOL_RETRY_BASE_DELAY_MS = env_int("TOOL_RETRY_BASE_DELAY_MS", "100")
     TOOL_RETRY_MAX_DELAY_MS = env_int("TOOL_RETRY_MAX_DELAY_MS", "2000")
     TOOL_RETRY_JITTER_RATIO = env_float("TOOL_RETRY_JITTER_RATIO", "0.2")
+
+    TOOL_DEFAULT_PRINCIPAL_ID = os.getenv(
+        "TOOL_DEFAULT_PRINCIPAL_ID",
+        "chat_api",
+    ).strip()
+    TOOL_DEFAULT_PERMISSIONS = env_csv(
+        "TOOL_DEFAULT_PERMISSIONS",
+        "knowledge_base:read",
+    )
+
+    TOOL_AUDIT_ENABLED = env_bool("TOOL_AUDIT_ENABLED", "true")
+    TOOL_AUDIT_PATH = project_path(
+        Path(os.getenv("TOOL_AUDIT_PATH", "logs/tool_audit.jsonl")).expanduser()
+    )
+    TOOL_AUDIT_MAX_DEPTH = env_int("TOOL_AUDIT_MAX_DEPTH", "6")
+    TOOL_AUDIT_MAX_ITEMS = env_int("TOOL_AUDIT_MAX_ITEMS", "20")
+    TOOL_AUDIT_MAX_STRING_CHARS = env_int(
+        "TOOL_AUDIT_MAX_STRING_CHARS",
+        "500",
+    )
+    TOOL_AUDIT_MAX_SERIALIZED_CHARS = env_int(
+        "TOOL_AUDIT_MAX_SERIALIZED_CHARS",
+        "5000",
+    )
 
     USE_LLM_JUDGE = env_bool("USE_LLM_JUDGE", "false")
     JUDGE_API_KEY = os.getenv("JUDGE_API_KEY") or LLM_API_KEY
@@ -237,6 +333,7 @@ class Settings:
     def validate(cls):
         """校验关键配置是否存在并可访问。"""
         validate_tool_runtime_settings(cls)
+        validate_tool_governance_settings(cls)
         cls.LANGGRAPH_CHECKPOINTER = validate_langgraph_checkpointer(
             cls.LANGGRAPH_CHECKPOINTER
         )

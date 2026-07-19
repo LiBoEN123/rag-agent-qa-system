@@ -30,6 +30,13 @@ def run_agent_langgraph(
     *,
     original_question: str,
     effective_question: str,
+    principal_id: str = "chat_api",
+    principal_type: str = "service",
+    roles: tuple[str, ...] = ("reader",),
+    permissions: tuple[str, ...] = ("knowledge_base:read",),
+    tenant_id: str = "",
+    request_source: str = "chat_api",
+    idempotency_key: str = "",
 ) -> dict[str, Any]:
     """同步执行 LangGraph 主图，并返回 API 主流程使用的结果字典。"""
     resolved_original_question = (original_question or "").strip()
@@ -43,6 +50,13 @@ def run_agent_langgraph(
         "decision": decision,
         "trace_id": trace_id,
         "session_id": session_id,
+        "principal_id": principal_id,
+        "principal_type": principal_type,
+        "roles": list(roles),
+        "permissions": list(permissions),
+        "tenant_id": tenant_id,
+        "request_source": request_source,
+        "idempotency_key": idempotency_key,
     }
 
     try:
