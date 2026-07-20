@@ -122,7 +122,10 @@ def register_default_tools(registry: ToolRegistry) -> None:
         ToolSpec(
             name="search_knowledge_base",
             version="1.0.0",
-            description="检索知识库并返回相关证据 chunk",
+            description=(
+                "用于回答需要依据当前本地知识库文档的问题；传入检索问题和"
+                "候选数量，返回相关证据 chunk。仅检索本地知识库，不用于互联网搜索。"
+            ),
             args_schema={
                 "query": "string, 必填，用户问题或检索问题",
                 "top_k": "integer, 可选，返回候选 chunk 数量",
@@ -147,7 +150,10 @@ def register_default_tools(registry: ToolRegistry) -> None:
         ToolSpec(
             name="compare_documents",
             version="1.0.0",
-            description="对比两个知识库文档中关于同一问题的相关规定差异",
+            description=(
+                "用于比较两个已知知识库文档对同一主题的规定；传入主题、两个"
+                "文档名和候选数量，返回双方证据与差异摘要。不用于未知文档的泛检索。"
+            ),
             args_schema={
                 "query": "string, 必填，对比主题或问题",
                 "doc_a": "string, 必填，第一个文档名或文档名关键词",
@@ -179,7 +185,10 @@ def register_default_tools(registry: ToolRegistry) -> None:
         ToolSpec(
             name="simple_calculator",
             version="1.0.0",
-            description="执行简单数字四则运算",
+            description=(
+                "用于计算明确的数字四则运算表达式并返回数值结果；参数 expression"
+                " 是待计算表达式。不用于解释知识库中的数字含义或执行代码。"
+            ),
             args_schema={"expression": "string, 必填，例如 '1 + 2 * 3'"},
             output_schema={"expression": "string", "result": "number"},
             handler=_handle_simple_calculator,
@@ -197,7 +206,10 @@ def register_default_tools(registry: ToolRegistry) -> None:
         ToolSpec(
             name="list_documents",
             version="1.0.0",
-            description="列出知识库文档及数量",
+            description=(
+                "用于查看当前本地知识库包含的文档名称和数量，无需参数；"
+                "返回文档列表，不返回文档全文或互联网内容。"
+            ),
             args_schema={},
             output_schema={"count": "integer", "documents": "list"},
             handler=_handle_list_documents,
@@ -215,7 +227,10 @@ def register_default_tools(registry: ToolRegistry) -> None:
         ToolSpec(
             name="get_chunk_text",
             version="1.0.0",
-            description="查看指定 chunk_id 的完整原文",
+            description=(
+                "用于在已知 chunk_id 时读取该知识库片段的完整原文；参数 chunk_id"
+                " 是片段标识。若不知道 chunk_id，应先检索知识库。"
+            ),
             args_schema={"chunk_id": "integer|string, 必填"},
             output_schema={"chunk_id": "integer|string", "chunk": "dict"},
             handler=_handle_get_chunk_text,

@@ -106,7 +106,7 @@ def test_agent_loop_answers_without_calling_tools(monkeypatch):
     output = _invoke_graph(
         monkeypatch,
         model,
-        decision={"action": "direct_answer", "router_llm_used": False},
+        decision={"action": "agent", "router_llm_used": False},
     )
 
     assert len(model.received_messages) == 1
@@ -612,14 +612,16 @@ def test_agent_selected_knowledge_search_keeps_rag_citation_path(monkeypatch):
     monkeypatch.setattr(
         graph_nodes,
         "get_langchain_tool_map",
-        lambda *, context: {"search_knowledge_base": FakeKnowledgeTool()},
+        lambda *, context, provider: {
+            "search_knowledge_base": FakeKnowledgeTool()
+        },
     )
     monkeypatch.setattr(graph_nodes, "run_rag_subgraph", fake_rag_subgraph)
 
     output = _invoke_graph(
         monkeypatch,
         model,
-        decision={"action": "direct_answer", "router_llm_used": False},
+        decision={"action": "agent", "router_llm_used": False},
     )
 
     assert len(model.received_messages) == 1

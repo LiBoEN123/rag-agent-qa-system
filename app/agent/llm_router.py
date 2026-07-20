@@ -8,7 +8,6 @@ import json
 from app.llm.factory import get_router_model
 from app.llm.gateway import ModelGateway
 from app.prompts import ROUTER_SYSTEM_PROMPT, ROUTER_USER_PROMPT
-from app.tools.registry import tool_registry
 
 
 def parse_router_json_output(llm_output: str) -> dict:
@@ -29,8 +28,13 @@ def parse_router_json_output(llm_output: str) -> dict:
 
 
 def call_router_llm(question: str, top_k: int, trace_id: str = "") -> str:
-    """通过统一 Gateway 调用 LLM Router。"""
-    allowed_actions = set(tool_registry.names()) | {"clarify", "direct_answer"}
+    """通过统一 Gateway 调用只做入口判断的 LLM Router。"""
+    allowed_actions = {
+        "agent",
+        "rag_fast_path",
+        "clarify",
+        "direct_answer",
+    }
     messages = [
         {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
         {
@@ -40,9 +44,6 @@ def call_router_llm(question: str, top_k: int, trace_id: str = "") -> str:
                 top_k=top_k,
                 available_actions=json.dumps(
                     sorted(allowed_actions), ensure_ascii=False
-                ),
-                tool_specs=json.dumps(
-                    tool_registry.router_specs(), ensure_ascii=False, indent=2
                 ),
             ),
         },

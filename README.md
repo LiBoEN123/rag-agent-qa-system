@@ -10,8 +10,9 @@
 - 混合检索：BM25 负责关键词精确匹配，SentenceTransformer Embedding 负责语义召回，提升中文问答召回稳定性。
 - CrossEncoder rerank：对候选 chunk 做二阶段重排，缓解初召回排序不准的问题。
 - ChromaDB 持久化：chunk 文本、metadata 和 embedding 持久化保存，服务重启可复用索引缓存。
-- LLM Router + 规则 fallback：可开启 LLM 路由，输出异常或参数非法时自动回退到规则路由。
+- Agent-first 粗粒度 Router：除空问题、稳定直答和明确澄清外，自然语言请求默认进入 `agent`，避免静态路由在模型看到动态工具前误分流；`rag_fast_path` 保留为显式/旧协议兼容入口。
 - 唯一 Agent Runtime：LangGraph 主图统一编排普通工具和 RAG 子图路径，共享既有返回协议和底层算法。
+- Registry-driven 工具发现：本地工具经 `ToolRegistry → LocalToolProvider → StructuredTool` 自动绑定；新增普通工具不需要修改 Router、Planner、Executor 或 Graph。
 - 多轮追问改写：同一 `session_id` 下通过 SQLite 保留最近会话历史，短追问和指代问题会先改写成独立检索问题。
 - 工具调用：支持知识库检索、双文档内容对比、简单四则运算、列出知识库文档和查看指定 chunk 原文。
 - 引用绑定和拒答机制：模型输出的 `Reference N` 会绑定回真实文件与 chunk；证据不足或引用支撑不足时拒答。
@@ -45,14 +46,14 @@ flowchart TD
         Finalize[Finalize / build_v2_result]
 
         Initialize --> InitialAction
-        InitialAction -->|普通请求| AgentModel
-        InitialAction -->|初始知识库检索 / 澄清| Planner
+        InitialAction -->|agent| AgentModel
+        InitialAction -->|rag_fast_path / 澄清 / 直接回答| Planner
 
         AgentModel --> ModelResult
         ModelResult -->|有 tool_calls 且预算充足| GovernedTools
         ModelResult -->|无 tool_calls| Composer
         ModelResult -->|达到模型或工具预算| Limit
-        ModelResult -->|首轮模型不可用| Planner
+        ModelResult -->|legacy 首轮模型不可用| Planner
         ModelResult -->|工具后模型失败| Composer
 
         GovernedTools --> ToolResult
@@ -69,13 +70,15 @@ flowchart TD
     end
 
     subgraph ToolRuntime[受治理工具执行链]
+        Provider[LocalToolProvider]
+        Registry[ToolRegistry.dispatch]
         StructuredTool[请求级 StructuredTool]
-        Dispatch[dispatch_tool]
         Runtime[ToolRuntime.execute]
         Handler[ToolSpec.handler]
 
-        StructuredTool --> Dispatch
-        Dispatch --> Runtime
+        Provider --> StructuredTool
+        StructuredTool --> Registry
+        Registry --> Runtime
         Runtime --> Handler
     end
 
@@ -138,8 +141,9 @@ flowchart TD
 | 多轮追问 | `session_id` 通过 SQLite 维持最近会话历史，对短追问、指代问题做 Query Rewrite |
 | 答案生成 | 调用 OpenAI-compatible Chat Completions，要求模型返回 JSON |
 | 引用绑定 | 将 `Reference N` 映射回真实文件、`chunk_id`、`snippet` 和分数 |
-| Agent Runtime | LangGraph 使用 `agent_model ↔ governed_tools` 迭代循环；工具结果以 ToolMessage 返回模型，Planner/Executor 保留为知识库、澄清和首轮模型不可用时的兼容路径 |
-| Agent 路由 | 支持规则路由和可选 LLM Router，失败时回退规则路由 |
+| Agent Runtime | LangGraph 使用 `agent_model ↔ governed_tools` 迭代循环；工具结果以 ToolMessage 返回模型，Planner/Executor 仅保留 RAG Fast Path、短路动作和旧决策兼容路径 |
+| Agent 路由 | 正常自然语言请求默认输出 `agent`；`direct_answer` / `clarify` 只做安全短路，`rag_fast_path` 保留为显式和旧协议兼容动作 |
+| 工具发现 | `LocalToolProvider` 按请求从 `ToolRegistry` 提供 ToolSpec，并自动构造请求级 StructuredTool；普通新工具无需修改核心编排 |
 | 工具调用 | `search_knowledge_base`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text` |
 | 可观测性 | `trace_id`、请求耗时、阶段耗时、工具调用日志、metrics 汇总接口 |
 | 失败分析 | `logs/bad_cases.jsonl` 记录值得分析的失败样例 |
@@ -153,7 +157,7 @@ flowchart TD
 3. 文档切分：Markdown 先按标题层级切分并保留标题路径，普通文本按段落和标点递归切分。
 4. 建立索引：构建 BM25 关键词索引，并使用 SentenceTransformer 生成 embedding；向量、chunk 和 metadata 持久化到 ChromaDB。
 5. 多轮改写：`/chat` 如果传入 `session_id`，会读取最近历史；短追问或指代问题会先改写成独立问题。
-6. Agent 执行：改写后的问题进入 Router 和 LangGraph 主图。普通请求由 Agent Model 根据 AIMessage 与 ToolMessage 迭代选择工具或生成最终回答；初始知识库检索、澄清以及首轮模型不可用场景保留 Planner/Executor 兼容路径。成功的知识库检索统一进入专用 RAG 子图。
+6. Agent 执行：改写后的普通问题由粗粒度 Router 统一送入 `agent`，Agent Model 再根据 Provider 动态提供的工具描述、参数 Schema、AIMessage 与 ToolMessage 迭代选择工具或生成最终回答。这样新增工具和用户口吻不需要写入 Router。显式 `rag_fast_path`、澄清和直接回答保留 Planner/Executor 薄兼容路径；Agent 选择知识库检索后仍统一进入专用 RAG 子图。
 7. 查询拆分：启用 `ENABLE_QUERY_DECOMPOSE` 后，复杂问题可由拆分模型生成子问题。
 8. 混合召回：查询时同时执行 BM25 和 embedding 召回，合并候选 chunk。
 9. 二阶段重排：使用 CrossEncoder reranker 对候选证据重新排序。
@@ -201,7 +205,9 @@ API 请求与响应 Schema、HTTP 状态语义和 trace 响应头保持不变；
 
 ## LangChain Tool 适配层
 
-现有 `ToolRegistry` 中的工具通过 `get_langchain_tools()` 按请求、按注册顺序转换为 LangChain `StructuredTool`。Agent Model 使用 `bind_tools()` 获取工具 Schema；模型生成的 `tool_calls` 由 `governed_tools` 节点调用请求级 StructuredTool，再统一进入 `dispatch_tool()` 和 `ToolRuntime`，因此参数校验、权限、超时、重试、审计、脱敏、统一错误码以及完整 `ToolInvocationContext` 都保持不变。
+`LocalToolProvider` 按请求从 `ToolRegistry` 读取稳定有序的 `ToolSpec`，`get_langchain_tools()` 再自动转换为 LangChain `StructuredTool`。Agent Model 使用 `bind_tools()` 获取每个工具的 description 与 Pydantic 参数 Schema；模型生成的 `tool_calls` 由 `governed_tools` 节点调用请求级 StructuredTool，再统一进入定义所属的 `ToolRegistry.dispatch()` 和 `ToolRuntime`。参数校验、权限、超时、重试、审计、脱敏、统一错误码以及完整 `ToolInvocationContext` 都保持不变。
+
+新增普通本地工具只需创建合法 `ToolSpec` 并注册到 Registry，不需要修改 Router、Planner、Executor 或 Graph。Provider 当前不做权限可见性预过滤，避免模型伪造隐藏工具名时绕过 Runtime 的明确治理结果；`ToolRuntime` 仍在执行前做最终权限校验。多 Provider 合并辅助函数会保持 Provider/注册顺序并拒绝重名，但当前生产环境只有 `LocalToolProvider`，尚未实现 MCP 或外部工具动态加载。
 
 本项目没有直接使用官方 `ToolNode`：当前版本的 ToolNode 在图编译时固定工具对象，而这里的 StructuredTool 必须捕获每次请求独立的 trace、session、权限和来源上下文。薄的 `governed_tools` 节点只负责消息适配和调用分发，不直接调用业务 handler，也不复制任何 Runtime 治理逻辑。
 
@@ -209,21 +215,21 @@ API 请求与响应 Schema、HTTP 状态语义和 trace 响应头保持不变；
 
 项目当前唯一 Agent Runtime 为 LangGraph。旧手写 Agent 编排入口、运行时选择配置与选择器均已删除，不再提供运行时回滚开关。升级已有环境时，应从本地 `.env` 删除旧的 Agent Runtime 选择变量；需要回滚版本时使用 Git commit、tag 或 release。
 
-当前请求链路为 `FastAPI → ChatService → Query Rewrite → Router → LangGraph Agent Graph → RAG Subgraph / 迭代工具循环 → Finalize → Session / Metrics → API Response`。ChatService 会把已经生成的 Router decision 传给主图，因此 Query Rewrite、Router 和 LangGraph Runtime 在单次请求中各执行一次。
+当前请求链路为 `FastAPI → ChatService → Query Rewrite → Router → LangGraph Agent Graph → RAG Subgraph / 迭代工具循环 → Finalize → Session / Metrics → API Response`。ChatService 会把已经生成的 Router decision 传给主图，因此 Query Rewrite、Router 和 LangGraph Runtime 在单次请求中各执行一次。正常 Router 不枚举工具意图，也不调用 Router LLM；它把普通请求交给能看到动态工具 Schema 的 Agent Model。
 
 主图的核心结构为：
 
 ```text
 START → route（可选）→ initialize
-  ├─ 初始知识库检索 / 澄清 → plan → execute → RAG 或 compose
-  └─ agent_model
+  ├─ rag_fast_path / 澄清 / 直接回答 → plan → execute → RAG 或 compose
+  └─ agent → agent_model
        ├─ tool_calls → governed_tools → agent_model
        ├─ search_knowledge_base 成功 → RAG 子图 → finalize
        ├─ 无 tool_calls → compose → finalize
        └─ 达到预算 → limit_handler → compose → finalize
 ```
 
-模型不可用或首轮调用失败时，保留的 Planner/Executor 会执行 Router 已确定的兼容计划；工具已经执行后模型失败则受控结束，不会重放旧计划。成功的知识库检索仍进入原 RAG 子图，以保留问题拆分、重排、证据门控、拒答、引用绑定和验证能力。
+`agent` 路径的模型不可用或调用失败会受控停止，不允许 Planner 猜测具体工具；旧具体工具 decision 的首轮失败仍可进入通用 Registry 兼容计划。成功的知识库检索继续进入原 RAG 子图，以保留问题拆分、重排、证据门控、拒答、引用绑定和验证能力。
 
 旧手写 Agent 编排入口已经删除。Planner、Executor、Answer Composer、`AgentState`、Router 和 Query Rewrite 仍由 LangGraph 节点或 ChatService 复用，它们属于共享业务层。完整 RAG 问答不再提供独立顺序式入口，脚本和测试统一调用 `app.rag.graph.run_rag_subgraph()`。
 
@@ -254,6 +260,7 @@ Checkpointer 只保存 Graph 节点执行快照，不替代应用级聊天历史
 - [ADR 0001：开源 Agent 技术栈](docs/adr/0001-open-source-agent-stack.md)
 - [ADR 0002：迭代式 Agent Loop](docs/adr/0002-iterative-agent-loop.md)
 - [ADR 0003：工具治理边界](docs/adr/0003-tool-governance-boundary.md)
+- [ADR 0004：基于注册表的工具发现](docs/adr/0004-registry-driven-tool-discovery.md)
 
 ## 快速启动
 
@@ -549,7 +556,7 @@ GET /metrics-summary?limit=20
 
 如果 `/chat` 传入 `session_id`，Query Rewrite 会在 Agent Router 之前执行；Router 看到的是改写后的有效问题，响应中的 `data.question` 仍保留原始输入，改写细节记录在 `data.tool_trace` 的 `query_rewrite` step 中。
 
-设置 `ENABLE_LLM_ROUTER=true` 后，系统会先调用路由模型生成 JSON 决策；如果模型调用失败、输出不是 JSON、action 非法或工具参数不合法，会自动回退到规则路由。
+`ENABLE_LLM_ROUTER` 作为旧配置项保留，但正常自然语言入口不再让 Router LLM 抢先选择 RAG；否则它无法知道 Provider 中是否刚注册了适用工具。LLM Router 的调用与旧 JSON 校验函数仍保留给兼容调用方，生产默认入口采用 Agent-first 分流。
 
 ## 索引构建与缓存
 
@@ -661,7 +668,7 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 - 为什么引入 reranker：初召回阶段更关注“找全”，排序可能受关键词密度或向量相似度误差影响；CrossEncoder 可以基于 query-chunk 交互重新判断相关性，把更适合作答的证据排到前面。
 - 为什么需要引用绑定：RAG 问答不能只给自然语言答案，还需要能追溯到文件、chunk 和片段，便于用户核验，也便于排查模型是否引用了错误证据。
 - 为什么证据不足时拒答：制度类问答对准确性要求高，低相关度证据强行生成容易造成误导；系统通过阈值、引用绑定和模型输出检查，在证据不足时返回 `no_evidence`。
-- 为什么 Agent Router 要有规则 fallback：LLM Router 能提升灵活性，但可能出现格式错误、动作非法或参数缺失；规则 fallback 保证核心路径可控，避免路由失败影响主流程。
+- 为什么普通请求默认进 Agent：Router 看不到 Provider 的动态工具 Schema，若它先按自然语言猜成 RAG，新工具或换一种说法就可能永远到不了 Agent。Agent-first 让具体工具选择只发生在动态 Schema 已绑定之后。
 - 为什么 Query Rewrite 只对追问触发：完整问题直接进入检索可以减少额外 LLM 成本；短追问和指代问题才结合历史改写，能在成本和多轮体验之间取得平衡。
 - 为什么要做离线评测：RAG 优化不能只看单个 demo，需要用覆盖多场景的评测集持续观察召回、答案关键点、拒答行为和 forbidden 命中情况，形成可复现的优化闭环。
 
@@ -813,5 +820,6 @@ docker run --rm -p 8000:8000 --env-file .env \
 - embedding 和 rerank 模型首次加载较慢，可能需要下载权重。
 - 多轮历史使用本地 SQLite 持久化，适合单实例运行；多实例部署时需要额外规划共享存储和并发策略。
 - SQLite Checkpointer 适合单进程本地开发；高并发、多进程共享、数据持续增长和敏感状态留存需要额外的容量、权限及清理策略。
-- Agent 已支持多轮工具观察、同轮多个工具调用和参数修正，但 Router/Planner 的工具硬编码仍保留；错误次数预算、总耗时预算和连续相同错误检测尚未实现。
+- Agent 已支持 Registry-driven 的多轮工具观察、同轮多个工具调用和参数修正；旧 Planner/Executor 与 RAG 专用处理仍保留少量兼容工具名，错误次数预算、总耗时预算和连续相同错误检测尚未实现。
+- 当前尚未实现 Web、SQL、MCP、外部工具动态加载、写工具人工审批恢复或多 Agent。
 - retrieval_confidence 和 answer_confidence 是启发式估计，不等同于严格概率。

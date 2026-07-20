@@ -21,7 +21,7 @@ from app.agent.executor import (
     execute_plan,
     summarize_tool_result,
 )
-from app.agent.model import get_agent_chat_model
+from app.agent.model import get_agent_chat_model, get_agent_tool_provider
 from app.agent.planner import build_plan_from_decision
 from app.agent.runtime import (
     append_llm_usage_trace,
@@ -163,14 +163,19 @@ def _agent_model_failure_updates(
         trace["error_type"] = error_type
     agent_state.tool_trace.append(trace)
 
-    if not agent_state.observations and not state.get("iteration_count", 0):
+    decision = _safe_decision(state.get("decision"))
+    if (
+        not agent_state.observations
+        and not state.get("iteration_count", 0)
+        and decision.get("action") != "agent"
+    ):
         return {
             "agent_state": agent_state,
             "fallback_to_legacy": True,
         }
     agent_state.status = "model_error"
-    agent_state.reason = "Agent model failed after tool execution"
-    agent_state.final_answer = "工具已执行，但模型暂时无法继续生成可靠回答。"
+    agent_state.reason = "Agent model is unavailable for dynamic tool selection"
+    agent_state.final_answer = "Agent 模型暂时不可用，无法安全选择或继续调用工具。"
     return {
         "agent_state": agent_state,
         "fallback_to_legacy": False,
@@ -204,7 +209,11 @@ def agent_model_node(
         )
 
     try:
-        tools = get_langchain_tools(context=runtime.context)
+        provider = get_agent_tool_provider()
+        tools = get_langchain_tools(
+            context=runtime.context,
+            provider=provider,
+        )
         bound_model = model.bind_tools(tools)
         response = bound_model.invoke(list(state.get("messages") or []))
         if not isinstance(response, AIMessage):
@@ -231,6 +240,7 @@ def agent_model_node(
         "max_iterations": int(state.get("max_iterations", 0) or 0),
         "max_tool_calls": int(state.get("max_tool_calls", 0) or 0),
         "stop_reason": "" if has_tool_calls else "completed",
+        "available_tool_names": [tool.name for tool in tools[:50]],
     }
     agent_state.tool_trace.append(iteration_trace)
     updates: dict[str, Any] = {
@@ -360,7 +370,11 @@ def governed_tools_node(
     if message is None or not message.tool_calls:
         return {"agent_state": agent_state, "messages": []}
 
-    tool_map = get_langchain_tool_map(context=runtime.context)
+    provider = get_agent_tool_provider()
+    tool_map = get_langchain_tool_map(
+        context=runtime.context,
+        provider=provider,
+    )
     tool_messages: list[ToolMessage] = []
     tool_error_count = max(0, int(state.get("tool_error_count", 0) or 0))
     previous_call_count = max(0, int(state.get("tool_call_count", 0) or 0))

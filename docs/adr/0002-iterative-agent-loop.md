@@ -114,14 +114,16 @@ PR1 已完成本 ADR 的最小迭代循环：
 ```text
 Agent Model
 → 请求级 LangChain StructuredTool
-→ dispatch_tool
+→ ToolRegistry.dispatch
 → ToolRuntime
 → ToolSpec.handler
 ```
 
 RAG 继续使用专用子图：初始 Router 选择知识库检索时走保留的 Planner/Executor 兼容入口；模型循环中选择 `search_knowledge_base` 后也会转入同一 RAG 子图。该选择确保问题拆分、混合检索、重排、证据门控、拒答和引用验证不回退。
 
-尚未完成的部分包括：Router/Planner 工具硬编码清理、工具错误次数上限、总耗时预算、连续相同错误检测和更完整的恢复策略。Planner/Executor 暂不删除，并负责知识库/澄清兼容路径以及首轮 Agent Model 不可用时的确定性降级。
+PR2 已按 ADR 0004 完成 Registry-driven 工具发现：Agent Model 通过可注入 `ToolProvider` 动态绑定 ToolSpec；Router 只输出粗粒度入口 action；Planner 使用一个通用 Registry 分支兼容旧具体工具 decision，不再按普通工具逐项规划。`agent` 路径的模型不可用会受控停止，不让 Planner 猜测具体工具；Planner/Executor 继续负责 RAG Fast Path、澄清、直接回答和旧入口兼容。
+
+尚未完成的部分包括：工具错误次数上限、总耗时预算、连续相同错误检测和更完整的恢复策略。Planner/Executor 暂不删除，RAG 专用路径和旧协议兼容层仍保留。
 
 ## 后续行动
 

@@ -10,8 +10,8 @@ from app.graph import runtime as graph_runtime
 from app.tools.registry import tool_registry
 
 
-def test_router_llm_uses_router_factory_and_keeps_allowed_actions(monkeypatch):
-    """Router 通过对应模型工厂调用，并保留工具白名单 Prompt。"""
+def test_router_llm_uses_only_coarse_grained_actions(monkeypatch):
+    """Router Prompt 只暴露入口动作，不再暴露具体工具或 Schema。"""
 
     class FakeRouterModel:
         def __init__(self):
@@ -20,7 +20,7 @@ def test_router_llm_uses_router_factory_and_keeps_allowed_actions(monkeypatch):
         def invoke(self, messages):
             self.calls.append(messages)
             return AIMessage(
-                content='{"action":"search_knowledge_base","reason":"需要检索"}'
+                content='{"action":"rag_fast_path","reason":"需要检索"}'
             )
 
     model = FakeRouterModel()
@@ -29,13 +29,15 @@ def test_router_llm_uses_router_factory_and_keeps_allowed_actions(monkeypatch):
     output = llm_router.call_router_llm("测试问题", 4, trace_id="router-trace")
     parsed = llm_router.parse_router_json_output(output)
 
-    assert parsed["action"] == "search_knowledge_base"
+    assert parsed["action"] == "rag_fast_path"
     assert isinstance(model.calls[0][0], SystemMessage)
     assert isinstance(model.calls[0][1], HumanMessage)
     user_prompt = model.calls[0][1].content
-    assert "search_knowledge_base" in user_prompt
-    assert "compare_documents" in user_prompt
+    assert "agent" in user_prompt
+    assert "rag_fast_path" in user_prompt
     assert "direct_answer" in user_prompt
+    assert "search_knowledge_base" not in user_prompt
+    assert "compare_documents" not in user_prompt
 
 
 def test_agent_allowed_tools_from_registry():
@@ -60,8 +62,8 @@ def test_agent_router_tool_specs_from_registry():
         assert "args_schema" in item
 
 
-def test_validate_llm_compare_documents_route_keeps_safe_args():
-    """验证 LLM 路由选择 compare_documents 时会校验并规整参数。"""
+def test_validate_legacy_tool_route_normalizes_to_agent():
+    """旧版具体工具输出只作为兼容输入并规整为通用 Agent。"""
     decision = agent.validate_route_decision(
         {
             "decision": "use_tool",
@@ -80,28 +82,22 @@ def test_validate_llm_compare_documents_route_keeps_safe_args():
         3,
     )
 
-    assert decision["decision"] == "use_tool"
-    assert decision["action"] == "compare_documents"
-    assert decision["tool_name"] == "compare_documents"
-    assert decision["tool_args"] == {
-        "query": "\u666e\u901a\u672c\u79d1\u56db\u5e74\u5236\u6700\u957f\u5b66\u4e60\u5e74\u9650",
-        "doc_a": "old.md",
-        "doc_b": "new.md",
-        "top_k": 10,
-    }
+    assert decision["decision"] == "use_agent"
+    assert decision["action"] == "agent"
+    assert decision["tool_name"] == ""
+    assert decision["tool_args"] == {}
 
 
-def test_rule_route_detects_explicit_compare_documents_question():
-    """验证显式双标题对比问题会命中 compare_documents 规则路由。"""
+def test_rule_route_sends_document_comparison_to_agent():
+    """文档对比进入 Agent，Router 不提取具体工具参数。"""
     decision = agent.route_agent_action_rule_based(
         "\u8bf7\u5bf9\u6bd4\u300a\u5185\u8499\u53e4\u5de5\u4e1a\u5927\u5b66\u5b66\u751f\u624b\u518c\u300b\u548c\u300a\u8c03\u6574\u901a\u77e5\u300b\u4e2d\u5173\u4e8e\u6700\u957f\u5b66\u4e60\u5e74\u9650\u7684\u5dee\u5f02\u3002",
         3,
     )
 
-    assert decision["action"] == "compare_documents"
-    assert decision["tool_name"] == "compare_documents"
-    assert decision["tool_args"]["doc_a"] == "\u5185\u8499\u53e4\u5de5\u4e1a\u5927\u5b66\u5b66\u751f\u624b\u518c"
-    assert decision["tool_args"]["doc_b"] == "\u8c03\u6574\u901a\u77e5"
+    assert decision["action"] == "agent"
+    assert decision["tool_name"] == ""
+    assert decision["tool_args"] == {}
 
 
 def test_rule_route_does_not_guess_compare_documents_from_vague_names():
@@ -111,7 +107,9 @@ def test_rule_route_does_not_guess_compare_documents_from_vague_names():
         3,
     )
 
-    assert decision["action"] != "compare_documents"
+    assert decision["action"] == "agent"
+    assert decision["tool_name"] == ""
+    assert decision["tool_args"] == {}
 
 
 def test_validate_llm_rag_route_normalizes_safe_args():
@@ -130,15 +128,15 @@ def test_validate_llm_rag_route_normalizes_safe_args():
     )
 
     assert decision["decision"] == "use_knowledge_base"
-    assert decision["action"] == "search_knowledge_base"
+    assert decision["action"] == "rag_fast_path"
     assert decision["tool_name"] == "search_knowledge_base"
     assert decision["tool_args"] == {"query": "Vue 应用如何创建?", "top_k": 3}
     assert decision["router_source"] == "llm"
     assert decision["router_confidence"] == 0.9
 
 
-def test_validate_llm_tool_route_checks_calculator_expression():
-    """验证计算器路由会规范化并校验表达式参数。"""
+def test_validate_llm_tool_route_leaves_args_to_agent_schema():
+    """Router 不再为计算工具规范化或校验参数。"""
     decision = agent.validate_route_decision(
         {
             "decision": "use_tool",
@@ -151,9 +149,10 @@ def test_validate_llm_tool_route_checks_calculator_expression():
         5,
     )
 
-    assert decision["decision"] == "use_tool"
-    assert decision["tool_name"] == "simple_calculator"
-    assert decision["tool_args"] == {"expression": "1+2*3"}
+    assert decision["decision"] == "use_agent"
+    assert decision["action"] == "agent"
+    assert decision["tool_name"] == ""
+    assert decision["tool_args"] == {}
 
 
 def test_validate_llm_route_rejects_unknown_tool():
@@ -171,64 +170,111 @@ def test_validate_llm_route_rejects_unknown_tool():
         )
 
 
-def test_tool_route_uses_rules_before_llm_when_router_enabled(monkeypatch):
-    """验证工具类问题命中高置信规则时不会调用 LLM Router。"""
+def test_normal_request_reaches_agent_without_llm_router(monkeypatch):
+    """普通请求不在动态工具发现前被静态或 LLM Router 截走。"""
     monkeypatch.setattr(agent.Settings, "ENABLE_LLM_ROUTER", True, raising=False)
     called = {"count": 0}
 
     def fake_llm(question, top_k, trace_id=""):
         """模拟不应被调用的 LLM Router。"""
         called["count"] += 1
-        raise AssertionError("工具类问题不应调用 LLM Router")
+        raise AssertionError("普通请求应直接进入动态 Agent")
 
     monkeypatch.setattr(agent_router, "route_agent_action_by_llm", fake_llm)
 
     decision = agent.route_agent_action("知识库有哪些文档？", 5)
 
-    assert decision["action"] == "list_documents"
+    assert decision["action"] == "agent"
     assert decision["tool_args"] == {}
     assert decision["router_source"] == "rule_based"
     assert decision["router_llm_used"] is False
     assert called["count"] == 0
 
 
-def test_default_kb_route_can_use_llm_when_enabled(monkeypatch):
-    """验证默认知识库问题在启用 Router 时仍可走 LLM 路由。"""
+@pytest.mark.parametrize(
+    "question",
+    [
+        "查看切块5的内容",
+        "查看分块5的内容",
+        "把编号为5的知识片段原文发给我",
+        "我想读一下第五段保存的完整文字",
+        "麻烦展示 ID 是 5 的那条记录",
+        "What is stored under item number 5?",
+        "调用刚注册的能力处理这段输入",
+    ],
+)
+def test_request_wording_does_not_bypass_dynamic_agent(monkeypatch, question):
+    """Router 不靠工具关键词猜意图，换口吻和新工具请求都进入 Agent。"""
     monkeypatch.setattr(agent.Settings, "ENABLE_LLM_ROUTER", True, raising=False)
+
+    def fail_if_called(question, top_k, trace_id=""):
+        raise AssertionError("自然语言工具意图不应在 Agent 前被静态分类")
+
     monkeypatch.setattr(
         agent_router,
         "route_agent_action_by_llm",
-        lambda question, top_k, trace_id="": {
+        fail_if_called,
+    )
+
+    decision = agent.route_agent_action(question, 5)
+
+    assert decision["decision"] == "use_agent"
+    assert decision["action"] == "agent"
+    assert decision["tool_name"] == ""
+    assert decision["tool_args"] == {}
+    assert decision["router_source"] == "rule_based"
+    assert decision["router_llm_used"] is False
+
+
+def test_llm_router_cannot_intercept_normal_request_as_rag(monkeypatch):
+    """即使配置启用 LLM Router，正常入口也不能抢在动态 Agent 前选 RAG。"""
+    monkeypatch.setattr(agent.Settings, "ENABLE_LLM_ROUTER", True, raising=False)
+    called = {"count": 0}
+
+    def fake_llm(question, top_k, trace_id=""):
+        called["count"] += 1
+        return {
             "decision": "use_knowledge_base",
-            "action": "search_knowledge_base",
-            "tool_args": {"query": "bad rewrite"},
-            "reason": "需要查知识库",
-            "confidence": 0.8,
-        },
-    )
+            "action": "rag_fast_path",
+            "reason": "错误地当成普通事实问答",
+            "confidence": 0.99,
+        }
 
-    decision = agent.route_agent_action("Vue 应用如何创建？", 5)
-
-    assert decision["action"] == "search_knowledge_base"
-    assert decision["router_source"] == "llm"
-    assert decision["router_llm_used"] is True
-
-
-def test_route_falls_back_to_rules_when_llm_is_invalid(monkeypatch):
-    """验证 LLM 路由非法时会回退到规则路由。"""
-    monkeypatch.setattr(agent.Settings, "ENABLE_LLM_ROUTER", True, raising=False)
     monkeypatch.setattr(
         agent_router,
         "route_agent_action_by_llm",
-        lambda question, top_k, trace_id="": {"action": "unknown_tool"},
+        fake_llm,
     )
 
     decision = agent.route_agent_action("Vue 应用如何创建？", 5)
 
-    assert decision["action"] == "search_knowledge_base"
-    assert decision["router_source"] == "rule_based_fallback"
-    assert decision["router_llm_used"] is True
-    assert "未知路由 action" in decision["router_fallback_reason"]
+    assert decision["action"] == "agent"
+    assert decision["router_source"] == "rule_based"
+    assert decision["router_llm_used"] is False
+    assert called["count"] == 0
+
+
+def test_normal_route_does_not_depend_on_llm_router_availability(monkeypatch):
+    """动态 Agent 入口不因 Router 模型异常而改变或增加一次模型调用。"""
+    monkeypatch.setattr(agent.Settings, "ENABLE_LLM_ROUTER", True, raising=False)
+    called = {"count": 0}
+
+    def unavailable_llm(question, top_k, trace_id=""):
+        called["count"] += 1
+        raise RuntimeError("router unavailable")
+
+    monkeypatch.setattr(
+        agent_router,
+        "route_agent_action_by_llm",
+        unavailable_llm,
+    )
+
+    decision = agent.route_agent_action("Vue 应用如何创建？", 5)
+
+    assert decision["action"] == "agent"
+    assert decision["router_source"] == "rule_based"
+    assert decision["router_llm_used"] is False
+    assert called["count"] == 0
 
 
 def test_route_uses_rules_when_router_disabled(monkeypatch):
@@ -237,9 +283,19 @@ def test_route_uses_rules_when_router_disabled(monkeypatch):
 
     decision = agent.route_agent_action("知识库有多少文档？", 5)
 
-    assert decision["action"] == "list_documents"
+    assert decision["action"] == "agent"
     assert decision["router_source"] == "rule_based"
     assert decision["router_llm_used"] is False
+
+
+def test_plain_arithmetic_expression_routes_to_agent_without_extracting_args():
+    """纯算式属于工具任务，但具体参数仍由 Agent Model 与 Schema 处理。"""
+    decision = agent.route_agent_action_rule_based("12 * 8", 5)
+
+    assert decision["decision"] == "use_agent"
+    assert decision["action"] == "agent"
+    assert decision["tool_name"] == ""
+    assert decision["tool_args"] == {}
 
 
 def test_langgraph_uses_search_knowledge_base_tool_once(monkeypatch):

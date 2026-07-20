@@ -77,7 +77,8 @@ def test_missing_required_args_do_not_dispatch(monkeypatch, tool_name, invalid_a
     """缺少必填参数时由 LangChain/Pydantic 拒绝，且不进入项目分发器。"""
     calls = []
     monkeypatch.setattr(
-        "app.tools.langchain_tools.dispatch_tool",
+        tool_registry,
+        "dispatch",
         lambda *args, **kwargs: calls.append((args, kwargs)),
     )
 
@@ -103,7 +104,8 @@ def test_invalid_top_k_does_not_dispatch(monkeypatch, tool_name, tool_args):
     """非法 top_k 保持现有模型约束，并在分发前失败。"""
     calls = []
     monkeypatch.setattr(
-        "app.tools.langchain_tools.dispatch_tool",
+        tool_registry,
+        "dispatch",
         lambda *args, **kwargs: calls.append((args, kwargs)),
     )
 
@@ -119,11 +121,11 @@ def test_schema_defaults_empty_args_and_chunk_id_types(monkeypatch):
     """默认参数、空参数工具及 chunk_id 联合类型保持现有 Schema 行为。"""
     calls = []
 
-    def fake_dispatch(tool_name, tool_args=None, trace_id=""):
-        calls.append((tool_name, tool_args, trace_id))
+    def fake_dispatch(tool_name, tool_args=None, *, context=None):
+        calls.append((tool_name, tool_args, context.trace_id))
         return {"ok": True}
 
-    monkeypatch.setattr("app.tools.langchain_tools.dispatch_tool", fake_dispatch)
+    monkeypatch.setattr(tool_registry, "dispatch", fake_dispatch)
 
     get_langchain_tool_map()["search_knowledge_base"].invoke({"query": "测试"})
     get_langchain_tool_map()["compare_documents"].invoke(
@@ -159,11 +161,11 @@ def test_langchain_tool_forwards_once_and_returns_dispatch_result(monkeypatch, o
         "error": "" if ok else "mock failure",
     }
 
-    def fake_dispatch(tool_name, tool_args=None, trace_id=""):
-        calls.append((tool_name, tool_args, trace_id))
+    def fake_dispatch(tool_name, tool_args=None, *, context=None):
+        calls.append((tool_name, tool_args, context.trace_id))
         return expected
 
-    monkeypatch.setattr("app.tools.langchain_tools.dispatch_tool", fake_dispatch)
+    monkeypatch.setattr(tool_registry, "dispatch", fake_dispatch)
 
     tool = get_langchain_tool("simple_calculator", trace_id="test-trace")
     assert tool is not None
@@ -180,11 +182,11 @@ def test_trace_id_is_isolated_between_tool_sets(monkeypatch):
     """不同请求构建的 Tool 闭包不会串用 trace_id。"""
     calls = []
 
-    def fake_dispatch(tool_name, tool_args=None, trace_id=""):
-        calls.append((tool_name, tool_args, trace_id))
+    def fake_dispatch(tool_name, tool_args=None, *, context=None):
+        calls.append((tool_name, tool_args, context.trace_id))
         return {"status": "success", "ok": True}
 
-    monkeypatch.setattr("app.tools.langchain_tools.dispatch_tool", fake_dispatch)
+    monkeypatch.setattr(tool_registry, "dispatch", fake_dispatch)
 
     tools_a = get_langchain_tool_map(trace_id="trace-a")
     tools_b = get_langchain_tool_map(trace_id="trace-b")
@@ -220,12 +222,12 @@ def test_langchain_tool_forwards_retained_governance_context(monkeypatch):
         source="langchain-test",
     )
 
-    def fake_dispatch(tool_name, tool_args=None, trace_id="", *, context=None):
-        calls.append((tool_name, tool_args, trace_id, context))
+    def fake_dispatch(tool_name, tool_args=None, *, context=None):
+        calls.append((tool_name, tool_args, context))
         return {"status": "success", "ok": True}
 
-    monkeypatch.setattr("app.tools.langchain_tools.dispatch_tool", fake_dispatch)
+    monkeypatch.setattr(tool_registry, "dispatch", fake_dispatch)
     tool = get_langchain_tool("list_documents", context=context)
     assert tool is not None
     tool.invoke({})
-    assert calls == [("list_documents", {}, "", context)]
+    assert calls == [("list_documents", {}, context)]

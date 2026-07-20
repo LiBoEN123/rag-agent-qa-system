@@ -6,6 +6,7 @@
 from typing import Any
 
 from app.agent.state import AgentPlanStep
+from app.tools.registry import tool_registry
 
 
 def _safe_decision(decision: dict[str, Any] | None) -> dict[str, Any]:
@@ -69,12 +70,15 @@ def build_plan_from_decision(
     question: str,
     top_k: int = 5,
 ) -> list[AgentPlanStep]:
-    """根据路由决策构建 Agent 的执行计划。"""
+    """构建 RAG/短路计划，并兼容旧版具体工具决策。
+
+    正常 ``agent`` 路径由迭代式 Agent Model 直接选择工具，不经过本函数。
+    """
     decision = _safe_decision(decision)
     question = (question or "").strip()
     action = str(decision.get("action") or "").strip()
 
-    if action == "search_knowledge_base":
+    if action in {"rag_fast_path", "search_knowledge_base"}:
         tool_args = _safe_tool_args(decision)
         if not tool_args:
             tool_args = {"query": question, "top_k": top_k}
@@ -92,59 +96,28 @@ def build_plan_from_decision(
             ),
         ]
 
-    if action == "compare_documents":
-        return [
-            _tool_call_step(
-                step_id=1,
-                tool_name="compare_documents",
-                tool_args=_safe_tool_args(decision),
-                reason="先调用文档对比工具获取差异证据",
-            ),
-            _final_answer_step(
-                step_id=2,
-                reason="根据文档对比结果生成最终回答",
-            ),
-        ]
+    if action == "agent":
+        # Graph 正常不会把该空计划交给 Executor；返回空列表可防止 Planner
+        # 在未来新增普通工具时重新承担具体工具选择职责。
+        return []
 
-    if action == "simple_calculator":
+    # 旧调用方可能仍传入具体工具 action。这里通过 Registry 做通用兼容，
+    # 不再为每个工具维护 Planner 分支。
+    legacy_tool_name = str(decision.get("tool_name") or action).strip()
+    if (
+        decision.get("decision") == "use_tool"
+        and tool_registry.get(legacy_tool_name) is not None
+    ):
         return [
             _tool_call_step(
                 step_id=1,
-                tool_name="simple_calculator",
+                tool_name=legacy_tool_name,
                 tool_args=_safe_tool_args(decision),
-                reason="先调用计算器工具得到计算结果",
+                reason="兼容旧路由决策并调用已注册工具",
             ),
             _final_answer_step(
                 step_id=2,
-                reason="根据计算结果生成最终回答",
-            ),
-        ]
-
-    if action == "list_documents":
-        return [
-            _tool_call_step(
-                step_id=1,
-                tool_name="list_documents",
-                tool_args=_safe_tool_args(decision),
-                reason="先列出知识库文档",
-            ),
-            _final_answer_step(
-                step_id=2,
-                reason="根据文档列表生成最终回答",
-            ),
-        ]
-
-    if action == "get_chunk_text":
-        return [
-            _tool_call_step(
-                step_id=1,
-                tool_name="get_chunk_text",
-                tool_args=_safe_tool_args(decision),
-                reason="先查看指定 chunk 原文",
-            ),
-            _final_answer_step(
-                step_id=2,
-                reason="根据 chunk 原文生成最终回答",
+                reason="根据工具结果生成最终回答",
             ),
         ]
 

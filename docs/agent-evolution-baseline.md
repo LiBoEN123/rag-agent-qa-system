@@ -217,3 +217,20 @@ PR1 最适合从 `app/graph/state.py` 开始，先定义 messages、循环计数
 - SQLite Checkpointer 已验证可以序列化完整的 `HumanMessage → AIMessage → ToolMessage → AIMessage` 轨迹。
 
 PR1 没有实现工具错误次数上限、总耗时预算、连续相同错误检测、Streaming、Interrupt、人工审批恢复、多 Agent 或新工具；这些仍属于后续演进范围。
+
+## 13. PR2 实现增量（2026-07-20）
+
+本文件第 1–11 节是 PR0 历史基线，第 12 节记录 PR1；PR2 在此基础上完成 Registry-driven 工具发现：
+
+- 新增 `ToolProvider` Protocol、`LocalToolProvider`、默认 Provider 工厂和多 Provider ToolSpec 合并/重名检测函数。
+- Agent Model 和 `governed_tools` 节点通过可替换的 `get_agent_tool_provider()` 获得同一请求可用工具；测试可以注入独立 Registry，不修改生产全局 Registry。
+- LangChain Adapter 从 Provider 的 ToolSpec 自动生成 StructuredTool，并校验定义属于分发 Registry。执行链改为 `StructuredTool → ToolRegistry.dispatch → ToolRuntime → handler`，治理能力没有复制或绕过。
+- Router 只输出 `agent`、`rag_fast_path`、`direct_answer`、`clarify`，不再接收所有工具 Schema，也不再解析或校验普通工具参数。正常自然语言请求默认进入 `agent`，避免 Router 在看不到动态工具时按关键词或口吻提前误分流。
+- Planner 不参与正常 `agent` 路径；旧具体工具 decision 由一个通用 Registry 兼容分支处理。Executor 与 Graph 无需为普通新工具增加分支。
+- 显式/旧协议 `rag_fast_path` 继续使用现有知识库检索工具、Planner/Executor 兼容入口和 RAG 子图；正常 Agent 调用知识库检索后也进入同一子图，检索、重排、证据门控、拒答及引用算法未修改。
+- Provider 当前不按权限过滤模型可见性；Runtime 仍对每次调用执行最终权限校验，缺权 handler 不会运行。
+- 新增的 `echo_text` 与 `join_texts` 只存在于测试 Registry。它们覆盖独立参数 Schema、Context 贯穿、未知工具恢复和请求隔离，生产 Registry 仍只有原五个工具。
+
+PR2 开始前基线为 `434 passed, 1 warning` 且 Ruff 通过。PR2 完成后的回归基线为 `444 passed, 1 warning`；唯一警告仍来自 `jieba` 对 `pkg_resources` 的弃用提示。没有调用真实外部模型，也没有修改 API Schema、SQLite 表结构、依赖版本或 RAG 算法。
+
+当前仍未实现多个生产 Provider、MCP、Web、SQL、外部工具加载、写工具审批恢复、多 Agent、工具错误次数上限或总耗时预算。旧 Planner/Executor 和 RAG 专用工具名引用作为兼容边界保留。

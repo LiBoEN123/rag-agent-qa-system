@@ -277,10 +277,9 @@ def test_question_without_rewrite_is_passed_through_without_extra_llm_count():
 @pytest.mark.parametrize(
     "action",
     [
+        "rag_fast_path",
+        # 旧调用方注入的 action 仍保留兼容预检。
         "search_knowledge_base",
-        "compare_documents",
-        "list_documents",
-        "get_chunk_text",
     ],
 )
 def test_rag_not_ready_stops_before_runtime_and_preserves_session_behavior(
@@ -289,7 +288,7 @@ def test_rag_not_ready_stops_before_runtime_and_preserves_session_behavior(
     decision = {
         "decision": "use_knowledge_base",
         "action": action,
-        "tool_name": action,
+        "tool_name": "search_knowledge_base",
         "reason": "知识库问题",
         "router_source": "rule_based",
         "router_llm_used": False,
@@ -317,17 +316,12 @@ def test_rag_not_ready_stops_before_runtime_and_preserves_session_behavior(
     assert len(calls["metrics"]) == 1
 
 
-def test_compare_documents_runs_langgraph_when_rag_is_ready():
+def test_agent_tool_task_does_not_require_router_level_rag_preflight():
     decision = {
-        "decision": "use_tool",
-        "action": "compare_documents",
-        "tool_name": "compare_documents",
-        "tool_args": {
-            "query": "对比主题",
-            "doc_a": "文档甲",
-            "doc_b": "文档乙",
-            "top_k": 4,
-        },
+        "decision": "use_agent",
+        "action": "agent",
+        "tool_name": "",
+        "tool_args": {},
         "reason": "对比两份文档",
         "router_source": "rule_based",
         "router_llm_used": False,
@@ -335,19 +329,22 @@ def test_compare_documents_runs_langgraph_when_rag_is_ready():
     service, calls = build_service(
         decision=decision,
         rag_status={"ready": True, "message": "索引可用"},
-        runtime_result=build_runtime_result(action="compare_documents"),
+        runtime_result=build_runtime_result(action="agent"),
     )
 
     outcome = service.handle(make_request())
 
-    assert calls["rag_status"] == 1
+    assert calls["rag_status"] == 0
     assert len(calls["langgraph"]) == 1
     assert calls["langgraph"][0]["decision"] is decision
-    assert calls["langgraph"][0]["decision"]["action"] == "compare_documents"
+    assert calls["langgraph"][0]["decision"]["action"] == "agent"
     assert outcome.http_status == 200
 
 
-@pytest.mark.parametrize("action", ["simple_calculator", "direct_answer", "clarify"])
+@pytest.mark.parametrize(
+    "action",
+    ["agent", "simple_calculator", "direct_answer", "clarify"],
+)
 def test_non_rag_actions_do_not_check_rag_status(action):
     service, calls = build_service(
         decision={

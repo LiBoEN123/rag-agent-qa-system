@@ -45,8 +45,10 @@ def after_initialize_condition(
     """知识库初始路由保留专用 RAG 链，其余请求进入模型循环。"""
     decision = state.get("decision")
     if isinstance(decision, dict) and decision.get("action") in {
+        "rag_fast_path",
         "search_knowledge_base",
         "clarify",
+        "direct_answer",
     }:
         return "legacy_plan"
     return "agent_model"

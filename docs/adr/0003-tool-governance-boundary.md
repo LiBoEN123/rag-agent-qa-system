@@ -6,7 +6,7 @@
 
 ## 背景
 
-项目已经围绕 `ToolSpec`、`ToolRegistry` 和 `ToolRuntime` 建立统一工具契约与执行治理。当前 Executor 先取得请求级 LangChain `StructuredTool`，其适配函数再经公共分发入口调用 Registry 和 Runtime。后续引入 Tool Calling、LangGraph `ToolNode`、MCP、搜索、数据库或浏览器工具时，必须保留这条边界，防止模型或第三方框架绕过权限、审计和运行时限制。
+项目已经围绕 `ToolSpec`、`ToolRegistry` 和 `ToolRuntime` 建立统一工具契约与执行治理。当前 `LocalToolProvider` 提供已注册 ToolSpec，LangChain Adapter 构造请求级 `StructuredTool`，其适配函数再调用定义所属的 Registry 和 Runtime。后续引入 Tool Calling、LangGraph `ToolNode`、MCP、搜索、数据库或浏览器工具时，必须保留这条边界，防止模型或第三方框架绕过权限、审计和运行时限制。
 
 ## 当前问题
 
@@ -122,7 +122,7 @@ MCP Tool
 
 ## 后续行动
 
-1. PR1 的 `governed_tools` 节点复用现有 Registry/Runtime，不直接使用业务 handler。
+1. PR1 的 `governed_tools` 节点与 PR2 的 ToolProvider/Adapter 复用现有 Registry/Runtime，不直接使用业务 handler。
 2. 增加模型 `tool_call_id` 与 Runtime `tool_call_id`、`ToolMessage` 和审计事件之间的关联设计。
 3. 在首个写工具前实现 LangGraph interrupt 审批恢复与持久化幂等去重。
 4. 为 MCP、数据库、搜索和浏览器分别提供最小权限的本地 Adapter 与安全测试。

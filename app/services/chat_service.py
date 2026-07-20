@@ -32,10 +32,9 @@ from app.storage.session import append_message, get_history
 logger = get_logger("chat_service")
 
 RAG_READY_ACTIONS = {
+    "rag_fast_path",
+    # 兼容仍由旧调用方注入的 RAG action。
     "search_knowledge_base",
-    "compare_documents",
-    "list_documents",
-    "get_chunk_text",
 }
 
 _TIMING_METRIC_KEYS = (
