@@ -147,7 +147,19 @@ def compose_final_answer(state: AgentState) -> AgentState:
             else:
                 state.final_answer = "工具执行失败，无法生成可靠回答。"
         return state
-    
+
+    if state.status == "ok" and state.final_answer:
+        state.tool_trace.append(
+            {
+                "step": "compose_final_answer",
+                "mode": "agent_loop",
+                "status": state.status,
+                "answer_len": len(state.final_answer),
+                "reason": state.reason,
+            }
+        )
+        return state
+
     if not state.observations:
         state.status = "error"
         state.reason = "No observations available for final answer"

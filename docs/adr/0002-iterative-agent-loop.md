@@ -98,6 +98,31 @@ START
 - 循环预算、工具错误语义、ToolMessage 对齐和模型降级路径需要新增单元测试与离线轨迹评测。
 - Router、Planner 和 Executor 的主要职责会调整，但现有 RAG 子图、工具业务实现和 API 协议保持稳定。
 
+## PR1 实现状态
+
+PR1 已完成本 ADR 的最小迭代循环：
+
+- `AgentGraphState.messages` 使用 LangGraph `add_messages` reducer，保存 Human、AI 和 Tool 消息。
+- `agent_model` 使用现有 OpenAI-compatible 回答模型工厂和请求级 StructuredTool 执行 `bind_tools()`，测试可通过 `get_agent_chat_model()` 注入确定性模型。
+- `governed_tools` 支持同一 AIMessage 的全部 `tool_calls`，每次结果都生成带正确模型调用 ID 和工具名的标准 `ToolMessage`。
+- 普通工具错误会返回模型继续决策；权限拒绝、策略拒绝、审计写入失败和非法调用上下文会受控停止。
+- `AGENT_MAX_ITERATIONS` 与 `AGENT_MAX_TOOL_CALLS` 分别限制模型轮次和工具执行总数，预算耗尽会设置明确 `stop_reason` 并正常进入 Composer/Finalize。
+- 最终 AIMessage 的文本写回 `AgentState.final_answer`，仍通过现有 Composer、`build_v2_result` 和 `/chat` Response Builder 输出。
+
+当前没有直接采用 `ToolNode`。LangGraph 1.2.9 的 ToolNode 在构图时接收固定工具集合，而项目 StructuredTool 捕获每次请求独立的 `ToolInvocationContext`；静态复用会造成 trace、session、权限和来源跨请求混用。当前薄节点只做动态工具适配，实际执行仍严格遵循：
+
+```text
+Agent Model
+→ 请求级 LangChain StructuredTool
+→ dispatch_tool
+→ ToolRuntime
+→ ToolSpec.handler
+```
+
+RAG 继续使用专用子图：初始 Router 选择知识库检索时走保留的 Planner/Executor 兼容入口；模型循环中选择 `search_knowledge_base` 后也会转入同一 RAG 子图。该选择确保问题拆分、混合检索、重排、证据门控、拒答和引用验证不回退。
+
+尚未完成的部分包括：Router/Planner 工具硬编码清理、工具错误次数上限、总耗时预算、连续相同错误检测和更完整的恢复策略。Planner/Executor 暂不删除，并负责知识库/澄清兼容路径以及首轮 Agent Model 不可用时的确定性降级。
+
 ## 后续行动
 
 1. PR1 首先扩展 `app/graph/state.py`，定义 messages、预算和循环计数状态。
@@ -106,4 +131,4 @@ START
 4. 明确 Checkpointer 中 messages 的保留、脱敏和清理策略。
 5. 保持 Planner/Executor 规则路径可单独回归，待新循环稳定后再评估职责收缩。
 
-本 ADR 只记录后续演进方向，PR0 不修改当前 LangGraph 主图和 Agent 行为。
+本 ADR 在 PR0 记录演进方向，并由上述 PR1 实现状态说明当前已落地范围。

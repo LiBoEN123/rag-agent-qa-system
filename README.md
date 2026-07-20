@@ -23,45 +23,107 @@
 
 ```mermaid
 flowchart TD
-    U[用户问题] --> API[FastAPI /chat]
+    User[用户问题] --> API[FastAPI /chat]
     API --> Service[ChatService]
-    Service --> QR[SQLite Session History<br/>Query Rewrite]
-    QR --> Router[Agent Router]
-    Router --> Graph[LangGraph Agent Graph]
-    Graph --> Planner[Agent Planner]
-    Planner --> Executor[Agent Executor]
-    Executor -->|search_knowledge_base| RAG[LangGraph RAG Subgraph]
-    Executor -->|compare_documents / simple_calculator<br/>list_documents / get_chunk_text| Tools[Tools]
-    Executor -->|clarify| Clarify[澄清追问]
-    Executor -->|direct_answer| Direct[直接回答]
+    Service --> History[(SQLite Session History)]
+    History --> Rewrite[Query Rewrite]
+    Rewrite --> Router[Agent Router]
+    Router --> Initialize
 
-    RAG --> QD[Query Decompose 可选问题拆分]
-    QD --> HR[Hybrid Retrieval<br/>BM25 + Embedding]
-    HR --> RR[CrossEncoder Rerank]
-    RR --> CB[Context Build]
-    CB --> LLM[LLM Generation<br/>OpenAI-compatible Chat Completions]
-    LLM --> RB[Reference Binding]
-    RB --> Guard[Confidence / Refusal]
-    Guard --> Finalize[Finalize]
+    subgraph AgentGraph[LangGraph Agent Graph]
+        Initialize[initialize<br/>创建 AgentState 和 HumanMessage]
+        InitialAction{初始路由动作}
+        AgentModel[agent_model<br/>模型绑定 StructuredTools]
+        ModelResult{检查最新 AIMessage}
+        GovernedTools[governed_tools<br/>执行全部 tool_calls]
+        ToolResult{检查工具观察}
+        Planner[兼容 Planner]
+        Executor[兼容 Executor]
+        RAGEntry[rag_subgraph]
+        Limit[limit_handler]
+        Composer[Answer Composer]
+        Finalize[Finalize / build_v2_result]
+
+        Initialize --> InitialAction
+        InitialAction -->|普通请求| AgentModel
+        InitialAction -->|初始知识库检索 / 澄清| Planner
+
+        AgentModel --> ModelResult
+        ModelResult -->|有 tool_calls 且预算充足| GovernedTools
+        ModelResult -->|无 tool_calls| Composer
+        ModelResult -->|达到模型或工具预算| Limit
+        ModelResult -->|首轮模型不可用| Planner
+        ModelResult -->|工具后模型失败| Composer
+
+        GovernedTools --> ToolResult
+        ToolResult -->|普通成功 / 可恢复错误<br/>ToolMessage| AgentModel
+        ToolResult -->|知识库检索成功| RAGEntry
+        ToolResult -->|不可恢复治理错误| Composer
+
+        Planner --> Executor
+        Executor -->|知识库检索成功| RAGEntry
+        Executor -->|普通工具 / 澄清 / 错误| Composer
+
+        Limit --> Composer
+        Composer --> Finalize
+    end
+
+    subgraph ToolRuntime[受治理工具执行链]
+        StructuredTool[请求级 StructuredTool]
+        Dispatch[dispatch_tool]
+        Runtime[ToolRuntime.execute]
+        Handler[ToolSpec.handler]
+
+        StructuredTool --> Dispatch
+        Dispatch --> Runtime
+        Runtime --> Handler
+    end
+
+    GovernedTools -. 请求级调用 .-> StructuredTool
+    Handler -. 统一工具结果 .-> GovernedTools
+
+    subgraph RAGGraph[LangGraph RAG Subgraph]
+        Decompose[Query Decompose]
+        Retrieval[Hybrid Retrieval<br/>BM25 + Embedding]
+        Rerank[CrossEncoder Rerank]
+        Evidence[Evidence Gate]
+        Context[Context Build]
+        Generation[LLM Generation]
+        Citations[Reference Binding<br/>Citation Verification]
+
+        Decompose --> Retrieval
+        Retrieval --> Rerank
+        Rerank --> Evidence
+        Evidence --> Context
+        Context --> Generation
+        Generation --> Citations
+    end
+
+    RAGEntry --> Decompose
+    Citations --> Finalize
 
     subgraph Indexing[索引构建流程]
-        DL[Document Loader<br/>txt / md / pdf / docx] --> CL[Clean Documents]
-        CL --> CS[Chunk Splitter<br/>Markdown 按标题层级切分]
-        CS --> EMB[Embedding]
-        EMB --> Chroma[(ChromaDB)]
-        CS --> BM25[BM25 Index]
-        Chroma --> Manifest[Manifest]
+        Loader[Document Loader<br/>txt / md / pdf / docx]
+        Clean[Clean Documents]
+        Splitter[Chunk Splitter<br/>Markdown 按标题层级切分]
+        Embedding[Embedding]
+        Chroma[(ChromaDB)]
+        BM25[(BM25 Index)]
+        Manifest[Manifest]
+
+        Loader --> Clean
+        Clean --> Splitter
+        Splitter --> Embedding
+        Embedding --> Chroma
+        Splitter --> BM25
+        Chroma --> Manifest
         BM25 --> Manifest
     end
 
-    Chroma --> HR
-    BM25 --> HR
-    Tools --> Composer
-    Clarify --> Composer
-    Direct --> Composer
-    Composer --> Finalize
+    Chroma --> Retrieval
+    BM25 --> Retrieval
     Finalize --> Store[Session / Metrics]
-    Store --> Resp[统一 ChatResponse]
+    Store --> Response[统一 ChatResponse]
 ```
 
 ## 核心能力
@@ -76,7 +138,7 @@ flowchart TD
 | 多轮追问 | `session_id` 通过 SQLite 维持最近会话历史，对短追问、指代问题做 Query Rewrite |
 | 答案生成 | 调用 OpenAI-compatible Chat Completions，要求模型返回 JSON |
 | 引用绑定 | 将 `Reference N` 映射回真实文件、`chunk_id`、`snippet` 和分数 |
-| Agent Runtime | Router 决策经 Planner 转为计划，由 Executor 执行，再由 Answer Composer 统一合成回答 |
+| Agent Runtime | LangGraph 使用 `agent_model ↔ governed_tools` 迭代循环；工具结果以 ToolMessage 返回模型，Planner/Executor 保留为知识库、澄清和首轮模型不可用时的兼容路径 |
 | Agent 路由 | 支持规则路由和可选 LLM Router，失败时回退规则路由 |
 | 工具调用 | `search_knowledge_base`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text` |
 | 可观测性 | `trace_id`、请求耗时、阶段耗时、工具调用日志、metrics 汇总接口 |
@@ -91,7 +153,7 @@ flowchart TD
 3. 文档切分：Markdown 先按标题层级切分并保留标题路径，普通文本按段落和标点递归切分。
 4. 建立索引：构建 BM25 关键词索引，并使用 SentenceTransformer 生成 embedding；向量、chunk 和 metadata 持久化到 ChromaDB。
 5. 多轮改写：`/chat` 如果传入 `session_id`，会读取最近历史；短追问或指代问题会先改写成独立问题。
-6. Agent 执行：改写后的问题进入 Router；Planner 将路由决策转换为标准计划，Executor 执行 RAG、普通工具、澄清或直接回答步骤，最后由 Answer Composer 统一合成结果。
+6. Agent 执行：改写后的问题进入 Router 和 LangGraph 主图。普通请求由 Agent Model 根据 AIMessage 与 ToolMessage 迭代选择工具或生成最终回答；初始知识库检索、澄清以及首轮模型不可用场景保留 Planner/Executor 兼容路径。成功的知识库检索统一进入专用 RAG 子图。
 7. 查询拆分：启用 `ENABLE_QUERY_DECOMPOSE` 后，复杂问题可由拆分模型生成子问题。
 8. 混合召回：查询时同时执行 BM25 和 embedding 召回，合并候选 chunk。
 9. 二阶段重排：使用 CrossEncoder reranker 对候选证据重新排序。
@@ -139,21 +201,35 @@ API 请求与响应 Schema、HTTP 状态语义和 trace 响应头保持不变；
 
 ## LangChain Tool 适配层
 
-现有 `ToolRegistry` 中的工具可以通过 `get_langchain_tools()` 按注册顺序转换为 LangChain `StructuredTool`。适配后的工具继续复用原有工具名称、Pydantic 参数 Schema 和返回协议，调用仍统一经过 `dispatch_tool()`，因此原有日志、耗时统计和请求级 `trace_id` 传递保持不变。
+现有 `ToolRegistry` 中的工具通过 `get_langchain_tools()` 按请求、按注册顺序转换为 LangChain `StructuredTool`。Agent Model 使用 `bind_tools()` 获取工具 Schema；模型生成的 `tool_calls` 由 `governed_tools` 节点调用请求级 StructuredTool，再统一进入 `dispatch_tool()` 和 `ToolRuntime`，因此参数校验、权限、超时、重试、审计、脱敏、统一错误码以及完整 `ToolInvocationContext` 都保持不变。
 
-LangGraph Agent Runtime 仍沿用 Executor → `dispatch_tool()` → `ToolRegistry` 的调用链；主图当前不会使用这组 `StructuredTool`，也尚未进行模型 `bind_tools()`。
+本项目没有直接使用官方 `ToolNode`：当前版本的 ToolNode 在图编译时固定工具对象，而这里的 StructuredTool 必须捕获每次请求独立的 trace、session、权限和来源上下文。薄的 `governed_tools` 节点只负责消息适配和调用分发，不直接调用业务 handler，也不复制任何 Runtime 治理逻辑。
 
 ## Agent Runtime
 
 项目当前唯一 Agent Runtime 为 LangGraph。旧手写 Agent 编排入口、运行时选择配置与选择器均已删除，不再提供运行时回滚开关。升级已有环境时，应从本地 `.env` 删除旧的 Agent Runtime 选择变量；需要回滚版本时使用 Git commit、tag 或 release。
 
-当前请求链路为 `FastAPI → ChatService → Query Rewrite → Router → LangGraph Agent Graph → RAG Subgraph / 普通工具 → Finalize → Session / Metrics → API Response`。ChatService 会把已经生成的 Router decision 传给主图，因此 Query Rewrite、Router 和 LangGraph Runtime 在单次请求中各执行一次。成功的 `search_knowledge_base` observation 会进入 RAG 子图并直接到 `finalize`；普通工具、澄清、直接回答和工具错误进入共享的 `compose → finalize`。
+当前请求链路为 `FastAPI → ChatService → Query Rewrite → Router → LangGraph Agent Graph → RAG Subgraph / 迭代工具循环 → Finalize → Session / Metrics → API Response`。ChatService 会把已经生成的 Router decision 传给主图，因此 Query Rewrite、Router 和 LangGraph Runtime 在单次请求中各执行一次。
+
+主图的核心结构为：
+
+```text
+START → route（可选）→ initialize
+  ├─ 初始知识库检索 / 澄清 → plan → execute → RAG 或 compose
+  └─ agent_model
+       ├─ tool_calls → governed_tools → agent_model
+       ├─ search_knowledge_base 成功 → RAG 子图 → finalize
+       ├─ 无 tool_calls → compose → finalize
+       └─ 达到预算 → limit_handler → compose → finalize
+```
+
+模型不可用或首轮调用失败时，保留的 Planner/Executor 会执行 Router 已确定的兼容计划；工具已经执行后模型失败则受控结束，不会重放旧计划。成功的知识库检索仍进入原 RAG 子图，以保留问题拆分、重排、证据门控、拒答、引用绑定和验证能力。
 
 旧手写 Agent 编排入口已经删除。Planner、Executor、Answer Composer、`AgentState`、Router 和 Query Rewrite 仍由 LangGraph 节点或 ChatService 复用，它们属于共享业务层。完整 RAG 问答不再提供独立顺序式入口，脚本和测试统一调用 `app.rag.graph.run_rag_subgraph()`。
 
 ### LangGraph RAG 子图
 
-知识库问答由独立子图依次执行问题歧义判断、Query Decompose、检索与重排、Evidence Gate、Context Build、回答生成、JSON 解析、引用绑定与验证。子图复用现有检索、Rerank、ChromaDB、模型网关、引用和置信度算法，API Schema 没有变化。`scripts/agent_eval.py` 也固定使用 LangGraph Runtime。当前主图未启用 ToolNode、`bind_tools()`、Streaming 或 Interrupt，会话存储也未迁移。
+知识库问答由独立子图依次执行问题歧义判断、Query Decompose、检索与重排、Evidence Gate、Context Build、回答生成、JSON 解析、引用绑定与验证。子图复用现有检索、Rerank、ChromaDB、模型网关、引用和置信度算法，API Schema 没有变化。`scripts/agent_eval.py` 也固定使用 LangGraph Runtime。当前主图已启用模型 `bind_tools()`，但基于请求级治理上下文没有采用静态 ToolNode；Streaming、Interrupt 和会话存储迁移仍未实现。
 
 ### LangGraph Checkpointer
 
@@ -271,6 +347,8 @@ streamlit run demo/streamlit_app.py
 | `ROUTER_MAX_TOKENS` | 路由模型最大输出 token |
 | `ROUTER_TEMPERATURE` | 路由模型温度 |
 | `AGENT_MAX_STEPS` | Agent 单次请求最多执行的计划步骤数，默认 `5` |
+| `AGENT_MAX_ITERATIONS` | 迭代式 Agent 最大模型轮次，默认 `6` |
+| `AGENT_MAX_TOOL_CALLS` | 迭代式 Agent 最大工具调用总数，默认 `10` |
 | `LANGGRAPH_CHECKPOINTER` | LangGraph Checkpointer，支持 `disabled`（默认）、`memory` 或 `sqlite` |
 | `LANGGRAPH_CHECKPOINT_DB_PATH` | SQLite Checkpoint 文件路径，默认 `./data/langgraph_checkpoints.sqlite3` |
 | `ENABLE_AGENT_TRACE_STORE` | 是否将 Agent 运行摘要和步骤写入 SQLite，默认 `false` |
@@ -325,6 +403,8 @@ ROUTER_API_URL=https://api.deepseek.com/v1/chat/completions
 ROUTER_TIMEOUT=10
 
 AGENT_MAX_STEPS=5
+AGENT_MAX_ITERATIONS=6
+AGENT_MAX_TOOL_CALLS=10
 ENABLE_AGENT_TRACE_STORE=false
 SQLITE_DB_PATH=./data/app.sqlite
 
@@ -733,5 +813,5 @@ docker run --rm -p 8000:8000 --env-file .env \
 - embedding 和 rerank 模型首次加载较慢，可能需要下载权重。
 - 多轮历史使用本地 SQLite 持久化，适合单实例运行；多实例部署时需要额外规划共享存储和并发策略。
 - SQLite Checkpointer 适合单进程本地开发；高并发、多进程共享、数据持续增长和敏感状态留存需要额外的容量、权限及清理策略。
-- LangGraph 复用标准 Planner / Executor / Answer Composer 链路，但当前计划仍以单次工具调用加最终回答为主，不是可自主循环的复杂多工具 Agent。
+- Agent 已支持多轮工具观察、同轮多个工具调用和参数修正，但 Router/Planner 的工具硬编码仍保留；错误次数预算、总耗时预算和连续相同错误检测尚未实现。
 - retrieval_confidence 和 answer_confidence 是启发式估计，不等同于严格概率。

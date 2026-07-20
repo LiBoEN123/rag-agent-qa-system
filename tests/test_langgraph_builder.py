@@ -16,6 +16,12 @@ def clear_compiled_graph_cache():
     graph_builder.get_compiled_agent_graph.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def use_legacy_fallback_model(monkeypatch):
+    """旧图阶段断言显式覆盖 Agent Model 不可用降级路径。"""
+    monkeypatch.setattr(graph_nodes, "get_agent_chat_model", lambda: None)
+
+
 def test_build_and_compile_graph_has_expected_public_nodes(monkeypatch):
     """Graph 可无业务副作用地创建、编译，并通过公开描述接口暴露节点。"""
     calls: list[str] = []

@@ -44,6 +44,7 @@ def isolate_graph_and_trace_store(monkeypatch):
         "LANGGRAPH_CHECKPOINTER",
         "disabled",
     )
+    monkeypatch.setattr(graph_nodes, "get_agent_chat_model", lambda: None)
     yield
     graph_builder.get_compiled_agent_graph.cache_clear()
 

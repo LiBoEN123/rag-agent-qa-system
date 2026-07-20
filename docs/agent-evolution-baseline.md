@@ -202,3 +202,18 @@ PR1：feat/iterative-agent-loop
 ```
 
 PR1 最适合从 `app/graph/state.py` 开始，先定义 messages、循环计数和预算状态；随后修改 `app/graph/nodes.py` 与 `app/graph/builder.py`，增加模型节点、受治理工具节点和循环条件。`app/tools/langchain_tools.py` 应继续只做适配，所有调用仍必须进入现有 Registry/Runtime 治理链。
+
+## 12. PR1 实现增量（2026-07-19）
+
+本文件第 1–11 节继续保留 PR0 的历史基线；PR1 在该基线上完成了以下增量：
+
+- 主图状态新增 LangChain `messages` reducer、模型轮次、工具调用数、工具错误数和停止原因。
+- 主路径新增 `agent_model → governed_tools → agent_model` 循环，支持无工具直接回答、顺序多工具、同轮多个 `tool_calls` 和普通错误后的参数修正。
+- 每个工具结果以关联模型 `tool_call_id` 的标准 `ToolMessage` 返回，并保留 Runtime、governance、错误码、摘要及 Runtime 工具调用 ID。
+- `governed_tools` 动态创建请求级 StructuredTool，继续经过统一 `dispatch_tool → ToolRuntime → handler` 链；没有把业务 handler 暴露给模型。
+- 模型轮次和工具调用总数分别由 `AGENT_MAX_ITERATIONS`（默认 6）与 `AGENT_MAX_TOOL_CALLS`（默认 10）限制，耗尽时受控进入 Finalize。
+- 初始知识库路由以及循环中成功的 `search_knowledge_base` 都继续进入专用 RAG 子图，引用绑定、证据门控和拒答算法未改动。
+- Planner/Executor、Router 的工具硬编码和 `AGENT_MAX_STEPS` 保留为知识库/澄清兼容路径及首轮模型不可用时的降级能力。
+- SQLite Checkpointer 已验证可以序列化完整的 `HumanMessage → AIMessage → ToolMessage → AIMessage` 轨迹。
+
+PR1 没有实现工具错误次数上限、总耗时预算、连续相同错误检测、Streaming、Interrupt、人工审批恢复、多 Agent 或新工具；这些仍属于后续演进范围。

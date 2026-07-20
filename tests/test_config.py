@@ -4,6 +4,7 @@ import pytest
 
 from app.config import (
     Settings,
+    validate_agent_loop_config,
     validate_tool_governance_config,
     validate_tool_runtime_config,
 )
@@ -19,6 +20,32 @@ def test_llm_transport_has_no_configuration_switch():
     """应用内部固定使用统一 LangChain transport。"""
     removed_name = "LLM_CLIENT" + "_MODE"
     assert not hasattr(Settings, removed_name)
+
+
+def test_agent_loop_configuration_accepts_safe_defaults():
+    """模型轮次与工具调用预算使用独立、明确的正整数语义。"""
+    validate_agent_loop_config(max_iterations=6, max_tool_calls=10)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_message"),
+    [
+        ({"max_iterations": 0}, "AGENT_MAX_ITERATIONS"),
+        ({"max_tool_calls": 0}, "AGENT_MAX_TOOL_CALLS"),
+        ({"max_iterations": True}, "AGENT_MAX_ITERATIONS"),
+        ({"max_iterations": 101}, "AGENT_MAX_ITERATIONS"),
+        ({"max_tool_calls": 1001}, "AGENT_MAX_TOOL_CALLS"),
+    ],
+)
+def test_agent_loop_configuration_rejects_invalid_values(
+    overrides,
+    expected_message,
+):
+    values = {"max_iterations": 6, "max_tool_calls": 10}
+    values.update(overrides)
+
+    with pytest.raises(ValueError, match=expected_message):
+        validate_agent_loop_config(**values)
 
 
 def test_settings_validate_keeps_llm_rag_and_checkpointer_configuration(

@@ -71,6 +71,27 @@ def env_float(name: str, default: str) -> float:
         raise ValueError(f"{name} 配置无效: {raw_value!r}，必须是数字") from exc
 
 
+def validate_agent_loop_config(
+    *,
+    max_iterations: int,
+    max_tool_calls: int,
+) -> None:
+    """校验迭代式 Agent 的模型轮次与工具调用预算。"""
+    values = {
+        "AGENT_MAX_ITERATIONS": max_iterations,
+        "AGENT_MAX_TOOL_CALLS": max_tool_calls,
+    }
+    for name, value in values.items():
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{name} 必须是整数")
+        if value < 1:
+            raise ValueError(f"{name} 必须大于或等于 1")
+    if max_iterations > 100:
+        raise ValueError("AGENT_MAX_ITERATIONS 必须小于或等于 100")
+    if max_tool_calls > 1000:
+        raise ValueError("AGENT_MAX_TOOL_CALLS 必须小于或等于 1000")
+
+
 def validate_tool_runtime_config(
     *,
     max_workers: int,
@@ -286,6 +307,8 @@ class Settings:
     ROUTER_TEMPERATURE = float(os.getenv("ROUTER_TEMPERATURE", "0.0"))
 
     AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "5"))
+    AGENT_MAX_ITERATIONS = env_int("AGENT_MAX_ITERATIONS", "6")
+    AGENT_MAX_TOOL_CALLS = env_int("AGENT_MAX_TOOL_CALLS", "10")
     LANGGRAPH_CHECKPOINTER = normalize_langgraph_checkpointer(
         os.getenv("LANGGRAPH_CHECKPOINTER", "disabled")
     )
@@ -332,6 +355,10 @@ class Settings:
     @classmethod
     def validate(cls):
         """校验关键配置是否存在并可访问。"""
+        validate_agent_loop_config(
+            max_iterations=cls.AGENT_MAX_ITERATIONS,
+            max_tool_calls=cls.AGENT_MAX_TOOL_CALLS,
+        )
         validate_tool_runtime_settings(cls)
         validate_tool_governance_settings(cls)
         cls.LANGGRAPH_CHECKPOINTER = validate_langgraph_checkpointer(

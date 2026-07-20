@@ -10,6 +10,7 @@ from app.api import lifecycle
 from app.config import Settings
 from app.graph import builder as graph_builder
 from app.graph import checkpointing
+from app.graph import nodes as graph_nodes
 from app.graph import runtime as graph_runtime
 from app.tools.context import ToolInvocationContext
 
@@ -25,6 +26,7 @@ def isolate_graph_runtime(monkeypatch, tmp_path):
         tmp_path / "checkpoint.sqlite3",
     )
     monkeypatch.setattr(Settings, "ENABLE_AGENT_TRACE_STORE", False)
+    monkeypatch.setattr(graph_nodes, "get_agent_chat_model", lambda: None)
     yield
     graph_builder.reset_agent_graph_runtime()
 
@@ -191,6 +193,8 @@ def test_memory_checkpoint_serializes_real_agent_state(monkeypatch):
     assert values["trace_id"] == "trace-memory"
     assert values["original_question"] == "问题-trace-memory"
     assert values["effective_question"] == "问题-trace-memory"
+    assert len(values["messages"]) == 1
+    assert values["messages"][0].content == "问题-trace-memory"
     assert values["result"]["status"] == "OK"
     assert values["agent_state"].trace_id == "trace-memory"
     assert values["agent_state"].original_question == "问题-trace-memory"
@@ -293,6 +297,8 @@ def test_sqlite_agent_checkpoint_survives_runtime_reset(monkeypatch, tmp_path):
     assert second is not first
     values = saved.checkpoint["channel_values"]
     assert values["result"]["status"] == "OK"
+    assert len(values["messages"]) == 1
+    assert values["messages"][0].content == "问题-trace-sqlite"
     assert "permissions" not in values
     assert "principal_id" not in values
     assert "permissions" not in values["agent_state"].model_dump()
