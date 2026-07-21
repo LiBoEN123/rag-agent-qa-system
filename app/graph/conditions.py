@@ -4,6 +4,10 @@ from typing import Literal
 
 from langchain_core.messages import AIMessage
 
+from app.agent.guardrails import (
+    TERMINAL_AGENT_STOP_REASONS,
+    is_agent_elapsed_budget_exhausted,
+)
 from app.agent.state import AgentState
 from app.graph.state import AgentGraphState
 
@@ -65,7 +69,7 @@ def _last_ai_message(state: AgentGraphState) -> AIMessage | None:
 def after_agent_model_condition(
     state: AgentGraphState,
 ) -> Literal["tools", "compose", "limit", "legacy_plan"]:
-    """根据最新模型输出和双预算确定下一节点，不执行任何副作用。"""
+    """根据最新模型输出和 Agent 预算确定下一节点，不执行副作用。"""
     if state.get("stop_reason") == "agent_model_call_failed":
         return "compose"
     if state.get("fallback_to_legacy", False):
@@ -80,9 +84,19 @@ def after_agent_model_condition(
     max_iterations = max(1, int(state.get("max_iterations", 1) or 1))
     tool_call_count = max(0, int(state.get("tool_call_count", 0) or 0))
     max_tool_calls = max(1, int(state.get("max_tool_calls", 1) or 1))
+    agent_elapsed_ms = max(0, int(state.get("agent_elapsed_ms", 0) or 0))
+    max_agent_elapsed_ms = max(
+        1,
+        int(state.get("max_agent_elapsed_ms", 1) or 1),
+    )
     if iteration_count >= max_iterations:
         return "limit"
     if tool_call_count + len(tool_calls) > max_tool_calls:
+        return "limit"
+    if is_agent_elapsed_budget_exhausted(
+        elapsed_ms=agent_elapsed_ms,
+        limit_ms=max_agent_elapsed_ms,
+    ):
         return "limit"
     return "tools"
 
@@ -94,7 +108,7 @@ def after_tools_condition(
     agent_state = state.get("agent_state")
     if not isinstance(agent_state, AgentState):
         return "compose"
-    if state.get("stop_reason") == "fatal_tool_error":
+    if str(state.get("stop_reason") or "") in TERMINAL_AGENT_STOP_REASONS:
         return "compose"
 
     for observation in reversed(agent_state.observations):

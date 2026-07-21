@@ -75,11 +75,23 @@ def validate_agent_loop_config(
     *,
     max_iterations: int,
     max_tool_calls: int,
+    max_tool_errors: int,
+    max_consecutive_same_tool_calls: int,
+    max_consecutive_same_tool_errors: int,
+    max_total_cost_ms: int,
 ) -> None:
-    """校验迭代式 Agent 的模型轮次与工具调用预算。"""
+    """校验迭代式 Agent 的轮次、错误、循环和累计耗时预算。"""
     values = {
         "AGENT_MAX_ITERATIONS": max_iterations,
         "AGENT_MAX_TOOL_CALLS": max_tool_calls,
+        "AGENT_MAX_TOOL_ERRORS": max_tool_errors,
+        "AGENT_MAX_CONSECUTIVE_SAME_TOOL_CALLS": (
+            max_consecutive_same_tool_calls
+        ),
+        "AGENT_MAX_CONSECUTIVE_SAME_TOOL_ERRORS": (
+            max_consecutive_same_tool_errors
+        ),
+        "AGENT_MAX_TOTAL_COST_MS": max_total_cost_ms,
     }
     for name, value in values.items():
         if isinstance(value, bool) or not isinstance(value, int):
@@ -90,6 +102,18 @@ def validate_agent_loop_config(
         raise ValueError("AGENT_MAX_ITERATIONS 必须小于或等于 100")
     if max_tool_calls > 1000:
         raise ValueError("AGENT_MAX_TOOL_CALLS 必须小于或等于 1000")
+    if max_tool_errors > 1000:
+        raise ValueError("AGENT_MAX_TOOL_ERRORS 必须小于或等于 1000")
+    if max_consecutive_same_tool_calls > 100:
+        raise ValueError(
+            "AGENT_MAX_CONSECUTIVE_SAME_TOOL_CALLS 必须小于或等于 100"
+        )
+    if max_consecutive_same_tool_errors > 100:
+        raise ValueError(
+            "AGENT_MAX_CONSECUTIVE_SAME_TOOL_ERRORS 必须小于或等于 100"
+        )
+    if max_total_cost_ms > 3_600_000:
+        raise ValueError("AGENT_MAX_TOTAL_COST_MS 必须小于或等于 3600000")
 
 
 def validate_tool_runtime_config(
@@ -309,6 +333,16 @@ class Settings:
     AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "5"))
     AGENT_MAX_ITERATIONS = env_int("AGENT_MAX_ITERATIONS", "6")
     AGENT_MAX_TOOL_CALLS = env_int("AGENT_MAX_TOOL_CALLS", "10")
+    AGENT_MAX_TOOL_ERRORS = env_int("AGENT_MAX_TOOL_ERRORS", "3")
+    AGENT_MAX_CONSECUTIVE_SAME_TOOL_CALLS = env_int(
+        "AGENT_MAX_CONSECUTIVE_SAME_TOOL_CALLS",
+        "2",
+    )
+    AGENT_MAX_CONSECUTIVE_SAME_TOOL_ERRORS = env_int(
+        "AGENT_MAX_CONSECUTIVE_SAME_TOOL_ERRORS",
+        "2",
+    )
+    AGENT_MAX_TOTAL_COST_MS = env_int("AGENT_MAX_TOTAL_COST_MS", "120000")
     LANGGRAPH_CHECKPOINTER = normalize_langgraph_checkpointer(
         os.getenv("LANGGRAPH_CHECKPOINTER", "disabled")
     )
@@ -358,6 +392,14 @@ class Settings:
         validate_agent_loop_config(
             max_iterations=cls.AGENT_MAX_ITERATIONS,
             max_tool_calls=cls.AGENT_MAX_TOOL_CALLS,
+            max_tool_errors=cls.AGENT_MAX_TOOL_ERRORS,
+            max_consecutive_same_tool_calls=(
+                cls.AGENT_MAX_CONSECUTIVE_SAME_TOOL_CALLS
+            ),
+            max_consecutive_same_tool_errors=(
+                cls.AGENT_MAX_CONSECUTIVE_SAME_TOOL_ERRORS
+            ),
+            max_total_cost_ms=cls.AGENT_MAX_TOTAL_COST_MS,
         )
         validate_tool_runtime_settings(cls)
         validate_tool_governance_settings(cls)

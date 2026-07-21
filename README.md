@@ -13,6 +13,7 @@
 - Agent-first 粗粒度 Router：除空问题、稳定直答和明确澄清外，自然语言请求默认进入 `agent`，避免静态路由在模型看到动态工具前误分流；`rag_fast_path` 保留为显式/旧协议兼容入口。
 - 唯一 Agent Runtime：LangGraph 主图统一编排普通工具和 RAG 子图路径，共享既有返回协议和底层算法。
 - Registry-driven 工具发现：本地工具经 `ToolRegistry → LocalToolProvider → StructuredTool` 自动绑定；新增普通工具不需要修改 Router、Planner、Executor 或 Graph。
+- Agent 循环防护：工具错误总数、连续相同调用、连续相同错误和模型/工具累计耗时均有独立预算；终止错误对同批后续调用 fail-closed，并补齐关联 ToolMessage。
 - 多轮追问改写：同一 `session_id` 下通过 SQLite 保留最近会话历史，短追问和指代问题会先改写成独立检索问题。
 - 工具调用：支持知识库检索、双文档内容对比、简单四则运算、列出知识库文档和查看指定 chunk 原文。
 - 引用绑定和拒答机制：模型输出的 `Reference N` 会绑定回真实文件与 chunk；证据不足或引用支撑不足时拒答。
@@ -36,7 +37,7 @@ flowchart TD
         InitialAction{初始路由动作}
         AgentModel[agent_model<br/>模型绑定 StructuredTools]
         ModelResult{检查最新 AIMessage}
-        GovernedTools[governed_tools<br/>执行全部 tool_calls]
+        GovernedTools[governed_tools<br/>逐调用 Guardrail + 受治理执行]
         ToolResult{检查工具观察}
         Planner[兼容 Planner]
         Executor[兼容 Executor]
@@ -52,14 +53,14 @@ flowchart TD
         AgentModel --> ModelResult
         ModelResult -->|有 tool_calls 且预算充足| GovernedTools
         ModelResult -->|无 tool_calls| Composer
-        ModelResult -->|达到模型或工具预算| Limit
+        ModelResult -->|达到模型、工具或耗时预算| Limit
         ModelResult -->|legacy 首轮模型不可用| Planner
         ModelResult -->|工具后模型失败| Composer
 
         GovernedTools --> ToolResult
         ToolResult -->|普通成功 / 可恢复错误<br/>ToolMessage| AgentModel
         ToolResult -->|知识库检索成功| RAGEntry
-        ToolResult -->|不可恢复治理错误| Composer
+        ToolResult -->|治理终止 / 审批 / Runtime 不可用<br/>错误或循环预算耗尽| Composer
 
         Planner --> Executor
         Executor -->|知识库检索成功| RAGEntry
@@ -144,6 +145,7 @@ flowchart TD
 | Agent Runtime | LangGraph 使用 `agent_model ↔ governed_tools` 迭代循环；工具结果以 ToolMessage 返回模型，Planner/Executor 仅保留 RAG Fast Path、短路动作和旧决策兼容路径 |
 | Agent 路由 | 正常自然语言请求默认输出 `agent`；`direct_answer` / `clarify` 只做安全短路，`rag_fast_path` 保留为显式和旧协议兼容动作 |
 | 工具发现 | `LocalToolProvider` 按请求从 `ToolRegistry` 提供 ToolSpec，并自动构造请求级 StructuredTool；普通新工具无需修改核心编排 |
+| Agent Guardrail | 工具错误总数、连续相同调用/错误、累计模型与工具耗时预算、同批 fail-closed、无悬空 ToolMessage |
 | 工具调用 | `search_knowledge_base`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text` |
 | 可观测性 | `trace_id`、请求耗时、阶段耗时、工具调用日志、metrics 汇总接口 |
 | 失败分析 | `logs/bad_cases.jsonl` 记录值得分析的失败样例 |
@@ -211,6 +213,8 @@ API 请求与响应 Schema、HTTP 状态语义和 trace 响应头保持不变；
 
 本项目没有直接使用官方 `ToolNode`：当前版本的 ToolNode 在图编译时固定工具对象，而这里的 StructuredTool 必须捕获每次请求独立的 trace、session、权限和来源上下文。薄的 `governed_tools` 节点只负责消息适配和调用分发，不直接调用业务 handler，也不复制任何 Runtime 治理逻辑。
 
+Agent 将工具失败分为可恢复、Runtime 重试已耗尽、终止治理、待审批和 Runtime 不可用。可恢复失败才会作为 ToolMessage 返回模型继续决策；权限/策略/审计/调用上下文/幂等键错误、待审批和 Runtime 不可用会终止当前请求。同批剩余调用不会执行，但每个模型 `tool_call_id` 都会得到 `handler_executed=false` 的 Guardrail ToolMessage。调用与错误循环使用只含 SHA-256 的稳定指纹，原始敏感参数不会为循环检测重复写入 trace。
+
 ## Agent Runtime
 
 项目当前唯一 Agent Runtime 为 LangGraph。旧手写 Agent 编排入口、运行时选择配置与选择器均已删除，不再提供运行时回滚开关。升级已有环境时，应从本地 `.env` 删除旧的 Agent Runtime 选择变量；需要回滚版本时使用 Git commit、tag 或 release。
@@ -226,7 +230,8 @@ START → route（可选）→ initialize
        ├─ tool_calls → governed_tools → agent_model
        ├─ search_knowledge_base 成功 → RAG 子图 → finalize
        ├─ 无 tool_calls → compose → finalize
-       └─ 达到预算 → limit_handler → compose → finalize
+       └─ 达到轮次 / 调用 / 错误 / 循环 / 耗时预算
+          → Guardrail ToolMessage → compose → finalize
 ```
 
 `agent` 路径的模型不可用或调用失败会受控停止，不允许 Planner 猜测具体工具；旧具体工具 decision 的首轮失败仍可进入通用 Registry 兼容计划。成功的知识库检索继续进入原 RAG 子图，以保留问题拆分、重排、证据门控、拒答、引用绑定和验证能力。
@@ -254,6 +259,18 @@ Checkpointer 只保存 Graph 节点执行快照，不替代应用级聊天历史
 
 当前尚未实现 Checkpoint 自动恢复、Replay、Time Travel、Interrupt、人工审批、Streaming、Checkpoint 管理 API 或生产级分布式 Checkpointer。
 
+### Tool Calling 自动测试与真实模型冒烟
+
+Fake Model 自动测试验证 Graph 编排、错误分类、治理链、预算、ToolMessage 轨迹和 Checkpointer 序列化；真实模型冒烟脚本验证供应商实际返回的 Tool Calling 协议。两者不能互相替代。
+
+在已配置真实 OpenAI-compatible 模型的本地环境中，可手动运行：
+
+```bash
+python scripts/smoke_test_agent_tool_calling.py
+```
+
+脚本会显示实际绑定的工具名、`search_knowledge_base` 与 `simple_calculator` 参数 Schema，以及两种强制工具场景返回的 AIMessage 类型、`tool_calls`、工具名、参数、`tool_call_id` 和 `additional_kwargs`。脚本不打印 API Key，不属于默认 Pytest/CI；本次 PR3 自动回归不会运行它。
+
 ## Agent 演进文档
 
 - [当前演进基线](docs/agent-evolution-baseline.md)
@@ -261,6 +278,7 @@ Checkpointer 只保存 Graph 节点执行快照，不替代应用级聊天历史
 - [ADR 0002：迭代式 Agent Loop](docs/adr/0002-iterative-agent-loop.md)
 - [ADR 0003：工具治理边界](docs/adr/0003-tool-governance-boundary.md)
 - [ADR 0004：基于注册表的工具发现](docs/adr/0004-registry-driven-tool-discovery.md)
+- [ADR 0005：Agent 错误恢复、预算与循环防护](docs/adr/0005-agent-error-recovery-and-budgets.md)
 
 ## 快速启动
 
@@ -356,6 +374,10 @@ streamlit run demo/streamlit_app.py
 | `AGENT_MAX_STEPS` | Agent 单次请求最多执行的计划步骤数，默认 `5` |
 | `AGENT_MAX_ITERATIONS` | 迭代式 Agent 最大模型轮次，默认 `6` |
 | `AGENT_MAX_TOOL_CALLS` | 迭代式 Agent 最大工具调用总数，默认 `10` |
+| `AGENT_MAX_TOOL_ERRORS` | 累计工具失败上限，第三次失败后停止，默认 `3` |
+| `AGENT_MAX_CONSECUTIVE_SAME_TOOL_CALLS` | 连续完全相同调用最多执行次数，默认 `2` |
+| `AGENT_MAX_CONSECUTIVE_SAME_TOOL_ERRORS` | 连续相同调用与错误码停止阈值，默认 `2` |
+| `AGENT_MAX_TOTAL_COST_MS` | Agent 模型与工具累计协作式耗时预算（毫秒），默认 `120000` |
 | `LANGGRAPH_CHECKPOINTER` | LangGraph Checkpointer，支持 `disabled`（默认）、`memory` 或 `sqlite` |
 | `LANGGRAPH_CHECKPOINT_DB_PATH` | SQLite Checkpoint 文件路径，默认 `./data/langgraph_checkpoints.sqlite3` |
 | `ENABLE_AGENT_TRACE_STORE` | 是否将 Agent 运行摘要和步骤写入 SQLite，默认 `false` |
@@ -412,6 +434,10 @@ ROUTER_TIMEOUT=10
 AGENT_MAX_STEPS=5
 AGENT_MAX_ITERATIONS=6
 AGENT_MAX_TOOL_CALLS=10
+AGENT_MAX_TOOL_ERRORS=3
+AGENT_MAX_CONSECUTIVE_SAME_TOOL_CALLS=2
+AGENT_MAX_CONSECUTIVE_SAME_TOOL_ERRORS=2
+AGENT_MAX_TOTAL_COST_MS=120000
 ENABLE_AGENT_TRACE_STORE=false
 SQLITE_DB_PATH=./data/app.sqlite
 

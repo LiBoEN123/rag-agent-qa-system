@@ -92,9 +92,11 @@ def build_tool_trace_step(
     step: AgentPlanStep,
     tool_result: dict,
     observation: AgentObservation,
+    *,
+    tool_spec=None,
 ) -> dict[str, Any]:
     """构造兼容现有响应结构的单步工具 trace。"""
-    spec = tool_registry.get(step.tool_name)
+    spec = tool_spec or tool_registry.get(step.tool_name)
     sanitized_args = (
         sanitize_tool_input(spec, step.tool_args)
         if spec is not None

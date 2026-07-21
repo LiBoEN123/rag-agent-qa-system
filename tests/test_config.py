@@ -23,8 +23,15 @@ def test_llm_transport_has_no_configuration_switch():
 
 
 def test_agent_loop_configuration_accepts_safe_defaults():
-    """模型轮次与工具调用预算使用独立、明确的正整数语义。"""
-    validate_agent_loop_config(max_iterations=6, max_tool_calls=10)
+    """模型轮次、工具调用、错误、循环和耗时预算使用正整数语义。"""
+    validate_agent_loop_config(
+        max_iterations=6,
+        max_tool_calls=10,
+        max_tool_errors=3,
+        max_consecutive_same_tool_calls=2,
+        max_consecutive_same_tool_errors=2,
+        max_total_cost_ms=120000,
+    )
 
 
 @pytest.mark.parametrize(
@@ -35,13 +42,30 @@ def test_agent_loop_configuration_accepts_safe_defaults():
         ({"max_iterations": True}, "AGENT_MAX_ITERATIONS"),
         ({"max_iterations": 101}, "AGENT_MAX_ITERATIONS"),
         ({"max_tool_calls": 1001}, "AGENT_MAX_TOOL_CALLS"),
+        ({"max_tool_errors": 0}, "AGENT_MAX_TOOL_ERRORS"),
+        (
+            {"max_consecutive_same_tool_calls": 101},
+            "AGENT_MAX_CONSECUTIVE_SAME_TOOL_CALLS",
+        ),
+        (
+            {"max_consecutive_same_tool_errors": False},
+            "AGENT_MAX_CONSECUTIVE_SAME_TOOL_ERRORS",
+        ),
+        ({"max_total_cost_ms": 3_600_001}, "AGENT_MAX_TOTAL_COST_MS"),
     ],
 )
 def test_agent_loop_configuration_rejects_invalid_values(
     overrides,
     expected_message,
 ):
-    values = {"max_iterations": 6, "max_tool_calls": 10}
+    values = {
+        "max_iterations": 6,
+        "max_tool_calls": 10,
+        "max_tool_errors": 3,
+        "max_consecutive_same_tool_calls": 2,
+        "max_consecutive_same_tool_errors": 2,
+        "max_total_cost_ms": 120000,
+    }
     values.update(overrides)
 
     with pytest.raises(ValueError, match=expected_message):

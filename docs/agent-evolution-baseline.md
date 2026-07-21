@@ -234,3 +234,22 @@ PR1 没有实现工具错误次数上限、总耗时预算、连续相同错误�
 PR2 开始前基线为 `434 passed, 1 warning` 且 Ruff 通过。PR2 完成后的回归基线为 `444 passed, 1 warning`；唯一警告仍来自 `jieba` 对 `pkg_resources` 的弃用提示。没有调用真实外部模型，也没有修改 API Schema、SQLite 表结构、依赖版本或 RAG 算法。
 
 当前仍未实现多个生产 Provider、MCP、Web、SQL、外部工具加载、写工具审批恢复、多 Agent、工具错误次数上限或总耗时预算。旧 Planner/Executor 和 RAG 专用工具名引用作为兼容边界保留。
+
+## 14. PR3 实现增量（2026-07-20）
+
+本文件第 1–11 节继续保留 PR0 历史快照，第 12–13 节记录 PR1/PR2；PR3 增加 Agent 错误分类、预算和循环防护：
+
+- 新增独立 `app/agent/guardrails.py`，定义稳定失败分类、Stop Reason、Agent 专属批次中止码、稳定调用/错误 SHA-256 指纹、连续计数和耗时预算纯函数。未知失败码采用保守终止默认值。
+- `AgentGraphState` 新增工具错误上限、连续相同调用/错误状态和 Agent 模型/工具累计整数毫秒；所有字段可由 LangGraph Checkpointer 序列化，不保存 Provider、ToolSpec、模型、异常、traceback 或时钟对象。
+- 新增 `AGENT_MAX_TOOL_ERRORS=3`、`AGENT_MAX_CONSECUTIVE_SAME_TOOL_CALLS=2`、`AGENT_MAX_CONSECUTIVE_SAME_TOOL_ERRORS=2`、`AGENT_MAX_TOTAL_COST_MS=120000`，统一由现有 `validate_agent_loop_config()` 校验。
+- 可恢复错误和 Runtime 已重试完的瞬时错误可在预算内返回模型；治理终止、缺少幂等键、待审批和 Runtime 不可用不会返回模型绕过。连续第三次相同调用在 StructuredTool 前拦截；连续第二次相同调用/参数/错误码失败后保存消息并停止。
+- 任一终止错误后，同一 AIMessage 的后续工具 fail-closed，不进入 StructuredTool、Runtime 或 handler；后续调用仍按原模型 ID 生成 `agent_batch_aborted` ToolMessage。轮次、调用和耗时 limit 也为所有未执行调用补齐标准 ToolMessage。
+- ToolMessage 和 tool trace 增加失败分类、稳定错误来源、handler 是否执行、确定性建议、调用指纹、Stop Reason、连续计数、错误累计数和纯数字预算快照；StructuredTool ValidationError 不包含原始 input 或 traceback。
+- `search_knowledge_base` 仍由 Agent Model 统一绑定。严格测试真实经过 `SearchKnowledgeBaseArgs → LocalToolProvider → StructuredTool → ToolRegistry.dispatch → ToolRuntime → handler → RAG 子图`；成功零结果不会增加工具错误数。
+- ChatService 主路径测试从 `ChatService.handle()` 进入真实 `run_agent_langgraph` 与编译 Graph，真实经过 Provider、StructuredTool、Registry 和 ToolRuntime，只替换 Agent 模型以及 session/metrics 等外部副作用。
+- SQLite Checkpointer 已覆盖普通成功、参数修正、重复调用停止和工具预算停止，所有 AIMessage tool call 均有对应 ToolMessage。
+- 新增手动 `scripts/smoke_test_agent_tool_calling.py` 验证真实供应商 Tool Calling；它不进入 Pytest/CI，本次未运行。
+
+PR3 开始前本地实际基线为 `452 passed, 1 warning`（高于远端文档记录的 444）；完成后为 `503 passed, 1 warning`，Ruff 与 `git diff --check` 均通过。唯一警告仍来自 `jieba` 对 `pkg_resources` 的弃用提示。本次自动测试未调用真实外部模型或网络。
+
+PR3 未修改 API Schema、SQLite 表结构、依赖版本或 RAG 检索/重排/引用/拒答算法。正式人工审批、LangGraph interrupt/resume、持久化幂等去重、强制取消正在运行的调用、Streaming、多 Agent、MCP、Web、SQL 和代码沙箱仍未实现。

@@ -24,6 +24,15 @@ class AgentGraphState(TypedDict, total=False):
     tool_call_count: int
     max_tool_calls: int
     tool_error_count: int
+    max_tool_errors: int
+    last_tool_call_fingerprint: str
+    consecutive_same_tool_call_count: int
+    max_consecutive_same_tool_calls: int
+    last_tool_error_fingerprint: str
+    consecutive_same_tool_error_count: int
+    max_consecutive_same_tool_errors: int
+    agent_elapsed_ms: int
+    max_agent_elapsed_ms: int
     stop_reason: str
     fallback_to_legacy: bool
     agent_state: AgentState
