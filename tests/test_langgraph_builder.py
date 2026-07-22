@@ -2,6 +2,7 @@
 
 import pytest
 
+from app.agent import framework_agent
 from app.agent.state import AgentPlanStep, AgentState
 from app.graph import builder as graph_builder
 from app.graph import nodes as graph_nodes
@@ -19,7 +20,7 @@ def clear_compiled_graph_cache():
 @pytest.fixture(autouse=True)
 def use_legacy_fallback_model(monkeypatch):
     """旧图阶段断言显式覆盖 Agent Model 不可用降级路径。"""
-    monkeypatch.setattr(graph_nodes, "get_agent_chat_model", lambda: None)
+    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: None)
 
 
 def test_build_and_compile_graph_has_expected_public_nodes(monkeypatch):

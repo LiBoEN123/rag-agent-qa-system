@@ -5,22 +5,20 @@ from functools import lru_cache
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from app.agent.framework_agent import build_framework_agent
 from app.graph.checkpointing import get_checkpointer
 from app.graph.conditions import (
-    after_agent_model_condition,
     after_execute_condition,
+    after_framework_condition,
     after_initialize_condition,
-    after_tools_condition,
     route_condition,
 )
 from app.graph.nodes import (
-    agent_model_node,
+    adapt_framework_agent_node,
     compose_node,
     execute_node,
     finalize_node,
-    governed_tools_node,
     initialize_agent_state_node,
-    limit_handler_node,
     plan_node,
     rag_subgraph_node,
     route_node,
@@ -43,9 +41,8 @@ def build_agent_graph(
     )
     builder.add_node("route", route_node)
     builder.add_node("initialize", initialize_agent_state_node)
-    builder.add_node("agent_model", agent_model_node)
-    builder.add_node("governed_tools", governed_tools_node)
-    builder.add_node("limit_handler", limit_handler_node)
+    builder.add_node("framework_agent", build_framework_agent())
+    builder.add_node("adapt_framework", adapt_framework_agent_node)
     builder.add_node("plan", plan_node)
     builder.add_node("execute", execute_node)
     builder.add_node("rag_subgraph", rag_subgraph_node)
@@ -65,30 +62,20 @@ def build_agent_graph(
         "initialize",
         after_initialize_condition,
         {
-            "agent_model": "agent_model",
+            "framework_agent": "framework_agent",
             "legacy_plan": "plan",
         },
     )
+    builder.add_edge("framework_agent", "adapt_framework")
     builder.add_conditional_edges(
-        "agent_model",
-        after_agent_model_condition,
+        "adapt_framework",
+        after_framework_condition,
         {
-            "tools": "governed_tools",
-            "compose": "compose",
-            "limit": "limit_handler",
             "legacy_plan": "plan",
-        },
-    )
-    builder.add_conditional_edges(
-        "governed_tools",
-        after_tools_condition,
-        {
-            "agent_model": "agent_model",
             "rag_subgraph": "rag_subgraph",
             "compose": "compose",
         },
     )
-    builder.add_edge("limit_handler", "compose")
     builder.add_edge("plan", "execute")
     builder.add_conditional_edges(
         "execute",

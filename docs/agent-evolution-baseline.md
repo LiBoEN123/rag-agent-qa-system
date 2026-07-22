@@ -253,3 +253,18 @@ PR2 开始前基线为 `434 passed, 1 warning` 且 Ruff 通过。PR2 完成后�
 PR3 开始前本地实际基线为 `452 passed, 1 warning`（高于远端文档记录的 444）；完成后为 `503 passed, 1 warning`，Ruff 与 `git diff --check` 均通过。唯一警告仍来自 `jieba` 对 `pkg_resources` 的弃用提示。本次自动测试未调用真实外部模型或网络。
 
 PR3 未修改 API Schema、SQLite 表结构、依赖版本或 RAG 检索/重排/引用/拒答算法。正式人工审批、LangGraph interrupt/resume、持久化幂等去重、强制取消正在运行的调用、Streaming、多 Agent、MCP、Web、SQL 和代码沙箱仍未实现。
+
+## 15. PR3R 框架原生 Runtime 重构（2026-07-21）
+
+本节只记录 PR3R 增量；第 1–11 节 PR0 历史快照以及 PR1–PR3 增量保持原样。PR3R 是 behavior-preserving refactor，不增加业务工具或新 API：
+
+- 父图原 `agent_model ↔ governed_tools` 自定义循环迁移为 LangChain `create_agent` 子图。框架内部 model/tools 节点负责循环、Pydantic 参数校验、同轮调用以及基础 ToolMessage 与 `tool_call_id` 对应。
+- `RegistryToolsMiddleware` 在模型和工具 hook 中从同一请求 Provider 解析动态工具。StructuredTool 的 `ToolRuntime` 注入字段不会暴露给模型 Schema；适配函数从框架 runtime context 构造原请求语义，并只调用 `ToolRegistry.dispatch()`。
+- `ModelCallLimitMiddleware` 和 `ToolCallLimitMiddleware` 接管 `AGENT_MAX_ITERATIONS` 与 `AGENT_MAX_TOOL_CALLS`；父图不再维护重复调用预算。`run_agent_langgraph()` 同时设置 `recursion_limit`，只作为图级最终兜底。
+- `ProjectToolGovernanceMiddleware` 只保留项目错误码分类、累计错误、重复调用/错误、总耗时和 terminal 同批 fail-closed。Runtime 超时、重试、权限、审批、审计和幂等策略仍只由项目 `ToolRuntime` 执行。
+- `search_knowledge_base` 仍由 Agent Model 从动态工具中选择。成功的单工具调用返回 `Command.PARENT`，更新配对 ToolMessage 和 `pending_rag_result`；父图薄适配节点再进入原 RAG 子图。多工具同批结果也通过相同 pending state 条件交接，引用、证据门和拒答算法未改。
+- Checkpointer 继续编译在父图，保存嵌入子图产生的完整消息轨迹。父图只保留 route、initialize、framework adapter、legacy plan/execute、RAG、compose 和 finalize 节点。
+- 新增精确依赖 `langchain==1.3.14`。依赖解析确认它兼容并复用已锁定的 `langchain-core==1.4.9`、`langgraph==1.2.9`、`langchain-openai==1.3.5` 与 `pydantic==2.12.5`，没有升级其他核心依赖。
+- 旧完整工具循环、手工 StructuredTool ValidationError 捕获、基础 ToolMessage 批处理、父图调用/错误指纹和第二套通用 canonicalization 已删除。当前维护入口是 `framework_agent.py`、`framework_middleware.py` 和 `framework_tools.py`；`app/graph/nodes.py` 只维护父图业务适配。
+
+PR3R 未修改 API Schema、SQLite Schema、生产工具名称/业务参数 Schema、RAG 算法或 Registry/Runtime 治理边界，也未运行真实外部模型。

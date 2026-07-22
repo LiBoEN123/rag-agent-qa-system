@@ -11,8 +11,8 @@
 - CrossEncoder rerank：对候选 chunk 做二阶段重排，缓解初召回排序不准的问题。
 - ChromaDB 持久化：chunk 文本、metadata 和 embedding 持久化保存，服务重启可复用索引缓存。
 - Agent-first 粗粒度 Router：除空问题、稳定直答和明确澄清外，自然语言请求默认进入 `agent`，避免静态路由在模型看到动态工具前误分流；`rag_fast_path` 保留为显式/旧协议兼容入口。
-- 唯一 Agent Runtime：LangGraph 主图统一编排普通工具和 RAG 子图路径，共享既有返回协议和底层算法。
-- Registry-driven 工具发现：本地工具经 `ToolRegistry → LocalToolProvider → StructuredTool` 自动绑定；新增普通工具不需要修改 Router、Planner、Executor 或 Graph。
+- 框架原生 Agent Runtime：LangGraph 父图嵌入 LangChain `create_agent` 子图，由框架管理模型—工具循环、参数校验、ToolMessage 和调用上限。
+- Registry-driven 工具发现：Middleware 按请求把 `ToolProvider` 的工具注入模型和执行层；工具经 `StructuredTool → ToolRegistry → ToolRuntime` 执行，新增普通工具不需要修改 Router、Planner、Executor 或 Graph。
 - Agent 循环防护：工具错误总数、连续相同调用、连续相同错误和模型/工具累计耗时均有独立预算；终止错误对同批后续调用 fail-closed，并补齐关联 ToolMessage。
 - 多轮追问改写：同一 `session_id` 下通过 SQLite 保留最近会话历史，短追问和指代问题会先改写成独立检索问题。
 - 工具调用：支持知识库检索、双文档内容对比、简单四则运算、列出知识库文档和查看指定 chunk 原文。
@@ -35,38 +35,27 @@ flowchart TD
     subgraph AgentGraph[LangGraph Agent Graph]
         Initialize[initialize<br/>创建 AgentState 和 HumanMessage]
         InitialAction{初始路由动作}
-        AgentModel[agent_model<br/>模型绑定 StructuredTools]
-        ModelResult{检查最新 AIMessage}
-        GovernedTools[governed_tools<br/>逐调用 Guardrail + 受治理执行]
-        ToolResult{检查工具观察}
+        FrameworkAgent[framework_agent<br/>LangChain create_agent 子图]
+        FrameworkAdapt[adapt_framework<br/>父图状态薄适配]
         Planner[兼容 Planner]
         Executor[兼容 Executor]
         RAGEntry[rag_subgraph]
-        Limit[limit_handler]
         Composer[Answer Composer]
         Finalize[Finalize / build_v2_result]
 
         Initialize --> InitialAction
-        InitialAction -->|agent| AgentModel
+        InitialAction -->|agent| FrameworkAgent
         InitialAction -->|rag_fast_path / 澄清 / 直接回答| Planner
 
-        AgentModel --> ModelResult
-        ModelResult -->|有 tool_calls 且预算充足| GovernedTools
-        ModelResult -->|无 tool_calls| Composer
-        ModelResult -->|达到模型、工具或耗时预算| Limit
-        ModelResult -->|legacy 首轮模型不可用| Planner
-        ModelResult -->|工具后模型失败| Composer
-
-        GovernedTools --> ToolResult
-        ToolResult -->|普通成功 / 可恢复错误<br/>ToolMessage| AgentModel
-        ToolResult -->|知识库检索成功| RAGEntry
-        ToolResult -->|治理终止 / 审批 / Runtime 不可用<br/>错误或循环预算耗尽| Composer
+        FrameworkAgent --> FrameworkAdapt
+        FrameworkAdapt -->|知识库检索成功| RAGEntry
+        FrameworkAdapt -->|最终回答 / 治理或预算终止| Composer
+        FrameworkAdapt -->|legacy 首轮模型不可用| Planner
 
         Planner --> Executor
         Executor -->|知识库检索成功| RAGEntry
         Executor -->|普通工具 / 澄清 / 错误| Composer
 
-        Limit --> Composer
         Composer --> Finalize
     end
 
@@ -77,14 +66,17 @@ flowchart TD
         Runtime[ToolRuntime.execute]
         Handler[ToolSpec.handler]
 
-        Provider --> StructuredTool
+        Middleware[RegistryToolsMiddleware]
+
+        Provider --> Middleware
+        Middleware --> StructuredTool
         StructuredTool --> Registry
         Registry --> Runtime
         Runtime --> Handler
     end
 
-    GovernedTools -. 请求级调用 .-> StructuredTool
-    Handler -. 统一工具结果 .-> GovernedTools
+    FrameworkAgent -. 请求级模型与工具 hook .-> Middleware
+    Handler -. 统一工具结果 .-> FrameworkAgent
 
     subgraph RAGGraph[LangGraph RAG Subgraph]
         Decompose[Query Decompose]
@@ -142,9 +134,9 @@ flowchart TD
 | 多轮追问 | `session_id` 通过 SQLite 维持最近会话历史，对短追问、指代问题做 Query Rewrite |
 | 答案生成 | 调用 OpenAI-compatible Chat Completions，要求模型返回 JSON |
 | 引用绑定 | 将 `Reference N` 映射回真实文件、`chunk_id`、`snippet` 和分数 |
-| Agent Runtime | LangGraph 使用 `agent_model ↔ governed_tools` 迭代循环；工具结果以 ToolMessage 返回模型，Planner/Executor 仅保留 RAG Fast Path、短路动作和旧决策兼容路径 |
+| Agent Runtime | LangGraph 父图嵌入 LangChain `create_agent` 子图；框架负责模型—工具循环、参数校验、ToolMessage 和模型/工具调用上限，Planner/Executor 仅保留兼容路径 |
 | Agent 路由 | 正常自然语言请求默认输出 `agent`；`direct_answer` / `clarify` 只做安全短路，`rag_fast_path` 保留为显式和旧协议兼容动作 |
-| 工具发现 | `LocalToolProvider` 按请求从 `ToolRegistry` 提供 ToolSpec，并自动构造请求级 StructuredTool；普通新工具无需修改核心编排 |
+| 工具发现 | `RegistryToolsMiddleware` 按请求从 `ToolProvider` 提供 ToolSpec，并对模型绑定和实际执行使用同一组请求级 StructuredTool；普通新工具无需修改核心编排 |
 | Agent Guardrail | 工具错误总数、连续相同调用/错误、累计模型与工具耗时预算、同批 fail-closed、无悬空 ToolMessage |
 | 工具调用 | `search_knowledge_base`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text` |
 | 可观测性 | `trace_id`、请求耗时、阶段耗时、工具调用日志、metrics 汇总接口 |
@@ -207,17 +199,17 @@ API 请求与响应 Schema、HTTP 状态语义和 trace 响应头保持不变；
 
 ## LangChain Tool 适配层
 
-`LocalToolProvider` 按请求从 `ToolRegistry` 读取稳定有序的 `ToolSpec`，`get_langchain_tools()` 再自动转换为 LangChain `StructuredTool`。Agent Model 使用 `bind_tools()` 获取每个工具的 description 与 Pydantic 参数 Schema；模型生成的 `tool_calls` 由 `governed_tools` 节点调用请求级 StructuredTool，再统一进入定义所属的 `ToolRegistry.dispatch()` 和 `ToolRuntime`。参数校验、权限、超时、重试、审计、脱敏、统一错误码以及完整 `ToolInvocationContext` 都保持不变。
+`RegistryToolsMiddleware` 在每次模型调用和工具执行时从同一 `ToolProvider` 解析稳定有序的 `ToolSpec`，再构造请求级 LangChain `StructuredTool`。`ToolRuntime` 注入参数不会出现在模型 Schema 中；适配函数从 `runtime.context` 取得 trace、session、principal、permissions、source 和 idempotency key，再调用定义所属的 `ToolRegistry.dispatch()`。Registry 继续统一进入项目 `ToolRuntime.execute()`，参数治理、权限、审批、超时、重试、审计、脱敏和错误码均未绕过。
 
 新增普通本地工具只需创建合法 `ToolSpec` 并注册到 Registry，不需要修改 Router、Planner、Executor 或 Graph。Provider 当前不做权限可见性预过滤，避免模型伪造隐藏工具名时绕过 Runtime 的明确治理结果；`ToolRuntime` 仍在执行前做最终权限校验。多 Provider 合并辅助函数会保持 Provider/注册顺序并拒绝重名，但当前生产环境只有 `LocalToolProvider`，尚未实现 MCP 或外部工具动态加载。
 
-本项目没有直接使用官方 `ToolNode`：当前版本的 ToolNode 在图编译时固定工具对象，而这里的 StructuredTool 必须捕获每次请求独立的 trace、session、权限和来源上下文。薄的 `governed_tools` 节点只负责消息适配和调用分发，不直接调用业务 handler，也不复制任何 Runtime 治理逻辑。
+模型—工具循环由 `langchain.agents.create_agent` 构建；其内部使用 LangGraph 标准 model/tools 节点处理 Pydantic 校验、同轮调用和基础 ToolMessage。动态工具通过 Middleware 覆盖请求，而不是在父图节点中手工 `bind_tools()`。`ModelCallLimitMiddleware` 和 `ToolCallLimitMiddleware` 分别执行单次 run 的模型与工具调用上限，父图调用还设置 `recursion_limit` 作为最终图级兜底。
 
-Agent 将工具失败分为可恢复、Runtime 重试已耗尽、终止治理、待审批和 Runtime 不可用。可恢复失败才会作为 ToolMessage 返回模型继续决策；权限/策略/审计/调用上下文/幂等键错误、待审批和 Runtime 不可用会终止当前请求。同批剩余调用不会执行，但每个模型 `tool_call_id` 都会得到 `handler_executed=false` 的 Guardrail ToolMessage。调用与错误循环使用只含 SHA-256 的稳定指纹，原始敏感参数不会为循环检测重复写入 trace。
+`ProjectToolGovernanceMiddleware` 只保留框架无法决定的项目语义：错误码分类、累计错误、连续相同调用/错误、协作式总耗时预算以及 terminal error 同批 fail-closed。已注册工具的调用指纹复用 `app.tools.policy.build_tool_args_fingerprint()`；未知模型 JSON 只做小型 JSON-compatible fallback。它不执行 handler、不复制 ToolRuntime 重试，也不自行实现参数校验或工具循环。
 
 ## Agent Runtime
 
-项目当前唯一 Agent Runtime 为 LangGraph。旧手写 Agent 编排入口、运行时选择配置与选择器均已删除，不再提供运行时回滚开关。升级已有环境时，应从本地 `.env` 删除旧的 Agent Runtime 选择变量；需要回滚版本时使用 Git commit、tag 或 release。
+项目当前唯一 Agent Runtime 是 LangGraph 父图中的 LangChain `create_agent` 子图。旧 `agent_model`、`governed_tools` 和 `limit_handler` 自定义循环已经删除，不提供双实现或运行时回滚开关；需要回滚版本时使用 Git commit、tag 或 release。
 
 当前请求链路为 `FastAPI → ChatService → Query Rewrite → Router → LangGraph Agent Graph → RAG Subgraph / 迭代工具循环 → Finalize → Session / Metrics → API Response`。ChatService 会把已经生成的 Router decision 传给主图，因此 Query Rewrite、Router 和 LangGraph Runtime 在单次请求中各执行一次。正常 Router 不枚举工具意图，也不调用 Router LLM；它把普通请求交给能看到动态工具 Schema 的 Agent Model。
 
@@ -226,12 +218,11 @@ Agent 将工具失败分为可恢复、Runtime 重试已耗尽、终止治理、
 ```text
 START → route（可选）→ initialize
   ├─ rag_fast_path / 澄清 / 直接回答 → plan → execute → RAG 或 compose
-  └─ agent → agent_model
-       ├─ tool_calls → governed_tools → agent_model
+  └─ agent → framework_agent（create_agent 内部 model ↔ tools）
+       → adapt_framework
        ├─ search_knowledge_base 成功 → RAG 子图 → finalize
-       ├─ 无 tool_calls → compose → finalize
-       └─ 达到轮次 / 调用 / 错误 / 循环 / 耗时预算
-          → Guardrail ToolMessage → compose → finalize
+       ├─ 无工具最终回答 → compose → finalize
+       └─ 治理或调用预算终止 → compose → finalize
 ```
 
 `agent` 路径的模型不可用或调用失败会受控停止，不允许 Planner 猜测具体工具；旧具体工具 decision 的首轮失败仍可进入通用 Registry 兼容计划。成功的知识库检索继续进入原 RAG 子图，以保留问题拆分、重排、证据门控、拒答、引用绑定和验证能力。
@@ -240,7 +231,7 @@ START → route（可选）→ initialize
 
 ### LangGraph RAG 子图
 
-知识库问答由独立子图依次执行问题歧义判断、Query Decompose、检索与重排、Evidence Gate、Context Build、回答生成、JSON 解析、引用绑定与验证。子图复用现有检索、Rerank、ChromaDB、模型网关、引用和置信度算法，API Schema 没有变化。`scripts/agent_eval.py` 也固定使用 LangGraph Runtime。当前主图已启用模型 `bind_tools()`，但基于请求级治理上下文没有采用静态 ToolNode；Streaming、Interrupt 和会话存储迁移仍未实现。
+知识库问答由独立子图依次执行问题歧义判断、Query Decompose、检索与重排、Evidence Gate、Context Build、回答生成、JSON 解析、引用绑定与验证。子图复用现有检索、Rerank、ChromaDB、模型网关、引用和置信度算法，API Schema 没有变化。`search_knowledge_base` 成功时工具返回 `Command.PARENT` 更新 ToolMessage 与 `pending_rag_result`；父图薄适配节点据此进入 RAG 子图，避免 Agent Model 直接基于原始 chunks 生成无引用答案。`scripts/agent_eval.py` 也固定使用 LangGraph Runtime；Streaming 和 Interrupt 仍未实现。
 
 ### LangGraph Checkpointer
 
@@ -279,6 +270,7 @@ python scripts/smoke_test_agent_tool_calling.py
 - [ADR 0003：工具治理边界](docs/adr/0003-tool-governance-boundary.md)
 - [ADR 0004：基于注册表的工具发现](docs/adr/0004-registry-driven-tool-discovery.md)
 - [ADR 0005：Agent 错误恢复、预算与循环防护](docs/adr/0005-agent-error-recovery-and-budgets.md)
+- [ADR 0006：框架原生 Agent Runtime](docs/adr/0006-framework-native-agent-runtime.md)
 
 ## 快速启动
 
@@ -721,10 +713,14 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   │   ├── planner.py           # 执行计划构造
 │   │   ├── executor.py          # 工具步骤执行
 │   │   ├── answer.py            # 最终答案合成
+│   │   ├── framework_agent.py   # create_agent 子图构建与父图结果适配
+│   │   ├── framework_middleware.py # 项目特有 Agent 治理 Middleware
+│   │   ├── framework_tools.py   # 动态框架工具、Context 与 RAG handoff 适配
+│   │   ├── guardrails.py        # 错误分类、Stop Reason 与小型指纹辅助
 │   │   └── runtime.py           # Agent 结果、统计和 trace 辅助逻辑
 │   ├── graph/
 │   │   ├── state.py             # LangGraph 状态 Schema
-│   │   ├── nodes.py             # 复用现有 Agent 业务函数的节点
+│   │   ├── nodes.py             # 父图业务节点与框架子图薄适配节点
 │   │   ├── conditions.py        # Router 条件入口
 │   │   ├── checkpointing.py      # Checkpointer 配置、缓存和 thread_id
 │   │   ├── builder.py           # StateGraph 构建、连接与缓存编译
@@ -846,6 +842,6 @@ docker run --rm -p 8000:8000 --env-file .env \
 - embedding 和 rerank 模型首次加载较慢，可能需要下载权重。
 - 多轮历史使用本地 SQLite 持久化，适合单实例运行；多实例部署时需要额外规划共享存储和并发策略。
 - SQLite Checkpointer 适合单进程本地开发；高并发、多进程共享、数据持续增长和敏感状态留存需要额外的容量、权限及清理策略。
-- Agent 已支持 Registry-driven 的多轮工具观察、同轮多个工具调用和参数修正；旧 Planner/Executor 与 RAG 专用处理仍保留少量兼容工具名，错误次数预算、总耗时预算和连续相同错误检测尚未实现。
+- Agent 已通过 `create_agent` 支持 Registry-driven 多轮工具观察、同轮多个工具调用和参数修正，并具备错误次数、重复调用/错误、总耗时和同批 fail-closed 防护；旧 Planner/Executor 只保留兼容路径。
 - 当前尚未实现 Web、SQL、MCP、外部工具动态加载、写工具人工审批恢复或多 Agent。
 - retrieval_confidence 和 answer_confidence 是启发式估计，不等同于严格概率。

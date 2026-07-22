@@ -4,6 +4,8 @@
 - 日期：2026-07-20
 - 决策者：Project Maintainer
 
+实现演进说明：本 ADR 的业务错误分类和预算语义继续有效；PR3R 已按 [ADR 0006](0006-framework-native-agent-runtime.md) 将执行机制从父图手写节点迁移到 LangChain Agent Middleware 和框架工具节点。下文描述保留为 PR3 决策背景，当前维护入口以 ADR 0006 为准。
+
 ## 背景
 
 PR1 建立了 `agent_model ↔ governed_tools` 循环，PR2 将模型工具发现改为 Provider/Registry 驱动。ToolRuntime 已负责参数校验、权限、审批判断、审计、超时和契约内有限重试，但 Agent 层此前没有累计工具错误上限、重复调用/错误检测或模型与工具累计耗时预算；终止错误还可能把同批后续调用继续执行。
@@ -75,3 +77,13 @@ ToolMessage 保留原有结果、Runtime 和 governance 字段，并增加稳定
 ## 暂未实现
 
 本 PR 不实现正式人工审批、LangGraph interrupt/resume、持久化幂等去重、强制取消正在运行的模型/handler、Streaming、多 Agent、MCP、Web、SQL 或代码沙箱。`approval_required` 当前只能受控停止，不能批准后恢复。
+
+## PR3R 框架迁移（2026-07-21）
+
+PR3R 不改变上述分类和终止规则，但删除了 `agent_model → governed_tools → agent_model` 的父图自定义循环：
+
+- `ModelCallLimitMiddleware` 与 `ToolCallLimitMiddleware` 分别接管模型和工具调用总数；不再由父图条件边维护第二套调用预算。
+- `ProjectToolGovernanceMiddleware` 保留错误累计、连续相同调用/错误、总耗时和 terminal 同批 fail-closed，因为这些是框架无法推断的项目语义。
+- LangChain 框架工具节点负责 Pydantic 参数校验、基础 ToolMessage 和 `tool_call_id` 对应；Middleware 只读取并补充现有 API/trace 兼容字段。
+- 注册工具指纹直接复用 `app.tools.policy.build_tool_args_fingerprint()`；`guardrails.py` 不再维护第二套通用 Python canonicalization。
+- Runtime 超时和重试仍只在项目 `ToolRuntime`；没有叠加 Model/Tool Retry Middleware 或 LangGraph RetryPolicy。

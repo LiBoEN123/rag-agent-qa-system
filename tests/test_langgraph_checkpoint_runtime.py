@@ -6,11 +6,11 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 
+from app.agent import framework_agent
 from app.api import lifecycle
 from app.config import Settings
 from app.graph import builder as graph_builder
 from app.graph import checkpointing
-from app.graph import nodes as graph_nodes
 from app.graph import runtime as graph_runtime
 from app.tools.context import ToolInvocationContext
 
@@ -26,7 +26,7 @@ def isolate_graph_runtime(monkeypatch, tmp_path):
         tmp_path / "checkpoint.sqlite3",
     )
     monkeypatch.setattr(Settings, "ENABLE_AGENT_TRACE_STORE", False)
-    monkeypatch.setattr(graph_nodes, "get_agent_chat_model", lambda: None)
+    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: None)
     yield
     graph_builder.reset_agent_graph_runtime()
 
@@ -110,13 +110,15 @@ def test_reset_recompiles_graph_and_replaces_memory_saver(monkeypatch):
     assert first_saver is not second_saver
 
 
-def test_disabled_runtime_invokes_graph_with_context_without_config(monkeypatch):
-    """默认关闭时仍传请求级 Runtime Context，但不传 checkpoint config。"""
+def test_disabled_runtime_invokes_graph_with_context_and_recursion_config(monkeypatch):
+    """关闭 Saver 时仍传 Context 与框架递归保护，但不传 thread_id。"""
     calls: list[dict] = []
 
     class RecordingGraph:
-        def invoke(self, graph_input, *, context):
-            calls.append({"input": graph_input, "context": context})
+        def invoke(self, graph_input, config, *, context):
+            calls.append(
+                {"input": graph_input, "config": config, "context": context}
+            )
             return {"result": {"status": "OK"}}
 
     monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "disabled")
@@ -136,6 +138,10 @@ def test_disabled_runtime_invokes_graph_with_context_without_config(monkeypatch)
         permissions=Settings.TOOL_DEFAULT_PERMISSIONS,
         source="chat_api",
     )
+    assert calls[0]["config"] == {
+        "recursion_limit": 68,
+        "max_concurrency": 1,
+    }
     assert "permissions" not in calls[0]["input"]
 
 
@@ -168,7 +174,9 @@ def test_enabled_runtime_passes_request_scoped_thread_id(
     )
     assert result == {"status": "OK"}
     assert calls[0]["config"] == {
-        "configurable": {"thread_id": expected}
+        "configurable": {"thread_id": expected},
+        "recursion_limit": 68,
+        "max_concurrency": 1,
     }
     assert calls[0]["context"].trace_id == "trace-enabled"
     assert calls[0]["context"].session_id == "private-session"

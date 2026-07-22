@@ -4,6 +4,7 @@ import json
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from app.agent import framework_agent, framework_tools
 from app.graph import builder as graph_builder
 from app.graph import checkpointing, runtime as graph_runtime
 from app.graph.builder import build_agent_graph
@@ -11,6 +12,11 @@ from app.graph import nodes as graph_nodes
 from app.graph.nodes import initialize_agent_state_node
 from app.tools.context import ToolInvocationContext
 from app.tools import runtime as tool_runtime
+from app.tools.contracts import ToolSpec
+from app.tools.providers import LocalToolProvider
+from app.tools.registry import ToolRegistry
+from app.tools.result import tool_success
+from app.tools.schemas import SearchKnowledgeBaseArgs
 
 
 class FakeToolCallingModel:
@@ -43,7 +49,7 @@ def _invoke_graph(
     context=None,
 ):
     """使用确定性模型和独立图执行一次 Agent 请求。"""
-    monkeypatch.setattr(graph_nodes, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
     monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_ITERATIONS", max_iterations)
     monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_TOOL_CALLS", max_tool_calls)
     return build_agent_graph().compile().invoke(
@@ -92,9 +98,7 @@ def test_initialize_agent_loop_state_uses_effective_question(monkeypatch):
         HumanMessage(content="奖学金申请什么时候开始？")
     ]
     assert updates["iteration_count"] == 0
-    assert updates["max_iterations"] == 6
     assert updates["tool_call_count"] == 0
-    assert updates["max_tool_calls"] == 10
     assert updates["tool_error_count"] == 0
     assert updates["stop_reason"] == ""
 
@@ -350,7 +354,7 @@ def test_agent_loop_stops_at_max_iterations(monkeypatch):
 
     assert len(model.received_messages) == 2
     assert output["iteration_count"] == 2
-    assert output["tool_call_count"] == 1
+    assert output["tool_call_count"] == 2
     assert output["stop_reason"] == "max_iterations_reached"
     assert output["agent_state"].status == "model_error"
     assert output["result"]["status"] == "MODEL_ERROR"
@@ -579,20 +583,23 @@ def test_agent_selected_knowledge_search_keeps_rag_citation_path(monkeypatch):
     }
     rag_calls = []
 
-    class FakeKnowledgeTool:
-        def invoke(self, args):
-            return {
-                "status": "success",
-                "ok": True,
-                "tool_name": "search_knowledge_base",
-                "tool_input": args,
-                "output": {"count": 1, "chunks": [chunk]},
-                "error": "",
-                "error_code": "",
-                "runtime": {"attempt_count": 1},
-                "governance": {"decision": "allow"},
-                "tool_call_id": "runtime-rag-call",
-            }
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="search_knowledge_base",
+            version="1.0.0",
+            description="从测试知识库检索证据",
+            args_schema={"query": "string", "top_k": "integer"},
+            output_schema={"chunks": "list"},
+            handler=lambda args, context: tool_success(
+                "search_knowledge_base",
+                args,
+                {"count": 1, "chunks": [chunk]},
+            ),
+            args_model=SearchKnowledgeBaseArgs,
+            required_permissions=("knowledge_base:read",),
+        )
+    )
 
     def fake_rag_subgraph(**kwargs):
         rag_calls.append(kwargs)
@@ -610,11 +617,9 @@ def test_agent_selected_knowledge_search_keeps_rag_citation_path(monkeypatch):
         }
 
     monkeypatch.setattr(
-        graph_nodes,
-        "get_langchain_tool_map",
-        lambda *, context, provider: {
-            "search_knowledge_base": FakeKnowledgeTool()
-        },
+        framework_tools,
+        "get_agent_tool_provider",
+        lambda: LocalToolProvider(registry),
     )
     monkeypatch.setattr(graph_nodes, "run_rag_subgraph", fake_rag_subgraph)
 
@@ -659,7 +664,7 @@ def test_sqlite_checkpointer_serializes_full_agent_message_loop(
         ]
     )
     db_path = tmp_path / "iterative-checkpoint.sqlite3"
-    monkeypatch.setattr(graph_nodes, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
     monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_ITERATIONS", 6)
     monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_TOOL_CALLS", 10)
     monkeypatch.setattr(

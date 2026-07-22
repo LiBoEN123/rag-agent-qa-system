@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
+from app.agent import framework_agent, framework_tools
 from app.agent import route_agent_action
 from app.api.responses import CHAT_RESULT_RESPONSE_MAP
 from app.graph import builder as graph_builder
@@ -103,9 +104,9 @@ def test_chat_service_runs_real_langgraph_provider_and_runtime(monkeypatch):
         return original_execute(self, tool_name, tool_args, context=context)
 
     monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", recording_execute)
-    monkeypatch.setattr(graph_nodes, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
     monkeypatch.setattr(
-        graph_nodes,
+        framework_tools,
         "get_agent_tool_provider",
         lambda: LocalToolProvider(registry),
     )

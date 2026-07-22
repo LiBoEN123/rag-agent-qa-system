@@ -6,6 +6,7 @@ import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
+from app.agent import framework_agent, framework_tools
 from app.graph import nodes as graph_nodes
 from app.graph.builder import build_agent_graph
 from app.tools import runtime as tool_runtime
@@ -89,9 +90,9 @@ def _invoke(
     max_same_errors: int = 2,
 ):
     provider = LocalToolProvider(registry)
-    monkeypatch.setattr(graph_nodes, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
     monkeypatch.setattr(
-        graph_nodes,
+        framework_tools,
         "get_agent_tool_provider",
         lambda: provider,
     )

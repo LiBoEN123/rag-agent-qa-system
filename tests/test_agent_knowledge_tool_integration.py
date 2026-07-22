@@ -2,6 +2,7 @@
 
 from langchain_core.messages import AIMessage
 
+from app.agent import framework_agent, framework_tools
 from app.graph import nodes as graph_nodes
 from app.graph.builder import build_agent_graph
 from app.tools import runtime as tool_runtime
@@ -79,9 +80,9 @@ def _invoke_knowledge_graph(
         return dict(rag_result)
 
     monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", recording_execute)
-    monkeypatch.setattr(graph_nodes, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
     monkeypatch.setattr(
-        graph_nodes,
+        framework_tools,
         "get_agent_tool_provider",
         lambda: provider,
     )
@@ -146,7 +147,8 @@ def test_search_knowledge_base_uses_real_structured_tool_registry_and_runtime(
     assert [tool.name for tool in result["model"].bound_tools] == [
         "search_knowledge_base"
     ]
-    assert bound_tool.args_schema is SearchKnowledgeBaseArgs
+    assert issubclass(bound_tool.args_schema, SearchKnowledgeBaseArgs)
+    assert "runtime" not in bound_tool.tool_call_schema.model_fields
     assert result["runtime_calls"] == ["search_knowledge_base"]
     assert result["seen_args"] == [
         {"query": "奖学金申请条件", "top_k": 5}

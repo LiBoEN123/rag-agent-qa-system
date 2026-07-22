@@ -3,6 +3,7 @@
 from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
+from app.agent import framework_agent, framework_tools
 from app.graph import builder as graph_builder
 from app.graph import checkpointing, nodes as graph_nodes
 from app.graph.runtime import run_agent_langgraph
@@ -79,7 +80,7 @@ def test_sqlite_serializes_success_correction_repeat_and_budget_stops(
         )
     )
     monkeypatch.setattr(
-        graph_nodes,
+        framework_tools,
         "get_agent_tool_provider",
         lambda: LocalToolProvider(registry),
     )
@@ -169,7 +170,7 @@ def test_sqlite_serializes_success_correction_repeat_and_budget_stops(
     try:
         for label, model, max_tool_calls, expected_status, expected_reason in cases:
             monkeypatch.setattr(
-                graph_nodes,
+                framework_agent,
                 "get_agent_chat_model",
                 lambda selected=model: selected,
             )
@@ -178,6 +179,7 @@ def test_sqlite_serializes_success_correction_repeat_and_budget_stops(
                 "AGENT_MAX_TOOL_CALLS",
                 max_tool_calls,
             )
+            graph_builder.get_compiled_agent_graph.cache_clear()
             result = run_agent_langgraph(
                 write_bad_cases=lambda record: None,
                 original_question=f"checkpoint {label}",
@@ -207,5 +209,5 @@ def test_sqlite_serializes_success_correction_repeat_and_budget_stops(
         graph_builder.reset_agent_graph_runtime()
         tool_runtime.reset_tool_runtime()
 
-    # success=1、correction=1、repeat=2、budget=0。
-    assert handler_calls == [1, 2, 3, 3]
+    # success=1、correction=1、repeat=2、budget=1（框架允许预算内调用）。
+    assert handler_calls == [1, 2, 3, 3, 4]

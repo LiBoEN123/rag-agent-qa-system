@@ -9,6 +9,7 @@ from app.agent.runtime import (
     maybe_save_agent_trace,
 )
 from app.common.logging import get_logger
+from app.config import Settings
 from app.graph.builder import get_compiled_agent_graph
 from app.graph.checkpointing import (
     build_checkpoint_thread_id,
@@ -75,19 +76,26 @@ def run_agent_langgraph(
             checkpoint_thread_id or "-",
         )
         graph = get_compiled_agent_graph()
+        graph_config: dict[str, Any] = {
+            "recursion_limit": max(
+                25,
+                Settings.AGENT_MAX_ITERATIONS * 8 + 20,
+            ),
+            "max_concurrency": 1,
+        }
         if checkpointer_enabled:
+            graph_config["configurable"] = {
+                "thread_id": checkpoint_thread_id,
+            }
             output = graph.invoke(
                 graph_input,
-                config={
-                    "configurable": {
-                        "thread_id": checkpoint_thread_id,
-                    }
-                },
+                config=graph_config,
                 context=resolved_tool_context,
             )
         else:
             output = graph.invoke(
                 graph_input,
+                config=graph_config,
                 context=resolved_tool_context,
             )
         result = output.get("result") if isinstance(output, dict) else None

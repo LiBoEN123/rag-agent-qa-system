@@ -5,6 +5,7 @@ import json
 import pytest
 
 from app.agent import executor as agent_executor
+from app.agent import framework_agent
 from app.agent import runtime as agent_runtime
 from app.agent.state import AgentPlanStep, AgentState
 from app.graph import builder as graph_builder
@@ -44,7 +45,7 @@ def isolate_graph_and_trace_store(monkeypatch):
         "LANGGRAPH_CHECKPOINTER",
         "disabled",
     )
-    monkeypatch.setattr(graph_nodes, "get_agent_chat_model", lambda: None)
+    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: None)
     yield
     graph_builder.get_compiled_agent_graph.cache_clear()
 
@@ -780,7 +781,8 @@ def test_top_level_graph_error_is_sanitized_but_kept_for_internal_diagnostics(
     sensitive_error = RuntimeError(sensitive_message)
 
     class BrokenGraph:
-        def invoke(self, graph_input, *, context):
+        def invoke(self, graph_input, config, *, context):
+            del graph_input, config, context
             raise sensitive_error
 
     monkeypatch.setattr(graph_runtime, "get_compiled_agent_graph", lambda: BrokenGraph())

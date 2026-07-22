@@ -5,7 +5,7 @@ import json
 from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel, Field
 
-from app.graph import nodes as graph_nodes
+from app.agent import framework_agent, framework_tools
 from app.graph.builder import build_agent_graph
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
@@ -104,9 +104,9 @@ def _invoke_dynamic_graph(
 ):
     """把独立 Provider 注入现有 Graph，不修改任何编排分支。"""
     provider = LocalToolProvider(registry)
-    monkeypatch.setattr(graph_nodes, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
     monkeypatch.setattr(
-        graph_nodes,
+        framework_tools,
         "get_agent_tool_provider",
         lambda: provider,
     )
@@ -283,7 +283,8 @@ def test_agent_binds_different_dynamic_args_schema(monkeypatch):
     )
 
     tool = next(item for item in model.bound_tools if item.name == "join_texts")
-    assert tool.args_schema is JoinTextsArgs
+    assert issubclass(tool.args_schema, JoinTextsArgs)
+    assert "runtime" not in tool.tool_call_schema.model_fields
     payload = json.loads(model.received_messages[1][-1].content)
     assert payload["output"] == {"text": "registry driven"}
 

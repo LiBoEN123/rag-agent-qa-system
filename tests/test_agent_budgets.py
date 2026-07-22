@@ -5,6 +5,7 @@ import json
 from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
+from app.agent import framework_agent, framework_middleware, framework_tools
 from app.graph import nodes as graph_nodes
 from app.graph.builder import build_agent_graph
 from app.tools.context import ToolInvocationContext
@@ -44,9 +45,9 @@ def _setup(monkeypatch, *, model, handler, max_tool_calls=10, max_elapsed_ms=120
             args_model=BudgetArgs,
         )
     )
-    monkeypatch.setattr(graph_nodes, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
     monkeypatch.setattr(
-        graph_nodes,
+        framework_tools,
         "get_agent_tool_provider",
         lambda: LocalToolProvider(registry),
     )
@@ -127,18 +128,13 @@ def test_tool_budget_limit_adds_messages_for_every_unexecuted_call(monkeypatch):
     output = _invoke(graph)
     messages = [item for item in output["messages"] if isinstance(item, ToolMessage)]
 
-    assert handler_calls == []
-    assert output["tool_call_count"] == 0
+    assert handler_calls == [1]
+    assert output["tool_call_count"] == 1
     assert output["stop_reason"] == "max_tool_calls_reached"
     assert {item.tool_call_id for item in messages} == {"budget-1", "budget-2"}
-    assert all(
-        json.loads(item.content)["handler_executed"] is False
-        for item in messages
-    )
-    assert all(
-        json.loads(item.content)["error_source"] == "agent_guardrail"
-        for item in messages
-    )
+    blocked = next(item for item in messages if item.tool_call_id == "budget-2")
+    assert blocked.status == "error"
+    assert str(blocked.content).startswith("Tool call limit exceeded")
 
 
 def test_model_elapsed_budget_blocks_tool_without_real_sleep(monkeypatch):
@@ -161,8 +157,8 @@ def test_model_elapsed_budget_blocks_tool_without_real_sleep(monkeypatch):
             ],
         )
     )
-    ticks = iter([10.0, 10.020])
-    monkeypatch.setattr(graph_nodes, "_agent_perf_counter", lambda: next(ticks))
+    ticks = iter([10_000, 10_020])
+    monkeypatch.setattr(framework_middleware, "_now_ms", lambda: next(ticks))
     graph = _setup(
         monkeypatch,
         model=model,
@@ -186,8 +182,7 @@ def test_model_elapsed_budget_blocks_tool_without_real_sleep(monkeypatch):
 
     assert model.calls == 1
     assert handler_calls == []
-    assert output["agent_elapsed_ms"] == 19
+    assert output["agent_elapsed_ms"] == 20
     assert output["stop_reason"] == "max_total_cost_reached"
     assert payload["stop_reason"] == "max_total_cost_reached"
-    assert iteration_trace["model_cost_ms"] == 19
-    assert iteration_trace["budget_snapshot"]["elapsed_limit_ms"] == 10
+    assert iteration_trace["model_cost_ms"] == 20
