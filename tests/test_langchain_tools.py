@@ -10,6 +10,7 @@ from app.tools import (
     get_langchain_tool_names,
     get_langchain_tools,
 )
+from app.config import Settings
 from app.tools.registry import tool_registry
 from app.tools.context import ToolInvocationContext
 from app.tools.schemas import (
@@ -18,6 +19,7 @@ from app.tools.schemas import (
     ListDocumentsArgs,
     SearchKnowledgeBaseArgs,
     SimpleCalculatorArgs,
+    WebFetchArgs,
     WebSearchArgs,
 )
 
@@ -31,6 +33,14 @@ CORE_TOOL_MODELS = {
 }
 
 
+@pytest.fixture(autouse=True)
+def isolate_default_permissions(monkeypatch):
+    """避免开发者本地 .env 改变默认工具可见性断言。"""
+    monkeypatch.setattr(
+        Settings, "TOOL_DEFAULT_PERMISSIONS", ("knowledge_base:read",)
+    )
+
+
 def test_langchain_tool_collection_matches_registry():
     """工具列表、映射、顺序和描述均以注册表为事实来源。"""
     tools = get_langchain_tools()
@@ -39,7 +49,9 @@ def test_langchain_tool_collection_matches_registry():
 
     assert isinstance(tools, list)
     assert all(isinstance(tool, BaseTool) for tool in tools)
-    default_visible_names = [name for name in registry_names if name != "web_search"]
+    default_visible_names = [
+        name for name in registry_names if name not in {"web_search", "web_fetch"}
+    ]
     assert names == default_visible_names
     assert len(names) == len(set(names))
     assert set(CORE_TOOL_MODELS) <= set(names)
@@ -65,6 +77,20 @@ def test_web_search_langchain_schema_requires_explicit_permission():
     assert with_permission is not None
     assert with_permission.args_schema is WebSearchArgs
     assert set(with_permission.args) == {"query", "max_results", "freshness"}
+
+
+def test_web_fetch_langchain_schema_requires_explicit_permission():
+    without_permission = get_langchain_tool("web_fetch")
+    context = ToolInvocationContext(
+        permissions=("knowledge_base:read", "web:fetch"),
+        source="langchain_tool_test",
+    )
+    with_permission = get_langchain_tool("web_fetch", context=context)
+
+    assert without_permission is None
+    assert with_permission is not None
+    assert with_permission.args_schema is WebFetchArgs
+    assert set(with_permission.args) == {"url", "max_chars"}
 
 
 @pytest.mark.parametrize("tool_name,args_model", CORE_TOOL_MODELS.items())

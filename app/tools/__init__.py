@@ -26,6 +26,7 @@ from app.tools.knowledge_base import (
     search_knowledge_base,
 )
 from app.tools.result import tool_error, tool_success
+from app.tools.web_fetch import web_fetch
 from app.tools.web_search import web_search
 from app.tools.policy import (
     ToolPolicyDecision,
@@ -93,5 +94,6 @@ __all__ = [
     "simple_calculator",
     "tool_error",
     "tool_success",
+    "web_fetch",
     "web_search",
 ]

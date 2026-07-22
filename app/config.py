@@ -17,6 +17,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 LANGGRAPH_CHECKPOINTER_VALUES = {"disabled", "memory", "sqlite"}
 WEB_SEARCH_SAFESEARCH_VALUES = {"on", "moderate", "off"}
 WEB_SEARCH_TOOL_TIMEOUT_SECONDS = 10
+WEB_FETCH_TOOL_TIMEOUT_SECONDS = 30
 _TOOL_PERMISSION_PATTERN = re.compile(
     r"^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*$"
 )
@@ -75,6 +76,11 @@ def env_float(name: str, default: str) -> float:
 
 def normalize_web_search_proxy(value: str | None) -> str | None:
     """把空白 Web Search 代理配置规整为 None。"""
+    return (value or "").strip() or None
+
+
+def normalize_web_fetch_proxy(value: str | None) -> str | None:
+    """把空白 Web Fetch 代理配置规整为 None。"""
     return (value or "").strip() or None
 
 
@@ -200,6 +206,59 @@ def validate_web_search_config(
         )
     if proxy is not None and not isinstance(proxy, str):
         raise ValueError("WEB_SEARCH_PROXY 必须为空或字符串")
+
+
+def validate_web_fetch_config(
+    *,
+    connect_timeout: object,
+    read_timeout: object,
+    max_response_bytes: object,
+    max_redirects: object,
+    user_agent: object,
+    proxy: object,
+) -> None:
+    """校验 hardened Web Fetch 客户端配置，不创建客户端或访问网络。"""
+    timeouts = {
+        "WEB_FETCH_CONNECT_TIMEOUT": connect_timeout,
+        "WEB_FETCH_READ_TIMEOUT": read_timeout,
+    }
+    for name, value in timeouts.items():
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or value <= 0
+        ):
+            raise ValueError(f"{name} 必须是有限正数，且不能是 bool")
+    if (
+        float(connect_timeout) + float(read_timeout)
+        >= WEB_FETCH_TOOL_TIMEOUT_SECONDS
+    ):
+        raise ValueError(
+            "WEB_FETCH_CONNECT_TIMEOUT 与 WEB_FETCH_READ_TIMEOUT 之和必须小于 "
+            f"web_fetch 工具总体超时 {WEB_FETCH_TOOL_TIMEOUT_SECONDS} 秒"
+        )
+    if (
+        isinstance(max_response_bytes, bool)
+        or not isinstance(max_response_bytes, int)
+        or max_response_bytes < 1
+    ):
+        raise ValueError("WEB_FETCH_MAX_RESPONSE_BYTES 必须是正整数")
+    if (
+        isinstance(max_redirects, bool)
+        or not isinstance(max_redirects, int)
+        or max_redirects < 0
+    ):
+        raise ValueError("WEB_FETCH_MAX_REDIRECTS 必须是非负整数")
+    if (
+        not isinstance(user_agent, str)
+        or not user_agent.strip()
+        or "\r" in user_agent
+        or "\n" in user_agent
+    ):
+        raise ValueError("WEB_FETCH_USER_AGENT 必须是无换行的非空字符串")
+    if proxy is not None and not isinstance(proxy, str):
+        raise ValueError("WEB_FETCH_PROXY 必须为空或字符串")
 
 
 def env_csv(name: str, default: str) -> tuple[str, ...]:
@@ -329,6 +388,17 @@ class Settings:
     WEB_SEARCH_TIMEOUT = env_int("WEB_SEARCH_TIMEOUT", "8")
     WEB_SEARCH_PROXY = normalize_web_search_proxy(os.getenv("WEB_SEARCH_PROXY"))
 
+    WEB_FETCH_CONNECT_TIMEOUT = env_float("WEB_FETCH_CONNECT_TIMEOUT", "3")
+    WEB_FETCH_READ_TIMEOUT = env_float("WEB_FETCH_READ_TIMEOUT", "10")
+    WEB_FETCH_MAX_RESPONSE_BYTES = env_int(
+        "WEB_FETCH_MAX_RESPONSE_BYTES", "2000000"
+    )
+    WEB_FETCH_MAX_REDIRECTS = env_int("WEB_FETCH_MAX_REDIRECTS", "5")
+    WEB_FETCH_USER_AGENT = os.getenv(
+        "WEB_FETCH_USER_AGENT", "rag-agent-qa-system/1.0"
+    )
+    WEB_FETCH_PROXY = normalize_web_fetch_proxy(os.getenv("WEB_FETCH_PROXY"))
+
     TOOL_DEFAULT_PRINCIPAL_ID = os.getenv(
         "TOOL_DEFAULT_PRINCIPAL_ID",
         "chat_api",
@@ -447,6 +517,14 @@ class Settings:
             safesearch=cls.WEB_SEARCH_SAFESEARCH,
             timeout=cls.WEB_SEARCH_TIMEOUT,
             proxy=cls.WEB_SEARCH_PROXY,
+        )
+        validate_web_fetch_config(
+            connect_timeout=cls.WEB_FETCH_CONNECT_TIMEOUT,
+            read_timeout=cls.WEB_FETCH_READ_TIMEOUT,
+            max_response_bytes=cls.WEB_FETCH_MAX_RESPONSE_BYTES,
+            max_redirects=cls.WEB_FETCH_MAX_REDIRECTS,
+            user_agent=cls.WEB_FETCH_USER_AGENT,
+            proxy=cls.WEB_FETCH_PROXY,
         )
         validate_tool_governance_settings(cls)
         cls.LANGGRAPH_CHECKPOINTER = validate_langgraph_checkpointer(

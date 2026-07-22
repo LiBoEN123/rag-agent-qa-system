@@ -10,9 +10,39 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    HttpUrl,
     field_validator,
     model_validator,
 )
+
+
+_WEB_FETCH_URL_MAX_CHARS = 2048
+
+
+def _validate_web_fetch_url_text(value: object) -> object:
+    """在 Pydantic URL 解析前拒绝超长、空白和控制字符。"""
+    if not isinstance(value, str):
+        return value
+    if len(value) > _WEB_FETCH_URL_MAX_CHARS:
+        raise ValueError("url 长度不能超过 2048 字符")
+    if any(
+        character.isspace() or ord(character) < 32 or ord(character) == 127
+        for character in value
+    ):
+        raise ValueError("url 不允许包含空白或控制字符")
+    return value
+
+
+def _validate_web_fetch_http_url(value: str) -> str:
+    """校验输出 URL 仍是无凭据且带主机名的 HTTP(S) URL。"""
+    if len(value) > _WEB_FETCH_URL_MAX_CHARS:
+        raise ValueError("URL 长度不能超过 2048 字符")
+    parsed = urlsplit(value)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("URL 必须是带主机名的 http 或 https URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("URL 不允许包含用户名或密码")
+    return value
 
 
 class ToolResult(BaseModel):
@@ -133,4 +163,78 @@ class WebSearchOutput(BaseModel):
             range(1, len(self.results) + 1)
         ):
             raise ValueError("rank 必须从 1 开始连续编号")
+        return self
+
+
+class WebFetchArgs(BaseModel):
+    """web_fetch 公开给模型的单页读取参数。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: HttpUrl = Field(
+        ...,
+        description=(
+            "要读取的单个公开 HTTP(S) 网页 URL；应来自 web_search 或用户明确"
+            "提供的公开网页，不用于本地文件、内网地址或 API 写操作"
+        ),
+    )
+    max_chars: int = Field(
+        default=12000,
+        ge=1000,
+        le=20000,
+        description="返回给 Agent Model 的最大正文字符数",
+    )
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def validate_url_text(cls, value: object) -> object:
+        """在标准 HttpUrl 解析前拒绝不安全的原始文本。"""
+        return _validate_web_fetch_url_text(value)
+
+    @field_validator("url")
+    @classmethod
+    def validate_url_authority(cls, value: HttpUrl) -> HttpUrl:
+        """拒绝 URL 凭据、空主机和明确非 Web 端口。"""
+        if not value.host:
+            raise ValueError("url 必须包含 hostname")
+        if value.username is not None or value.password is not None:
+            raise ValueError("url 不允许包含用户名或密码")
+        if value.port is not None and value.port not in {80, 443}:
+            raise ValueError("url 只允许 80 或 443 端口")
+        return value
+
+
+class WebFetchOutput(BaseModel):
+    """有限、结构化且明确标记不可信的单页正文输出。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    requested_url: str = Field(..., max_length=_WEB_FETCH_URL_MAX_CHARS)
+    final_url: str = Field(..., max_length=_WEB_FETCH_URL_MAX_CHARS)
+    status_code: int = Field(..., ge=200, le=299)
+    content_type: str = Field(..., min_length=1, max_length=100)
+
+    title: str = Field(default="", max_length=500)
+    author: str = Field(default="", max_length=300)
+    published_date: str = Field(default="", max_length=100)
+    language: str = Field(default="", max_length=50)
+
+    content: str = Field(..., max_length=20000)
+    content_length: int = Field(..., ge=0, le=20000)
+    truncated: bool
+
+    extractor: Literal["trafilatura"] = "trafilatura"
+    content_is_untrusted: Literal[True] = True
+
+    @field_validator("requested_url", "final_url")
+    @classmethod
+    def validate_output_url(cls, value: str) -> str:
+        """确保模型收到的 URL 仍满足 HTTP(S) 输出边界。"""
+        return _validate_web_fetch_http_url(value)
+
+    @model_validator(mode="after")
+    def validate_content_length(self) -> "WebFetchOutput":
+        """确保显式长度与实际返回正文严格一致。"""
+        if self.content_length != len(self.content):
+            raise ValueError("content_length 必须等于 len(content)")
         return self

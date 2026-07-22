@@ -3,7 +3,7 @@
 import pytest
 from pydantic import BaseModel
 
-from app.tools.context import ToolInvocationContext, build_default_tool_context
+from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from app.tools.providers import LocalToolProvider, collect_tool_specs
 from app.tools.registry import ToolRegistry, tool_registry
@@ -83,12 +83,16 @@ def test_default_local_provider_exposes_only_permitted_production_tools():
 
     names = [
         spec.name
-        for spec in provider.list_specs(context=build_default_tool_context())
+        for spec in provider.list_specs(
+            context=ToolInvocationContext(permissions=("knowledge_base:read",))
+        )
     ]
 
     assert set(names) < set(tool_registry.names())
     assert "web_search" in tool_registry.names()
+    assert "web_fetch" in tool_registry.names()
     assert "web_search" not in names
+    assert "web_fetch" not in names
     assert set(names) == {
         "search_knowledge_base",
         "compare_documents",

@@ -160,6 +160,11 @@ def _tool_data(
                 "risk_level": spec.risk_level.value,
                 "required_permissions": list(spec.required_permissions),
                 "requires_approval": spec.requires_approval,
+                "output_model": (
+                    spec.output_model.__name__
+                    if spec.output_model is not None
+                    else None
+                ),
             }
         )
     visibility = {
@@ -256,6 +261,37 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
         ("web_search" in default_visible_tools) == default_has_web_permission
     )
     web_authorized_visibility_ok = True
+    fetch_spec = next(
+        (
+            item
+            for item in registered_tools
+            if item.get("name") == "web_fetch"
+        ),
+        None,
+    )
+    fetch_schema_fields = set(
+        (fetch_spec or {}).get("args_schema", {}).get("properties", {})
+    )
+    fetch_contract_ok = bool(
+        fetch_spec
+        and fetch_spec.get("risk_level") == "read_only"
+        and fetch_spec.get("required_permissions") == ["web:fetch"]
+        and fetch_spec.get("output_model") == "WebFetchOutput"
+    )
+    forbidden_fetch_fields = {
+        "headers",
+        "cookies",
+        "proxy",
+        "timeout",
+        "method",
+        "body",
+        "runtime",
+    }
+    fetch_schema_ok = fetch_schema_fields == {"url", "max_chars"} and not (
+        forbidden_fetch_fields & fetch_schema_fields
+    )
+    fetch_default_visibility_ok = "web_fetch" not in default_visible_tools
+    fetch_authorized_visibility_ok = True
     if enforce_default_registry:
         default_context = build_default_tool_context(
             source="agent_runtime_inspection"
@@ -271,6 +307,17 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
             for spec in resolved_provider.list_specs(context=authorized_context)
         }
         web_authorized_visibility_ok = "web_search" in authorized_names
+        fetch_context = ToolInvocationContext(
+            principal_id=default_context.principal_id,
+            principal_type=default_context.principal_type,
+            permissions=("knowledge_base:read", "web:fetch"),
+            source="agent_runtime_inspection",
+        )
+        fetch_authorized_names = {
+            spec.name
+            for spec in resolved_provider.list_specs(context=fetch_context)
+        }
+        fetch_authorized_visibility_ok = "web_fetch" in fetch_authorized_names
     checks = [
         _check("dependency_versions", not missing_packages, ", ".join(missing_packages)),
         _check("parent_required_nodes", not missing_parent, ", ".join(missing_parent)),
@@ -308,6 +355,26 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
             "web_search_authorized_visibility",
             not enforce_default_registry or web_authorized_visibility_ok,
             "web_search is hidden despite web:search permission",
+        ),
+        _check(
+            "web_fetch_contract",
+            not enforce_default_registry or fetch_contract_ok,
+            "web_fetch must be read-only, require web:fetch, and validate output",
+        ),
+        _check(
+            "web_fetch_model_schema",
+            not enforce_default_registry or fetch_schema_ok,
+            "web_fetch model schema must expose only url and max_chars",
+        ),
+        _check(
+            "web_fetch_default_visibility",
+            not enforce_default_registry or fetch_default_visibility_ok,
+            "web_fetch must not be visible to the default service principal",
+        ),
+        _check(
+            "web_fetch_authorized_visibility",
+            not enforce_default_registry or fetch_authorized_visibility_ok,
+            "web_fetch is hidden despite web:fetch permission",
         ),
         _check("source_file_budgets", not over_budget, "; ".join(over_budget)),
     ]

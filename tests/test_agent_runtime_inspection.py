@@ -14,8 +14,16 @@ from app.tools.registry import ToolRegistry
 from scripts import inspect_agent_runtime as inspection
 
 
-def test_runtime_report_preserves_graph_contract():
+def _knowledge_only(monkeypatch):
+    """固定文档声明的最小默认权限，隔离本地 .env。"""
+    monkeypatch.setattr(
+        Settings, "TOOL_DEFAULT_PERMISSIONS", ("knowledge_base:read",)
+    )
+
+
+def test_runtime_report_preserves_graph_contract(monkeypatch):
     """报告来自真实编译图，并保留父图与嵌入子图关键边界。"""
+    _knowledge_only(monkeypatch)
     report = inspection.inspect_runtime()
     parent_nodes = set(report["parent_graph"]["nodes"])
     framework_nodes = set(report["framework_agent"]["nodes"])
@@ -33,8 +41,9 @@ def test_runtime_report_preserves_graph_contract():
     assert any("ToolCallLimitMiddleware" in name for name in framework_nodes)
 
 
-def test_tool_contracts_use_model_facing_json_schema():
+def test_tool_contracts_use_model_facing_json_schema(monkeypatch):
     """默认工具输出公开模型 Schema 和治理元数据，不暴露 Runtime 字段。"""
+    _knowledge_only(monkeypatch)
     report = inspection.inspect_runtime()
     tools = report["registered_tools"]
     context = build_default_tool_context(source="agent_runtime_inspection")
@@ -42,6 +51,7 @@ def test_tool_contracts_use_model_facing_json_schema():
     assert {tool["name"] for tool in tools} == {
         "search_knowledge_base",
         "web_search",
+        "web_fetch",
         "compare_documents",
         "simple_calculator",
         "list_documents",
@@ -65,6 +75,10 @@ def test_tool_contracts_use_model_facing_json_schema():
         "max_results",
         "freshness",
     }
+    fetch = next(tool for tool in tools if tool["name"] == "web_fetch")
+    assert fetch["required_permissions"] == ["web:fetch"]
+    assert fetch["output_model"] == "WebFetchOutput"
+    assert set(fetch["args_schema"]["properties"]) == {"url", "max_chars"}
     assert report["tool_visibility"] == {
         "permission_count": len(context.permissions),
         "registered_tool_count": len(tools),
@@ -72,8 +86,9 @@ def test_tool_contracts_use_model_facing_json_schema():
     }
 
 
-def test_json_cli_is_parseable_stable_and_safe(capsys):
+def test_json_cli_is_parseable_stable_and_safe(capsys, monkeypatch):
     """JSON 输出可稳定解析，且不包含运行时对象表示。"""
+    _knowledge_only(monkeypatch)
     assert inspection.main(["--format", "json"]) == 0
     first = capsys.readouterr().out
     assert inspection.main(["--format", "json"]) == 0
@@ -99,8 +114,9 @@ def test_mermaid_cli_uses_xray_compiled_graph(capsys):
     assert "ModelCallLimitMiddleware" in output
 
 
-def test_check_cli_passes_without_extra_output(capsys):
+def test_check_cli_passes_without_extra_output(capsys, monkeypatch):
     """当前架构满足检查时返回稳定消息和零退出码。"""
+    _knowledge_only(monkeypatch)
     assert inspection.main(["--check"]) == 0
     captured = capsys.readouterr()
 
@@ -119,6 +135,14 @@ def test_inspection_reports_web_search_when_default_permission_is_enabled(
     report = inspection.inspect_runtime()
 
     assert "web_search" in report["default_visible_tools"]
+    assert all(item["passed"] for item in report["checks"])
+
+
+def test_inspection_reports_web_fetch_for_explicit_permission(monkeypatch):
+    _knowledge_only(monkeypatch)
+    report = inspection.inspect_runtime()
+
+    assert "web_fetch" not in report["default_visible_tools"]
     assert all(item["passed"] for item in report["checks"])
 
 

@@ -13,7 +13,7 @@ from app.tools.context import ToolInvocationContext, has_permission
 from app.tools.contracts import ToolRiskLevel, ToolSpec
 from app.tools.providers import LocalToolProvider
 from app.tools.providers.base import is_tool_visible
-from app.tools.registry import ToolRegistry
+from app.tools.registry import ToolRegistry, tool_registry
 from app.tools.result import tool_success
 
 
@@ -184,6 +184,34 @@ def test_same_provider_keeps_request_visibility_isolated():
     ]
     assert names == [["public_tool"], ["public_tool", "private_tool"]]
     assert not hasattr(provider, "context")
+
+
+@pytest.mark.parametrize(
+    ("permissions", "has_search", "has_fetch"),
+    [
+        (("knowledge_base:read",), False, False),
+        (("knowledge_base:read", "web:search"), True, False),
+        (("knowledge_base:read", "web:fetch"), False, True),
+        (
+            ("knowledge_base:read", "web:search", "web:fetch"),
+            True,
+            True,
+        ),
+    ],
+)
+def test_production_web_permissions_are_independent(
+    permissions, has_search, has_fetch
+):
+    """同一生产 Provider 连续请求保持 Search 与 Fetch 权限隔离。"""
+    names = {
+        spec.name
+        for spec in LocalToolProvider(tool_registry).list_specs(
+            context=ToolInvocationContext(permissions=permissions)
+        )
+    }
+
+    assert ("web_search" in names) is has_search
+    assert ("web_fetch" in names) is has_fetch
 
 
 def test_agent_binds_visible_tools_and_executes_authorized_tool(monkeypatch):

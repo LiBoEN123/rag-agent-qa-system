@@ -41,6 +41,8 @@ FastAPI
 
 `web_search` 也是动态普通工具，但成功结果只形成 ToolMessage 并回到 Agent Model，不写 `pending_rag_result`。它通过 DDGS 查询公开互联网；本地受控证据仍必须使用 `search_knowledge_base`。
 
+`web_fetch` 与 `web_search` 一样走普通 ToolMessage 路径：Agent 可先搜索，再从搜索结果选择一个公开 URL 抓取正文。下载通过 requests-hardened，HTML 正文通过 Trafilatura 提取；它不进入 RAG、不持久化网页，也不生成本地 references。
+
 ## 当前图
 
 以下 Mermaid 由 `python scripts/inspect_agent_runtime.py --format mermaid` 的 `compiled_graph.get_graph(xray=True).draw_mermaid()` 输出生成。升级框架或修改图后应重新运行命令并替换本段，不要手工维护第二套图。
@@ -120,6 +122,7 @@ graph TD;
 | `app/tools/registry.py` | 注册 ToolSpec；统一分发工具 |
 | `app/tools/runtime.py` | 治理并执行单次工具调用 |
 | `app/tools/web_search.py` | 调用 DDGS；映射参数、规范化结果和转换公开异常 |
+| `app/tools/web_fetch.py` | 构造 hardened 客户端；限制响应并调用 Trafilatura |
 | `app/agent/runtime.py` | 构造 API 兼容结果；保存 trace |
 | `app/rag/graph/` | 编排检索、证据、生成和引用流程 |
 
@@ -146,6 +149,12 @@ Provider 的模型可见性层只复用 `has_permission()` 检查全部 `ToolSpe
 | 搜索结果为什么为空 | DDGS region、`backend="auto"`、网络条件 |
 | Web Search 为什么没有进入 RAG | 它是普通 Agent 工具；只有本地知识库检索进入 RAG |
 | 如何更换搜索后端 | 保持 `app/tools/web_search.py` 的开源后端适配边界和 ToolSpec 契约 |
+| 模型为什么看不到 `web_fetch` | `app/tools/providers/local.py`、`web:fetch` 权限 |
+| 为什么 URL 被拒绝 | requests-hardened 配置和 `app/tools/web_fetch.py` 的 URL 业务规则 |
+| 为什么没有正文 | Trafilatura 提取结果和页面实际可读正文 |
+| 为什么页面过大 | `WEB_FETCH_MAX_RESPONSE_BYTES` |
+| 为什么不支持 PDF | PR7 只处理 HTML、XHTML 和纯文本 |
+| 为什么 Web Fetch 没有 RAG references | `web_fetch` 是普通工具路径，不进入本地 RAG |
 | 工具可见但为什么执行被拒绝 | `app/tools/policy.py`、`app/tools/runtime.py` |
 | ToolMessage 为什么异常 | `app/agent/framework_middleware.py`、`app/agent/framework_tools.py` |
 | 知识库为什么没有引用 | `app/rag/graph/`、`app/rag/citations.py` |
@@ -184,6 +193,6 @@ python scripts/inspect_agent_runtime.py --format mermaid
 python scripts/inspect_agent_runtime.py --check
 ```
 
-脚本只使用普通 `build_agent_graph().compile()`，不会调用带 Checkpointer 的缓存入口；也不会初始化模型、DDGS、执行 handler、访问网络或读取/重建 RAG 索引。报告分别列出 Registry 的 `registered_tools` 和默认 Context 的 `default_visible_tools`，并验证默认可见集合是注册集合的子集、权限满足以及 Web Search 的授权可见性。版本来自 `importlib.metadata`，图来自 `get_graph()`/`get_graph(xray=True)`，Mermaid 来自 `draw_mermaid()`，工具参数来自模型可见的 Pydantic JSON Schema。
+脚本只使用普通 `build_agent_graph().compile()`，不会调用带 Checkpointer 的缓存入口；也不会初始化模型、DDGS、requests-hardened Manager、Trafilatura、执行 handler、访问网络或读取/重建 RAG 索引。报告分别列出 Registry 的 `registered_tools` 和默认 Context 的 `default_visible_tools`，并验证默认可见集合是注册集合的子集、权限满足、Web Search/Web Fetch 的授权可见性，以及 `web_fetch` 模型 Schema 只有 `url` 和 `max_chars`。版本来自 `importlib.metadata`，图来自 `get_graph()`/`get_graph(xray=True)`，Mermaid 来自 `draw_mermaid()`，工具参数来自模型可见的 Pydantic JSON Schema。
 
 升级 LangChain、LangGraph 或 Pydantic 时，先运行契约测试和 `--check`。重点确认父图节点未改变、xray 仍能展开 `framework_agent`、model/tools 和调用限制节点仍存在、`ToolRuntime` 注入字段未暴露给模型，并重新生成本页 Mermaid。

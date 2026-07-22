@@ -234,6 +234,21 @@ def summarize_tool_output(spec: ToolSpec, value: Any) -> Any:
             sensitive_keys=spec.sensitive_output_fields,
             **audit_redaction_limits(),
         )
+    if spec.name == "web_fetch":
+        summary = {
+            "status_code": value.get("status_code", 0),
+            "content_type": value.get("content_type", ""),
+            "content_length": value.get("content_length", 0),
+            "truncated": bool(value.get("truncated", False)),
+            "content_is_untrusted": bool(
+                value.get("content_is_untrusted", False)
+            ),
+        }
+        return redact_sensitive_data(
+            summary,
+            sensitive_keys=spec.sensitive_output_fields,
+            **audit_redaction_limits(),
+        )
 
     summary: dict[str, Any] = {
         "type": "dict",

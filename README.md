@@ -15,7 +15,7 @@
 - 权限感知的 Registry-driven 工具发现：Provider 按请求权限只暴露满足 `required_permissions` 的工具，Middleware 将其注入模型和执行层；工具仍经 `StructuredTool → ToolRegistry → ToolRuntime` 执行。
 - Agent 循环防护：工具错误总数、连续相同调用、连续相同错误和模型/工具累计耗时均有独立预算；终止错误对同批后续调用 fail-closed，并补齐关联 ToolMessage。
 - 多轮追问改写：同一 `session_id` 下通过 SQLite 保留最近会话历史，短追问和指代问题会先改写成独立检索问题。
-- 工具调用：支持知识库检索、双文档内容对比、简单四则运算、列出知识库文档和查看指定 chunk 原文。
+- 工具调用：支持知识库检索、公开网页搜索与受治理的单页正文提取、双文档内容对比、简单四则运算、列出知识库文档和查看指定 chunk 原文。
 - 引用绑定和拒答机制：模型输出的 `Reference N` 会绑定回真实文件与 chunk；证据不足或引用支撑不足时拒答。
 - 可观测性：每次 `/chat` 请求记录 `trace_id`、阶段耗时、状态、工具调用、引用数量和 LLM 调用次数。
 - bad case 日志：对模型格式异常、引用异常、工具异常、索引未就绪等失败样例做结构化记录。
@@ -138,7 +138,7 @@ flowchart TD
 | Agent 路由 | 正常自然语言请求默认输出 `agent`；`direct_answer` / `clarify` 只做安全短路，`rag_fast_path` 保留为显式和旧协议兼容动作 |
 | 工具发现 | `ToolProvider` 按请求权限过滤模型可见 ToolSpec，`RegistryToolsMiddleware` 对模型绑定和实际执行使用同一组请求级 StructuredTool；普通新工具无需修改核心编排 |
 | Agent Guardrail | 工具错误总数、连续相同调用/错误、累计模型与工具耗时预算、同批 fail-closed、无悬空 ToolMessage |
-| 工具调用 | Registry 注册六个生产工具：`search_knowledge_base`、`web_search`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text`；默认可见数量由请求权限决定 |
+| 工具调用 | Registry 注册七个生产工具：`search_knowledge_base`、`web_search`、`web_fetch`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text`；默认可见数量由请求权限决定 |
 | 可观测性 | `trace_id`、请求耗时、阶段耗时、工具调用日志、metrics 汇总接口 |
 | 失败分析 | `logs/bad_cases.jsonl` 记录值得分析的失败样例 |
 | 评测 | 支持规则评测、Chroma/chunks 索引取证和可选 LLM Judge 语义评估 |
@@ -231,6 +231,30 @@ python scripts/smoke_test_web_search.py \
 
 脚本默认经过 `ToolRegistry → ToolRuntime → DDGS` 生产链路，不调用 Agent 模型、不读取或修改知识库；缺少 `web:search` 权限时会直接给出启用提示。
 
+## Web Fetch
+
+`web_fetch` 用于已知具体公开 URL 后读取单个网页正文；通常由 Agent 在 `web_search` 返回候选标题、URL 和摘要后选择调用，也可读取用户明确提供的 URL。下载层固定使用 `requests-hardened==1.3.0` 做 SSRF IP 过滤和逐跳安全重定向，正文提取固定使用 `trafilatura==2.1.0`，而权限、总体超时、一次有限重试、审计和输出校验仍由现有 `ToolRuntime` 负责。`search_knowledge_base` 则只读取本地受控知识库并进入 RAG 引用路径。
+
+模型只能提供 `url` 和 `max_chars`，不能提供 method、headers、Cookie、Authorization、proxy、timeout 或 body。应用层只接受 HTTP(S)、无 credentials、无控制字符且端口为 80/443 的 URL；私网、环回、链路本地、metadata 地址、DNS 解析和 redirect 目标由 `requests-hardened` 校验。响应以 streaming 方式读取解压后内容并受 `WEB_FETCH_MAX_RESPONSE_BYTES` 限制，只接受 HTML、XHTML 和纯文本，不支持 PDF、二进制文件或 JavaScript 渲染。
+
+URL、页面元数据和正文全部是不可信输入。输出固定包含 `content_is_untrusted=true`；模型不得执行页面中的命令、不得把正文视为 system/developer/tool 指令，也不得因为页面要求而调用其他工具，只能将其作为回答用户问题的参考，并在回答中注明实际 `final_url`。网页不会写入 ChromaDB/BM25，不设置 `pending_rag_result`，也不会生成本地 RAG references。
+
+默认权限仍只有 `knowledge_base:read`，因此 `web_search` 和 `web_fetch` 都默认不可见。两项 Web 权限彼此独立：只有 `web:search` 时只能搜索，只有 `web:fetch` 时只能读取明确 URL，两者都有时才支持搜索后抓取：
+
+```env
+TOOL_DEFAULT_PERMISSIONS=knowledge_base:read,web:search,web:fetch
+```
+
+真实网络验证仅由维护者手动执行，不进入 Pytest/CI：
+
+```bash
+python scripts/smoke_test_web_fetch.py \
+  --url "https://example.com/" \
+  --max-chars 4000
+```
+
+脚本默认经过 `ToolRegistry → ToolRuntime → requests-hardened → Trafilatura`，只显示有限正文预览和安全元数据，不显示代理、headers、cookies 或完整正文。
+
 ## Agent Runtime
 
 项目当前唯一 Agent Runtime 是 LangGraph 父图中的 LangChain `create_agent` 子图。旧 `agent_model`、`governed_tools` 和 `limit_handler` 自定义循环已经删除，不提供双实现或运行时回滚开关；需要回滚版本时使用 Git commit、tag 或 release。
@@ -245,7 +269,7 @@ START → route（可选）→ initialize
   └─ agent → framework_agent（create_agent 内部 model ↔ tools）
        → adapt_framework
        ├─ search_knowledge_base 成功 → RAG 子图 → finalize
-       ├─ web_search 等普通工具 → ToolMessage → Agent Model → compose → finalize
+       ├─ web_search / web_fetch 等普通工具 → ToolMessage → Agent Model → compose → finalize
        ├─ 无工具最终回答 → compose → finalize
        └─ 治理或调用预算终止 → compose → finalize
 ```
@@ -311,6 +335,7 @@ python scripts/inspect_agent_runtime.py --check
 - [ADR 0006：框架原生 Agent Runtime](docs/adr/0006-framework-native-agent-runtime.md)
 - [ADR 0007：权限感知的工具可见性](docs/adr/0007-permission-aware-tool-visibility.md)
 - [ADR 0008：开源 Web Search 生产工具](docs/adr/0008-open-source-web-search-tool.md)
+- [ADR 0009：安全 Web Fetch 网页正文工具](docs/adr/0009-secure-web-fetch-tool.md)
 
 ## 快速启动
 
@@ -332,8 +357,9 @@ pip install -r requirements.lock
 copy .env.example .env
 ```
 
-锁文件已经包含 `ddgs==9.14.4` 基础包；未安装 `ddgs[api]`、`ddgs[mcp]` 或
-`ddgs[dht]`，也不需要 `langchain-community` 包装。
+锁文件已经包含 `ddgs==9.14.4`、`requests-hardened==1.3.0` 和
+`trafilatura==2.1.0` 基础包；未安装这些依赖的 dev、docs、eval、all、MCP
+等 extras，也不需要 `langchain-community` 包装。
 
 将知识库文档放到 `data/kb/`，然后编辑 `.env` 中的模型配置。启动服务：
 
@@ -395,7 +421,13 @@ streamlit run demo/streamlit_app.py
 | `WEB_SEARCH_SAFESEARCH` | 安全搜索级别：`on`、`moderate` 或 `off`，默认 `moderate` |
 | `WEB_SEARCH_TIMEOUT` | DDGS 内部 HTTP 超时秒数，默认 `8`，不得超过工具总体超时 |
 | `WEB_SEARCH_PROXY` | 可选 DDGS 代理；留空时传入 `None`，只在确实需要时配置 |
-| `TOOL_DEFAULT_PERMISSIONS` | 默认服务主体权限；默认仅 `knowledge_base:read`，显式加入 `web:search` 才会向模型暴露 Web Search |
+| `WEB_FETCH_CONNECT_TIMEOUT` | Web Fetch 连接阶段超时秒数，默认 `3` |
+| `WEB_FETCH_READ_TIMEOUT` | Web Fetch 单次响应读取超时秒数，默认 `10` |
+| `WEB_FETCH_MAX_RESPONSE_BYTES` | Web Fetch 解压后响应正文上限，默认 `2000000` bytes |
+| `WEB_FETCH_MAX_REDIRECTS` | Web Fetch 最大安全重定向次数，默认 `5` |
+| `WEB_FETCH_USER_AGENT` | 维护者配置的非空 User-Agent，不接受模型输入 |
+| `WEB_FETCH_PROXY` | 可选受信任代理；留空时禁用，禁止使用未经信任的用户输入 |
+| `TOOL_DEFAULT_PERMISSIONS` | 默认服务主体权限；默认仅 `knowledge_base:read`，需分别显式加入 `web:search`、`web:fetch` 才暴露相应 Web 工具 |
 | `USE_LLM_JUDGE` | 评测脚本是否启用 LLM Judge，默认 `false` |
 | `JUDGE_API_KEY` | 评测 Judge 模型 API Key；为空时可复用回答模型 Key |
 | `JUDGE_MODEL` | 评测 Judge 模型名称 |
@@ -595,6 +627,8 @@ curl -X POST "http://127.0.0.1:8000/chat" \
 可能返回 `search_knowledge_base`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text`、`clarify`、`direct_answer` 等动作。
 
 `web_search` 不作为 Router 关键词 action。普通问题先进入 `agent`，再由 Agent Model 根据动态 Tool Schema 和当前请求权限决定是否调用 Web Search。
+
+`web_fetch` 同样不作为 Router action，也不在 Query Rewrite、Planner 或 Executor 中增加 URL 特判；它由 Agent Model 在普通工具循环中按权限和 Schema 选择。
 
 ### `/kb_summary`
 
@@ -800,6 +834,7 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   │   ├── dispatch.py          # 工具分发与调用日志
 │   │   ├── langchain_tools.py   # LangChain StructuredTool 适配层
 │   │   ├── web_search.py        # DDGS 调用、结果规范化和公开异常映射
+│   │   ├── web_fetch.py         # hardened 下载、体积/MIME 门禁和 Trafilatura 提取
 │   │   ├── registry.py          # 工具注册和分发
 │   │   └── schemas.py           # 工具参数模型
 │   ├── services/
@@ -828,6 +863,7 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   ├── perf_test.py             # 简单串行压测
 │   ├── concurrent_perf_test.py  # 简单并发压测
 │   ├── smoke_test_web_search.py # 手动真实 DDGS Registry/Runtime 冒烟
+│   ├── smoke_test_web_fetch.py  # 手动安全 Web Fetch Registry/Runtime 冒烟
 │   └── test_local_llm.py        # 本地模型接口测试
 ├── demo/
 │   └── streamlit_app.py         # Streamlit Demo 页面

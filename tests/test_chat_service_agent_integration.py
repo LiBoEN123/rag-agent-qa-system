@@ -65,6 +65,10 @@ class ChatAgentModel:
 
 
 class ChatWebSearchModel(ChatAgentModel):
+    def __init__(self):
+        super().__init__()
+        self.selected_url = ""
+
     def invoke(self, messages):
         self.calls += 1
         self.received_messages.append(list(messages))
@@ -84,8 +88,28 @@ class ChatWebSearchModel(ChatAgentModel):
                     }
                 ],
             )
+        latest = messages[-1]
+        assert isinstance(latest, ToolMessage)
+        payload = json.loads(latest.content)
+        if self.calls == 2:
+            self.selected_url = payload["output"]["results"][0]["url"]
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "web_fetch",
+                        "args": {"url": self.selected_url, "max_chars": 4000},
+                        "id": "chat-fetch-call",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        output = payload["output"]
         return AIMessage(
-            content="Python 新闻来源：https://example.com/python-news"
+            content=(
+                f"{output['title']}：{output['content']} "
+                f"来源：{output['final_url']}"
+            )
         )
 
 
@@ -245,8 +269,11 @@ def test_chat_service_runs_real_langgraph_provider_and_runtime(monkeypatch):
     assert bad_cases == []
 
 
-def test_chat_service_completes_web_search_through_production_chain(monkeypatch):
+def test_chat_service_completes_web_search_and_fetch_through_production_chain(
+    monkeypatch,
+):
     web_search_module = import_module("app.tools.web_search")
+    web_fetch_module = import_module("app.tools.web_fetch")
     graph_builder.reset_agent_graph_runtime()
     tool_runtime.reset_tool_runtime()
     ddgs_calls = []
@@ -265,8 +292,56 @@ def test_chat_service_completes_web_search_through_production_chain(monkeypatch)
                 }
             ]
 
+    article_html = """
+    <html><head><title>Python release news</title></head>
+    <body><main><h1>Python release news</h1>
+    <p>A new Python release is available with runtime improvements.</p>
+    </main></body></html>
+    """
+
+    class FakeResponse:
+        status_code = 200
+        encoding = "utf-8"
+        headers = {"Content-Type": "text/html; charset=utf-8"}
+
+        def __init__(self, url):
+            self.url = url
+            self.closed = False
+
+        def iter_content(self, chunk_size):
+            del chunk_size
+            yield article_html.encode()
+
+        def close(self):
+            self.closed = True
+
+    class FakeSession:
+        def __init__(self):
+            self.trust_env = True
+            self.max_redirects = 30
+            self.calls = []
+
+        def request(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs))
+            return FakeResponse(url)
+
+        def close(self):
+            pass
+
+    class FakeManager:
+        sessions = []
+
+        def __init__(self, config):
+            self.config = config
+            self.session = FakeSession()
+            self.sessions.append(self.session)
+
+        def get_session(self):
+            return self.session
+
     model = ChatWebSearchModel()
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
+    monkeypatch.setattr(web_fetch_module, "Manager", FakeManager)
     monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
     monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_ITERATIONS", 6)
     monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_TOOL_CALLS", 10)
@@ -283,7 +358,7 @@ def test_chat_service_completes_web_search_through_production_chain(monkeypatch)
     monkeypatch.setattr(
         graph_nodes.Settings,
         "TOOL_DEFAULT_PERMISSIONS",
-        ("knowledge_base:read", "web:search"),
+        ("knowledge_base:read", "web:search", "web:fetch"),
     )
     monkeypatch.setattr(graph_nodes.Settings, "TOOL_AUDIT_ENABLED", False)
 
@@ -348,27 +423,43 @@ def test_chat_service_completes_web_search_through_production_chain(monkeypatch)
     assert outcome.result["status"] == "OK"
     assert outcome.result["references"] == []
     assert outcome.result["action"] == "agent"
-    assert model.calls == 2
+    assert model.calls == 3
     assert "web_search" in model.bound_tool_names
-    message = model.received_messages[1][-1]
-    assert isinstance(message, ToolMessage)
-    assert message.tool_call_id == "chat-web-call"
-    assert json.loads(message.content)["output"]["results"][0]["url"] == (
+    assert "web_fetch" in model.bound_tool_names
+    search_message = model.received_messages[1][-1]
+    fetch_message = model.received_messages[2][-1]
+    assert isinstance(search_message, ToolMessage)
+    assert isinstance(fetch_message, ToolMessage)
+    assert search_message.tool_call_id == "chat-web-call"
+    assert fetch_message.tool_call_id == "chat-fetch-call"
+    assert json.loads(search_message.content)["output"]["results"][0]["url"] == (
         "https://example.com/python-news"
     )
+    fetch_output = json.loads(fetch_message.content)["output"]
+    assert fetch_output["final_url"] == "https://example.com/python-news"
+    assert fetch_output["content_is_untrusted"] is True
+    assert model.selected_url == "https://example.com/python-news"
     assert len(ddgs_calls) == 2
+    assert len(FakeManager.sessions) == 1
+    assert FakeManager.sessions[0].calls[0][0] == "GET"
     assert rewrite_calls == [
         ("今天有哪些重要的 Python 新闻？", [], "trace-chat-web")
     ]
-    assert session_writes == [
-        ("session-chat-web", "user", "今天有哪些重要的 Python 新闻？"),
-        (
-            "session-chat-web",
-            "assistant",
-            "Python 新闻来源：https://example.com/python-news",
-        ),
-    ]
+    assert session_writes[0] == (
+        "session-chat-web",
+        "user",
+        "今天有哪些重要的 Python 新闻？",
+    )
+    assert session_writes[1][0:2] == ("session-chat-web", "assistant")
+    assert "Python release news" in session_writes[1][2]
+    assert "A new Python release is available" in session_writes[1][2]
+    assert "https://example.com/python-news" in session_writes[1][2]
     assert len(metric_writes) == 1
     assert metric_writes[0]["tool_called"] is True
     assert metric_writes[0]["tool_success"] is True
-    assert metric_writes[0]["tool_name"] == "web_search"
+    assert metric_writes[0]["tool_name"] == "web_fetch"
+    assert [
+        item["tool_name"]
+        for item in outcome.result["tool_trace"]
+        if item.get("step") == "tool_call" and item.get("handler_executed")
+    ] == ["web_search", "web_fetch"]

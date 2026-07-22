@@ -312,3 +312,18 @@ PR5 完成后为 `515 passed, 1 warning`；重点测试、Ruff、compileall、�
 - Agent Graph、Middleware 栈、Router、Planner、Executor、API Schema、SQLite Schema、RAG 算法、Checkpointer 和原五个工具业务契约均未修改。Web Search 是普通 ToolMessage 路径，不设置 `pending_rag_result`，不进入本地 RAG，也不产生本地 references。
 
 PR6 完成后为 `565 passed, 1 warning`；Ruff、`python -m compileall app`、三种 Runtime inspection 模式、架构检查、`python -m pip check` 与 `git diff --check` 全部通过。唯一警告仍来自 `jieba` 对 `pkg_resources` 的弃用提示。自动测试全部使用 Fake DDGS，没有访问真实搜索引擎；按任务约束未运行真实网络冒烟。
+
+## 19. PR7 安全 Web Fetch 网页正文工具（2026-07-22）
+
+本节只记录 PR7 增量；PR0–PR6 历史内容保持原样。修改前实际分支为 `fix/langgraph-runtime-hardening`，HEAD 为 `582cab9e80e0c0d01be3b7f7a5497a114d2ffd08`，工作区干净。修改前本地 `pytest -q` 实际为 `4 failed, 561 passed, 1 warning`：本地未跟踪 `.env` 已显式授予 `web:search`，而四个测试隐式假设默认只有知识库权限；Ruff、`python -m compileall app`、Runtime architecture check、`python -m pip check` 和 `git diff --check` 均通过。相关测试已改为显式构造权限上下文，不修改或覆盖维护者的 `.env`。
+
+- 新增 BSD-3-Clause 的 `requests-hardened==1.3.0` 与 Apache-2.0 的 `trafilatura==2.1.0`，两者均要求 Python `>=3.10` 并声明支持 Python 3.12；本地验证版本为 Python 3.12.3。pip dry-run 没有升级或降级 LangChain、LangChain Core/OpenAI、LangGraph、Pydantic、FastAPI、ChromaDB、sentence-transformers、DDGS、requests 或 httpx。
+- 实际解析复用 `requests==2.32.5`、`certifi==2026.6.17`、`charset-normalizer==3.4.5`、`idna==3.18`、`urllib3==2.7.0`、`lxml==6.1.1`、`python-dateutil==2.9.0.post0` 和 `regex==2026.5.9`；新增 Trafilatura 基础依赖为 `babel==2.18.0`、`courlan==1.4.0`、`dateparser==1.4.1`、`htmldate==1.10.0`、`jusText==3.0.2`、`lxml-html-clean==0.4.5`、`pytz==2026.2`、`tld==0.13.2`、`tzlocal==5.4.4`。未安装 dev、docs、eval 或 all extras。
+- Registry 新增第七个生产工具 `web_fetch@1.0.0`：`WebFetchArgs`、`WebFetchOutput`、`READ_ONLY`、`required_permissions=("web:fetch",)`、总体超时 30 秒、最多一次 Runtime 重试、URL 敏感参数、`SUMMARY` 审计、幂等且无需审批。30 秒外层预算大于 3 秒连接与 10 秒读取预算，为安全重定向、streaming 和 Trafilatura 提取保留余量。
+- 模型 Schema 只有 `url` 和 `max_chars`。下载固定经过 `requests-hardened.Manager(Config(...))`，启用 IP filter、禁止 loopback、保留安全自动重定向；Session 禁用环境代理与 `.netrc`，只发 GET、受信 User-Agent 和有限 Accept。响应先检查 Content-Length，再按解压后的实际字节 streaming 累计，默认上限 2,000,000 bytes，并始终关闭 Response/Session。
+- 应用层只处理 HTTP(S)、无 credentials/控制字符、最长 2048 字符、80/443 端口和 fragment 移除；private、loopback、link-local、metadata、DNS 与逐跳 redirect 安全由 requests-hardened 处理，不自行实现 IP 枚举、DNS 固定或 redirect 验证。测试覆盖 `127.0.0.1`、`localhost`、`::1`、`169.254.169.254`、`10.0.0.1`、`192.168.1.1`、public URL 和 public-to-private redirect，且不会进入真实 socket transport。
+- HTML/XHTML 只把安全下载后的文本交给 Trafilatura 公共 `extract(..., output_format="json", with_metadata=True)`；纯文本直接解码和有限规范化。只接受 HTML、XHTML 和 text/plain，PDF、JSON、二进制与缺失 Content-Type 均拒绝。输出由 Pydantic 校验正文长度、2xx 状态、HTTP(S) URL，并固定 `extractor="trafilatura"`、`content_is_untrusted=true`。
+- URL、元数据和正文均是不可信数据；ToolSpec 明确禁止执行网页命令、把页面当作系统/开发者/工具指令或因页面要求调用其他工具。审计只保留状态、MIME、长度、截断和不可信标记，不保存完整 URL、正文或代理。
+- 默认权限保持 `knowledge_base:read`，所以最小默认上下文仍只看到原五个工具。`web:search` 与 `web:fetch` 独立控制搜索和单页正文读取；两者都有时支持 `web_search → ToolMessage → web_fetch → ToolMessage → final answer`，隐藏名称伪造仍返回 `unknown_tool`，直接无权 dispatch 仍返回 `permission_denied`。
+- 自动测试使用 Fake DDGS、Fake hardened Manager/Session/Response 和 requests-hardened 的公开 adapter 边界；固定 HTML fixture 调用真实 Trafilatura。全量结果为 `639 passed, 1 warning`，Ruff 通过；唯一警告仍来自 `jieba` 对 `pkg_resources` 的弃用提示。自动测试没有访问真实模型、搜索引擎、网页、代理、RAG 索引、生产 Checkpoint 或生产审计文件；按任务约束未运行真实网络冒烟。
+- Agent Graph、Middleware 栈、Router、Planner、Executor、API Schema、SQLite Schema、RAG 算法、Checkpointer 和现有六个工具契约均未修改。`web_fetch` 是普通 ToolMessage 路径，不设置 `pending_rag_result`，不写 ChromaDB/BM25，不产生本地 RAG references。
