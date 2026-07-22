@@ -1,0 +1,178 @@
+# Agent Runtime 维护指南
+
+本文面向需要定位或维护 Agent Runtime、但不需要逐行阅读全部实现的开发者。当前唯一主实现是 LangGraph 父图嵌入 LangChain `create_agent` 子图；脚本输出是图结构和工具 Schema 的维护入口。
+
+## 十分钟阅读路径
+
+按以下顺序阅读，每个文件只关注表中内容：
+
+| 顺序 | 文件 | 只需要理解 |
+| --- | --- | --- |
+| 1 | `app/services/chat_service.py` | 请求改写、Router、Runtime 和 API 结果收尾如何串联 |
+| 2 | `app/graph/builder.py` | 父图有哪些节点、边和条件出口 |
+| 3 | `app/graph/conditions.py` | legacy、框架 Agent、RAG 与 compose 如何分流 |
+| 4 | `app/graph/nodes.py` | 父图节点如何适配现有业务状态和最终结果 |
+| 5 | `app/agent/framework_agent.py` | `create_agent`、调用限制 Middleware 和事件转换如何组装 |
+| 6 | `app/agent/framework_middleware.py` | 项目错误分类、预算、循环防护和同批 fail-closed |
+| 7 | `app/agent/framework_tools.py` | 动态 StructuredTool、Registry dispatch 和 RAG handoff |
+| 8 | `app/tools/registry.py` | 默认 ToolSpec 如何注册、查询和统一分发 |
+| 9 | `app/tools/runtime.py` | 单次工具调用的策略、审计、超时、重试和输出校验 |
+
+## 主调用链
+
+```text
+FastAPI
+→ ChatService
+→ Router
+→ LangGraph Parent Graph
+→ LangChain create_agent
+→ RegistryToolsMiddleware / ProjectToolGovernanceMiddleware
+→ StructuredTool
+→ ToolRegistry.dispatch
+→ ToolRuntime.execute
+→ ToolSpec.handler
+→ ToolMessage / Command.PARENT
+→ RAG Subgraph 或 Compose
+→ Finalize
+```
+
+`search_knowledge_base` 与普通工具一样由 Agent Model 根据动态 Schema 选择，并经过相同的 Registry/Runtime 治理链。成功结果通过 `Command.PARENT` 和 `pending_rag_result` 回到父图，再进入原 RAG 子图。不要把它移回 Router 或绕过 Runtime。
+
+## 当前图
+
+以下 Mermaid 由 `python scripts/inspect_agent_runtime.py --format mermaid` 的 `compiled_graph.get_graph(xray=True).draw_mermaid()` 输出生成。升级框架或修改图后应重新运行命令并替换本段，不要手工维护第二套图。
+
+```mermaid
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	route(route)
+	initialize(initialize)
+	adapt_framework(adapt_framework)
+	plan(plan)
+	execute(execute)
+	rag_subgraph(rag_subgraph)
+	compose(compose)
+	finalize(finalize)
+	__end__([<p>__end__</p>]):::last
+	__start__ -.-> initialize;
+	__start__ -.-> route;
+	adapt_framework -.-> compose;
+	adapt_framework -. &nbsp;legacy_plan&nbsp; .-> plan;
+	adapt_framework -.-> rag_subgraph;
+	compose --> finalize;
+	execute -.-> compose;
+	execute -.-> rag_subgraph;
+	framework_agent\3aProjectToolGovernanceMiddleware\2eafter_agent --> adapt_framework;
+	initialize -.-> framework_agent\3a__start__;
+	initialize -. &nbsp;legacy_plan&nbsp; .-> plan;
+	plan --> execute;
+	rag_subgraph --> finalize;
+	route --> initialize;
+	finalize --> __end__;
+	subgraph framework_agent
+	framework_agent\3a__start__(<p>__start__</p>)
+	framework_agent\3amodel(model)
+	framework_agent\3atools(tools)
+	framework_agent\3aProjectToolGovernanceMiddleware\2ebefore_model(ProjectToolGovernanceMiddleware.before_model)
+	framework_agent\3aProjectToolGovernanceMiddleware\2eafter_agent(ProjectToolGovernanceMiddleware.after_agent)
+	framework_agent\3aModelCallLimitMiddleware\2ebefore_model(ModelCallLimitMiddleware.before_model)
+	framework_agent\3aModelCallLimitMiddleware\2eafter_model(ModelCallLimitMiddleware.after_model)
+	framework_agent\3aToolCallLimitMiddleware\2eafter_model(ToolCallLimitMiddleware.after_model)
+	framework_agent\3aModelCallLimitMiddleware\2eafter_model -.-> framework_agent\3aProjectToolGovernanceMiddleware\2eafter_agent;
+	framework_agent\3aModelCallLimitMiddleware\2eafter_model -.-> framework_agent\3aProjectToolGovernanceMiddleware\2ebefore_model;
+	framework_agent\3aModelCallLimitMiddleware\2eafter_model -.-> framework_agent\3atools;
+	framework_agent\3aModelCallLimitMiddleware\2ebefore_model -.-> framework_agent\3aProjectToolGovernanceMiddleware\2eafter_agent;
+	framework_agent\3aModelCallLimitMiddleware\2ebefore_model -.-> framework_agent\3amodel;
+	framework_agent\3aProjectToolGovernanceMiddleware\2ebefore_model -.-> framework_agent\3aModelCallLimitMiddleware\2ebefore_model;
+	framework_agent\3aProjectToolGovernanceMiddleware\2ebefore_model -.-> framework_agent\3aProjectToolGovernanceMiddleware\2eafter_agent;
+	framework_agent\3aToolCallLimitMiddleware\2eafter_model -.-> framework_agent\3aModelCallLimitMiddleware\2eafter_model;
+	framework_agent\3aToolCallLimitMiddleware\2eafter_model -.-> framework_agent\3aProjectToolGovernanceMiddleware\2eafter_agent;
+	framework_agent\3a__start__ --> framework_agent\3aProjectToolGovernanceMiddleware\2ebefore_model;
+	framework_agent\3amodel --> framework_agent\3aToolCallLimitMiddleware\2eafter_model;
+	framework_agent\3atools -.-> framework_agent\3aProjectToolGovernanceMiddleware\2ebefore_model;
+	end
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
+```
+
+`RegistryToolsMiddleware` 使用 wrap hook 动态覆盖模型和工具请求，不会作为独立图节点出现；它是否仍正确提供工具由检查脚本的默认工具与 Schema 契约覆盖。
+
+## 文件职责
+
+| 文件 | 唯一主要职责 |
+| --- | --- |
+| `app/graph/builder.py` | 声明父图节点和边 |
+| `app/graph/conditions.py` | 声明父图无副作用分支条件 |
+| `app/graph/nodes.py` | 适配父图业务节点和最终结果 |
+| `app/agent/framework_agent.py` | 组装 `create_agent`；转换框架事件 |
+| `app/agent/framework_middleware.py` | 执行项目特有 Agent 治理 |
+| `app/agent/framework_tools.py` | 适配动态工具；处理 RAG handoff |
+| `app/tools/registry.py` | 注册 ToolSpec；统一分发工具 |
+| `app/tools/runtime.py` | 治理并执行单次工具调用 |
+| `app/agent/runtime.py` | 构造 API 兼容结果；保存 trace |
+| `app/rag/graph/` | 编排检索、证据、生成和引用流程 |
+
+## 框架与项目边界
+
+框架负责 `model ↔ tools` 循环、Pydantic 参数校验、基础 ToolMessage、`ModelCallLimitMiddleware` 和 `ToolCallLimitMiddleware`。项目 Middleware 只负责框架无法判断的 ToolErrorCode 语义、重复调用/错误、累计错误、总耗时和 terminal 同批 fail-closed。
+
+工具执行的唯一受治理路径是：
+
+```text
+StructuredTool → ToolRegistry.dispatch → ToolRuntime.execute → ToolSpec.handler
+```
+
+项目 `ToolRuntime` 独占权限、策略、审批、审计、幂等、超时、有限重试和输出校验。框架 Middleware 不应复制这些能力。
+
+## 常见问题定位
+
+| 问题 | 首先查看 |
+| --- | --- |
+| Graph 为什么走这个分支 | `app/graph/builder.py`、`app/graph/conditions.py` |
+| 模型看到哪些工具 | `app/agent/framework_tools.py` |
+| 工具为什么拒绝 | `app/tools/policy.py`、`app/tools/runtime.py` |
+| ToolMessage 为什么异常 | `app/agent/framework_middleware.py`、`app/agent/framework_tools.py` |
+| 知识库为什么没有引用 | `app/rag/graph/`、`app/rag/citations.py` |
+| API 为什么返回某状态 | `app/services/chat_service.py`、`app/agent/runtime.py` |
+| 图为什么创建 Checkpoint 文件 | `app/graph/checkpointing.py`、`app/graph/runtime.py` |
+| 核心文件为何触发 CI | `scripts/inspect_agent_runtime.py` 的规模预算 |
+
+## 新增普通工具
+
+1. 定义 Pydantic Args Model。
+2. 定义接收已校验参数和 `ToolInvocationContext` 的 handler。
+3. 创建合法 `ToolSpec`，填写版本、描述、Schema 与治理元数据。
+4. 注册到相应 `ToolRegistry`。
+5. 增加工具行为、权限和错误结果测试。
+
+正常情况下不需要修改 Router、Planner、Executor、Parent Graph、`create_agent` 或 Middleware。模型可见 Schema 来自 StructuredTool/Pydantic，检查脚本不会维护第二份参数 Schema。
+
+## 不应该做什么
+
+- 不在 `nodes.py` 再实现工具循环。
+- 不在 Router 硬编码普通工具意图。
+- 不绕过 Registry 或 ToolRuntime 调用 handler。
+- 不重新手写框架已经生成的基础 ToolMessage。
+- 不实现第二套参数 Schema。
+- 不为框架已有能力创建自定义 Runtime。
+- 不同时维护两套 Agent Loop。
+- 不从 `builder.py` 源码、AST 或正则反推图结构。
+
+## 检查与升级
+
+```bash
+python scripts/inspect_agent_runtime.py
+python scripts/inspect_agent_runtime.py --format json
+python scripts/inspect_agent_runtime.py --format mermaid
+python scripts/inspect_agent_runtime.py --check
+```
+
+脚本只使用普通 `build_agent_graph().compile()`，不会调用带 Checkpointer 的缓存入口；也不会初始化模型、执行 handler、访问网络或读取/重建 RAG 索引。版本来自 `importlib.metadata`，图来自 `get_graph()`/`get_graph(xray=True)`，Mermaid 来自 `draw_mermaid()`，工具参数来自模型可见的 Pydantic JSON Schema。
+
+升级 LangChain、LangGraph 或 Pydantic 时，先运行契约测试和 `--check`。重点确认父图节点未改变、xray 仍能展开 `framework_agent`、model/tools 和调用限制节点仍存在、`ToolRuntime` 注入字段未暴露给模型，并重新生成本页 Mermaid。

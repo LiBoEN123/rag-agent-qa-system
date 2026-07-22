@@ -41,6 +41,9 @@ jobs:
       - name: Run Ruff
         run: ruff check app tests scripts
 
+      - name: Check Agent Runtime architecture
+        run: python scripts/inspect_agent_runtime.py --check
+
       - name: Run tests
         env:
           HF_HUB_OFFLINE: "1"

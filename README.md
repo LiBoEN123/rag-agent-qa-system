@@ -262,9 +262,22 @@ python scripts/smoke_test_agent_tool_calling.py
 
 脚本会显示实际绑定的工具名、`search_knowledge_base` 与 `simple_calculator` 参数 Schema，以及两种强制工具场景返回的 AIMessage 类型、`tool_calls`、工具名、参数、`tool_call_id` 和 `additional_kwargs`。脚本不打印 API Key，不属于默认 Pytest/CI；本次 PR3 自动回归不会运行它。
 
+## Agent Runtime 检查
+
+以下命令通过 LangGraph/LangChain 公开 introspection 与 Schema API 查看当前 Runtime，不调用模型、工具或网络，也不会创建 Checkpoint 数据库：
+
+```bash
+python scripts/inspect_agent_runtime.py
+python scripts/inspect_agent_runtime.py --format mermaid
+python scripts/inspect_agent_runtime.py --check
+```
+
+图结构、维护路径、文件职责和常见问题定位见 [Agent Runtime 维护指南](docs/agent-runtime-maintenance.md)。CI 会运行 `--check`，阻止旧自定义循环节点回归、关键框架节点消失、工具契约失效或核心文件超过架构预算。
+
 ## Agent 演进文档
 
 - [当前演进基线](docs/agent-evolution-baseline.md)
+- [Agent Runtime 维护指南](docs/agent-runtime-maintenance.md)
 - [ADR 0001：开源 Agent 技术栈](docs/adr/0001-open-source-agent-stack.md)
 - [ADR 0002：迭代式 Agent Loop](docs/adr/0002-iterative-agent-loop.md)
 - [ADR 0003：工具治理边界](docs/adr/0003-tool-governance-boundary.md)

@@ -268,3 +268,17 @@ PR3 未修改 API Schema、SQLite 表结构、依赖版本或 RAG 检索/重排/
 - 旧完整工具循环、手工 StructuredTool ValidationError 捕获、基础 ToolMessage 批处理、父图调用/错误指纹和第二套通用 canonicalization 已删除。当前维护入口是 `framework_agent.py`、`framework_middleware.py` 和 `framework_tools.py`；`app/graph/nodes.py` 只维护父图业务适配。
 
 PR3R 未修改 API Schema、SQLite Schema、生产工具名称/业务参数 Schema、RAG 算法或 Registry/Runtime 治理边界，也未运行真实外部模型。
+
+## 16. PR4 Runtime 稳定化与维护契约（2026-07-22）
+
+本节只记录 PR4 增量。PR4 没有修改 Agent 行为、业务工具、父图节点/条件边、`create_agent` Middleware 栈、工具执行链、RAG handoff、API Schema 或 SQLite Schema。
+
+- 新增 `scripts/inspect_agent_runtime.py`，使用普通 `build_agent_graph().compile()`，不初始化 Checkpointer、模型、工具 Runtime 或 RAG 索引。
+- 父图和框架子图结构来自 `get_graph()` 与 `get_graph(xray=True)`；Mermaid 来自 `draw_mermaid()`，没有解析源码、AST 或调用外部渲染服务。
+- 默认工具参数来自 StructuredTool 模型可见的 Pydantic JSON Schema；版本来自 `importlib.metadata`，没有手工复制 Schema 或锁死脚本中的依赖版本。
+- `--check` 覆盖父图预期/禁用节点、框架 model/tools 与调用限制节点、xray 子图、默认 Registry 工具契约、关键依赖可见性和五个核心文件规模预算。
+- 新增 `docs/agent-runtime-maintenance.md`，记录十分钟阅读路径、真实 xray Mermaid、职责边界、故障定位、新增工具步骤和禁止事项。
+- 现有 GitHub Actions 质量 Job 增加无网络架构检查；没有创建重复 Workflow。
+- 新增 6 个公开行为契约测试，覆盖真实图、xray、Mermaid、JSON、`--check`，并证明检查过程不会初始化模型、Checkpointer 或执行 handler。
+
+PR4 开始前本地 HEAD 为 `ffc64fb`，与任务给出的远端查验值一致；基线为 `501 passed, 1 warning`。完成后为 `507 passed, 1 warning`，Ruff、compileall、四种检查脚本模式与 `git diff --check` 全部通过；唯一警告仍来自 `jieba` 对 `pkg_resources` 的弃用提示。生产目录 `app/` 净变化为 0 行；新增脚本 239 行，没有新增第三方依赖或生产模块。
