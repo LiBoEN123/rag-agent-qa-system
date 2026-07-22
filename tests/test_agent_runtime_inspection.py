@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from app.agent import framework_agent
 from app.graph import builder as graph_builder
+from app.tools.context import build_default_tool_context
 from app.tools.contracts import ToolSpec
 from app.tools.providers import LocalToolProvider
 from app.tools.registry import ToolRegistry
@@ -33,7 +34,9 @@ def test_runtime_report_preserves_graph_contract():
 
 def test_tool_contracts_use_model_facing_json_schema():
     """默认工具输出公开模型 Schema 和治理元数据，不暴露 Runtime 字段。"""
-    tools = inspection.inspect_runtime()["tools"]
+    report = inspection.inspect_runtime()
+    tools = report["tools"]
+    context = build_default_tool_context(source="agent_runtime_inspection")
 
     assert {tool["name"] for tool in tools} == {
         "search_knowledge_base",
@@ -46,6 +49,15 @@ def test_tool_contracts_use_model_facing_json_schema():
     assert all("runtime" not in tool["args_schema"].get("properties", {}) for tool in tools)
     assert all(tool["description"] and tool["version"] for tool in tools)
     assert all(tool["risk_level"] == "read_only" for tool in tools)
+    assert all(
+        permission in context.permissions
+        for tool in tools
+        for permission in tool["required_permissions"]
+    )
+    assert report["tool_visibility"] == {
+        "permission_count": len(context.permissions),
+        "visible_tool_count": len(tools),
+    }
 
 
 def test_json_cli_is_parseable_stable_and_safe(capsys):

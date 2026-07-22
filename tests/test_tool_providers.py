@@ -3,7 +3,7 @@
 import pytest
 from pydantic import BaseModel
 
-from app.tools.context import ToolInvocationContext
+from app.tools.context import ToolInvocationContext, build_default_tool_context
 from app.tools.contracts import ToolSpec
 from app.tools.providers import LocalToolProvider, collect_tool_specs
 from app.tools.registry import ToolRegistry, tool_registry
@@ -83,7 +83,7 @@ def test_default_local_provider_exposes_all_production_tools():
 
     names = [
         spec.name
-        for spec in provider.list_specs(context=ToolInvocationContext())
+        for spec in provider.list_specs(context=build_default_tool_context())
     ]
 
     assert names == tool_registry.names()

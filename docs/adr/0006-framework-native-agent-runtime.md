@@ -27,7 +27,7 @@ PR1–PR3 在 `app/graph/nodes.py` 中逐步实现模型—工具循环、动态
 
 ## 动态工具与治理边界
 
-每次请求的模型 hook 从 `ToolProvider` 构造动态 StructuredTool；执行 hook 使用同一 Provider 语义按名称解析实际工具。适配工具通过 LangChain `ToolRuntime[ToolInvocationContext]` 获得 trace、session、principal、permissions、source 和 idempotency key。该 runtime 参数是注入字段，不出现在模型业务参数 Schema 中。
+每次请求的模型 hook 从 `ToolProvider` 构造当前 Context 有权看到的动态 StructuredTool；执行 hook 使用同一 Provider 语义按名称解析实际工具。Provider 只检查 `required_permissions`，不会把审批、幂等键、主体、来源或风险策略前移。适配工具通过 LangChain `ToolRuntime[ToolInvocationContext]` 获得 trace、session、principal、permissions、source 和 idempotency key。该 runtime 参数是注入字段，不出现在模型业务参数 Schema 中。
 
 所有生产调用只进入：
 
@@ -40,7 +40,7 @@ Agent Model
 → ToolSpec.handler
 ```
 
-框架适配层不直接调用 handler。项目 ToolRuntime 继续独占权限、策略、审批、审计、超时、有限重试、输出校验和幂等治理；本次不增加 ModelRetryMiddleware、ToolRetryMiddleware 或 RetryPolicy，因此不存在双重重试。
+框架适配层不直接调用 handler。未绑定或隐藏名称由框架按 `unknown_tool` 处理，不反查 Registry 证明其存在；已解析调用仍进入项目 ToolRuntime，由它继续独占最终权限、策略、审批、审计、超时、有限重试、输出校验和幂等治理。本次不增加 ModelRetryMiddleware、ToolRetryMiddleware 或 RetryPolicy，因此不存在双重重试。
 
 ## 保留的自定义 Middleware
 

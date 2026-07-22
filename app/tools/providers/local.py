@@ -2,15 +2,12 @@
 
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
+from app.tools.providers.base import is_tool_visible
 from app.tools.registry import ToolRegistry, tool_registry
 
 
 class LocalToolProvider:
-    """按注册顺序暴露指定 ToolRegistry 中的工具定义。
-
-    当前版本保留 Runtime 作为唯一权限判定点，因此不在模型可见性阶段过滤
-    权限。这样模型误选或伪造工具调用时，仍会得到结构化治理拒绝结果。
-    """
+    """按注册顺序暴露当前请求有权看到的本地工具定义。"""
 
     def __init__(self, registry: ToolRegistry):
         """绑定一个注册表；Provider 本身不缓存任何请求上下文。"""
@@ -28,8 +25,7 @@ class LocalToolProvider:
         *,
         context: ToolInvocationContext,
     ) -> list[ToolSpec]:
-        """返回当前注册表中的 ToolSpec，不执行 handler 或 Runtime。"""
-        del context
+        """返回权限可见的 ToolSpec，不执行 handler、Policy 或 Runtime。"""
         specs: list[ToolSpec] = []
         for name in self._registry.names():
             spec = self._registry.get(name)
@@ -37,7 +33,8 @@ class LocalToolProvider:
                 raise RuntimeError(
                     f"tool registry 中不存在已列出的工具: {name}"
                 )
-            specs.append(spec)
+            if is_tool_visible(spec, context=context):
+                specs.append(spec)
         return specs
 
 

@@ -389,8 +389,8 @@ def test_provider_request_isolation(monkeypatch):
     ]
 
 
-def test_runtime_still_enforces_permissions_for_provider_tools():
-    """Provider 只发现工具，最终权限拒绝仍由 ToolRuntime 完成。"""
+def test_direct_dispatch_still_enforces_runtime_permissions():
+    """绕过模型可见性直接分发时，最终权限仍由 ToolRuntime 拒绝。"""
     registry = ToolRegistry()
     called: list[str] = []
 
@@ -414,14 +414,13 @@ def test_runtime_still_enforces_permissions_for_provider_tools():
         trace_id="trace-denied",
         source="permission_test",
     )
-    tool = get_langchain_tool(
+    result = registry.dispatch(
         "protected_echo",
+        {"text": "blocked"},
         context=context,
-        provider=LocalToolProvider(registry),
     )
 
-    assert tool is not None
-    result = tool.invoke({"text": "blocked"})
     assert result["ok"] is False
     assert result["error_code"] == "permission_denied"
+    assert result["governance"]["missing_permissions"] == ["dynamic:use"]
     assert called == []

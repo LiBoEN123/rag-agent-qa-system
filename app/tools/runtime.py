@@ -949,12 +949,13 @@ class ToolRuntime:
     def _governance_metadata(
         decision: ToolPolicyDecision,
     ) -> dict[str, Any]:
-        """返回不暴露角色、权限或内部策略配置的公共治理元数据。"""
+        """返回不暴露主体或内部配置的公共执行治理元数据。"""
         return {
             "decision": decision.decision.value,
             "risk_level": decision.risk_level.value,
             "approval_required": decision.approval_required,
             "args_fingerprint": decision.args_fingerprint,
+            "missing_permissions": list(decision.missing_permissions),
         }
 
     def _error_result(

@@ -20,9 +20,10 @@ warnings.filterwarnings("ignore", message="pkg_resources is deprecated as an API
 from app.agent.framework_agent import build_framework_agent  # noqa: E402
 from app.agent.framework_tools import build_framework_tools  # noqa: E402
 from app.graph.builder import build_agent_graph  # noqa: E402
-from app.tools.context import ToolInvocationContext  # noqa: E402
+from app.tools.context import build_default_tool_context  # noqa: E402
 from app.tools.contracts import ToolSpec  # noqa: E402
 from app.tools.providers import ToolProvider, get_default_tool_provider  # noqa: E402
+from app.tools.providers.base import is_tool_visible  # noqa: E402
 
 
 PACKAGES = ("langchain", "langchain-core", "langchain-openai", "langgraph", "pydantic")
@@ -65,15 +66,18 @@ def _graph_data(drawable_graph) -> dict[str, Any]:
     return {"nodes": nodes, "edges": edges}
 
 
-def _tool_data(provider: ToolProvider) -> tuple[list[dict[str, Any]], list[str]]:
+def _tool_data(
+    provider: ToolProvider,
+) -> tuple[list[dict[str, Any]], list[str], dict[str, int], list[str]]:
     """Read registered tool contracts and model-facing schemas without dispatch."""
-    context = ToolInvocationContext(source="agent_runtime_inspection")
+    context = build_default_tool_context(source="agent_runtime_inspection")
     registry = getattr(provider, "registry", None)
     specs = list(provider.list_specs(context=context))
     tools_by_name = {
         tool.name: tool for tool in build_framework_tools(provider, context=context)
     }
     errors: list[str] = []
+    visibility_errors: list[str] = []
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for spec in specs:
@@ -83,6 +87,10 @@ def _tool_data(provider: ToolProvider) -> tuple[list[dict[str, Any]], list[str]]
         if spec.name in seen:
             errors.append(f"duplicate tool name: {spec.name}")
         seen.add(spec.name)
+        if not is_tool_visible(spec, context=context):
+            visibility_errors.append(
+                f"visible tool lacks a required permission: {spec.name}"
+            )
         if not spec.description or not spec.version or spec.args_model is None:
             errors.append(f"incomplete ToolSpec contract: {spec.name}")
         if registry is None or registry.get(spec.name) is not spec:
@@ -104,10 +112,20 @@ def _tool_data(provider: ToolProvider) -> tuple[list[dict[str, Any]], list[str]]
                 "description": description if len(description) <= 240 else description[:237] + "...",
                 "args_schema": schema,
                 "risk_level": spec.risk_level.value,
+                "required_permissions": list(spec.required_permissions),
                 "requires_approval": spec.requires_approval,
             }
         )
-    return sorted(rows, key=lambda item: item["name"]), errors
+    visibility = {
+        "permission_count": len(context.permissions),
+        "visible_tool_count": len(rows),
+    }
+    return (
+        sorted(rows, key=lambda item: item["name"]),
+        errors,
+        visibility,
+        visibility_errors,
+    )
 
 
 def _check(name: str, passed: bool, detail: str) -> dict[str, Any]:
@@ -132,7 +150,9 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
     parent_data = _graph_data(parent_graph)
     framework_data = _graph_data(framework_graph)
     xray_nodes = sorted(parent_xray.nodes)
-    tools, tool_errors = _tool_data(provider or get_default_tool_provider())
+    tools, tool_errors, tool_visibility, visibility_errors = _tool_data(
+        provider or get_default_tool_provider()
+    )
     source_files = {
         path: {"lines": _line_count(path), "limit": limit}
         for path, limit in SOURCE_FILE_LIMITS.items()
@@ -164,6 +184,11 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
         _check("framework_call_limits", not missing_limits, ", ".join(missing_limits)),
         _check("parent_xray_subgraph", xray_has_agent, "framework model/tools visible"),
         _check("default_tool_contracts", not tool_errors and bool(tools), "; ".join(tool_errors)),
+        _check(
+            "default_tool_visibility",
+            not visibility_errors,
+            "; ".join(visibility_errors),
+        ),
         _check("source_file_budgets", not over_budget, "; ".join(over_budget)),
     ]
     return {
@@ -174,6 +199,7 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
             node for node in framework_data["nodes"] if "Middleware" in node
         ),
         "tools": tools,
+        "tool_visibility": tool_visibility,
         "source_files": source_files,
         "checks": checks,
     }
@@ -189,6 +215,12 @@ def render_text(report: dict[str, Any]) -> str:
     lines.extend(f"- {name}" for name in report["framework_agent"]["nodes"])
     lines.extend(["", "Default tools"])
     lines.extend(f"- {tool['name']}" for tool in report["tools"])
+    visibility = report["tool_visibility"]
+    lines.append(
+        "- visibility: "
+        f"{visibility['visible_tool_count']} tools / "
+        f"{visibility['permission_count']} permissions"
+    )
     lines.extend(["", "Architecture budgets"])
     lines.extend(
         f"- {Path(path).name}: {item['lines']} / {item['limit']}"

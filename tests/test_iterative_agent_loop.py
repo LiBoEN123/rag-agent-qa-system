@@ -403,8 +403,8 @@ def test_agent_loop_stops_before_exceeding_tool_call_budget(monkeypatch):
     assert output["result"]["status"] == "MODEL_ERROR"
 
 
-def test_agent_loop_stops_after_unrecoverable_governance_error(monkeypatch):
-    """权限拒绝写回 ToolMessage 与 trace 后停止，不再调用模型。"""
+def test_agent_loop_recovers_from_forged_hidden_tool_name(monkeypatch):
+    """无权工具按未知名称写回 ToolMessage，模型读取后可继续回答。"""
     model = FakeToolCallingModel(
         [
             AIMessage(
@@ -418,6 +418,7 @@ def test_agent_loop_stops_after_unrecoverable_governance_error(monkeypatch):
                     }
                 ],
             ),
+            AIMessage(content="hidden tool handled"),
         ]
     )
     denied_context = ToolInvocationContext(
@@ -435,17 +436,16 @@ def test_agent_loop_stops_after_unrecoverable_governance_error(monkeypatch):
         context=denied_context,
     )
 
-    assert len(model.received_messages) == 1
-    assert output["stop_reason"] == "fatal_tool_error"
-    assert output["agent_state"].status == "tool_error"
-    assert output["result"]["status"] == "TOOL_ERROR"
+    assert len(model.received_messages) == 2
+    assert output["stop_reason"] == "completed"
+    assert output["result"]["answer"] == "hidden tool handled"
     tool_trace = next(
         item
         for item in output["result"]["tool_trace"]
         if item.get("step") == "tool_call"
     )
-    assert tool_trace["error_code"] == "permission_denied"
-    assert tool_trace["policy_decision"] == "deny"
+    assert tool_trace["error_code"] == "unknown_tool"
+    assert tool_trace["handler_executed"] is False
 
 
 def test_agent_loop_preserves_runtime_context_and_audit_chain(monkeypatch):

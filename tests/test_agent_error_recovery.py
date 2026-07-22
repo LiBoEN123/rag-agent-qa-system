@@ -418,7 +418,7 @@ def test_runtime_unavailable_is_terminal(monkeypatch):
     assert _payloads(output)["runtime"]["failure_kind"] == "terminal_runtime"
 
 
-def test_permission_denied_aborts_later_call_in_same_batch(monkeypatch):
+def test_hidden_tool_is_unknown_and_public_batch_call_still_executes(monkeypatch):
     protected_calls: list[int] = []
     normal_calls: list[int] = []
 
@@ -447,7 +447,8 @@ def test_permission_denied_aborts_later_call_in_same_batch(monkeypatch):
                     _call("protected_tool", 1, "denied"),
                     _call("normal_tool", 2, "normal"),
                 ],
-            )
+            ),
+            AIMessage(content="hidden tool handled"),
         ]
     )
     context = ToolInvocationContext(
@@ -466,11 +467,11 @@ def test_permission_denied_aborts_later_call_in_same_batch(monkeypatch):
     payloads = _payloads(output)
 
     assert protected_calls == []
-    assert normal_calls == []
-    assert output["stop_reason"] == "fatal_tool_error"
+    assert normal_calls == [2]
+    assert output["stop_reason"] == "completed"
     assert set(payloads) == {"denied", "normal"}
-    assert payloads["denied"]["error_code"] == "permission_denied"
-    assert payloads["normal"]["error_code"] == "agent_batch_aborted"
+    assert payloads["denied"]["error_code"] == "unknown_tool"
+    assert payloads["normal"]["ok"] is True
 
 
 def test_structured_tool_validation_error_is_corrected_next_round(monkeypatch):

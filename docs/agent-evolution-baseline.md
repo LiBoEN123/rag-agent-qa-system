@@ -282,3 +282,18 @@ PR3R 未修改 API Schema、SQLite Schema、生产工具名称/业务参数 Sche
 - 新增 6 个公开行为契约测试，覆盖真实图、xray、Mermaid、JSON、`--check`，并证明检查过程不会初始化模型、Checkpointer 或执行 handler。
 
 PR4 开始前本地 HEAD 为 `ffc64fb`，与任务给出的远端查验值一致；基线为 `501 passed, 1 warning`。完成后为 `507 passed, 1 warning`，Ruff、compileall、四种检查脚本模式与 `git diff --check` 全部通过；唯一警告仍来自 `jieba` 对 `pkg_resources` 的弃用提示。生产目录 `app/` 净变化为 0 行；新增脚本 239 行，没有新增第三方依赖或生产模块。
+
+## 17. PR5 权限感知工具可见性（2026-07-22）
+
+本节只记录 PR5 增量。PR5 沿用 LangChain Middleware 的请求级工具覆盖，不新增 Agent 节点、工具执行器、权限引擎或依赖：
+
+- `is_tool_visible()` 复用 `has_permission()`，仅当 Context 精确满足全部 `required_permissions` 时返回真；空要求始终可见，多权限采用 AND 语义。
+- `LocalToolProvider` 按 Registry 注册顺序过滤 ToolSpec，不缓存 Context 或结果，也不执行 Policy、Runtime、handler 或审计。
+- `RegistryToolsMiddleware` 原有 `request.override(tools=...)` 与 `request.override(tool=...)` 自动获得过滤结果；Agent Graph、`create_agent` 循环和 Middleware 栈未修改。
+- 审批、幂等键、主体、来源和风险等级不参与可见性；权限满足的工具仍由 `ToolRuntime → ToolPolicyEngine` 做执行期治理。
+- 模型伪造隐藏名称时 `request.tool is None`，沿用通用 `unknown_tool` ToolMessage，不泄漏 description、Schema 或缺失权限；直接 Registry dispatch 仍由 Runtime 返回 `permission_denied`。
+- Runtime inspection 改用 `build_default_tool_context()`，报告可见工具的 `required_permissions`、默认权限数量和可见工具数量，并检查每个输出工具都满足默认 Context。
+
+PR5 修改前本地 HEAD 为 `5d2754f`，基线为 `507 passed, 1 warning`；Ruff、compileall、Runtime architecture check 和 `git diff --check` 均通过。PR5 未修改 Agent Graph、Middleware 栈、API/SQLite Schema、RAG 算法、生产工具名称或参数 Schema。
+
+PR5 完成后为 `515 passed, 1 warning`；重点测试、Ruff、compileall、三种 Runtime inspection 模式、架构检查与 `git diff --check` 全部通过。唯一警告仍来自 `jieba` 对 `pkg_resources` 的弃用提示；自动测试未调用真实外部模型或网络。

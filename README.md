@@ -12,7 +12,7 @@
 - ChromaDB 持久化：chunk 文本、metadata 和 embedding 持久化保存，服务重启可复用索引缓存。
 - Agent-first 粗粒度 Router：除空问题、稳定直答和明确澄清外，自然语言请求默认进入 `agent`，避免静态路由在模型看到动态工具前误分流；`rag_fast_path` 保留为显式/旧协议兼容入口。
 - 框架原生 Agent Runtime：LangGraph 父图嵌入 LangChain `create_agent` 子图，由框架管理模型—工具循环、参数校验、ToolMessage 和调用上限。
-- Registry-driven 工具发现：Middleware 按请求把 `ToolProvider` 的工具注入模型和执行层；工具经 `StructuredTool → ToolRegistry → ToolRuntime` 执行，新增普通工具不需要修改 Router、Planner、Executor 或 Graph。
+- 权限感知的 Registry-driven 工具发现：Provider 按请求权限只暴露满足 `required_permissions` 的工具，Middleware 将其注入模型和执行层；工具仍经 `StructuredTool → ToolRegistry → ToolRuntime` 执行。
 - Agent 循环防护：工具错误总数、连续相同调用、连续相同错误和模型/工具累计耗时均有独立预算；终止错误对同批后续调用 fail-closed，并补齐关联 ToolMessage。
 - 多轮追问改写：同一 `session_id` 下通过 SQLite 保留最近会话历史，短追问和指代问题会先改写成独立检索问题。
 - 工具调用：支持知识库检索、双文档内容对比、简单四则运算、列出知识库文档和查看指定 chunk 原文。
@@ -136,7 +136,7 @@ flowchart TD
 | 引用绑定 | 将 `Reference N` 映射回真实文件、`chunk_id`、`snippet` 和分数 |
 | Agent Runtime | LangGraph 父图嵌入 LangChain `create_agent` 子图；框架负责模型—工具循环、参数校验、ToolMessage 和模型/工具调用上限，Planner/Executor 仅保留兼容路径 |
 | Agent 路由 | 正常自然语言请求默认输出 `agent`；`direct_answer` / `clarify` 只做安全短路，`rag_fast_path` 保留为显式和旧协议兼容动作 |
-| 工具发现 | `RegistryToolsMiddleware` 按请求从 `ToolProvider` 提供 ToolSpec，并对模型绑定和实际执行使用同一组请求级 StructuredTool；普通新工具无需修改核心编排 |
+| 工具发现 | `ToolProvider` 按请求权限过滤模型可见 ToolSpec，`RegistryToolsMiddleware` 对模型绑定和实际执行使用同一组请求级 StructuredTool；普通新工具无需修改核心编排 |
 | Agent Guardrail | 工具错误总数、连续相同调用/错误、累计模型与工具耗时预算、同批 fail-closed、无悬空 ToolMessage |
 | 工具调用 | `search_knowledge_base`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text` |
 | 可观测性 | `trace_id`、请求耗时、阶段耗时、工具调用日志、metrics 汇总接口 |
@@ -201,7 +201,9 @@ API 请求与响应 Schema、HTTP 状态语义和 trace 响应头保持不变；
 
 `RegistryToolsMiddleware` 在每次模型调用和工具执行时从同一 `ToolProvider` 解析稳定有序的 `ToolSpec`，再构造请求级 LangChain `StructuredTool`。`ToolRuntime` 注入参数不会出现在模型 Schema 中；适配函数从 `runtime.context` 取得 trace、session、principal、permissions、source 和 idempotency key，再调用定义所属的 `ToolRegistry.dispatch()`。Registry 继续统一进入项目 `ToolRuntime.execute()`，参数治理、权限、审批、超时、重试、审计、脱敏和错误码均未绕过。
 
-新增普通本地工具只需创建合法 `ToolSpec` 并注册到 Registry，不需要修改 Router、Planner、Executor 或 Graph。Provider 当前不做权限可见性预过滤，避免模型伪造隐藏工具名时绕过 Runtime 的明确治理结果；`ToolRuntime` 仍在执行前做最终权限校验。多 Provider 合并辅助函数会保持 Provider/注册顺序并拒绝重名，但当前生产环境只有 `LocalToolProvider`，尚未实现 MCP 或外部工具动态加载。
+新增普通本地工具只需创建合法 `ToolSpec` 并注册到 Registry，不需要修改 Router、Planner、Executor 或 Graph。`LocalToolProvider` 复用精确、区分大小写的 `has_permission()`，仅当 Context 满足全部 `required_permissions` 时才向模型暴露工具；空权限要求始终可见。过滤保持 Registry 顺序，不执行完整 Policy、handler、Runtime 或审计，也不会因审批、风险等级或暂缺幂等键隐藏工具。
+
+模型伪造未绑定的隐藏名称时沿用框架未知工具路径，只返回 `unknown_tool`，不证明工具是否存在，也不泄漏 description、参数 Schema 或缺失权限。模型可见性不是授权替代：所有真实调用仍进入 `ToolRegistry.dispatch() → ToolRuntime.execute()` 做最终权限与执行期治理；绕过模型可见性直接分发无权工具仍返回 `permission_denied`。多 Provider 合并保持 Provider/注册顺序并拒绝重名；当前生产环境只有 `LocalToolProvider`。
 
 模型—工具循环由 `langchain.agents.create_agent` 构建；其内部使用 LangGraph 标准 model/tools 节点处理 Pydantic 校验、同轮调用和基础 ToolMessage。动态工具通过 Middleware 覆盖请求，而不是在父图节点中手工 `bind_tools()`。`ModelCallLimitMiddleware` 和 `ToolCallLimitMiddleware` 分别执行单次 run 的模型与工具调用上限，父图调用还设置 `recursion_limit` 作为最终图级兜底。
 

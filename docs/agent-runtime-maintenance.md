@@ -15,8 +15,9 @@
 | 5 | `app/agent/framework_agent.py` | `create_agent`、调用限制 Middleware 和事件转换如何组装 |
 | 6 | `app/agent/framework_middleware.py` | 项目错误分类、预算、循环防护和同批 fail-closed |
 | 7 | `app/agent/framework_tools.py` | 动态 StructuredTool、Registry dispatch 和 RAG handoff |
-| 8 | `app/tools/registry.py` | 默认 ToolSpec 如何注册、查询和统一分发 |
-| 9 | `app/tools/runtime.py` | 单次工具调用的策略、审计、超时、重试和输出校验 |
+| 8 | `app/tools/providers/local.py` | 请求权限如何过滤模型可见 ToolSpec |
+| 9 | `app/tools/registry.py` | 默认 ToolSpec 如何注册、查询和统一分发 |
+| 10 | `app/tools/runtime.py` | 单次工具调用的策略、审计、超时、重试和输出校验 |
 
 ## 主调用链
 
@@ -113,6 +114,7 @@ graph TD;
 | `app/agent/framework_agent.py` | 组装 `create_agent`；转换框架事件 |
 | `app/agent/framework_middleware.py` | 执行项目特有 Agent 治理 |
 | `app/agent/framework_tools.py` | 适配动态工具；处理 RAG handoff |
+| `app/tools/providers/local.py` | 按请求 `required_permissions` 过滤模型可见工具 |
 | `app/tools/registry.py` | 注册 ToolSpec；统一分发工具 |
 | `app/tools/runtime.py` | 治理并执行单次工具调用 |
 | `app/agent/runtime.py` | 构造 API 兼容结果；保存 trace |
@@ -128,15 +130,15 @@ graph TD;
 StructuredTool → ToolRegistry.dispatch → ToolRuntime.execute → ToolSpec.handler
 ```
 
-项目 `ToolRuntime` 独占权限、策略、审批、审计、幂等、超时、有限重试和输出校验。框架 Middleware 不应复制这些能力。
+Provider 的模型可见性层只复用 `has_permission()` 检查全部 `ToolSpec.required_permissions`，不运行完整 Policy。审批、幂等键、主体、来源和风险仍是执行期治理，因此权限满足的审批工具和写工具仍可见。项目 `ToolRuntime` 独占最终权限、策略、审批、审计、幂等、超时、有限重试和输出校验；可见性过滤和框架 Middleware 都不能替代或复制这些能力。
 
 ## 常见问题定位
 
 | 问题 | 首先查看 |
 | --- | --- |
 | Graph 为什么走这个分支 | `app/graph/builder.py`、`app/graph/conditions.py` |
-| 模型看到哪些工具 | `app/agent/framework_tools.py` |
-| 工具为什么拒绝 | `app/tools/policy.py`、`app/tools/runtime.py` |
+| 模型为什么看不到某个工具 | `app/tools/providers/local.py`、`ToolSpec.required_permissions` |
+| 工具可见但为什么执行被拒绝 | `app/tools/policy.py`、`app/tools/runtime.py` |
 | ToolMessage 为什么异常 | `app/agent/framework_middleware.py`、`app/agent/framework_tools.py` |
 | 知识库为什么没有引用 | `app/rag/graph/`、`app/rag/citations.py` |
 | API 为什么返回某状态 | `app/services/chat_service.py`、`app/agent/runtime.py` |
@@ -151,13 +153,14 @@ StructuredTool → ToolRegistry.dispatch → ToolRuntime.execute → ToolSpec.ha
 4. 注册到相应 `ToolRegistry`。
 5. 增加工具行为、权限和错误结果测试。
 
-正常情况下不需要修改 Router、Planner、Executor、Parent Graph、`create_agent` 或 Middleware。模型可见 Schema 来自 StructuredTool/Pydantic，检查脚本不会维护第二份参数 Schema。
+正常情况下不需要修改 Router、Planner、Executor、Parent Graph、`create_agent` 或 Middleware。新增权限要求后应分别测试无权 Context 不可见、有权 Context 可见，以及直接 dispatch 的 Runtime 最终拒绝。模型可见 Schema 来自 StructuredTool/Pydantic，检查脚本不会维护第二份参数 Schema。
 
 ## 不应该做什么
 
 - 不在 `nodes.py` 再实现工具循环。
 - 不在 Router 硬编码普通工具意图。
 - 不绕过 Registry 或 ToolRuntime 调用 handler。
+- 不在 Provider 调用完整 Policy Engine 或复制权限字符串比较。
 - 不重新手写框架已经生成的基础 ToolMessage。
 - 不实现第二套参数 Schema。
 - 不为框架已有能力创建自定义 Runtime。
@@ -173,6 +176,6 @@ python scripts/inspect_agent_runtime.py --format mermaid
 python scripts/inspect_agent_runtime.py --check
 ```
 
-脚本只使用普通 `build_agent_graph().compile()`，不会调用带 Checkpointer 的缓存入口；也不会初始化模型、执行 handler、访问网络或读取/重建 RAG 索引。版本来自 `importlib.metadata`，图来自 `get_graph()`/`get_graph(xray=True)`，Mermaid 来自 `draw_mermaid()`，工具参数来自模型可见的 Pydantic JSON Schema。
+脚本只使用普通 `build_agent_graph().compile()`，不会调用带 Checkpointer 的缓存入口；也不会初始化模型、执行 handler、访问网络或读取/重建 RAG 索引。默认工具使用 `build_default_tool_context()` 解析，报告包含权限数量、可见工具数量和各工具 `required_permissions`，但不输出主体或请求标识。版本来自 `importlib.metadata`，图来自 `get_graph()`/`get_graph(xray=True)`，Mermaid 来自 `draw_mermaid()`，工具参数来自模型可见的 Pydantic JSON Schema。
 
 升级 LangChain、LangGraph 或 Pydantic 时，先运行契约测试和 `--check`。重点确认父图节点未改变、xray 仍能展开 `framework_agent`、model/tools 和调用限制节点仍存在、`ToolRuntime` 注入字段未暴露给模型，并重新生成本页 Mermaid。

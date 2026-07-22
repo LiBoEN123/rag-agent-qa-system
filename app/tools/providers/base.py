@@ -3,7 +3,7 @@
 from collections.abc import Sequence
 from typing import Protocol
 
-from app.tools.context import ToolInvocationContext
+from app.tools.context import ToolInvocationContext, has_permission
 from app.tools.contracts import ToolSpec
 
 
@@ -15,8 +15,20 @@ class ToolProvider(Protocol):
         *,
         context: ToolInvocationContext,
     ) -> Sequence[ToolSpec]:
-        """返回稳定有序的 ToolSpec，不执行任何工具。"""
+        """返回当前请求允许暴露给 Agent Model 的稳定有序 ToolSpec。"""
         ...
+
+
+def is_tool_visible(
+    spec: ToolSpec,
+    *,
+    context: ToolInvocationContext,
+) -> bool:
+    """仅按工具声明的必需权限判断当前请求是否可见。"""
+    return all(
+        has_permission(context.permissions, permission)
+        for permission in spec.required_permissions
+    )
 
 
 def collect_tool_specs(
@@ -38,4 +50,4 @@ def collect_tool_specs(
     return collected
 
 
-__all__ = ["ToolProvider", "collect_tool_specs"]
+__all__ = ["ToolProvider", "collect_tool_specs", "is_tool_visible"]
