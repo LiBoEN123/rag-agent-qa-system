@@ -414,6 +414,42 @@ def test_langgraph_runtime_start_is_logged_once_with_trace_id(monkeypatch):
     ]
 
 
+def test_tool_call_chain_is_logged_once_in_execution_order(monkeypatch):
+    """一次请求把所有实际工具步骤压缩为一条有序终端日志。"""
+    runtime_result = build_runtime_result(
+        tool_trace=[
+            {
+                "step": "tool_call",
+                "tool_name": "web_search",
+                "tool_status": "success",
+                "cost_ms": 12,
+            },
+            {
+                "step": "tool_call",
+                "tool_name": "web_fetch",
+                "tool_status": "success",
+                "cost_ms": 34,
+            },
+        ]
+    )
+    service, _ = build_service(runtime_result=runtime_result)
+    messages = []
+
+    def record_log(message, *args, **kwargs):
+        del kwargs
+        rendered = message % args if args else message
+        messages.append(rendered)
+
+    monkeypatch.setattr("app.services.chat_service.logger.info", record_log)
+    service.handle(make_request())
+
+    chain_logs = [message for message in messages if "tool_call_chain=" in message]
+    assert chain_logs == [
+        "[trace_id=trace-1] [agent] "
+        "tool_call_chain=web_search(success,12ms) -> web_fetch(success,34ms)"
+    ]
+
+
 @pytest.mark.parametrize(
     ("status", "code", "public_status"),
     [

@@ -48,6 +48,24 @@ _TIMING_METRIC_KEYS = (
     "rag_answer_cost_ms",
 )
 
+
+def _format_tool_call_chain(tool_trace: list[dict[str, Any]]) -> str:
+    """把工具 trace 压缩为适合终端单行展示的调用链。"""
+    calls = []
+    for step in tool_trace:
+        if step.get("step") != "tool_call":
+            continue
+        tool_name = " ".join(str(step.get("tool_name") or "").split())[:100]
+        if not tool_name:
+            continue
+        tool_status = " ".join(
+            str(step.get("tool_status") or "unknown").split()
+        )[:40]
+        cost_ms = max(0, int(step.get("cost_ms", 0) or 0))
+        calls.append(f"{tool_name}({tool_status},{cost_ms}ms)")
+    return " -> ".join(calls) or "none"
+
+
 CHAT_RESULT_RESPONSE_MAP = {
     "MODEL_ERROR": {
         "code": "MODEL_ERROR",
@@ -538,6 +556,11 @@ class ChatService:
         result = self._deps.attach_query_rewrite_trace(
             result,
             context.rewrite_trace,
+        )
+        logger.info(
+            "[trace_id=%s] [agent] tool_call_chain=%s",
+            context.request.trace_id,
+            _format_tool_call_chain(result.get("tool_trace") or []),
         )
         agent_cost_ms = int(
             (self._deps.perf_counter() - agent_start) * 1000
