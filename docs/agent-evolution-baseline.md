@@ -297,3 +297,18 @@ PR4 开始前本地 HEAD 为 `ffc64fb`，与任务给出的远端查验值一致
 PR5 修改前本地 HEAD 为 `5d2754f`，基线为 `507 passed, 1 warning`；Ruff、compileall、Runtime architecture check 和 `git diff --check` 均通过。PR5 未修改 Agent Graph、Middleware 栈、API/SQLite Schema、RAG 算法、生产工具名称或参数 Schema。
 
 PR5 完成后为 `515 passed, 1 warning`；重点测试、Ruff、compileall、三种 Runtime inspection 模式、架构检查与 `git diff --check` 全部通过。唯一警告仍来自 `jieba` 对 `pkg_resources` 的弃用提示；自动测试未调用真实外部模型或网络。
+
+## 18. PR6 开源 Web Search 生产工具（2026-07-22）
+
+本节只记录 PR6 增量；PR0–PR5 历史内容保持原样。修改前实际分支为 `fix/langgraph-runtime-hardening`，HEAD 为 `50468f9611e325c4b4ffb2461f625c92b3f4ce47`，工作区干净。修改前本地基线为 `515 passed, 1 warning`，Ruff、`python -m compileall app`、Runtime architecture check 与 `git diff --check` 全部通过。
+
+- 新增 MIT 许可证 `ddgs==9.14.4` 基础依赖；要求 Python `>=3.10`，当前 Python 3.12 可用。pip dry-run 只新增 DDGS 及传输依赖，复用 `httpx==0.28.1`，没有升级或降级 LangChain、LangGraph、Pydantic、FastAPI、requests 或 ChromaDB。未安装 extras、`langchain-community` 或 MCP。
+- 生产 Registry 新增 `web_search@1.0.0`：`READ_ONLY`、`required_permissions=("web:search",)`、幂等、无需审批、总体超时 10 秒、最多一次 Runtime 重试、`SUMMARY` 审计、query 敏感字段、`WebSearchOutput` 输出校验。
+- 模型参数只有 `query`、`max_results` 和 `freshness`；region、safesearch、DDGS 内部 timeout 和 proxy 来自统一 Settings。默认权限仍为 `knowledge_base:read`，因此默认可见工具仍是原五个；显式加入 `web:search` 后才暴露第六个工具。
+- DDGS `title/href/body` 被规范化为有限的 `rank/title/url/snippet`，过滤非 HTTP(S) URL、按 URL 去重并保序。空列表是成功零结果，所有成功输出带 `provider="ddgs"` 和 `content_is_untrusted=true`，不抓取网页正文。
+- 公开 `RatelimitException` 映射 `rate_limited/True`，`TimeoutException` 映射 `timeout/True`，`DDGSException` 保守映射 `dependency_unavailable/True`，调用参数错误映射 `invalid_arguments/False`，不可规范化顶层结构映射 `invalid_result/False`。handler 不重试；ToolRuntime 继续负责有限重试、退避、超时、审计和 attempt 元数据。
+- Runtime inspection 分离 `registered_tools` 与 `default_visible_tools`，验证注册契约、模型 Schema、默认权限子集、Web Search 的隐藏/授权可见性，且不会实例化 DDGS 或执行 handler。
+- Fake-DDGS 自动测试覆盖参数、freshness 映射、规范化、零结果、异常、安全审计、Runtime 权限/重试/timeout/output_model、连续请求可见性、隐藏名称伪造、真实 Graph 与 ChatService 主链路。自动测试不访问真实搜索引擎；真实网络冒烟脚本已提供但未自动运行。
+- Agent Graph、Middleware 栈、Router、Planner、Executor、API Schema、SQLite Schema、RAG 算法、Checkpointer 和原五个工具业务契约均未修改。Web Search 是普通 ToolMessage 路径，不设置 `pending_rag_result`，不进入本地 RAG，也不产生本地 references。
+
+PR6 完成后为 `565 passed, 1 warning`；Ruff、`python -m compileall app`、三种 Runtime inspection 模式、架构检查、`python -m pip check` 与 `git diff --check` 全部通过。唯一警告仍来自 `jieba` 对 `pkg_resources` 的弃用提示。自动测试全部使用 Fake DDGS，没有访问真实搜索引擎；按任务约束未运行真实网络冒烟。

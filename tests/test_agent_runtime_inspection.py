@@ -5,6 +5,7 @@ import json
 from pydantic import BaseModel
 
 from app.agent import framework_agent
+from app.config import Settings
 from app.graph import builder as graph_builder
 from app.tools.context import build_default_tool_context
 from app.tools.contracts import ToolSpec
@@ -35,11 +36,12 @@ def test_runtime_report_preserves_graph_contract():
 def test_tool_contracts_use_model_facing_json_schema():
     """默认工具输出公开模型 Schema 和治理元数据，不暴露 Runtime 字段。"""
     report = inspection.inspect_runtime()
-    tools = report["tools"]
+    tools = report["registered_tools"]
     context = build_default_tool_context(source="agent_runtime_inspection")
 
     assert {tool["name"] for tool in tools} == {
         "search_knowledge_base",
+        "web_search",
         "compare_documents",
         "simple_calculator",
         "list_documents",
@@ -49,14 +51,24 @@ def test_tool_contracts_use_model_facing_json_schema():
     assert all("runtime" not in tool["args_schema"].get("properties", {}) for tool in tools)
     assert all(tool["description"] and tool["version"] for tool in tools)
     assert all(tool["risk_level"] == "read_only" for tool in tools)
-    assert all(
-        permission in context.permissions
-        for tool in tools
-        for permission in tool["required_permissions"]
-    )
+    assert report["default_visible_tools"] == [
+        "search_knowledge_base",
+        "compare_documents",
+        "simple_calculator",
+        "list_documents",
+        "get_chunk_text",
+    ]
+    web = next(tool for tool in tools if tool["name"] == "web_search")
+    assert web["required_permissions"] == ["web:search"]
+    assert set(web["args_schema"]["properties"]) == {
+        "query",
+        "max_results",
+        "freshness",
+    }
     assert report["tool_visibility"] == {
         "permission_count": len(context.permissions),
-        "visible_tool_count": len(tools),
+        "registered_tool_count": len(tools),
+        "visible_tool_count": len(report["default_visible_tools"]),
     }
 
 
@@ -96,6 +108,20 @@ def test_check_cli_passes_without_extra_output(capsys):
     assert captured.err == ""
 
 
+def test_inspection_reports_web_search_when_default_permission_is_enabled(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        Settings,
+        "TOOL_DEFAULT_PERMISSIONS",
+        ("knowledge_base:read", "web:search"),
+    )
+    report = inspection.inspect_runtime()
+
+    assert "web_search" in report["default_visible_tools"]
+    assert all(item["passed"] for item in report["checks"])
+
+
 def test_inspection_does_not_initialize_model_checkpointer_or_handler(monkeypatch):
     """内省只读取契约，不初始化模型、Checkpointer 或工具 handler。"""
 
@@ -123,5 +149,8 @@ def test_inspection_does_not_initialize_model_checkpointer_or_handler(monkeypatc
 
     report = inspection.inspect_runtime(LocalToolProvider(registry))
 
-    assert [tool["name"] for tool in report["tools"]] == ["inspection_probe"]
+    assert [tool["name"] for tool in report["registered_tools"]] == [
+        "inspection_probe"
+    ]
+    assert report["default_visible_tools"] == ["inspection_probe"]
     assert all(item["passed"] for item in report["checks"])

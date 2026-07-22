@@ -20,10 +20,18 @@ warnings.filterwarnings("ignore", message="pkg_resources is deprecated as an API
 from app.agent.framework_agent import build_framework_agent  # noqa: E402
 from app.agent.framework_tools import build_framework_tools  # noqa: E402
 from app.graph.builder import build_agent_graph  # noqa: E402
-from app.tools.context import build_default_tool_context  # noqa: E402
+from app.tools.context import (  # noqa: E402
+    ToolInvocationContext,
+    build_default_tool_context,
+)
 from app.tools.contracts import ToolSpec  # noqa: E402
-from app.tools.providers import ToolProvider, get_default_tool_provider  # noqa: E402
+from app.tools.providers import (  # noqa: E402
+    LocalToolProvider,
+    ToolProvider,
+    get_default_tool_provider,
+)
 from app.tools.providers.base import is_tool_visible  # noqa: E402
+from app.tools.registry import ToolRegistry  # noqa: E402
 
 
 PACKAGES = ("langchain", "langchain-core", "langchain-openai", "langgraph", "pydantic")
@@ -68,34 +76,72 @@ def _graph_data(drawable_graph) -> dict[str, Any]:
 
 def _tool_data(
     provider: ToolProvider,
-) -> tuple[list[dict[str, Any]], list[str], dict[str, int], list[str]]:
+) -> tuple[
+    list[dict[str, Any]],
+    list[str],
+    list[str],
+    dict[str, int],
+    list[str],
+]:
     """Read registered tool contracts and model-facing schemas without dispatch."""
     context = build_default_tool_context(source="agent_runtime_inspection")
     registry = getattr(provider, "registry", None)
-    specs = list(provider.list_specs(context=context))
-    tools_by_name = {
-        tool.name: tool for tool in build_framework_tools(provider, context=context)
+    if not isinstance(registry, ToolRegistry):
+        return [], [], ["provider does not expose a ToolRegistry"], {}, []
+    visible_specs = list(provider.list_specs(context=context))
+    visible_names = [spec.name for spec in visible_specs if isinstance(spec, ToolSpec)]
+    registered_specs = [registry.get(name) for name in registry.names()]
+    all_permissions = tuple(
+        sorted(
+            {
+                permission
+                for spec in registered_specs
+                if isinstance(spec, ToolSpec)
+                for permission in spec.required_permissions
+            }
+        )
+    )
+    inspection_context = ToolInvocationContext(
+        principal_id="agent_runtime_inspection",
+        permissions=all_permissions,
+        source="agent_runtime_inspection",
+    )
+    all_tools_by_name = {
+        tool.name: tool
+        for tool in build_framework_tools(
+            LocalToolProvider(registry),
+            context=inspection_context,
+        )
     }
     errors: list[str] = []
     visibility_errors: list[str] = []
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for spec in specs:
+    registered_names = set(registry.names())
+    if not set(visible_names) <= registered_names:
+        visibility_errors.append("default visible tools are not a registry subset")
+    for spec in visible_specs:
         if not isinstance(spec, ToolSpec):
-            errors.append(f"provider returned non-ToolSpec: {type(spec).__name__}")
+            visibility_errors.append(
+                f"provider returned non-ToolSpec: {type(spec).__name__}"
+            )
             continue
-        if spec.name in seen:
-            errors.append(f"duplicate tool name: {spec.name}")
-        seen.add(spec.name)
         if not is_tool_visible(spec, context=context):
             visibility_errors.append(
                 f"visible tool lacks a required permission: {spec.name}"
             )
+    for spec in registered_specs:
+        if not isinstance(spec, ToolSpec):
+            errors.append(f"registry returned non-ToolSpec: {type(spec).__name__}")
+            continue
+        if spec.name in seen:
+            errors.append(f"duplicate tool name: {spec.name}")
+        seen.add(spec.name)
         if not spec.description or not spec.version or spec.args_model is None:
             errors.append(f"incomplete ToolSpec contract: {spec.name}")
-        if registry is None or registry.get(spec.name) is not spec:
+        if registry.get(spec.name) is not spec:
             errors.append(f"registry cannot resolve ToolSpec: {spec.name}")
-        tool = tools_by_name.get(spec.name)
+        tool = all_tools_by_name.get(spec.name)
         if tool is None:
             errors.append(f"StructuredTool is missing: {spec.name}")
             continue
@@ -118,10 +164,12 @@ def _tool_data(
         )
     visibility = {
         "permission_count": len(context.permissions),
-        "visible_tool_count": len(rows),
+        "registered_tool_count": len(rows),
+        "visible_tool_count": len(visible_names),
     }
     return (
-        sorted(rows, key=lambda item: item["name"]),
+        rows,
+        visible_names,
         errors,
         visibility,
         visibility_errors,
@@ -150,8 +198,16 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
     parent_data = _graph_data(parent_graph)
     framework_data = _graph_data(framework_graph)
     xray_nodes = sorted(parent_xray.nodes)
-    tools, tool_errors, tool_visibility, visibility_errors = _tool_data(
-        provider or get_default_tool_provider()
+    enforce_default_registry = provider is None
+    resolved_provider = provider or get_default_tool_provider()
+    (
+        registered_tools,
+        default_visible_tools,
+        tool_errors,
+        tool_visibility,
+        visibility_errors,
+    ) = _tool_data(
+        resolved_provider
     )
     source_files = {
         path: {"lines": _line_count(path), "limit": limit}
@@ -176,6 +232,45 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
         for path, item in source_files.items()
         if item["lines"] > item["limit"]
     ]
+    web_spec = next(
+        (
+            item
+            for item in registered_tools
+            if item.get("name") == "web_search"
+        ),
+        None,
+    )
+    web_schema_fields = set(
+        (web_spec or {}).get("args_schema", {}).get("properties", {})
+    )
+    web_contract_ok = bool(
+        web_spec and web_spec.get("required_permissions") == ["web:search"]
+    )
+    default_has_web_permission = (
+        "web:search"
+        in build_default_tool_context(
+            source="agent_runtime_inspection"
+        ).permissions
+    )
+    web_default_visibility_ok = (
+        ("web_search" in default_visible_tools) == default_has_web_permission
+    )
+    web_authorized_visibility_ok = True
+    if enforce_default_registry:
+        default_context = build_default_tool_context(
+            source="agent_runtime_inspection"
+        )
+        authorized_context = ToolInvocationContext(
+            principal_id=default_context.principal_id,
+            principal_type=default_context.principal_type,
+            permissions=tuple((*default_context.permissions, "web:search")),
+            source="agent_runtime_inspection",
+        )
+        authorized_names = {
+            spec.name
+            for spec in resolved_provider.list_specs(context=authorized_context)
+        }
+        web_authorized_visibility_ok = "web_search" in authorized_names
     checks = [
         _check("dependency_versions", not missing_packages, ", ".join(missing_packages)),
         _check("parent_required_nodes", not missing_parent, ", ".join(missing_parent)),
@@ -183,11 +278,36 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
         _check("framework_core_nodes", not missing_framework, ", ".join(missing_framework)),
         _check("framework_call_limits", not missing_limits, ", ".join(missing_limits)),
         _check("parent_xray_subgraph", xray_has_agent, "framework model/tools visible"),
-        _check("default_tool_contracts", not tool_errors and bool(tools), "; ".join(tool_errors)),
+        _check(
+            "registered_tool_contracts",
+            not tool_errors and bool(registered_tools),
+            "; ".join(tool_errors),
+        ),
         _check(
             "default_tool_visibility",
             not visibility_errors,
             "; ".join(visibility_errors),
+        ),
+        _check(
+            "web_search_contract",
+            not enforce_default_registry or web_contract_ok,
+            "web_search must require web:search",
+        ),
+        _check(
+            "web_search_model_schema",
+            not enforce_default_registry
+            or not ({"proxy", "backend", "timeout", "runtime"} & web_schema_fields),
+            "web_search model schema exposes runtime configuration",
+        ),
+        _check(
+            "web_search_default_visibility",
+            not enforce_default_registry or web_default_visibility_ok,
+            "web_search visibility does not match default permissions",
+        ),
+        _check(
+            "web_search_authorized_visibility",
+            not enforce_default_registry or web_authorized_visibility_ok,
+            "web_search is hidden despite web:search permission",
         ),
         _check("source_file_budgets", not over_budget, "; ".join(over_budget)),
     ]
@@ -198,7 +318,8 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
         "middleware_nodes": sorted(
             node for node in framework_data["nodes"] if "Middleware" in node
         ),
-        "tools": tools,
+        "registered_tools": registered_tools,
+        "default_visible_tools": default_visible_tools,
         "tool_visibility": tool_visibility,
         "source_files": source_files,
         "checks": checks,
@@ -213,12 +334,20 @@ def render_text(report: dict[str, Any]) -> str:
     lines.extend(f"- {name}" for name in report["parent_graph"]["nodes"])
     lines.extend(["", "Framework agent nodes"])
     lines.extend(f"- {name}" for name in report["framework_agent"]["nodes"])
-    lines.extend(["", "Default tools"])
-    lines.extend(f"- {tool['name']}" for tool in report["tools"])
+    lines.extend(["", "Registered tools"])
+    for tool in report["registered_tools"]:
+        permissions = ",".join(tool["required_permissions"]) or "none"
+        lines.append(
+            f"- {tool['name']} {tool['version']} risk={tool['risk_level']} "
+            f"permissions={permissions} approval={tool['requires_approval']}"
+        )
+    lines.extend(["", "Default visible tools"])
+    lines.extend(f"- {name}" for name in report["default_visible_tools"])
     visibility = report["tool_visibility"]
     lines.append(
         "- visibility: "
-        f"{visibility['visible_tool_count']} tools / "
+        f"{visibility['visible_tool_count']} visible / "
+        f"{visibility['registered_tool_count']} registered / "
         f"{visibility['permission_count']} permissions"
     )
     lines.extend(["", "Architecture budgets"])

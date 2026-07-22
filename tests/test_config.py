@@ -4,9 +4,11 @@ import pytest
 
 from app.config import (
     Settings,
+    normalize_web_search_proxy,
     validate_agent_loop_config,
     validate_tool_governance_config,
     validate_tool_runtime_config,
+    validate_web_search_config,
 )
 
 
@@ -86,6 +88,69 @@ def test_settings_validate_keeps_llm_rag_and_checkpointer_configuration(
     assert Settings.LANGGRAPH_CHECKPOINTER == "disabled"
     assert Settings.LLM_API_KEY == "test-key"
     assert Settings.RAG_FILE_PATH == tmp_path
+
+
+def test_web_search_configuration_accepts_safe_defaults():
+    validate_web_search_config(
+        region="us-en",
+        safesearch="moderate",
+        timeout=8,
+        proxy=None,
+    )
+
+
+@pytest.mark.parametrize("safesearch", ["on", "moderate", "off"])
+def test_web_search_configuration_accepts_supported_safesearch(safesearch):
+    validate_web_search_config(
+        region="us-en",
+        safesearch=safesearch,
+        timeout=8,
+        proxy="http://proxy.example:8080",
+    )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_message"),
+    [
+        ({"region": "  "}, "WEB_SEARCH_REGION"),
+        ({"safesearch": "strict"}, "WEB_SEARCH_SAFESEARCH"),
+        ({"timeout": 0}, "WEB_SEARCH_TIMEOUT"),
+        ({"timeout": True}, "WEB_SEARCH_TIMEOUT"),
+        ({"timeout": 11}, "WEB_SEARCH_TIMEOUT"),
+        ({"proxy": 123}, "WEB_SEARCH_PROXY"),
+    ],
+)
+def test_web_search_configuration_rejects_invalid_values(
+    overrides,
+    expected_message,
+):
+    values = {
+        "region": "us-en",
+        "safesearch": "moderate",
+        "timeout": 8,
+        "proxy": None,
+    }
+    values.update(overrides)
+    with pytest.raises(ValueError, match=expected_message):
+        validate_web_search_config(**values)
+
+
+def test_web_search_empty_proxy_is_normalized_to_none():
+    assert normalize_web_search_proxy("") is None
+    assert normalize_web_search_proxy("   ") is None
+    assert normalize_web_search_proxy(" socks5://127.0.0.1:1080 ") == (
+        "socks5://127.0.0.1:1080"
+    )
+
+
+def test_settings_validate_rejects_invalid_web_search_config(monkeypatch, tmp_path):
+    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "disabled")
+    monkeypatch.setattr(Settings, "LLM_API_KEY", "test-key")
+    monkeypatch.setattr(Settings, "RAG_FILE_PATH", tmp_path)
+    monkeypatch.setattr(Settings, "WEB_SEARCH_SAFESEARCH", "invalid")
+
+    with pytest.raises(ValueError, match="WEB_SEARCH_SAFESEARCH"):
+        Settings.validate()
 
 
 @pytest.mark.parametrize(

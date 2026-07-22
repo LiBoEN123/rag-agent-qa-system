@@ -18,6 +18,7 @@ from app.tools.schemas import (
     ListDocumentsArgs,
     SearchKnowledgeBaseArgs,
     SimpleCalculatorArgs,
+    WebSearchArgs,
 )
 
 
@@ -38,17 +39,32 @@ def test_langchain_tool_collection_matches_registry():
 
     assert isinstance(tools, list)
     assert all(isinstance(tool, BaseTool) for tool in tools)
-    assert names == registry_names
+    default_visible_names = [name for name in registry_names if name != "web_search"]
+    assert names == default_visible_names
     assert len(names) == len(set(names))
     assert set(CORE_TOOL_MODELS) <= set(names)
-    assert get_langchain_tool_names() == registry_names
-    assert list(get_langchain_tool_map()) == registry_names
+    assert get_langchain_tool_names() == default_visible_names
+    assert list(get_langchain_tool_map()) == default_visible_names
 
     for tool in tools:
         spec = tool_registry.get(tool.name)
         assert spec is not None
         assert tool.description
         assert tool.description == spec.description
+
+
+def test_web_search_langchain_schema_requires_explicit_permission():
+    without_permission = get_langchain_tool("web_search")
+    context = ToolInvocationContext(
+        permissions=("knowledge_base:read", "web:search"),
+        source="langchain_tool_test",
+    )
+    with_permission = get_langchain_tool("web_search", context=context)
+
+    assert without_permission is None
+    assert with_permission is not None
+    assert with_permission.args_schema is WebSearchArgs
+    assert set(with_permission.args) == {"query", "max_results", "freshness"}
 
 
 @pytest.mark.parametrize("tool_name,args_model", CORE_TOOL_MODELS.items())

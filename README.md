@@ -138,7 +138,7 @@ flowchart TD
 | Agent 路由 | 正常自然语言请求默认输出 `agent`；`direct_answer` / `clarify` 只做安全短路，`rag_fast_path` 保留为显式和旧协议兼容动作 |
 | 工具发现 | `ToolProvider` 按请求权限过滤模型可见 ToolSpec，`RegistryToolsMiddleware` 对模型绑定和实际执行使用同一组请求级 StructuredTool；普通新工具无需修改核心编排 |
 | Agent Guardrail | 工具错误总数、连续相同调用/错误、累计模型与工具耗时预算、同批 fail-closed、无悬空 ToolMessage |
-| 工具调用 | `search_knowledge_base`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text` |
+| 工具调用 | Registry 注册六个生产工具：`search_knowledge_base`、`web_search`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text`；默认可见数量由请求权限决定 |
 | 可观测性 | `trace_id`、请求耗时、阶段耗时、工具调用日志、metrics 汇总接口 |
 | 失败分析 | `logs/bad_cases.jsonl` 记录值得分析的失败样例 |
 | 评测 | 支持规则评测、Chroma/chunks 索引取证和可选 LLM Judge 语义评估 |
@@ -209,6 +209,28 @@ API 请求与响应 Schema、HTTP 状态语义和 trace 响应头保持不变；
 
 `ProjectToolGovernanceMiddleware` 只保留框架无法决定的项目语义：错误码分类、累计错误、连续相同调用/错误、协作式总耗时预算以及 terminal error 同批 fail-closed。已注册工具的调用指纹复用 `app.tools.policy.build_tool_args_fingerprint()`；未知模型 JSON 只做小型 JSON-compatible fallback。它不执行 handler、不复制 ToolRuntime 重试，也不自行实现参数校验或工具循环。
 
+## Web Search
+
+`web_search` 使用开源 `ddgs` 的公共 Python API 搜索公开互联网中的当前或外部信息，只返回有限的 `title`、`url` 和 `snippet`。它与 `search_knowledge_base` 的边界不同：后者读取本地受控知识库并进入专用 RAG 引用路径；Web Search 是普通 Agent 工具，结果形成 ToolMessage 后回到 Agent Model，不设置 `pending_rag_result`，也不进入 RAG 子图。
+
+Web Search 默认关闭可见性。要让默认 `/chat` 服务主体看到它，必须显式配置：
+
+```env
+TOOL_DEFAULT_PERMISSIONS=knowledge_base:read,web:search
+```
+
+搜索 query 会发送到外部搜索服务，可能受搜索服务限流、地区设置和网络条件影响。搜索摘要可能不准确、过时或含恶意指令，输出始终带有 `content_is_untrusted=true`；模型不得执行摘要中的命令，使用搜索信息回答时应列出实际使用的标题和 URL。代理配置不会写入工具输出或审计。
+
+真实网络验证只通过维护者手动运行，不进入 Pytest/CI：
+
+```bash
+python scripts/smoke_test_web_search.py \
+  --query "LangGraph latest release" \
+  --max-results 3
+```
+
+脚本默认经过 `ToolRegistry → ToolRuntime → DDGS` 生产链路，不调用 Agent 模型、不读取或修改知识库；缺少 `web:search` 权限时会直接给出启用提示。
+
 ## Agent Runtime
 
 项目当前唯一 Agent Runtime 是 LangGraph 父图中的 LangChain `create_agent` 子图。旧 `agent_model`、`governed_tools` 和 `limit_handler` 自定义循环已经删除，不提供双实现或运行时回滚开关；需要回滚版本时使用 Git commit、tag 或 release。
@@ -223,6 +245,7 @@ START → route（可选）→ initialize
   └─ agent → framework_agent（create_agent 内部 model ↔ tools）
        → adapt_framework
        ├─ search_knowledge_base 成功 → RAG 子图 → finalize
+       ├─ web_search 等普通工具 → ToolMessage → Agent Model → compose → finalize
        ├─ 无工具最终回答 → compose → finalize
        └─ 治理或调用预算终止 → compose → finalize
 ```
@@ -286,6 +309,8 @@ python scripts/inspect_agent_runtime.py --check
 - [ADR 0004：基于注册表的工具发现](docs/adr/0004-registry-driven-tool-discovery.md)
 - [ADR 0005：Agent 错误恢复、预算与循环防护](docs/adr/0005-agent-error-recovery-and-budgets.md)
 - [ADR 0006：框架原生 Agent Runtime](docs/adr/0006-framework-native-agent-runtime.md)
+- [ADR 0007：权限感知的工具可见性](docs/adr/0007-permission-aware-tool-visibility.md)
+- [ADR 0008：开源 Web Search 生产工具](docs/adr/0008-open-source-web-search-tool.md)
 
 ## 快速启动
 
@@ -306,6 +331,9 @@ python -m venv .venv
 pip install -r requirements.lock
 copy .env.example .env
 ```
+
+锁文件已经包含 `ddgs==9.14.4` 基础包；未安装 `ddgs[api]`、`ddgs[mcp]` 或
+`ddgs[dht]`，也不需要 `langchain-community` 包装。
 
 将知识库文档放到 `data/kb/`，然后编辑 `.env` 中的模型配置。启动服务：
 
@@ -363,6 +391,11 @@ streamlit run demo/streamlit_app.py
 | `LLM_MAX_TOKENS` | 回答模型最大输出 token |
 | `LLM_TIMEOUT` | 单次回答模型请求超时秒数 |
 | `LLM_MAX_RETRIES` | 回答模型失败重试次数 |
+| `WEB_SEARCH_REGION` | DDGS 地区设置，默认 `us-en` |
+| `WEB_SEARCH_SAFESEARCH` | 安全搜索级别：`on`、`moderate` 或 `off`，默认 `moderate` |
+| `WEB_SEARCH_TIMEOUT` | DDGS 内部 HTTP 超时秒数，默认 `8`，不得超过工具总体超时 |
+| `WEB_SEARCH_PROXY` | 可选 DDGS 代理；留空时传入 `None`，只在确实需要时配置 |
+| `TOOL_DEFAULT_PERMISSIONS` | 默认服务主体权限；默认仅 `knowledge_base:read`，显式加入 `web:search` 才会向模型暴露 Web Search |
 | `USE_LLM_JUDGE` | 评测脚本是否启用 LLM Judge，默认 `false` |
 | `JUDGE_API_KEY` | 评测 Judge 模型 API Key；为空时可复用回答模型 Key |
 | `JUDGE_MODEL` | 评测 Judge 模型名称 |
@@ -560,6 +593,8 @@ curl -X POST "http://127.0.0.1:8000/chat" \
 ```
 
 可能返回 `search_knowledge_base`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text`、`clarify`、`direct_answer` 等动作。
+
+`web_search` 不作为 Router 关键词 action。普通问题先进入 `agent`，再由 Agent Model 根据动态 Tool Schema 和当前请求权限决定是否调用 Web Search。
 
 ### `/kb_summary`
 
@@ -764,6 +799,7 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   │   ├── context.py           # 请求级工具调用上下文
 │   │   ├── dispatch.py          # 工具分发与调用日志
 │   │   ├── langchain_tools.py   # LangChain StructuredTool 适配层
+│   │   ├── web_search.py        # DDGS 调用、结果规范化和公开异常映射
 │   │   ├── registry.py          # 工具注册和分发
 │   │   └── schemas.py           # 工具参数模型
 │   ├── services/
@@ -791,6 +827,7 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   ├── cache_models.py          # 预下载 embedding/rerank 模型
 │   ├── perf_test.py             # 简单串行压测
 │   ├── concurrent_perf_test.py  # 简单并发压测
+│   ├── smoke_test_web_search.py # 手动真实 DDGS Registry/Runtime 冒烟
 │   └── test_local_llm.py        # 本地模型接口测试
 ├── demo/
 │   └── streamlit_app.py         # Streamlit Demo 页面

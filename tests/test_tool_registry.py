@@ -15,6 +15,7 @@ def test_tool_registry_names_include_builtin_tools():
     assert "list_documents" in names
     assert "get_chunk_text" in names
     assert "compare_documents" in names
+    assert "web_search" in names
 
 
 def test_router_specs_include_search_knowledge_base():
@@ -52,7 +53,7 @@ def test_tool_registry_router_specs_shape():
 
 
 def test_builtin_tools_publish_v2_contract_metadata():
-    """验证五个内置工具发布完整且符合要求的 V2 契约。"""
+    """验证六个注册生产工具发布完整且符合要求的 V2 契约。"""
     specs = tool_registry.contract_specs()
     specs_by_name = {spec["name"]: spec for spec in specs}
     expected_permissions = {
@@ -61,6 +62,7 @@ def test_builtin_tools_publish_v2_contract_metadata():
         "simple_calculator": [],
         "list_documents": ["knowledge_base:read"],
         "get_chunk_text": ["knowledge_base:read"],
+        "web_search": ["web:search"],
     }
     expected_timeouts = {
         "search_knowledge_base": 10.0,
@@ -68,6 +70,7 @@ def test_builtin_tools_publish_v2_contract_metadata():
         "simple_calculator": 3.0,
         "list_documents": 5.0,
         "get_chunk_text": 5.0,
+        "web_search": 10.0,
     }
 
     assert len(specs) == len(tool_registry.names())
@@ -80,11 +83,17 @@ def test_builtin_tools_publish_v2_contract_metadata():
         assert spec["risk_level"] == "read_only"
         assert spec["required_permissions"] == expected_permissions[name]
         assert spec["timeout"] == expected_timeouts[name]
-        assert spec["max_retries"] == 0
+        assert spec["max_retries"] == (1 if name == "web_search" else 0)
         assert spec["idempotent"] is True
         assert spec["requires_approval"] is False
-        assert spec["output_model"] is None
+        assert spec["output_model"] == (
+            "WebSearchOutput" if name == "web_search" else None
+        )
         assert "handler" not in spec
+
+    web = specs_by_name["web_search"]
+    assert web["sensitive_arg_fields"] == ["query"]
+    assert web["audit_output_mode"] == "summary"
 
 
 def test_tool_registry_dispatch_simple_calculator():

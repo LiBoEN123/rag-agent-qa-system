@@ -15,6 +15,8 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 LANGGRAPH_CHECKPOINTER_VALUES = {"disabled", "memory", "sqlite"}
+WEB_SEARCH_SAFESEARCH_VALUES = {"on", "moderate", "off"}
+WEB_SEARCH_TOOL_TIMEOUT_SECONDS = 10
 _TOOL_PERMISSION_PATTERN = re.compile(
     r"^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*$"
 )
@@ -69,6 +71,11 @@ def env_float(name: str, default: str) -> float:
         return float(raw_value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{name} 配置无效: {raw_value!r}，必须是数字") from exc
+
+
+def normalize_web_search_proxy(value: str | None) -> str | None:
+    """把空白 Web Search 代理配置规整为 None。"""
+    return (value or "").strip() or None
 
 
 def validate_agent_loop_config(
@@ -167,6 +174,32 @@ def validate_tool_runtime_settings(settings: Any) -> None:
         retry_max_delay_ms=settings.TOOL_RETRY_MAX_DELAY_MS,
         retry_jitter_ratio=settings.TOOL_RETRY_JITTER_RATIO,
     )
+
+
+def validate_web_search_config(
+    *,
+    region: object,
+    safesearch: object,
+    timeout: object,
+    proxy: object,
+) -> None:
+    """校验 DDGS 客户端配置，不访问网络或创建客户端。"""
+    if not isinstance(region, str) or not region.strip():
+        raise ValueError("WEB_SEARCH_REGION 不能为空")
+    if not isinstance(safesearch, str) or safesearch not in WEB_SEARCH_SAFESEARCH_VALUES:
+        allowed = ", ".join(sorted(WEB_SEARCH_SAFESEARCH_VALUES))
+        raise ValueError(
+            f"WEB_SEARCH_SAFESEARCH 配置无效: {safesearch!r}，可选值为: {allowed}"
+        )
+    if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
+        raise ValueError("WEB_SEARCH_TIMEOUT 必须是正整数")
+    if timeout > WEB_SEARCH_TOOL_TIMEOUT_SECONDS:
+        raise ValueError(
+            "WEB_SEARCH_TIMEOUT 必须小于或等于 web_search 工具总体超时 "
+            f"{WEB_SEARCH_TOOL_TIMEOUT_SECONDS} 秒"
+        )
+    if proxy is not None and not isinstance(proxy, str):
+        raise ValueError("WEB_SEARCH_PROXY 必须为空或字符串")
 
 
 def env_csv(name: str, default: str) -> tuple[str, ...]:
@@ -289,6 +322,13 @@ class Settings:
     TOOL_RETRY_MAX_DELAY_MS = env_int("TOOL_RETRY_MAX_DELAY_MS", "2000")
     TOOL_RETRY_JITTER_RATIO = env_float("TOOL_RETRY_JITTER_RATIO", "0.2")
 
+    WEB_SEARCH_REGION = os.getenv("WEB_SEARCH_REGION", "us-en").strip()
+    WEB_SEARCH_SAFESEARCH = os.getenv(
+        "WEB_SEARCH_SAFESEARCH", "moderate"
+    ).strip().lower()
+    WEB_SEARCH_TIMEOUT = env_int("WEB_SEARCH_TIMEOUT", "8")
+    WEB_SEARCH_PROXY = normalize_web_search_proxy(os.getenv("WEB_SEARCH_PROXY"))
+
     TOOL_DEFAULT_PRINCIPAL_ID = os.getenv(
         "TOOL_DEFAULT_PRINCIPAL_ID",
         "chat_api",
@@ -402,6 +442,12 @@ class Settings:
             max_total_cost_ms=cls.AGENT_MAX_TOTAL_COST_MS,
         )
         validate_tool_runtime_settings(cls)
+        validate_web_search_config(
+            region=cls.WEB_SEARCH_REGION,
+            safesearch=cls.WEB_SEARCH_SAFESEARCH,
+            timeout=cls.WEB_SEARCH_TIMEOUT,
+            proxy=cls.WEB_SEARCH_PROXY,
+        )
         validate_tool_governance_settings(cls)
         cls.LANGGRAPH_CHECKPOINTER = validate_langgraph_checkpointer(
             cls.LANGGRAPH_CHECKPOINTER

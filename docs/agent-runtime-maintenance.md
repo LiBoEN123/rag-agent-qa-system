@@ -39,6 +39,8 @@ FastAPI
 
 `search_knowledge_base` 与普通工具一样由 Agent Model 根据动态 Schema 选择，并经过相同的 Registry/Runtime 治理链。成功结果通过 `Command.PARENT` 和 `pending_rag_result` 回到父图，再进入原 RAG 子图。不要把它移回 Router 或绕过 Runtime。
 
+`web_search` 也是动态普通工具，但成功结果只形成 ToolMessage 并回到 Agent Model，不写 `pending_rag_result`。它通过 DDGS 查询公开互联网；本地受控证据仍必须使用 `search_knowledge_base`。
+
 ## 当前图
 
 以下 Mermaid 由 `python scripts/inspect_agent_runtime.py --format mermaid` 的 `compiled_graph.get_graph(xray=True).draw_mermaid()` 输出生成。升级框架或修改图后应重新运行命令并替换本段，不要手工维护第二套图。
@@ -117,6 +119,7 @@ graph TD;
 | `app/tools/providers/local.py` | 按请求 `required_permissions` 过滤模型可见工具 |
 | `app/tools/registry.py` | 注册 ToolSpec；统一分发工具 |
 | `app/tools/runtime.py` | 治理并执行单次工具调用 |
+| `app/tools/web_search.py` | 调用 DDGS；映射参数、规范化结果和转换公开异常 |
 | `app/agent/runtime.py` | 构造 API 兼容结果；保存 trace |
 | `app/rag/graph/` | 编排检索、证据、生成和引用流程 |
 
@@ -138,6 +141,11 @@ Provider 的模型可见性层只复用 `has_permission()` 检查全部 `ToolSpe
 | --- | --- |
 | Graph 为什么走这个分支 | `app/graph/builder.py`、`app/graph/conditions.py` |
 | 模型为什么看不到某个工具 | `app/tools/providers/local.py`、`ToolSpec.required_permissions` |
+| Web Search 为什么模型看不到 | `TOOL_DEFAULT_PERMISSIONS`、`app/tools/providers/local.py` |
+| Web Search 为什么执行失败 | `app/tools/web_search.py`、`app/tools/runtime.py` |
+| 搜索结果为什么为空 | DDGS region、`backend="auto"`、网络条件 |
+| Web Search 为什么没有进入 RAG | 它是普通 Agent 工具；只有本地知识库检索进入 RAG |
+| 如何更换搜索后端 | 保持 `app/tools/web_search.py` 的开源后端适配边界和 ToolSpec 契约 |
 | 工具可见但为什么执行被拒绝 | `app/tools/policy.py`、`app/tools/runtime.py` |
 | ToolMessage 为什么异常 | `app/agent/framework_middleware.py`、`app/agent/framework_tools.py` |
 | 知识库为什么没有引用 | `app/rag/graph/`、`app/rag/citations.py` |
@@ -176,6 +184,6 @@ python scripts/inspect_agent_runtime.py --format mermaid
 python scripts/inspect_agent_runtime.py --check
 ```
 
-脚本只使用普通 `build_agent_graph().compile()`，不会调用带 Checkpointer 的缓存入口；也不会初始化模型、执行 handler、访问网络或读取/重建 RAG 索引。默认工具使用 `build_default_tool_context()` 解析，报告包含权限数量、可见工具数量和各工具 `required_permissions`，但不输出主体或请求标识。版本来自 `importlib.metadata`，图来自 `get_graph()`/`get_graph(xray=True)`，Mermaid 来自 `draw_mermaid()`，工具参数来自模型可见的 Pydantic JSON Schema。
+脚本只使用普通 `build_agent_graph().compile()`，不会调用带 Checkpointer 的缓存入口；也不会初始化模型、DDGS、执行 handler、访问网络或读取/重建 RAG 索引。报告分别列出 Registry 的 `registered_tools` 和默认 Context 的 `default_visible_tools`，并验证默认可见集合是注册集合的子集、权限满足以及 Web Search 的授权可见性。版本来自 `importlib.metadata`，图来自 `get_graph()`/`get_graph(xray=True)`，Mermaid 来自 `draw_mermaid()`，工具参数来自模型可见的 Pydantic JSON Schema。
 
 升级 LangChain、LangGraph 或 Pydantic 时，先运行契约测试和 `--check`。重点确认父图节点未改变、xray 仍能展开 `framework_agent`、model/tools 和调用限制节点仍存在、`ToolRuntime` 注入字段未暴露给模型，并重新生成本页 Mermaid。

@@ -4,6 +4,7 @@ pydantic
 python-dotenv
 requests
 httpx
+ddgs
 numpy
 jieba
 rank-bm25

@@ -77,8 +77,8 @@ def test_collect_tool_specs_preserves_provider_order_and_rejects_duplicates():
     assert calls == []
 
 
-def test_default_local_provider_exposes_all_production_tools():
-    """默认 Provider 的事实来源仍是生产 ToolRegistry。"""
+def test_default_local_provider_exposes_only_permitted_production_tools():
+    """默认 Provider 以生产 Registry 为来源并隐藏缺权工具。"""
     provider = LocalToolProvider(tool_registry)
 
     names = [
@@ -86,7 +86,9 @@ def test_default_local_provider_exposes_all_production_tools():
         for spec in provider.list_specs(context=build_default_tool_context())
     ]
 
-    assert names == tool_registry.names()
+    assert set(names) < set(tool_registry.names())
+    assert "web_search" in tool_registry.names()
+    assert "web_search" not in names
     assert set(names) == {
         "search_knowledge_base",
         "compare_documents",

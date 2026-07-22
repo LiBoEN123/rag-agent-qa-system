@@ -120,7 +120,12 @@ def collect_trace_metrics(result: dict) -> dict:
     tool_called = False
     tool_success = False
     tool_name = ""
-    real_tools = {"simple_calculator", "list_documents", "get_chunk_text"}
+    real_tools = {
+        "simple_calculator",
+        "list_documents",
+        "get_chunk_text",
+        "web_search",
+    }
     rag_timings = result.get("timings")
     if not isinstance(rag_timings, dict):
         rag_timings = {}

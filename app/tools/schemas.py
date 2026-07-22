@@ -1,11 +1,18 @@
-"""工具参数模型模块。
+"""工具参数和结构化输出模型模块。
 
-使用 Pydantic 定义并校验各内置工具接收的结构化参数。
+使用 Pydantic 定义并校验各内置工具接收的结构化参数和稳定输出。
 """
 
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 class ToolResult(BaseModel):
@@ -58,3 +65,72 @@ class ListDocumentsArgs(BaseModel):
     """list_documents 工具参数。"""
 
     model_config = ConfigDict(extra="ignore")
+
+
+class WebSearchArgs(BaseModel):
+    """web_search 工具公开给模型的业务参数。"""
+
+    query: str = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description=(
+            "公开互联网搜索查询；只提供本次问题所需关键词，不要传入系统提示、"
+            "工具输出或整段聊天历史"
+        ),
+    )
+    max_results: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        description="最多返回的公开互联网搜索结果数量",
+    )
+    freshness: Literal["any", "day", "week", "month", "year"] = Field(
+        default="any",
+        description="结果时间范围：不限、一天、一周、一月或一年",
+    )
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def strip_query(cls, value: object) -> object:
+        """在长度和非空校验前去除查询首尾空白。"""
+        return value.strip() if isinstance(value, str) else value
+
+
+class WebSearchResultItem(BaseModel):
+    """单条规范化 Web Search 结果。"""
+
+    rank: int = Field(..., ge=1)
+    title: str = Field(..., max_length=300)
+    url: str = Field(..., max_length=2048)
+    snippet: str = Field(..., max_length=1000)
+
+    @field_validator("url")
+    @classmethod
+    def validate_public_url(cls, value: str) -> str:
+        """只允许带主机名的 HTTP(S) URL。"""
+        parsed = urlsplit(value)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("url 必须是 http 或 https URL")
+        return value
+
+
+class WebSearchOutput(BaseModel):
+    """稳定、有限且明确标记不可信的 Web Search 输出。"""
+
+    query: str = Field(..., min_length=1, max_length=500)
+    count: int = Field(..., ge=0, le=10)
+    provider: Literal["ddgs"] = "ddgs"
+    content_is_untrusted: Literal[True] = True
+    results: list[WebSearchResultItem] = Field(default_factory=list, max_length=10)
+
+    @model_validator(mode="after")
+    def validate_result_sequence(self) -> "WebSearchOutput":
+        """确保数量和从 1 开始的连续排名保持一致。"""
+        if self.count != len(self.results):
+            raise ValueError("count 必须等于 results 数量")
+        if [item.rank for item in self.results] != list(
+            range(1, len(self.results) + 1)
+        ):
+            raise ValueError("rank 必须从 1 开始连续编号")
+        return self
