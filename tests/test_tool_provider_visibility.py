@@ -212,6 +212,7 @@ def test_production_web_permissions_are_independent(
 
     assert ("web_search" in names) is has_search
     assert ("web_fetch" in names) is has_fetch
+    assert ("web_pdf_fetch" in names) is has_fetch
 
 
 def test_agent_binds_visible_tools_and_executes_authorized_tool(monkeypatch):

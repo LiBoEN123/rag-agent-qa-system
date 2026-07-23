@@ -35,6 +35,7 @@ from app.tools.schemas import WebFetchArgs, WebFetchOutput
 
 
 web_fetch_module = import_module("app.tools.web_fetch")
+web_download_module = import_module("app.tools.web_download")
 web_fetch_handler = web_fetch_module.web_fetch
 ARTICLE_HTML = (
     Path(__file__).parent / "fixtures" / "web_fetch_article.html"
@@ -161,7 +162,7 @@ def _install_fake_manager(monkeypatch, outcomes):
         def get_session(self):
             return self.session
 
-    monkeypatch.setattr(web_fetch_module, "Manager", FakeManager)
+    monkeypatch.setattr(web_download_module, "Manager", FakeManager)
     return managers
 
 
@@ -644,7 +645,7 @@ def test_permission_denial_prevents_manager_construction(monkeypatch):
         def __init__(self, config):
             raise AssertionError(f"manager must not be constructed: {config}")
 
-    monkeypatch.setattr(web_fetch_module, "Manager", ForbiddenManager)
+    monkeypatch.setattr(web_download_module, "Manager", ForbiddenManager)
     registry = ToolRegistry()
     registry.register(_web_fetch_spec())
 
@@ -786,7 +787,7 @@ def test_runtime_total_timeout_still_bounds_fetch(monkeypatch):
         def get_session(self):
             return self.session
 
-    monkeypatch.setattr(web_fetch_module, "Manager", SlowManager)
+    monkeypatch.setattr(web_download_module, "Manager", SlowManager)
     registry = ToolRegistry()
     registry.register(replace(_web_fetch_spec(), timeout=0.01))
     runtime = _runtime(registry)

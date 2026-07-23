@@ -20,6 +20,7 @@ from app.tools.schemas import (
     SearchKnowledgeBaseArgs,
     SimpleCalculatorArgs,
     WebFetchArgs,
+    WebPdfFetchArgs,
     WebSearchArgs,
 )
 
@@ -50,7 +51,9 @@ def test_langchain_tool_collection_matches_registry():
     assert isinstance(tools, list)
     assert all(isinstance(tool, BaseTool) for tool in tools)
     default_visible_names = [
-        name for name in registry_names if name not in {"web_search", "web_fetch"}
+        name
+        for name in registry_names
+        if name not in {"web_search", "web_fetch", "web_pdf_fetch"}
     ]
     assert names == default_visible_names
     assert len(names) == len(set(names))
@@ -91,6 +94,25 @@ def test_web_fetch_langchain_schema_requires_explicit_permission():
     assert with_permission is not None
     assert with_permission.args_schema is WebFetchArgs
     assert set(with_permission.args) == {"url", "max_chars"}
+
+
+def test_web_pdf_fetch_langchain_schema_requires_explicit_permission():
+    without_permission = get_langchain_tool("web_pdf_fetch")
+    context = ToolInvocationContext(
+        permissions=("knowledge_base:read", "web:fetch"),
+        source="langchain_tool_test",
+    )
+    with_permission = get_langchain_tool("web_pdf_fetch", context=context)
+
+    assert without_permission is None
+    assert with_permission is not None
+    assert with_permission.args_schema is WebPdfFetchArgs
+    assert set(with_permission.args) == {
+        "url",
+        "start_page",
+        "max_pages",
+        "max_chars",
+    }
 
 
 @pytest.mark.parametrize("tool_name,args_model", CORE_TOOL_MODELS.items())

@@ -327,3 +327,18 @@ PR6 完成后为 `565 passed, 1 warning`；Ruff、`python -m compileall app`、�
 - 默认权限保持 `knowledge_base:read`，所以最小默认上下文仍只看到原五个工具。`web:search` 与 `web:fetch` 独立控制搜索和单页正文读取；两者都有时支持 `web_search → ToolMessage → web_fetch → ToolMessage → final answer`，隐藏名称伪造仍返回 `unknown_tool`，直接无权 dispatch 仍返回 `permission_denied`。
 - 自动测试使用 Fake DDGS、Fake hardened Manager/Session/Response 和 requests-hardened 的公开 adapter 边界；固定 HTML fixture 调用真实 Trafilatura。全量结果为 `639 passed, 1 warning`，Ruff 通过；唯一警告仍来自 `jieba` 对 `pkg_resources` 的弃用提示。自动测试没有访问真实模型、搜索引擎、网页、代理、RAG 索引、生产 Checkpoint 或生产审计文件；按任务约束未运行真实网络冒烟。
 - Agent Graph、Middleware 栈、Router、Planner、Executor、API Schema、SQLite Schema、RAG 算法、Checkpointer 和现有六个工具契约均未修改。`web_fetch` 是普通 ToolMessage 路径，不设置 `pending_rag_result`，不写 ChromaDB/BM25，不产生本地 RAG references。
+
+## 20. PR8 安全 Web PDF 读取工具（2026-07-23）
+
+本节只记录 PR8 增量；PR0–PR7 历史内容保持原样。修改前实际分支为 `fix/langgraph-runtime-hardening`，HEAD 为 `b677f477f7e1f06a6de99b05c11ee2b05bcf75b9`，工作区干净；该 HEAD 已包含 Agent 请求结束时的脱敏 `tool_call_chain` INFO 日志。修改前本地基线为 `640 passed, 1 warning`，Ruff、`python -m compileall app`、`python -m pip check` 和 `git diff --check` 通过。原 `python scripts/inspect_agent_runtime.py --check` 唯一失败项为 `web_fetch_default_visibility`：本地未跟踪 `.env` 已显式授予 `web:fetch`，但旧检查硬编码要求该工具始终隐藏；PR8 将检查改为验证可见性与当前权限一致，同时继续用显式最小权限测试证明默认代码配置下 Web 工具不可见。
+
+- 未增加或升级依赖。安全下载继续使用锁定的 `requests-hardened==1.3.0`，PDF 解析复用锁定的 `pypdf==6.14.2`；Agent Loop、参数/输出 Schema 和执行治理继续分别复用 LangChain `create_agent`、Pydantic、ToolRegistry 与 ToolRuntime。
+- 新增第八个生产 ToolSpec `web_pdf_fetch@1.0.0`：`WebPdfFetchArgs`、`WebPdfFetchOutput`、`READ_ONLY`、`required_permissions=("web:fetch",)`、默认总体超时 45 秒、最多一次 Runtime 重试、URL 敏感参数、`SUMMARY` 审计、幂等且无需审批。模型参数只有 `url`、`start_page`、`max_pages` 和 `max_chars`。
+- 原 `web_fetch.py` 的 URL 业务校验、requests-hardened Manager、只读 GET 参数、HTTP 状态映射、Content-Type 白名单、streaming 字节限制及 Response/Session 关闭移动到薄共享适配 `web_download.py`。HTML/XHTML/纯文本仍由 Trafilatura 处理并继续拒绝 PDF；`web_pdf_fetch` 调用同一下载入口，没有 raw requests 回退或第二套 SSRF、代理、重定向、重试、权限和审计实现。
+- PDF 允许 `application/pdf`、`application/x-pdf`，并只在内容具有 `%PDF-` 签名时兼容 `application/octet-stream`。默认 PDF 下载上限 10,000,000 bytes、文档总页数上限 1,000；连接/读取/重定向/User-Agent/代理继续复用 Web Fetch 配置。45 秒 ToolSpec 总体上限大于默认 3+10 秒内部网络预算，为解析保留时间。
+- pypdf 只通过 `PdfReader(BytesIO(body), strict=False)`、`reader.is_encrypted`、`reader.metadata`、`reader.pages` 和 `page.extract_text()` 读取 PDF。输出保留实际 `[Page N]` 标记、跳过空白页、有限返回 title/author/subject，并在组合页文本后截断。加密、损坏、超过字节/页数上限和扫描件/无文本均为稳定非重试错误；不接收密码，不提取图片、附件、表单、JavaScript 或外部链接，也不调用 OCR。
+- URL、PDF bytes、正文和元数据原值不会进入 SUMMARY 审计；审计只保留 HTTP 状态、MIME、total/start page、pages read、content length、truncated 和不可信标记。输出固定 `content_is_untrusted=true`；ToolSpec 禁止把 PDF 内容当作 system/developer/tool 指令或因其中要求调用其他工具。
+- 默认代码配置仍为 `TOOL_DEFAULT_PERMISSIONS=knowledge_base:read`，最小上下文只看到原五个本地工具；`web:search` 只暴露 `web_search`，`web:fetch` 同时暴露 `web_fetch` 与 `web_pdf_fetch`。隐藏名称伪造返回 `unknown_tool`，直接无权 dispatch 返回 `permission_denied`，并且 HTTP Manager 与 PdfReader 都不会构造。
+- 真实 `build_agent_graph().compile().invoke(...)` 测试覆盖 `web_search → web_pdf_fetch → final answer`，以及 `web_fetch` 误读 PDF 收到 unsupported content type ToolMessage 后改用 `web_pdf_fetch` 的恢复链。ToolMessage call ID、Registry/ToolRuntime 调用、页码正文、tool trace 顺序、脱敏 `tool_call_chain`、空本地 references 和不进入 RAG 均已验证。
+- 自动测试使用确定性两页 PDF fixture、Fake DDGS 和 Fake hardened Manager/Session/Response；加密、空白、超页数和损坏 PDF 在测试中通过 pypdf 生成。完成后全量结果为 `698 passed, 1 warning`；唯一警告仍来自 jieba 对 `pkg_resources` 的弃用提示。自动测试没有访问真实模型、搜索引擎、PDF URL、代理、RAG 索引、生产 Checkpoint 或生产审计文件；按任务约束未运行真实网络 PDF 冒烟。
+- Agent Graph、Middleware 栈、Router、Planner、Executor、FastAPI API Schema、SQLite Schema、Checkpointer、本地 RAG 算法和原七个工具业务契约均未修改。`web_pdf_fetch` 只走普通 ToolMessage，不设置 `pending_rag_result`，不写 ChromaDB/BM25/manifest/知识库目录，不产生本地 RAG references，也不永久保存 PDF。

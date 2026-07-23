@@ -1,6 +1,7 @@
 """Runtime inspection CLI 的公开架构契约。"""
 
 import json
+from importlib import import_module
 
 from pydantic import BaseModel
 
@@ -52,6 +53,7 @@ def test_tool_contracts_use_model_facing_json_schema(monkeypatch):
         "search_knowledge_base",
         "web_search",
         "web_fetch",
+        "web_pdf_fetch",
         "compare_documents",
         "simple_calculator",
         "list_documents",
@@ -79,6 +81,16 @@ def test_tool_contracts_use_model_facing_json_schema(monkeypatch):
     assert fetch["required_permissions"] == ["web:fetch"]
     assert fetch["output_model"] == "WebFetchOutput"
     assert set(fetch["args_schema"]["properties"]) == {"url", "max_chars"}
+    pdf = next(tool for tool in tools if tool["name"] == "web_pdf_fetch")
+    assert pdf["required_permissions"] == ["web:fetch"]
+    assert pdf["output_model"] == "WebPdfFetchOutput"
+    assert set(pdf["args_schema"]["properties"]) == {
+        "url",
+        "start_page",
+        "max_pages",
+        "max_chars",
+    }
+    assert "web_pdf_fetch" not in report["default_visible_tools"]
     assert report["tool_visibility"] == {
         "permission_count": len(context.permissions),
         "registered_tool_count": len(tools),
@@ -143,6 +155,23 @@ def test_inspection_reports_web_fetch_for_explicit_permission(monkeypatch):
     report = inspection.inspect_runtime()
 
     assert "web_fetch" not in report["default_visible_tools"]
+    assert "web_pdf_fetch" not in report["default_visible_tools"]
+    assert all(item["passed"] for item in report["checks"])
+
+
+def test_inspection_reports_both_fetch_tools_when_permission_is_enabled(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        Settings,
+        "TOOL_DEFAULT_PERMISSIONS",
+        ("knowledge_base:read", "web:fetch"),
+    )
+
+    report = inspection.inspect_runtime()
+
+    assert "web_fetch" in report["default_visible_tools"]
+    assert "web_pdf_fetch" in report["default_visible_tools"]
     assert all(item["passed"] for item in report["checks"])
 
 
@@ -170,6 +199,16 @@ def test_inspection_does_not_initialize_model_checkpointer_or_handler(monkeypatc
     )
     monkeypatch.setattr(framework_agent, "get_agent_chat_model", forbidden)
     monkeypatch.setattr(graph_builder, "get_checkpointer", forbidden)
+    monkeypatch.setattr(
+        import_module("app.tools.web_download"),
+        "Manager",
+        forbidden,
+    )
+    monkeypatch.setattr(
+        import_module("app.tools.web_pdf_fetch"),
+        "PdfReader",
+        forbidden,
+    )
 
     report = inspection.inspect_runtime(LocalToolProvider(registry))
 

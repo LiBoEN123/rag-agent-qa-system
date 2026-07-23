@@ -17,6 +17,7 @@ def test_tool_registry_names_include_builtin_tools():
     assert "compare_documents" in names
     assert "web_search" in names
     assert "web_fetch" in names
+    assert "web_pdf_fetch" in names
 
 
 def test_router_specs_include_search_knowledge_base():
@@ -54,7 +55,7 @@ def test_tool_registry_router_specs_shape():
 
 
 def test_builtin_tools_publish_v2_contract_metadata():
-    """验证七个注册生产工具发布完整且符合要求的 V2 契约。"""
+    """验证八个注册生产工具发布完整且符合要求的 V2 契约。"""
     specs = tool_registry.contract_specs()
     specs_by_name = {spec["name"]: spec for spec in specs}
     expected_permissions = {
@@ -65,6 +66,7 @@ def test_builtin_tools_publish_v2_contract_metadata():
         "get_chunk_text": ["knowledge_base:read"],
         "web_search": ["web:search"],
         "web_fetch": ["web:fetch"],
+        "web_pdf_fetch": ["web:fetch"],
     }
     expected_timeouts = {
         "search_knowledge_base": 10.0,
@@ -74,6 +76,7 @@ def test_builtin_tools_publish_v2_contract_metadata():
         "get_chunk_text": 5.0,
         "web_search": 10.0,
         "web_fetch": 30.0,
+        "web_pdf_fetch": 45.0,
     }
 
     assert len(specs) == len(tool_registry.names())
@@ -87,7 +90,7 @@ def test_builtin_tools_publish_v2_contract_metadata():
         assert spec["required_permissions"] == expected_permissions[name]
         assert spec["timeout"] == expected_timeouts[name]
         assert spec["max_retries"] == (
-            1 if name in {"web_search", "web_fetch"} else 0
+            1 if name in {"web_search", "web_fetch", "web_pdf_fetch"} else 0
         )
         assert spec["idempotent"] is True
         assert spec["requires_approval"] is False
@@ -95,6 +98,7 @@ def test_builtin_tools_publish_v2_contract_metadata():
             {
                 "web_search": "WebSearchOutput",
                 "web_fetch": "WebFetchOutput",
+                "web_pdf_fetch": "WebPdfFetchOutput",
             }.get(name)
         )
         assert "handler" not in spec
@@ -105,6 +109,9 @@ def test_builtin_tools_publish_v2_contract_metadata():
     fetch = specs_by_name["web_fetch"]
     assert fetch["sensitive_arg_fields"] == ["url"]
     assert fetch["audit_output_mode"] == "summary"
+    pdf = specs_by_name["web_pdf_fetch"]
+    assert pdf["sensitive_arg_fields"] == ["url"]
+    assert pdf["audit_output_mode"] == "summary"
 
 
 def test_tool_registry_dispatch_simple_calculator():

@@ -27,6 +27,7 @@ from app.tools.knowledge_base import (
 )
 from app.tools.result import tool_error, tool_success
 from app.tools.web_fetch import web_fetch
+from app.tools.web_pdf_fetch import web_pdf_fetch
 from app.tools.web_search import web_search
 from app.tools.policy import (
     ToolPolicyDecision,
@@ -95,5 +96,6 @@ __all__ = [
     "tool_error",
     "tool_success",
     "web_fetch",
+    "web_pdf_fetch",
     "web_search",
 ]

@@ -34,7 +34,15 @@ from app.tools.providers.base import is_tool_visible  # noqa: E402
 from app.tools.registry import ToolRegistry  # noqa: E402
 
 
-PACKAGES = ("langchain", "langchain-core", "langchain-openai", "langgraph", "pydantic")
+PACKAGES = (
+    "langchain",
+    "langchain-core",
+    "langchain-openai",
+    "langgraph",
+    "pydantic",
+    "pypdf",
+    "requests-hardened",
+)
 EXPECTED_PARENT_NODES = {
     "route", "initialize", "framework_agent", "adapt_framework", "plan",
     "execute", "rag_subgraph", "compose", "finalize",
@@ -290,8 +298,54 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
     fetch_schema_ok = fetch_schema_fields == {"url", "max_chars"} and not (
         forbidden_fetch_fields & fetch_schema_fields
     )
-    fetch_default_visibility_ok = "web_fetch" not in default_visible_tools
+    default_has_fetch_permission = (
+        "web:fetch"
+        in build_default_tool_context(
+            source="agent_runtime_inspection"
+        ).permissions
+    )
+    fetch_default_visibility_ok = (
+        ("web_fetch" in default_visible_tools) == default_has_fetch_permission
+    )
     fetch_authorized_visibility_ok = True
+    pdf_spec = next(
+        (
+            item
+            for item in registered_tools
+            if item.get("name") == "web_pdf_fetch"
+        ),
+        None,
+    )
+    pdf_schema_fields = set(
+        (pdf_spec or {}).get("args_schema", {}).get("properties", {})
+    )
+    pdf_contract_ok = bool(
+        pdf_spec
+        and pdf_spec.get("risk_level") == "read_only"
+        and pdf_spec.get("required_permissions") == ["web:fetch"]
+        and pdf_spec.get("output_model") == "WebPdfFetchOutput"
+    )
+    forbidden_pdf_fields = {
+        "proxy",
+        "headers",
+        "cookies",
+        "timeout",
+        "password",
+        "strict",
+        "runtime",
+    }
+    pdf_schema_ok = pdf_schema_fields == {
+        "url",
+        "start_page",
+        "max_pages",
+        "max_chars",
+    } and not (forbidden_pdf_fields & pdf_schema_fields)
+    pdf_default_visibility_ok = (
+        ("web_pdf_fetch" in default_visible_tools)
+        == default_has_fetch_permission
+    )
+    pdf_authorized_visibility_ok = True
+    registered_tool_count_ok = len(registered_tools) == 8
     if enforce_default_registry:
         default_context = build_default_tool_context(
             source="agent_runtime_inspection"
@@ -317,7 +371,13 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
             spec.name
             for spec in resolved_provider.list_specs(context=fetch_context)
         }
-        fetch_authorized_visibility_ok = "web_fetch" in fetch_authorized_names
+        fetch_authorized_visibility_ok = {
+            "web_fetch",
+            "web_pdf_fetch",
+        } <= fetch_authorized_names
+        pdf_authorized_visibility_ok = (
+            "web_pdf_fetch" in fetch_authorized_names
+        )
     checks = [
         _check("dependency_versions", not missing_packages, ", ".join(missing_packages)),
         _check("parent_required_nodes", not missing_parent, ", ".join(missing_parent)),
@@ -329,6 +389,11 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
             "registered_tool_contracts",
             not tool_errors and bool(registered_tools),
             "; ".join(tool_errors),
+        ),
+        _check(
+            "registered_tool_count",
+            not enforce_default_registry or registered_tool_count_ok,
+            "default registry must contain exactly eight production tools",
         ),
         _check(
             "default_tool_visibility",
@@ -369,12 +434,32 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
         _check(
             "web_fetch_default_visibility",
             not enforce_default_registry or fetch_default_visibility_ok,
-            "web_fetch must not be visible to the default service principal",
+            "web_fetch visibility does not match default permissions",
         ),
         _check(
             "web_fetch_authorized_visibility",
             not enforce_default_registry or fetch_authorized_visibility_ok,
-            "web_fetch is hidden despite web:fetch permission",
+            "web_fetch or web_pdf_fetch is hidden despite web:fetch permission",
+        ),
+        _check(
+            "web_pdf_fetch_contract",
+            not enforce_default_registry or pdf_contract_ok,
+            "web_pdf_fetch must be read-only, require web:fetch, and validate output",
+        ),
+        _check(
+            "web_pdf_fetch_model_schema",
+            not enforce_default_registry or pdf_schema_ok,
+            "web_pdf_fetch model schema exposes runtime configuration",
+        ),
+        _check(
+            "web_pdf_fetch_default_visibility",
+            not enforce_default_registry or pdf_default_visibility_ok,
+            "web_pdf_fetch visibility does not match default permissions",
+        ),
+        _check(
+            "web_pdf_fetch_authorized_visibility",
+            not enforce_default_registry or pdf_authorized_visibility_ok,
+            "web_pdf_fetch is hidden despite web:fetch permission",
         ),
         _check("source_file_budgets", not over_budget, "; ".join(over_budget)),
     ]

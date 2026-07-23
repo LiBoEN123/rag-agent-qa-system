@@ -153,6 +153,16 @@ def test_settings_validate_rejects_invalid_web_search_config(monkeypatch, tmp_pa
         Settings.validate()
 
 
+def test_settings_validate_rejects_invalid_web_pdf_config(monkeypatch, tmp_path):
+    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "disabled")
+    monkeypatch.setattr(Settings, "LLM_API_KEY", "test-key")
+    monkeypatch.setattr(Settings, "RAG_FILE_PATH", tmp_path)
+    monkeypatch.setattr(Settings, "WEB_PDF_MAX_DOCUMENT_PAGES", 0)
+
+    with pytest.raises(ValueError, match="WEB_PDF_MAX_DOCUMENT_PAGES"):
+        Settings.validate()
+
+
 @pytest.mark.parametrize(
     "overrides,expected_message",
     [

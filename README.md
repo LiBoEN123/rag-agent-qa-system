@@ -138,7 +138,7 @@ flowchart TD
 | Agent 路由 | 正常自然语言请求默认输出 `agent`；`direct_answer` / `clarify` 只做安全短路，`rag_fast_path` 保留为显式和旧协议兼容动作 |
 | 工具发现 | `ToolProvider` 按请求权限过滤模型可见 ToolSpec，`RegistryToolsMiddleware` 对模型绑定和实际执行使用同一组请求级 StructuredTool；普通新工具无需修改核心编排 |
 | Agent Guardrail | 工具错误总数、连续相同调用/错误、累计模型与工具耗时预算、同批 fail-closed、无悬空 ToolMessage |
-| 工具调用 | Registry 注册七个生产工具：`search_knowledge_base`、`web_search`、`web_fetch`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text`；默认可见数量由请求权限决定 |
+| 工具调用 | Registry 注册八个生产工具：`search_knowledge_base`、`web_search`、`web_fetch`、`web_pdf_fetch`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text`；默认可见数量由请求权限决定 |
 | 可观测性 | `trace_id`、请求耗时、阶段耗时、工具调用日志、metrics 汇总接口 |
 | 失败分析 | `logs/bad_cases.jsonl` 记录值得分析的失败样例 |
 | 评测 | 支持规则评测、Chroma/chunks 索引取证和可选 LLM Judge 语义评估 |
@@ -239,7 +239,7 @@ python scripts/smoke_test_web_search.py \
 
 URL、页面元数据和正文全部是不可信输入。输出固定包含 `content_is_untrusted=true`；模型不得执行页面中的命令、不得把正文视为 system/developer/tool 指令，也不得因为页面要求而调用其他工具，只能将其作为回答用户问题的参考，并在回答中注明实际 `final_url`。网页不会写入 ChromaDB/BM25，不设置 `pending_rag_result`，也不会生成本地 RAG references。
 
-默认权限仍只有 `knowledge_base:read`，因此 `web_search` 和 `web_fetch` 都默认不可见。两项 Web 权限彼此独立：只有 `web:search` 时只能搜索，只有 `web:fetch` 时只能读取明确 URL，两者都有时才支持搜索后抓取：
+默认权限仍只有 `knowledge_base:read`，因此三个 Web 工具都默认不可见。两项 Web 权限彼此独立：只有 `web:search` 时只能搜索；只有 `web:fetch` 时可用 `web_fetch` 和 `web_pdf_fetch` 读取明确 URL；两者都有时才支持搜索后读取：
 
 ```env
 TOOL_DEFAULT_PERMISSIONS=knowledge_base:read,web:search,web:fetch
@@ -255,6 +255,28 @@ python scripts/smoke_test_web_fetch.py \
 
 脚本默认经过 `ToolRegistry → ToolRuntime → requests-hardened → Trafilatura`，只显示有限正文预览和安全元数据，不显示代理、headers、cookies 或完整正文。
 
+## Web PDF Fetch
+
+`web_pdf_fetch` 是第八个注册生产工具，用于读取已知公开 PDF 的指定连续页范围。它与 `web_fetch` 保持明确分工：`web_fetch` 只处理 HTML、XHTML 和纯文本并继续拒绝 PDF；`web_pdf_fetch` 只处理 PDF，并使用项目已经锁定的 `pypdf==6.14.2` 提取数字文本。两者共用 `app/tools/web_download.py` 中基于 `requests-hardened==1.3.0` 的 SSRF 安全下载、逐跳重定向、可信代理、streaming 和资源关闭边界。
+
+模型只能提供 `url`、1-based `start_page`、1–20 的 `max_pages` 和 1000–30000 的 `max_chars`。服务端另以 `WEB_PDF_MAX_RESPONSE_BYTES`、`WEB_PDF_MAX_DOCUMENT_PAGES` 和 `WEB_PDF_TOOL_TIMEOUT_SECONDS` 控制下载字节、总页数和总体 ToolRuntime 时间。工具接受 `application/pdf`、`application/x-pdf`，并仅在内容具有 `%PDF-` 签名时兼容 `application/octet-stream`；所有允许类型最终都检查 PDF magic。
+
+正文按实际页码返回 `[Page N]` 边界，空白页不列入 `page_numbers`，title、author 和 subject 只做有限单行规范化。加密、损坏、页数超限和无可提取文本的 PDF 会返回稳定非重试错误；扫描件/图片型 PDF 不自动 OCR，也不接收密码、提取图片/附件/脚本或调用 LLM 清洗。
+
+PDF 文本和元数据固定标记 `content_is_untrusted=true`，只能作为回答参考；模型不得执行 PDF 中的命令或把内容视为 system/developer/tool 指令，回答时应注明 `final_url` 和相关页码。`web_pdf_fetch` 要求 `web:fetch` 权限，经过普通 `StructuredTool → Registry → ToolRuntime → handler → ToolMessage` 链路；它不进入本地 RAG、不设置 `pending_rag_result`、不写 ChromaDB/BM25，也不生成本地 references。
+
+真实网络验证仅由维护者手动执行，不进入 Pytest/CI：
+
+```bash
+python scripts/smoke_test_web_pdf_fetch.py \
+  --url "https://example.com/document.pdf" \
+  --start-page 1 \
+  --max-pages 3 \
+  --max-chars 8000
+```
+
+脚本默认经过 `ToolRegistry → ToolRuntime → requests-hardened → pypdf`，只显示安全有限 URL、页码、长度和正文预览，不显示代理、headers、PDF bytes 或完整正文。
+
 ## Agent Runtime
 
 项目当前唯一 Agent Runtime 是 LangGraph 父图中的 LangChain `create_agent` 子图。旧 `agent_model`、`governed_tools` 和 `limit_handler` 自定义循环已经删除，不提供双实现或运行时回滚开关；需要回滚版本时使用 Git commit、tag 或 release。
@@ -269,7 +291,7 @@ START → route（可选）→ initialize
   └─ agent → framework_agent（create_agent 内部 model ↔ tools）
        → adapt_framework
        ├─ search_knowledge_base 成功 → RAG 子图 → finalize
-       ├─ web_search / web_fetch 等普通工具 → ToolMessage → Agent Model → compose → finalize
+       ├─ web_search / web_fetch / web_pdf_fetch 等普通工具 → ToolMessage → Agent Model → compose → finalize
        ├─ 无工具最终回答 → compose → finalize
        └─ 治理或调用预算终止 → compose → finalize
 ```
@@ -336,6 +358,7 @@ python scripts/inspect_agent_runtime.py --check
 - [ADR 0007：权限感知的工具可见性](docs/adr/0007-permission-aware-tool-visibility.md)
 - [ADR 0008：开源 Web Search 生产工具](docs/adr/0008-open-source-web-search-tool.md)
 - [ADR 0009：安全 Web Fetch 网页正文工具](docs/adr/0009-secure-web-fetch-tool.md)
+- [ADR 0010：安全 Web PDF 页范围读取工具](docs/adr/0010-secure-web-pdf-fetch-tool.md)
 
 ## 快速启动
 
@@ -427,6 +450,9 @@ streamlit run demo/streamlit_app.py
 | `WEB_FETCH_MAX_REDIRECTS` | Web Fetch 最大安全重定向次数，默认 `5` |
 | `WEB_FETCH_USER_AGENT` | 维护者配置的非空 User-Agent，不接受模型输入 |
 | `WEB_FETCH_PROXY` | 可选受信任代理；留空时禁用，禁止使用未经信任的用户输入 |
+| `WEB_PDF_MAX_RESPONSE_BYTES` | Web PDF 解压后响应上限，默认 `10000000` bytes |
+| `WEB_PDF_MAX_DOCUMENT_PAGES` | Web PDF 允许的文档总页数上限，默认 `1000` |
+| `WEB_PDF_TOOL_TIMEOUT_SECONDS` | Web PDF ToolRuntime 总体超时，默认 `45` 秒，必须大于连接与读取超时之和 |
 | `TOOL_DEFAULT_PERMISSIONS` | 默认服务主体权限；默认仅 `knowledge_base:read`，需分别显式加入 `web:search`、`web:fetch` 才暴露相应 Web 工具 |
 | `USE_LLM_JUDGE` | 评测脚本是否启用 LLM Judge，默认 `false` |
 | `JUDGE_API_KEY` | 评测 Judge 模型 API Key；为空时可复用回答模型 Key |
@@ -629,6 +655,8 @@ curl -X POST "http://127.0.0.1:8000/chat" \
 `web_search` 不作为 Router 关键词 action。普通问题先进入 `agent`，再由 Agent Model 根据动态 Tool Schema 和当前请求权限决定是否调用 Web Search。
 
 `web_fetch` 同样不作为 Router action，也不在 Query Rewrite、Planner 或 Executor 中增加 URL 特判；它由 Agent Model 在普通工具循环中按权限和 Schema 选择。
+
+`web_pdf_fetch` 也不增加 PDF Router action 或 Graph/Planner/Executor 特判；模型可根据 `web_fetch` 的类型错误 ToolMessage 在同一框架循环中改用 PDF 工具。
 
 ### `/kb_summary`
 
@@ -834,7 +862,9 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   │   ├── dispatch.py          # 工具分发与调用日志
 │   │   ├── langchain_tools.py   # LangChain StructuredTool 适配层
 │   │   ├── web_search.py        # DDGS 调用、结果规范化和公开异常映射
-│   │   ├── web_fetch.py         # hardened 下载、体积/MIME 门禁和 Trafilatura 提取
+│   │   ├── web_download.py      # HTML/PDF 共用的 hardened 有限下载适配
+│   │   ├── web_fetch.py         # HTML/XHTML/纯文本的 Trafilatura 提取
+│   │   ├── web_pdf_fetch.py     # PDF magic、pypdf 页范围与元数据提取
 │   │   ├── registry.py          # 工具注册和分发
 │   │   └── schemas.py           # 工具参数模型
 │   ├── services/
@@ -864,6 +894,7 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   ├── concurrent_perf_test.py  # 简单并发压测
 │   ├── smoke_test_web_search.py # 手动真实 DDGS Registry/Runtime 冒烟
 │   ├── smoke_test_web_fetch.py  # 手动安全 Web Fetch Registry/Runtime 冒烟
+│   ├── smoke_test_web_pdf_fetch.py # 手动安全 Web PDF Registry/Runtime 冒烟
 │   └── test_local_llm.py        # 本地模型接口测试
 ├── demo/
 │   └── streamlit_app.py         # Streamlit Demo 页面

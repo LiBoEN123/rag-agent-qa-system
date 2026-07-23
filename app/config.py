@@ -261,6 +261,42 @@ def validate_web_fetch_config(
         raise ValueError("WEB_FETCH_PROXY 必须为空或字符串")
 
 
+def validate_web_pdf_config(
+    *,
+    max_response_bytes: object,
+    max_document_pages: object,
+    tool_timeout_seconds: object,
+    connect_timeout: object,
+    read_timeout: object,
+) -> None:
+    """校验 PDF 专属体量和总体 Runtime 超时配置。"""
+    integer_values = {
+        "WEB_PDF_MAX_RESPONSE_BYTES": max_response_bytes,
+        "WEB_PDF_MAX_DOCUMENT_PAGES": max_document_pages,
+    }
+    for name, value in integer_values.items():
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 1
+        ):
+            raise ValueError(f"{name} 必须是正整数")
+    if (
+        isinstance(tool_timeout_seconds, bool)
+        or not isinstance(tool_timeout_seconds, (int, float))
+        or not math.isfinite(float(tool_timeout_seconds))
+        or tool_timeout_seconds <= 0
+    ):
+        raise ValueError("WEB_PDF_TOOL_TIMEOUT_SECONDS 必须是有限正数")
+    if float(connect_timeout) + float(read_timeout) >= float(
+        tool_timeout_seconds
+    ):
+        raise ValueError(
+            "WEB_PDF_TOOL_TIMEOUT_SECONDS 必须大于连接与读取超时之和，"
+            "以便为 PDF 解析保留预算"
+        )
+
+
 def env_csv(name: str, default: str) -> tuple[str, ...]:
     """读取逗号分隔且保持顺序的非空配置项。"""
     raw_value = os.getenv(name, default)
@@ -398,6 +434,16 @@ class Settings:
         "WEB_FETCH_USER_AGENT", "rag-agent-qa-system/1.0"
     )
     WEB_FETCH_PROXY = normalize_web_fetch_proxy(os.getenv("WEB_FETCH_PROXY"))
+    WEB_PDF_MAX_RESPONSE_BYTES = env_int(
+        "WEB_PDF_MAX_RESPONSE_BYTES", "10000000"
+    )
+    WEB_PDF_MAX_DOCUMENT_PAGES = env_int(
+        "WEB_PDF_MAX_DOCUMENT_PAGES", "1000"
+    )
+    WEB_PDF_TOOL_TIMEOUT_SECONDS = env_float(
+        "WEB_PDF_TOOL_TIMEOUT_SECONDS",
+        "45",
+    )
 
     TOOL_DEFAULT_PRINCIPAL_ID = os.getenv(
         "TOOL_DEFAULT_PRINCIPAL_ID",
@@ -525,6 +571,13 @@ class Settings:
             max_redirects=cls.WEB_FETCH_MAX_REDIRECTS,
             user_agent=cls.WEB_FETCH_USER_AGENT,
             proxy=cls.WEB_FETCH_PROXY,
+        )
+        validate_web_pdf_config(
+            max_response_bytes=cls.WEB_PDF_MAX_RESPONSE_BYTES,
+            max_document_pages=cls.WEB_PDF_MAX_DOCUMENT_PAGES,
+            tool_timeout_seconds=cls.WEB_PDF_TOOL_TIMEOUT_SECONDS,
+            connect_timeout=cls.WEB_FETCH_CONNECT_TIMEOUT,
+            read_timeout=cls.WEB_FETCH_READ_TIMEOUT,
         )
         validate_tool_governance_settings(cls)
         cls.LANGGRAPH_CHECKPOINTER = validate_langgraph_checkpointer(

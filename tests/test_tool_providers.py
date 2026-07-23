@@ -91,8 +91,10 @@ def test_default_local_provider_exposes_only_permitted_production_tools():
     assert set(names) < set(tool_registry.names())
     assert "web_search" in tool_registry.names()
     assert "web_fetch" in tool_registry.names()
+    assert "web_pdf_fetch" in tool_registry.names()
     assert "web_search" not in names
     assert "web_fetch" not in names
+    assert "web_pdf_fetch" not in names
     assert set(names) == {
         "search_knowledge_base",
         "compare_documents",

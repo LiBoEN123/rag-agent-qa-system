@@ -126,6 +126,7 @@ def collect_trace_metrics(result: dict) -> dict:
         "get_chunk_text",
         "web_search",
         "web_fetch",
+        "web_pdf_fetch",
     }
     rag_timings = result.get("timings")
     if not isinstance(rag_timings, dict):

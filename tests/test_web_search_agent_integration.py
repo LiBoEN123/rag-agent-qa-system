@@ -2,6 +2,7 @@
 
 import json
 from importlib import import_module
+from pathlib import Path
 
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
@@ -16,6 +17,10 @@ from app.tools.registry import tool_registry
 
 web_search_module = import_module("app.tools.web_search")
 web_fetch_module = import_module("app.tools.web_fetch")
+web_download_module = import_module("app.tools.web_download")
+PDF_BYTES = (
+    Path(__file__).parent / "fixtures" / "web_pdf_text.pdf"
+).read_bytes()
 
 
 ARTICLE_HTML = """
@@ -87,6 +92,113 @@ class SearchFetchModel(RecordingModel):
         )
 
 
+class SearchPdfModel(RecordingModel):
+    """依据 ToolMessage 执行 web_search → web_pdf_fetch → final。"""
+
+    def __init__(self):
+        super().__init__([])
+        self.selected_url = ""
+        self.pdf_output = {}
+        self.bound_tool_history: list[list[str]] = []
+
+    def bind_tools(self, tools):
+        self.bound_tool_names = [tool.name for tool in tools]
+        self.bound_tool_history.append(list(self.bound_tool_names))
+        return self
+
+    def invoke(self, messages):
+        self.received_messages.append(list(messages))
+        if len(self.received_messages) == 1:
+            return AIMessage(
+                content="",
+                tool_calls=[_tool_call("pdf-search-call")],
+            )
+        latest = messages[-1]
+        assert isinstance(latest, ToolMessage)
+        payload = json.loads(latest.content)
+        if len(self.received_messages) == 2:
+            self.selected_url = payload["output"]["results"][0]["url"]
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "web_pdf_fetch",
+                        "args": {
+                            "url": self.selected_url,
+                            "start_page": 1,
+                            "max_pages": 2,
+                            "max_chars": 4000,
+                        },
+                        "id": "pdf-fetch-call",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        self.pdf_output = payload["output"]
+        return AIMessage(
+            content=(
+                f"{self.pdf_output['title']}，相关页码 "
+                f"{self.pdf_output['page_numbers']}，来源："
+                f"{self.pdf_output['final_url']}"
+            )
+        )
+
+
+class FetchThenPdfModel(RecordingModel):
+    """观察 web_fetch 类型错误后改用 web_pdf_fetch。"""
+
+    def __init__(self):
+        super().__init__([])
+        self.first_error = {}
+        self.pdf_output = {}
+
+    def invoke(self, messages):
+        self.received_messages.append(list(messages))
+        url = "https://example.com/document.pdf"
+        if len(self.received_messages) == 1:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "web_fetch",
+                        "args": {"url": url, "max_chars": 4000},
+                        "id": "wrong-html-fetch",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        latest = messages[-1]
+        assert isinstance(latest, ToolMessage)
+        payload = json.loads(latest.content)
+        if len(self.received_messages) == 2:
+            self.first_error = payload
+            assert payload["error_code"] == "invalid_result"
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "web_pdf_fetch",
+                        "args": {
+                            "url": url,
+                            "start_page": 1,
+                            "max_pages": 2,
+                            "max_chars": 4000,
+                        },
+                        "id": "correct-pdf-fetch",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        self.pdf_output = payload["output"]
+        return AIMessage(
+            content=(
+                f"已改用 PDF 工具：{self.pdf_output['title']} "
+                f"{self.pdf_output['final_url']} pages "
+                f"{self.pdf_output['page_numbers']}"
+            )
+        )
+
+
 class FakeFetchResponse:
     def __init__(self, url):
         self.url = url
@@ -124,6 +236,34 @@ class FakeFetchManager:
     def __init__(self, config):
         self.config = config
         self.session = FakeFetchSession()
+        self.sessions.append(self.session)
+
+    def get_session(self):
+        return self.session
+
+
+class FakePdfResponse(FakeFetchResponse):
+    def __init__(self, url="https://example.com/document.pdf"):
+        super().__init__(url)
+        self.headers = {"Content-Type": "application/pdf"}
+
+    def iter_content(self, chunk_size):
+        del chunk_size
+        yield PDF_BYTES
+
+
+class FakePdfSession(FakeFetchSession):
+    def request(self, method, url, **kwargs):
+        self.calls.append((method, url, kwargs))
+        return FakePdfResponse(url)
+
+
+class FakePdfManager:
+    sessions = []
+
+    def __init__(self, config):
+        self.config = config
+        self.session = FakePdfSession()
         self.sessions.append(self.session)
 
     def get_session(self):
@@ -333,7 +473,7 @@ def test_agent_searches_then_fetches_through_registry_runtime(monkeypatch):
 
     FakeFetchManager.sessions = []
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
-    monkeypatch.setattr(web_fetch_module, "Manager", FakeFetchManager)
+    monkeypatch.setattr(web_download_module, "Manager", FakeFetchManager)
     monkeypatch.setattr(
         graph_nodes,
         "run_rag_subgraph",
@@ -396,12 +536,146 @@ def test_agent_searches_then_fetches_through_registry_runtime(monkeypatch):
     assert "web_fetch" not in build_agent_graph().nodes
 
 
+def test_agent_searches_then_reads_pdf_through_registry_runtime(monkeypatch):
+    """真实 create_agent 循环把搜索 PDF URL 交给受治理 PDF 工具。"""
+    ddgs_calls = []
+
+    class FakeDDGS:
+        def __init__(self, **kwargs):
+            ddgs_calls.append(("init", kwargs))
+
+        def text(self, query, **kwargs):
+            ddgs_calls.append(("text", query, kwargs))
+            return [
+                {
+                    "title": "Governed Web PDF Fixture",
+                    "href": "https://example.com/document.pdf",
+                    "body": "Two page public PDF",
+                }
+            ]
+
+    FakePdfManager.sessions = []
+    monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
+    monkeypatch.setattr(web_download_module, "Manager", FakePdfManager)
+    monkeypatch.setattr(
+        graph_nodes,
+        "run_rag_subgraph",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError(f"web PDF must not enter RAG: {args!r} {kwargs!r}")
+        ),
+    )
+    model = SearchPdfModel()
+    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    runtime_calls = []
+    original_execute = tool_runtime.ToolRuntime.execute
+
+    def recording_execute(self, name, args=None, *, context=None):
+        runtime_calls.append((name, dict(args or {}), context))
+        return original_execute(self, name, args, context=context)
+
+    monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", recording_execute)
+    output = _invoke(
+        model,
+        ToolInvocationContext(
+            trace_id="trace-search-pdf",
+            session_id="session-search-pdf",
+            principal_id="web-reader",
+            permissions=("knowledge_base:read", "web:search", "web:fetch"),
+            source="web_pdf_multi_tool_test",
+        ),
+    )
+
+    assert len(model.received_messages) == 3
+    assert all(
+        {"web_search", "web_pdf_fetch"} <= set(names)
+        for names in model.bound_tool_history
+    )
+    search_message = model.received_messages[1][-1]
+    pdf_message = model.received_messages[2][-1]
+    assert isinstance(search_message, ToolMessage)
+    assert isinstance(pdf_message, ToolMessage)
+    assert search_message.tool_call_id == "pdf-search-call"
+    assert pdf_message.tool_call_id == "pdf-fetch-call"
+    pdf_payload = json.loads(pdf_message.content)
+    assert pdf_payload["output"]["page_numbers"] == [1, 2]
+    assert "[Page 1]" in pdf_payload["output"]["content"]
+    assert "[Page 2]" in pdf_payload["output"]["content"]
+    assert [call[0] for call in runtime_calls] == [
+        "web_search",
+        "web_pdf_fetch",
+    ]
+    assert "Governed Web PDF Fixture" in output["result"]["answer"]
+    assert model.selected_url in output["result"]["answer"]
+    assert "[1, 2]" in output["result"]["answer"]
+    assert output["result"]["references"] == []
+    assert output["pending_rag_result"] == {}
+    assert [
+        item["tool_name"]
+        for item in output["result"]["tool_trace"]
+        if item.get("step") == "tool_call" and item.get("handler_executed")
+    ] == ["web_search", "web_pdf_fetch"]
+    pdf_trace = next(
+        item
+        for item in output["result"]["tool_trace"]
+        if item.get("tool_name") == "web_pdf_fetch"
+    )
+    assert pdf_trace["tool_args"]["url"] == "***REDACTED***"
+    assert len(ddgs_calls) == 2
+    assert len(FakePdfManager.sessions) == 1
+    assert "web_pdf_fetch" not in build_agent_graph().nodes
+
+
+def test_agent_recovers_from_web_fetch_pdf_content_type_error(monkeypatch):
+    """模型读取错误 ToolMessage 后在同一框架循环中改用 PDF 工具。"""
+    FakePdfManager.sessions = []
+    monkeypatch.setattr(web_download_module, "Manager", FakePdfManager)
+    monkeypatch.setattr(
+        graph_nodes,
+        "run_rag_subgraph",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError(f"web PDF recovery must not enter RAG: {args} {kwargs}")
+        ),
+    )
+    model = FetchThenPdfModel()
+    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    output = _invoke(
+        model,
+        ToolInvocationContext(
+            trace_id="trace-fetch-pdf-recovery",
+            permissions=("knowledge_base:read", "web:fetch"),
+            source="web_pdf_recovery_test",
+        ),
+    )
+
+    assert len(model.received_messages) == 3
+    wrong_message = model.received_messages[1][-1]
+    correct_message = model.received_messages[2][-1]
+    assert isinstance(wrong_message, ToolMessage)
+    assert isinstance(correct_message, ToolMessage)
+    assert wrong_message.tool_call_id == "wrong-html-fetch"
+    assert correct_message.tool_call_id == "correct-pdf-fetch"
+    assert model.first_error["error_code"] == "invalid_result"
+    assert model.pdf_output["page_numbers"] == [1, 2]
+    assert "Governed Web PDF Fixture" in output["result"]["answer"]
+    assert output["result"]["references"] == []
+    assert output["pending_rag_result"] == {}
+    assert [
+        (item["tool_name"], item["tool_status"])
+        for item in output["result"]["tool_trace"]
+        if item.get("step") == "tool_call" and item.get("handler_executed")
+    ] == [
+        ("web_fetch", "error"),
+        ("web_pdf_fetch", "success"),
+    ]
+    assert len(FakePdfManager.sessions) == 2
+
+
 def test_forged_hidden_web_fetch_is_unknown_without_http_manager(monkeypatch):
     class ForbiddenManager:
         def __init__(self, config):
             raise AssertionError(f"hidden web_fetch reached Manager: {config}")
 
-    monkeypatch.setattr(web_fetch_module, "Manager", ForbiddenManager)
+    monkeypatch.setattr(web_download_module, "Manager", ForbiddenManager)
     model = RecordingModel(
         [
             AIMessage(
@@ -435,5 +709,61 @@ def test_forged_hidden_web_fetch_is_unknown_without_http_manager(monkeypatch):
     assert "web_fetch" not in model.bound_tool_names
     assert isinstance(message, ToolMessage)
     assert message.tool_call_id == "forged-fetch-call"
+    assert json.loads(message.content)["error_code"] == "unknown_tool"
+    assert output["result"]["status"] == "OK"
+
+
+def test_forged_hidden_web_pdf_fetch_is_unknown_without_dependencies(
+    monkeypatch,
+):
+    class ForbiddenManager:
+        def __init__(self, config):
+            raise AssertionError(f"hidden web_pdf_fetch reached Manager: {config}")
+
+    def forbidden_reader(*args, **kwargs):
+        raise AssertionError(f"hidden web_pdf_fetch reached pypdf: {args} {kwargs}")
+
+    monkeypatch.setattr(web_download_module, "Manager", ForbiddenManager)
+    monkeypatch.setattr(
+        import_module("app.tools.web_pdf_fetch"),
+        "PdfReader",
+        forbidden_reader,
+    )
+    model = RecordingModel(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "web_pdf_fetch",
+                        "args": {
+                            "url": "https://example.com/hidden.pdf",
+                            "start_page": 1,
+                            "max_pages": 2,
+                            "max_chars": 4000,
+                        },
+                        "id": "forged-pdf-fetch-call",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="隐藏 PDF 工具调用已安全处理。"),
+        ]
+    )
+    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+
+    output = _invoke(
+        model,
+        ToolInvocationContext(
+            trace_id="trace-forged-pdf-fetch",
+            permissions=("knowledge_base:read", "web:search"),
+            source="web_visibility_test",
+        ),
+    )
+
+    message = model.received_messages[1][-1]
+    assert "web_pdf_fetch" not in model.bound_tool_names
+    assert isinstance(message, ToolMessage)
+    assert message.tool_call_id == "forged-pdf-fetch-call"
     assert json.loads(message.content)["error_code"] == "unknown_tool"
     assert output["result"]["status"] == "OK"
