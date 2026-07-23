@@ -68,7 +68,7 @@ handler 不实现线程池、sleep、指数退避、审计、权限判断、Grap
 
 `web_search` 要求精确权限 `web:search`。默认 `TOOL_DEFAULT_PERMISSIONS=knowledge_base:read` 不变，升级代码不会自动把用户查询发送给外部服务；维护者必须显式加入 `web:search`。无权时 Provider 隐藏完整契约，伪造名称返回 `unknown_tool`，直接 dispatch 由 Runtime 返回 `permission_denied`。
 
-DDGS 内部超时默认 8 秒，ToolSpec 总体超时为 10 秒。公开 `RatelimitException`、`TimeoutException` 和 `DDGSException` 分别映射为稳定限流、超时和依赖不可用错误；Runtime 独占最多一次重试、退避、抖动和 attempt 元数据。`query` 声明为敏感参数，审计只保存参数指纹和有限输出摘要；proxy 不进入输出、ToolMessage、审计或 Agent State。
+DDGS 内部超时默认 8 秒，ToolSpec 总体超时为 10 秒。公开 `RatelimitException`、`TimeoutException` 和 `DDGSException` 分别映射为稳定限流、超时和依赖不可用错误；Runtime 独占最多一次重试、退避、抖动和 attempt 元数据。`query` 声明为敏感参数，审计只保存参数指纹和有限输出摘要；proxy 不进入输出、ToolMessage、审计或 Agent State。默认使用独立的 `WEB_SEARCH_PROXY`；显式开启 `WEB_TRUSTED_PROXY_MODE` 后，维护者配置的 `WEB_TRUSTED_PROXY_URL` 统一覆盖搜索和下载代理。
 
 ## 后果与可替换边界
 

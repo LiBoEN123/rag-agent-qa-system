@@ -235,7 +235,9 @@ python scripts/smoke_test_web_search.py \
 
 `web_fetch` 用于已知具体公开 URL 后读取单个网页正文；通常由 Agent 在 `web_search` 返回候选标题、URL 和摘要后选择调用，也可读取用户明确提供的 URL。下载层固定使用 `requests-hardened==1.3.0` 做 SSRF IP 过滤和逐跳安全重定向，正文提取固定使用 `trafilatura==2.1.0`，而权限、总体超时、一次有限重试、审计和输出校验仍由现有 `ToolRuntime` 负责。`search_knowledge_base` 则只读取本地受控知识库并进入 RAG 引用路径。
 
-模型只能提供 `url` 和 `max_chars`，不能提供 method、headers、Cookie、Authorization、proxy、timeout 或 body。应用层只接受 HTTP(S)、无 credentials、无控制字符且端口为 80/443 的 URL；私网、环回、链路本地、metadata 地址、DNS 解析和 redirect 目标由 `requests-hardened` 校验。响应以 streaming 方式读取解压后内容并受 `WEB_FETCH_MAX_RESPONSE_BYTES` 限制，只接受 HTML、XHTML 和纯文本，不支持 PDF、二进制文件或 JavaScript 渲染。
+模型只能提供 `url` 和 `max_chars`，不能提供 method、headers、Cookie、Authorization、proxy、timeout 或 body。应用层只接受 HTTP(S)、无 credentials、无控制字符且端口为 80/443 的 URL。默认 `WEB_TRUSTED_PROXY_MODE=false`，私网、环回、链路本地、metadata 地址、DNS 解析和 redirect 目标继续由 `requests-hardened` 校验。响应以 streaming 方式读取解压后内容并受 `WEB_FETCH_MAX_RESPONSE_BYTES` 限制，只接受 HTML、XHTML 和纯文本，不支持 PDF、二进制文件或 JavaScript 渲染。
+
+受控本地开发环境可显式设置 `WEB_TRUSTED_PROXY_MODE=true` 和 `WEB_TRUSTED_PROXY_URL=http://127.0.0.1:<port>`。开启后统一代理覆盖 `WEB_SEARCH_PROXY`、`WEB_FETCH_PROXY`，搜索、HTML 和 PDF 工具共用该代理；下载层仍禁用环境代理并保留 URL、超时、响应体量、Content-Type 和资源关闭约束，但把 DNS/IP、私网及重定向目标的网络策略委托给受信代理。该代理必须自行拒绝局域网、环回、metadata 地址和危险重定向，不能把此模式当作生产安全默认值；关闭开关即恢复原有 hardened SSRF 校验。
 
 URL、页面元数据和正文全部是不可信输入。输出固定包含 `content_is_untrusted=true`；模型不得执行页面中的命令、不得把正文视为 system/developer/tool 指令，也不得因为页面要求而调用其他工具，只能将其作为回答用户问题的参考，并在回答中注明实际 `final_url`。网页不会写入 ChromaDB/BM25，不设置 `pending_rag_result`，也不会生成本地 RAG references。
 
@@ -257,7 +259,7 @@ python scripts/smoke_test_web_fetch.py \
 
 ## Web PDF Fetch
 
-`web_pdf_fetch` 是第八个注册生产工具，用于读取已知公开 PDF 的指定连续页范围。它与 `web_fetch` 保持明确分工：`web_fetch` 只处理 HTML、XHTML 和纯文本并继续拒绝 PDF；`web_pdf_fetch` 只处理 PDF，并使用项目已经锁定的 `pypdf==6.14.2` 提取数字文本。两者共用 `app/tools/web_download.py` 中基于 `requests-hardened==1.3.0` 的 SSRF 安全下载、逐跳重定向、可信代理、streaming 和资源关闭边界。
+`web_pdf_fetch` 是第八个注册生产工具，用于读取已知公开 PDF 的指定连续页范围。它与 `web_fetch` 保持明确分工：`web_fetch` 只处理 HTML、XHTML 和纯文本并继续拒绝 PDF；`web_pdf_fetch` 只处理 PDF，并使用项目已经锁定的 `pypdf==6.14.2` 提取数字文本。两者共用 `app/tools/web_download.py` 中基于 `requests-hardened==1.3.0` 的下载、逐跳重定向、可信代理、streaming 和资源关闭边界；默认模式实施本地 SSRF 校验，显式受信代理模式则按上一节所述委托网络策略。
 
 模型只能提供 `url`、1-based `start_page`、1–20 的 `max_pages` 和 1000–30000 的 `max_chars`。服务端另以 `WEB_PDF_MAX_RESPONSE_BYTES`、`WEB_PDF_MAX_DOCUMENT_PAGES` 和 `WEB_PDF_TOOL_TIMEOUT_SECONDS` 控制下载字节、总页数和总体 ToolRuntime 时间。工具接受 `application/pdf`、`application/x-pdf`，并仅在内容具有 `%PDF-` 签名时兼容 `application/octet-stream`；所有允许类型最终都检查 PDF magic。
 
@@ -444,6 +446,8 @@ streamlit run demo/streamlit_app.py
 | `WEB_SEARCH_SAFESEARCH` | 安全搜索级别：`on`、`moderate` 或 `off`，默认 `moderate` |
 | `WEB_SEARCH_TIMEOUT` | DDGS 内部 HTTP 超时秒数，默认 `8`，不得超过工具总体超时 |
 | `WEB_SEARCH_PROXY` | 可选 DDGS 代理；留空时传入 `None`，只在确实需要时配置 |
+| `WEB_TRUSTED_PROXY_MODE` | 是否启用统一受信代理模式，默认 `false`；开启时委托 DNS/IP 网络策略，只适合受控环境 |
+| `WEB_TRUSTED_PROXY_URL` | 统一受信 HTTP(S) 代理 URL；模式开启时必填并覆盖两个 Web 工具独立代理 |
 | `WEB_FETCH_CONNECT_TIMEOUT` | Web Fetch 连接阶段超时秒数，默认 `3` |
 | `WEB_FETCH_READ_TIMEOUT` | Web Fetch 单次响应读取超时秒数，默认 `10` |
 | `WEB_FETCH_MAX_RESPONSE_BYTES` | Web Fetch 解压后响应正文上限，默认 `2000000` bytes |

@@ -4,10 +4,13 @@ import pytest
 
 from app.config import (
     Settings,
+    normalize_trusted_web_proxy_url,
     normalize_web_search_proxy,
+    resolve_web_proxy,
     validate_agent_loop_config,
     validate_tool_governance_config,
     validate_tool_runtime_config,
+    validate_trusted_web_proxy_config,
     validate_web_search_config,
 )
 
@@ -141,6 +144,68 @@ def test_web_search_empty_proxy_is_normalized_to_none():
     assert normalize_web_search_proxy(" socks5://127.0.0.1:1080 ") == (
         "socks5://127.0.0.1:1080"
     )
+
+
+def test_trusted_web_proxy_mode_overrides_independent_tool_proxies():
+    proxy = "http://127.0.0.1:7890"
+
+    assert normalize_trusted_web_proxy_url(f" {proxy} ") == proxy
+    assert (
+        resolve_web_proxy(
+            trusted_proxy_mode=True,
+            trusted_proxy_url=proxy,
+            fallback_proxy="http://fallback.example:8080",
+        )
+        == proxy
+    )
+    assert (
+        resolve_web_proxy(
+            trusted_proxy_mode=False,
+            trusted_proxy_url=proxy,
+            fallback_proxy="http://fallback.example:8080",
+        )
+        == "http://fallback.example:8080"
+    )
+
+
+def test_trusted_web_proxy_mode_requires_url_during_resolution():
+    with pytest.raises(ValueError, match="WEB_TRUSTED_PROXY_URL"):
+        resolve_web_proxy(
+            trusted_proxy_mode=True,
+            trusted_proxy_url=None,
+            fallback_proxy=None,
+        )
+
+
+def test_trusted_web_proxy_configuration_accepts_disabled_or_valid_url():
+    validate_trusted_web_proxy_config(enabled=False, proxy_url=None)
+    validate_trusted_web_proxy_config(
+        enabled=True,
+        proxy_url="http://127.0.0.1:7890",
+    )
+
+
+@pytest.mark.parametrize(
+    ("enabled", "proxy_url", "expected_message"),
+    [
+        ("true", "http://127.0.0.1:7890", "WEB_TRUSTED_PROXY_MODE"),
+        (True, None, "WEB_TRUSTED_PROXY_URL"),
+        (True, "socks5://127.0.0.1:7890", "WEB_TRUSTED_PROXY_URL"),
+        (True, "http://127.0.0.1:bad", "WEB_TRUSTED_PROXY_URL"),
+        (True, "http://127.0.0.1:7890/path", "WEB_TRUSTED_PROXY_URL"),
+        (True, "http://127.0.0.1:7890?secret=yes", "WEB_TRUSTED_PROXY_URL"),
+    ],
+)
+def test_trusted_web_proxy_configuration_rejects_invalid_values(
+    enabled,
+    proxy_url,
+    expected_message,
+):
+    with pytest.raises(ValueError, match=expected_message):
+        validate_trusted_web_proxy_config(
+            enabled=enabled,
+            proxy_url=proxy_url,
+        )
 
 
 def test_settings_validate_rejects_invalid_web_search_config(monkeypatch, tmp_path):

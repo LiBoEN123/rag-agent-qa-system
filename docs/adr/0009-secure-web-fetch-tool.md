@@ -58,9 +58,9 @@ Trafilatura 负责 HTML/XHTML 的正文、标题和有限元数据提取。项�
 
 ## 下载、重定向和代理边界
 
-请求固定为 GET、streaming 和 `allow_redirects=True`。Session 设置 `trust_env=False`，不读取 `.netrc` 或环境代理；不发送用户 Authorization、Cookie、Referer 或 headers。只显式设置受信 User-Agent 和 Accept。`WEB_FETCH_PROXY` 为空时不传代理，非空时只由服务器 Settings 配置，并按 requests-hardened 官方支持的 requests proxy 参数传入；模型和 URL 参数不能覆盖代理，代理也不进入 ToolMessage、审计、错误消息或 Agent State。
+请求固定为 GET、streaming 和 `allow_redirects=True`。Session 设置 `trust_env=False`，不读取 `.netrc` 或环境代理；不发送用户 Authorization、Cookie、Referer 或 headers。只显式设置受信 User-Agent 和 Accept。默认 `WEB_TRUSTED_PROXY_MODE=false`：`WEB_FETCH_PROXY` 为空时不传代理，非空时仍由 requests-hardened 执行 DNS/IP、私网和重定向目标校验。显式开启受信代理模式时，`WEB_TRUSTED_PROXY_URL` 统一覆盖搜索和下载代理，并把这些网络策略委托给维护者控制的代理；该代理必须自行拒绝局域网、环回、metadata 地址和危险重定向。模型和 URL 参数始终不能覆盖代理，代理也不进入 ToolMessage、审计、错误消息或 Agent State。
 
-`WEB_FETCH_MAX_REDIRECTS=5` 通过 hardened Session 的重定向上限实现。每次自动重定向仍使用 requests-hardened adapter 做网络级验证；项目不实现 DNS 固定客户端或另一套 redirect 安全验证器。
+`WEB_FETCH_MAX_REDIRECTS=5` 通过 Session 的重定向上限实现。默认模式下每次自动重定向仍使用 requests-hardened adapter 做网络级验证；受信代理模式下由代理负责相同的网络策略。项目不实现 DNS 固定客户端或另一套 redirect 安全验证器。
 
 ## 响应体量和内容类型
 

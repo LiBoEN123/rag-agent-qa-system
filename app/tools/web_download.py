@@ -85,10 +85,14 @@ def normalize_public_web_url(
 
 
 def _build_hardened_manager() -> Manager:
-    """按可信服务器配置构造启用 SSRF 过滤的 HTTP Manager。"""
+    """按默认安全模式或显式受信代理模式构造 HTTP Manager。"""
+    delegate_network_policy = (
+        Settings.WEB_TRUSTED_PROXY_MODE
+        and Settings.WEB_FETCH_PROXY is not None
+    )
     return Manager(
         Config(
-            ip_filter_enable=True,
+            ip_filter_enable=not delegate_network_policy,
             ip_filter_allow_loopback_ips=False,
             never_redirect=False,
             default_timeout=(

@@ -23,7 +23,7 @@ text = reader.pages[index].extract_text()
 
 ## 下载与资源边界
 
-requests-hardened 继续负责 DNS/IP、私网与环回拒绝、连接固定和每次安全重定向。Session 继续设置 `trust_env=False`，只发 GET，不读取 `.netrc`，不发送 Cookie、Authorization 或用户 headers；代理仍只有维护者配置的 `WEB_FETCH_PROXY`，没有 PDF 专用代理。
+默认 `WEB_TRUSTED_PROXY_MODE=false` 时，requests-hardened 继续负责 DNS/IP、私网与环回拒绝、连接固定和每次安全重定向。Session 始终设置 `trust_env=False`，只发 GET，不读取 `.netrc`，不发送 Cookie、Authorization 或用户 headers；代理仍没有模型可控或 PDF 专用入口。受控环境显式开启统一受信代理模式后，`WEB_TRUSTED_PROXY_URL` 同时覆盖搜索、HTML 和 PDF 代理，DNS/IP 与重定向目标网络策略改由该代理承担；URL、端口、体量、类型和资源关闭约束不变。
 
 HTML 和 PDF 共用连接超时、读取超时、最大重定向、User-Agent 和代理配置。PDF 使用独立的 `WEB_PDF_MAX_RESPONSE_BYTES=10000000`，因为 PDF 通常比单页 HTML 大；默认 10 MB 仍能在内存解析前提供明确上限。`WEB_PDF_MAX_DOCUMENT_PAGES=1000` 在正文提取前限制页树规模。ToolSpec 总体超时默认 45 秒，大于默认 3 秒连接加 10 秒读取预算，为有限下载和 pypdf 解析保留时间；handler 不自行重试，只有 ToolRuntime 最多重试一次明确可重试的网络失败。
 

@@ -8,6 +8,7 @@ import os
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -82,6 +83,63 @@ def normalize_web_search_proxy(value: str | None) -> str | None:
 def normalize_web_fetch_proxy(value: str | None) -> str | None:
     """把空白 Web Fetch 代理配置规整为 None。"""
     return (value or "").strip() or None
+
+
+def normalize_trusted_web_proxy_url(value: str | None) -> str | None:
+    """把空白的统一受信代理地址规整为 None。"""
+    return (value or "").strip() or None
+
+
+def validate_trusted_web_proxy_config(
+    *,
+    enabled: object,
+    proxy_url: object,
+) -> None:
+    """校验显式委托网络策略的受信代理模式配置。"""
+    if not isinstance(enabled, bool):
+        raise ValueError("WEB_TRUSTED_PROXY_MODE 必须是布尔值")
+    if not enabled:
+        return
+    if not isinstance(proxy_url, str) or not proxy_url:
+        raise ValueError(
+            "WEB_TRUSTED_PROXY_MODE=true 时必须配置 WEB_TRUSTED_PROXY_URL"
+        )
+    if any(
+        character.isspace() or ord(character) < 32 or ord(character) == 127
+        for character in proxy_url
+    ):
+        raise ValueError("WEB_TRUSTED_PROXY_URL 包含非法字符")
+    try:
+        parsed = urlsplit(proxy_url)
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("WEB_TRUSTED_PROXY_URL 格式无效") from exc
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "WEB_TRUSTED_PROXY_URL 必须是无 path、query、fragment 的 HTTP(S) URL"
+        )
+
+
+def resolve_web_proxy(
+    *,
+    trusted_proxy_mode: bool,
+    trusted_proxy_url: str | None,
+    fallback_proxy: str | None,
+) -> str | None:
+    """受信模式开启时校验并统一覆盖工具原有的独立代理配置。"""
+    if trusted_proxy_mode:
+        validate_trusted_web_proxy_config(
+            enabled=True,
+            proxy_url=trusted_proxy_url,
+        )
+        return trusted_proxy_url
+    return fallback_proxy
 
 
 def validate_agent_loop_config(
@@ -422,7 +480,16 @@ class Settings:
         "WEB_SEARCH_SAFESEARCH", "moderate"
     ).strip().lower()
     WEB_SEARCH_TIMEOUT = env_int("WEB_SEARCH_TIMEOUT", "8")
-    WEB_SEARCH_PROXY = normalize_web_search_proxy(os.getenv("WEB_SEARCH_PROXY"))
+    WEB_TRUSTED_PROXY_MODE = env_bool("WEB_TRUSTED_PROXY_MODE", "false")
+    WEB_TRUSTED_PROXY_URL = normalize_trusted_web_proxy_url(
+        os.getenv("WEB_TRUSTED_PROXY_URL")
+    )
+    _WEB_SEARCH_PROXY = normalize_web_search_proxy(os.getenv("WEB_SEARCH_PROXY"))
+    WEB_SEARCH_PROXY = resolve_web_proxy(
+        trusted_proxy_mode=WEB_TRUSTED_PROXY_MODE,
+        trusted_proxy_url=WEB_TRUSTED_PROXY_URL,
+        fallback_proxy=_WEB_SEARCH_PROXY,
+    )
 
     WEB_FETCH_CONNECT_TIMEOUT = env_float("WEB_FETCH_CONNECT_TIMEOUT", "3")
     WEB_FETCH_READ_TIMEOUT = env_float("WEB_FETCH_READ_TIMEOUT", "10")
@@ -433,7 +500,12 @@ class Settings:
     WEB_FETCH_USER_AGENT = os.getenv(
         "WEB_FETCH_USER_AGENT", "rag-agent-qa-system/1.0"
     )
-    WEB_FETCH_PROXY = normalize_web_fetch_proxy(os.getenv("WEB_FETCH_PROXY"))
+    _WEB_FETCH_PROXY = normalize_web_fetch_proxy(os.getenv("WEB_FETCH_PROXY"))
+    WEB_FETCH_PROXY = resolve_web_proxy(
+        trusted_proxy_mode=WEB_TRUSTED_PROXY_MODE,
+        trusted_proxy_url=WEB_TRUSTED_PROXY_URL,
+        fallback_proxy=_WEB_FETCH_PROXY,
+    )
     WEB_PDF_MAX_RESPONSE_BYTES = env_int(
         "WEB_PDF_MAX_RESPONSE_BYTES", "10000000"
     )
@@ -558,6 +630,10 @@ class Settings:
             max_total_cost_ms=cls.AGENT_MAX_TOTAL_COST_MS,
         )
         validate_tool_runtime_settings(cls)
+        validate_trusted_web_proxy_config(
+            enabled=cls.WEB_TRUSTED_PROXY_MODE,
+            proxy_url=cls.WEB_TRUSTED_PROXY_URL,
+        )
         validate_web_search_config(
             region=cls.WEB_SEARCH_REGION,
             safesearch=cls.WEB_SEARCH_SAFESEARCH,

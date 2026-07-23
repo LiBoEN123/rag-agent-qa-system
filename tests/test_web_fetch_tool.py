@@ -119,6 +119,7 @@ def isolate_web_fetch(monkeypatch):
     monkeypatch.setattr(Settings, "WEB_FETCH_MAX_REDIRECTS", 5)
     monkeypatch.setattr(Settings, "WEB_FETCH_USER_AGENT", "rag-agent-qa-system/1.0")
     monkeypatch.setattr(Settings, "WEB_FETCH_PROXY", None)
+    monkeypatch.setattr(Settings, "WEB_TRUSTED_PROXY_MODE", False)
     monkeypatch.setattr(Settings, "TOOL_AUDIT_ENABLED", False)
     yield
     tool_runtime.reset_tool_runtime()
@@ -329,8 +330,45 @@ def test_explicit_server_proxy_is_used_but_never_returned(monkeypatch):
     result = web_fetch_handler(_args(), ToolInvocationContext())
 
     kwargs = managers[0].session.calls[0][2]
+    assert managers[0].config.ip_filter_enable is True
     assert kwargs["proxies"] == {"http": proxy, "https": proxy}
     assert proxy not in json.dumps(result)
+
+
+def test_trusted_proxy_mode_delegates_ip_policy_and_uses_explicit_proxy(
+    monkeypatch,
+):
+    proxy = "http://127.0.0.1:7890"
+    monkeypatch.setattr(Settings, "WEB_TRUSTED_PROXY_MODE", True)
+    monkeypatch.setattr(Settings, "WEB_FETCH_PROXY", proxy)
+    managers = _install_fake_manager(
+        monkeypatch,
+        [FakeResponse(body=b"plain body", content_type="text/plain")],
+    )
+
+    result = web_fetch_handler(_args(), ToolInvocationContext())
+
+    manager = managers[0]
+    kwargs = manager.session.calls[0][2]
+    assert manager.config.ip_filter_enable is False
+    assert manager.config.ip_filter_allow_loopback_ips is False
+    assert manager.session.trust_env is False
+    assert kwargs["proxies"] == {"http": proxy, "https": proxy}
+    assert proxy not in json.dumps(result)
+
+
+def test_trusted_proxy_mode_without_proxy_fails_closed(monkeypatch):
+    monkeypatch.setattr(Settings, "WEB_TRUSTED_PROXY_MODE", True)
+    monkeypatch.setattr(Settings, "WEB_FETCH_PROXY", None)
+    managers = _install_fake_manager(
+        monkeypatch,
+        [FakeResponse(body=b"plain body", content_type="text/plain")],
+    )
+
+    web_fetch_handler(_args(), ToolInvocationContext())
+
+    assert managers[0].config.ip_filter_enable is True
+    assert "proxies" not in managers[0].session.calls[0][2]
 
 
 def test_proxy_failure_returns_stable_message_without_proxy(monkeypatch):
