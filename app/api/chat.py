@@ -73,7 +73,6 @@ _chat_response_builder = ChatResponseBuilder(
     extract_llm_usage=extract_llm_usage,
 )
 build_chat_response = _chat_response_builder.build
-build_chat_response_from_result = _chat_response_builder.build_from_result
 chat_service = create_default_chat_service()
 
 
@@ -81,15 +80,7 @@ def build_chat_response_from_outcome(
     outcome: ChatServiceOutcome,
     trace_id: str,
 ) -> ChatResponse:
-    """使用现有 Response Builder 把应用服务结果适配为 API Schema。"""
-    if outcome.response_config is not None:
-        return build_chat_response_from_result(
-            result=outcome.result,
-            trace_id=trace_id,
-            question=outcome.question,
-            response_config=outcome.response_config,
-        )
-
+    """使用唯一 Response Builder 把应用服务结果适配为 API Schema。"""
     result = outcome.result
     return build_chat_response(
         code=outcome.code,

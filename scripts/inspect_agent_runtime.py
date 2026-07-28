@@ -8,7 +8,9 @@ import sys
 import warnings
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any
+from typing import Any, get_origin
+
+from pydantic import BaseModel
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +21,11 @@ warnings.filterwarnings("ignore", message="pkg_resources is deprecated as an API
 
 from app.agent.framework_agent import build_framework_agent  # noqa: E402
 from app.agent.framework_tools import build_framework_tools  # noqa: E402
+from app.agent.results import AgentRunResult  # noqa: E402
+from app.contracts.chat import (  # noqa: E402
+    CHAT_STATUS_POLICIES,
+    AgentResultStatus,
+)
 from app.graph.builder import build_agent_graph  # noqa: E402
 from app.graph.state import AgentGraphState  # noqa: E402
 from app.tools.context import (  # noqa: E402
@@ -87,6 +94,24 @@ BUSINESS_STATE_FIELDS = {
     "tool_trace",
 }
 NESTED_STATE_FIELD = "agent_" + "state"
+AGENT_RESULT_FIELDS = {
+    "status",
+    "answer",
+    "references",
+    "retrieval_confidence",
+    "answer_confidence",
+    "need_clarification",
+    "clarification_question",
+    "reason",
+    "action",
+    "tool_result_summary",
+    "tool_trace",
+    "router_llm_used",
+    "decompose_llm_used",
+    "answer_llm_used",
+    "llm_call_count",
+    "timings",
+}
 
 
 def _line_count(relative_path: str) -> int:
@@ -288,6 +313,46 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
     nested_state_fields = sorted(
         {NESTED_STATE_FIELD, "rewritten_question"} & state_fields
     )
+    result_fields = set(AgentRunResult.model_fields)
+    result_contract_ok = (
+        issubclass(AgentRunResult, BaseModel)
+        and result_fields == AGENT_RESULT_FIELDS
+        and AgentRunResult.model_config.get("extra") == "forbid"
+    )
+    policy_statuses = set(CHAT_STATUS_POLICIES)
+    policy_values = {
+        policy.result_status
+        for policy in CHAT_STATUS_POLICIES.values()
+    }
+    status_policy_complete = (
+        policy_statuses == set(AgentResultStatus)
+        and policy_values == set(AgentResultStatus)
+    )
+    service_source = (
+        PROJECT_ROOT / "app/services/chat_service.py"
+    ).read_text(encoding="utf-8")
+    metrics_source = (
+        PROJECT_ROOT / "app/observability/metrics.py"
+    ).read_text(encoding="utf-8")
+    response_source = (
+        PROJECT_ROOT / "app/api/responses.py"
+    ).read_text(encoding="utf-8")
+    single_status_policy = (
+        status_policy_complete
+        and "get_chat_status_policy" in service_source
+        and "get_chat_status_policy" not in metrics_source
+        and "get_chat_status_policy" not in response_source
+    )
+    result_annotation = AgentGraphState.__annotations__.get("result")
+    result_is_checkpoint_safe = get_origin(result_annotation) is dict
+    api_builder_boundary_ok = not any(
+        fragment in response_source
+        for fragment in (
+            "app.services",
+            "app.agent.runtime",
+            "app.graph",
+        )
+    )
     web_spec = next(
         (
             item
@@ -441,6 +506,37 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
             not missing_business_fields,
             ", ".join(missing_business_fields),
         ),
+        _check(
+            "agent_result_contract",
+            result_contract_ok,
+            (
+                f"missing={sorted(AGENT_RESULT_FIELDS - result_fields)}; "
+                f"extra={sorted(result_fields - AGENT_RESULT_FIELDS)}"
+            ),
+        ),
+        _check(
+            "status_policy_complete",
+            status_policy_complete,
+            (
+                f"keys={sorted(str(item) for item in policy_statuses)}; "
+                f"values={sorted(str(item) for item in policy_values)}"
+            ),
+        ),
+        _check(
+            "single_status_policy",
+            single_status_policy,
+            "ChatService must be the only high-level policy consumer",
+        ),
+        _check(
+            "result_is_checkpoint_safe",
+            result_is_checkpoint_safe,
+            "AgentGraphState.result must remain a plain dict annotation",
+        ),
+        _check(
+            "api_response_builder_boundary",
+            api_builder_boundary_ok,
+            "API Response Builder must not import services, runtime, or graph",
+        ),
         _check("parent_required_nodes", not missing_parent, ", ".join(missing_parent)),
         _check("parent_forbidden_nodes", not forbidden_parent, ", ".join(forbidden_parent)),
         _check(
@@ -535,6 +631,21 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
     return {
         "versions": versions,
         "state_schema": {"fields": sorted(state_fields)},
+        "agent_result_contract": {
+            "model": AgentRunResult.__name__,
+            "fields": sorted(result_fields),
+            "extra": AgentRunResult.model_config.get("extra"),
+        },
+        "chat_status_policy": [
+            {
+                "result_status": status.value,
+                "http_status": CHAT_STATUS_POLICIES[status].http_status,
+                "code": CHAT_STATUS_POLICIES[status].code,
+                "public_status": CHAT_STATUS_POLICIES[status].public_status,
+                "metric_status": CHAT_STATUS_POLICIES[status].metric_status,
+            }
+            for status in AgentResultStatus
+        ],
         "parent_graph": {**parent_data, "xray_nodes": xray_nodes},
         "framework_agent": framework_data,
         "middleware_nodes": sorted(

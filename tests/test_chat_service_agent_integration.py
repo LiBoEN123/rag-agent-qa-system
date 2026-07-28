@@ -9,7 +9,6 @@ from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_tools
-from app.api.responses import CHAT_RESULT_RESPONSE_MAP
 from app.graph import builder as graph_builder
 from app.graph import nodes as graph_nodes
 from app.graph.runtime import run_agent_langgraph
@@ -17,7 +16,6 @@ from app.observability.metrics import (
     attach_query_rewrite_trace,
     build_query_rewrite_trace,
     collect_trace_metrics,
-    normalize_metrics_status,
 )
 from app.services.chat_service import (
     ChatService,
@@ -273,7 +271,6 @@ def test_chat_service_runs_real_langgraph_provider_and_runtime(monkeypatch):
         build_query_rewrite_trace=build_query_rewrite_trace,
         attach_query_rewrite_trace=attach_query_rewrite_trace,
         collect_trace_metrics=collect_trace_metrics,
-        normalize_metrics_status=normalize_metrics_status,
         log_and_write_metrics=lambda record: metric_writes.append(dict(record)),
         write_bad_cases=lambda record: bad_cases.append(dict(record)),
         append_message=lambda session_id, role, content: session_writes.append(
@@ -281,7 +278,6 @@ def test_chat_service_runs_real_langgraph_provider_and_runtime(monkeypatch):
         ),
         now_iso=lambda: "2026-07-20T10:00:00.000",
         perf_counter=clock,
-        response_map=CHAT_RESULT_RESPONSE_MAP,
     )
     service = ChatService(dependencies)
 
@@ -462,7 +458,6 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
         build_query_rewrite_trace=build_query_rewrite_trace,
         attach_query_rewrite_trace=attach_query_rewrite_trace,
         collect_trace_metrics=collect_trace_metrics,
-        normalize_metrics_status=normalize_metrics_status,
         log_and_write_metrics=lambda record: metric_writes.append(dict(record)),
         write_bad_cases=lambda record: None,
         append_message=lambda session_id, role, content: session_writes.append(
@@ -470,7 +465,6 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
         ),
         now_iso=lambda: "2026-07-22T10:00:00.000",
         perf_counter=clock,
-        response_map=CHAT_RESULT_RESPONSE_MAP,
     )
 
     try:
@@ -660,7 +654,6 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
         build_query_rewrite_trace=build_query_rewrite_trace,
         attach_query_rewrite_trace=attach_query_rewrite_trace,
         collect_trace_metrics=collect_trace_metrics,
-        normalize_metrics_status=normalize_metrics_status,
         log_and_write_metrics=lambda record: metric_writes.append(dict(record)),
         write_bad_cases=lambda record: None,
         append_message=lambda session_id, role, content: session_writes.append(
@@ -668,7 +661,6 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
         ),
         now_iso=lambda: "2026-07-23T10:00:00.000",
         perf_counter=clock,
-        response_map=CHAT_RESULT_RESPONSE_MAP,
     )
     log_messages = []
 

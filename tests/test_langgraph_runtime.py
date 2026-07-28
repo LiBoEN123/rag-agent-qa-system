@@ -7,6 +7,8 @@ from langchain_core.messages import AIMessage
 
 from app.agent import framework_agent
 from app.agent import runtime as agent_runtime
+from app.agent.results import create_agent_result
+from app.contracts.chat import AgentResultStatus
 from app.graph import builder as graph_builder
 from app.graph import nodes as graph_nodes
 from app.graph import runtime as graph_runtime
@@ -187,6 +189,59 @@ def test_runtime_rejects_missing_or_invalid_graph_result(
     assert result["references"] == []
     assert result["tool_trace"][0]["step"] == "agent_langgraph_error"
     assert result["reason"] == "Agent 内部执行异常，请稍后重试"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("status", "UNKNOWN"),
+        ("references", ["invalid"]),
+        ("retrieval_confidence", 1.5),
+        ("llm_call_count", -1),
+        ("timings", None),
+    ],
+)
+def test_runtime_rejects_graph_result_that_violates_contract(
+    monkeypatch,
+    field,
+    value,
+):
+    payload = create_agent_result(status=AgentResultStatus.OK)
+    payload[field] = value
+
+    class InvalidResultGraph:
+        def invoke(self, graph_input, config, *, context):
+            del graph_input, config, context
+            return {"result": payload}
+
+    monkeypatch.setattr(
+        graph_runtime,
+        "get_compiled_agent_graph",
+        lambda: InvalidResultGraph(),
+    )
+
+    result = _run()
+
+    assert result["status"] == "INTERNAL_ERROR"
+    assert result["tool_trace"][0]["step"] == "agent_langgraph_error"
+
+
+def test_runtime_rejects_graph_result_with_missing_required_field(monkeypatch):
+    payload = create_agent_result(status=AgentResultStatus.OK)
+    payload.pop("timings")
+
+    class MissingFieldGraph:
+        def invoke(self, graph_input, config, *, context):
+            del graph_input, config, context
+            return {"result": payload}
+
+    monkeypatch.setattr(
+        graph_runtime,
+        "get_compiled_agent_graph",
+        lambda: MissingFieldGraph(),
+    )
+
+    assert _run()["status"] == "INTERNAL_ERROR"
 
 
 def test_runtime_signature_rejects_external_decision():

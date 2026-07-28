@@ -54,7 +54,24 @@ def test_runtime_report_preserves_graph_contract(monkeypatch):
         "single_runtime_state",
         "no_nested_agent_state",
         "state_has_business_fields",
+        "agent_result_contract",
+        "status_policy_complete",
+        "single_status_policy",
+        "result_is_checkpoint_safe",
+        "api_response_builder_boundary",
     } <= {item["name"] for item in report["checks"]}
+    assert report["agent_result_contract"]["model"] == "AgentRunResult"
+    assert report["agent_result_contract"]["extra"] == "forbid"
+    assert {
+        item["result_status"] for item in report["chat_status_policy"]
+    } == {
+        "OK",
+        "NEED_CLARIFICATION",
+        "NO_RELEVANT_INFO",
+        "TOOL_ERROR",
+        "MODEL_ERROR",
+        "INTERNAL_ERROR",
+    }
 
 
 def test_tool_contracts_use_model_facing_json_schema(monkeypatch):

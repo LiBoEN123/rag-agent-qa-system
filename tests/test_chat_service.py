@@ -3,13 +3,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent.runtime import build_internal_error_result
-from app.api.responses import CHAT_RESULT_RESPONSE_MAP
+from app.agent.results import build_internal_error_result
+from app.contracts.chat import get_chat_status_policy
 from app.observability.metrics import (
     attach_query_rewrite_trace,
     build_query_rewrite_trace,
     collect_trace_metrics,
-    normalize_metrics_status,
 )
 from app.services.chat_service import (
     ChatService,
@@ -142,13 +141,11 @@ def build_service(
         build_query_rewrite_trace=build_query_rewrite_trace,
         attach_query_rewrite_trace=attach_query_rewrite_trace,
         collect_trace_metrics=collect_trace_metrics,
-        normalize_metrics_status=normalize_metrics_status,
         log_and_write_metrics=fake_metrics,
         write_bad_cases=lambda record: calls["bad_cases"].append(dict(record)),
         append_message=fake_append,
         now_iso=lambda: "2026-07-14T10:00:00.000",
         perf_counter=IncrementingClock(),
-        response_map=CHAT_RESULT_RESPONSE_MAP,
     )
     return ChatService(dependencies), calls
 
@@ -363,18 +360,40 @@ def test_tool_call_chain_is_logged_once_in_execution_order(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("status", "code", "public_status"),
+    ("status", "http_status", "code", "public_status", "metric_status"),
     [
-        ("NEED_CLARIFICATION", "NEED_CLARIFICATION", "clarify"),
-        ("NO_RELEVANT_INFO", "NO_RELEVANT_INFO", "no_evidence"),
-        ("TOOL_ERROR", "TOOL_ERROR", "error"),
-        ("MODEL_ERROR", "MODEL_ERROR", "error"),
+        ("OK", 200, 0, "ok", "success"),
+        (
+            "NEED_CLARIFICATION",
+            200,
+            "NEED_CLARIFICATION",
+            "clarify",
+            "clarify",
+        ),
+        (
+            "NO_RELEVANT_INFO",
+            200,
+            "NO_RELEVANT_INFO",
+            "no_evidence",
+            "no_relevant_info",
+        ),
+        ("TOOL_ERROR", 200, "TOOL_ERROR", "error", "tool_error"),
+        ("MODEL_ERROR", 200, "MODEL_ERROR", "error", "model_error"),
+        (
+            "INTERNAL_ERROR",
+            500,
+            "INTERNAL_ERROR",
+            "error",
+            "internal_error",
+        ),
     ],
 )
-def test_known_runtime_statuses_reuse_existing_response_mapping(
+def test_known_runtime_statuses_use_single_status_policy(
     status,
+    http_status,
     code,
     public_status,
+    metric_status,
 ):
     result = build_runtime_result(
         status=status,
@@ -385,12 +404,27 @@ def test_known_runtime_statuses_reuse_existing_response_mapping(
 
     outcome = service.handle(make_request())
 
-    assert outcome.http_status == 200
+    assert outcome.http_status == http_status
     assert outcome.code == code
     assert outcome.response_status == public_status
-    assert outcome.response_config is CHAT_RESULT_RESPONSE_MAP[status]
+    assert get_chat_status_policy(status).public_status == public_status
     assert len(calls["messages"]) == 2
     assert len(calls["metrics"]) == 1
+    assert calls["metrics"][0]["status"] == metric_status
+
+
+def test_unknown_runtime_status_fails_closed_across_response_and_metrics():
+    service, calls = build_service(
+        runtime_result=build_runtime_result(status="UNKNOWN"),
+    )
+
+    outcome = service.handle(make_request())
+
+    assert outcome.http_status == 500
+    assert outcome.code == "INTERNAL_ERROR"
+    assert outcome.response_status == "error"
+    assert outcome.result["status"] == "INTERNAL_ERROR"
+    assert calls["metrics"][0]["status"] == "internal_error"
 
 
 def test_langgraph_internal_error_result_maps_to_http_500():

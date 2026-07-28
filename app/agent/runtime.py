@@ -1,6 +1,5 @@
 """Agent Runtime 结果构造、统计和追踪存储辅助函数。"""
 
-from collections.abc import Mapping
 from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
@@ -18,8 +17,6 @@ from app.storage.traces import save_agent_trace
 
 logger = get_logger("chat_service")
 
-_INTERNAL_ERROR_MESSAGE = "Agent 内部执行异常，请稍后重试"
-_INTERNAL_ERROR_MARKER = "internal_error"
 _INTEGER_ADAPTER = TypeAdapter(int)
 
 
@@ -138,54 +135,6 @@ def get_route_decision_for_trace(decision: dict) -> str:
     return "unknown"
 
 
-def map_agent_status_to_public_status(status: str) -> str:
-    """将 Agent 内部状态映射为 API 使用的大写业务状态。"""
-    mapping = {
-        "ok": "OK",
-        "clarify": "NEED_CLARIFICATION",
-        "direct_answer": "OK",
-        "tool_error": "TOOL_ERROR",
-        "model_error": "MODEL_ERROR",
-        "no_evidence": "NO_RELEVANT_INFO",
-        "error": "INTERNAL_ERROR",
-        "running": "INTERNAL_ERROR",
-    }
-    return mapping.get(str(status or ""), "INTERNAL_ERROR")
-
-
-def summarize_observations_for_result(
-    *,
-    status: str,
-    reason: str,
-    observations: list[dict[str, Any]],
-) -> str:
-    """从 observations 中提取 API 响应使用的工具结果摘要。"""
-    if status == "clarify":
-        return "未调用工具，问题需要澄清"
-
-    if status == "direct_answer":
-        return "未调用工具，直接回答"
-
-    if not observations:
-        return reason
-
-    summaries = []
-    for observation in observations:
-        if observation.get("tool_name") == "search_knowledge_base":
-            output = observation.get("output")
-            output = output if isinstance(output, dict) else {}
-            chunks = output.get("chunks", [])
-            count = output.get("count", len(chunks) if isinstance(chunks, list) else 0)
-            summaries.append(f"知识库检索完成，召回 {count} 个 chunk")
-            continue
-
-        summary = str(observation.get("summary") or "")
-        if summary:
-            summaries.append(summary)
-
-    return "；".join(summaries[-3:]) if summaries else reason
-
-
 def build_decide_trace(
     decision: dict,
     *,
@@ -253,58 +202,6 @@ def upsert_llm_usage_trace(
     return updated
 
 
-def build_v2_result(state: Mapping[str, Any]) -> dict[str, Any]:
-    """将平铺 AgentGraphState 转换成 API 主流程结果字典。"""
-    status = str(state.get("status") or "")
-    reason = str(state.get("reason") or "")
-    final_answer = str(state.get("final_answer") or "")
-    references = state.get("references")
-    references = references if isinstance(references, list) else []
-    observations = [
-        item
-        for item in state.get("observations", [])
-        if isinstance(item, dict)
-    ]
-    tool_trace = state.get("tool_trace")
-    tool_trace = tool_trace if isinstance(tool_trace, list) else []
-    decision = state.get("decision")
-    decision = decision if isinstance(decision, dict) else {}
-    public_status = map_agent_status_to_public_status(status)
-    need_clarification = status == "clarify"
-    rag_trace = next(
-        (
-            step
-            for step in reversed(tool_trace)
-            if step.get("step") == "compose_final_answer" and step.get("mode") == "rag"
-        ),
-        {},
-    )
-    timings = rag_trace.get("timings")
-
-    return {
-        "status": public_status,
-        "answer": final_answer,
-        "references": references,
-        "retrieval_confidence": rag_trace.get("retrieval_confidence", 0.0),
-        "answer_confidence": rag_trace.get("answer_confidence", 0.0),
-        "need_clarification": need_clarification,
-        "clarification_question": final_answer if need_clarification else "",
-        "reason": reason,
-        "action": decision.get("action", ""),
-        "tool_result_summary": summarize_observations_for_result(
-            status=status,
-            reason=reason,
-            observations=observations,
-        ),
-        "tool_trace": tool_trace,
-        "router_llm_used": False,
-        "decompose_llm_used": bool(state.get("decompose_llm_used")),
-        "answer_llm_used": bool(state.get("answer_llm_used")),
-        "llm_call_count": max(0, int(state.get("llm_call_count", 0) or 0)),
-        "timings": dict(timings) if isinstance(timings, dict) else {},
-    }
-
-
 def validate_runtime_counts(
     *,
     top_k: Any,
@@ -327,41 +224,6 @@ def validate_runtime_counts(
         validate("top_k", top_k, 1, 10),
         validate("decompose_top_k", decompose_top_k, 1, 20),
     )
-
-
-def build_internal_error_result(
-    exc: Exception,
-    *,
-    runtime_label: str = "Agent Runtime",
-    trace_step: str = "agent_runtime_error",
-) -> dict:
-    """构造 Agent Runtime 顶层异常时的脱敏兼容错误结果。
-
-    ``exc`` 仅供调用方写入内部日志和 bad case；其内容不得进入返回结果。
-    """
-    return {
-        "status": "INTERNAL_ERROR",
-        "answer": _INTERNAL_ERROR_MESSAGE,
-        "references": [],
-        "retrieval_confidence": 0.0,
-        "answer_confidence": 0.0,
-        "need_clarification": False,
-        "clarification_question": "",
-        "reason": _INTERNAL_ERROR_MESSAGE,
-        "action": "",
-        "tool_result_summary": "",
-        "tool_trace": [
-            {
-                "step": trace_step,
-                "status": "error",
-                "error": _INTERNAL_ERROR_MARKER,
-            }
-        ],
-        "router_llm_used": False,
-        "decompose_llm_used": False,
-        "answer_llm_used": False,
-        "llm_call_count": 0,
-    }
 
 
 def _default_bad_case(trace_id: str, question: str) -> dict:

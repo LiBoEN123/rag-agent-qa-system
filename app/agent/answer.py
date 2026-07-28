@@ -3,6 +3,8 @@
 from collections.abc import Mapping
 from typing import Any
 
+from app.agent.results import map_rag_status_to_agent_status
+
 ERROR_STATUSES = {"tool_error", "error", "model_error"}
 INTERNAL_ERROR_TEXT = "Agent 内部执行异常，请稍后重试"
 
@@ -11,24 +13,6 @@ DIRECT_ANSWER_TEXT = (
     "我可以基于已导入的文档回答问题并提供引用，"
     "也可以列出知识库文档、查看指定 chunk、对比文档内容，以及进行简单四则运算。"
 )
-
-
-def map_rag_status(status: str) -> str:
-    """将现有 RAG 状态映射为 Agent 的统一状态。"""
-    normalized = str(status or "").strip()
-    mapping = {
-        "OK": "ok",
-        "NEED_CLARIFICATION": "clarify",
-        "NO_RELEVANT_INFO": "no_evidence",
-        "MODEL_ERROR": "model_error",
-        "MODEL_BAD_OUTPUT": "model_error",
-        "ok": "ok",
-        "clarify": "clarify",
-        "no_evidence": "no_evidence",
-        "model_error": "model_error",
-    }
-    return mapping.get(normalized, "error")
-
 
 def _copy_trace(state: Mapping[str, Any]) -> list[dict[str, Any]]:
     """复制当前 trace，避免答案 helper 修改调用方列表。"""
@@ -44,7 +28,7 @@ def build_rag_answer_updates(
     rag_result: Mapping[str, Any],
 ) -> dict[str, Any]:
     """将 RAG 子图结果映射为平铺 AgentGraphState 更新。"""
-    status = map_rag_status(rag_result.get("status", ""))
+    status = map_rag_status_to_agent_status(rag_result.get("status", ""))
     final_answer = str(rag_result.get("answer", "") or "")
     raw_references = rag_result.get("references", [])
     references = (
@@ -178,5 +162,4 @@ def build_compose_answer_updates(
 __all__ = [
     "build_compose_answer_updates",
     "build_rag_answer_updates",
-    "map_rag_status",
 ]

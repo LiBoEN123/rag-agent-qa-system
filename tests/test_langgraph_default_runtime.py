@@ -91,6 +91,7 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
             "decompose_llm_used": False,
             "answer_llm_used": True,
             "llm_call_count": 1,
+            "timings": {},
         }
 
     dependencies = replace(

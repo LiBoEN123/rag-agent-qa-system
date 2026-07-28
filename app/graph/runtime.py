@@ -3,9 +3,12 @@
 from collections.abc import Callable
 from typing import Any
 
+from app.agent.results import (
+    build_internal_error_result,
+    validate_agent_result_payload,
+)
 from app.agent.runtime import (
     _write_internal_bad_case,
-    build_internal_error_result,
     maybe_save_agent_trace,
     validate_runtime_counts,
 )
@@ -103,6 +106,7 @@ def run_agent_langgraph(
         result = output.get("result") if isinstance(output, dict) else None
         if not isinstance(result, dict):
             raise RuntimeError("LangGraph did not produce a valid result")
+        result = validate_agent_result_payload(result)
 
         logger.info(
             "[trace_id=%s] [agent] langgraph_graph_end status=%s",

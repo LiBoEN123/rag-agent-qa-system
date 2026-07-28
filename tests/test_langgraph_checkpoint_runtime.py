@@ -8,8 +8,10 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from app.agent import framework_agent
+from app.agent.results import AgentRunResult, create_agent_result
 from app.api import lifecycle
 from app.config import Settings
+from app.contracts.chat import AgentResultStatus
 from app.graph import builder as graph_builder
 from app.graph import checkpointing
 from app.graph import nodes as graph_nodes
@@ -68,6 +70,11 @@ def _run(
     )
 
 
+def _valid_recording_result() -> dict:
+    """为只关注 Runtime 配置的假 Graph 提供完整结果契约。"""
+    return create_agent_result(status=AgentResultStatus.OK)
+
+
 @pytest.mark.parametrize(
     ("mode", "saver"),
     [
@@ -123,7 +130,7 @@ def test_disabled_runtime_invokes_graph_with_context_and_recursion_config(monkey
             calls.append(
                 {"input": graph_input, "config": config, "context": context}
             )
-            return {"result": {"status": "OK"}}
+            return {"result": _valid_recording_result()}
 
     monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "disabled")
     monkeypatch.setattr(
@@ -133,7 +140,7 @@ def test_disabled_runtime_invokes_graph_with_context_and_recursion_config(monkey
     )
 
     result = _run("trace-disabled")
-    assert result == {"status": "OK"}
+    assert result == _valid_recording_result()
     assert len(calls) == 1
     assert calls[0]["context"] == ToolInvocationContext(
         trace_id="trace-disabled",
@@ -162,7 +169,7 @@ def test_enabled_runtime_passes_request_scoped_thread_id(
             calls.append(
                 {"input": graph_input, "config": config, "context": context}
             )
-            return {"result": {"status": "OK"}}
+            return {"result": _valid_recording_result()}
 
     monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", mode)
     monkeypatch.setattr(
@@ -176,7 +183,7 @@ def test_enabled_runtime_passes_request_scoped_thread_id(
         trace_id="trace-enabled",
         session_id="private-session",
     )
-    assert result == {"status": "OK"}
+    assert result == _valid_recording_result()
     assert calls[0]["config"] == {
         "configurable": {"thread_id": expected},
         "recursion_limit": 68,
@@ -208,6 +215,8 @@ def test_memory_checkpoint_serializes_flat_runtime_state(monkeypatch):
     assert len(values["messages"]) == 1
     assert values["messages"][0].content == "问题-trace-memory"
     assert values["result"]["status"] == "OK"
+    assert isinstance(values["result"], dict)
+    assert not isinstance(values["result"], AgentRunResult)
     assert values["status"] == "direct_answer"
     assert values["observations"] == []
     assert values["tool_trace"] == values["result"]["tool_trace"]

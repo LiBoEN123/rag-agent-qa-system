@@ -3,19 +3,9 @@
 使用 Pydantic 定义聊天、引用和检索接口的请求与响应字段约束。
 """
 
-from typing import Literal, TypeAlias
-
 from pydantic import BaseModel, ConfigDict, Field
 
-
-PublicStatus: TypeAlias = Literal[
-    "ok",
-    "no_evidence",
-    "empty_index",
-    "error",
-    "clarify",
-    "out_of_scope",
-]
+from app.contracts.chat import PublicStatus
 
 
 class ChatRequest(BaseModel):

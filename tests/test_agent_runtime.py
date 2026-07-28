@@ -2,24 +2,15 @@
 
 from copy import deepcopy
 
-from app.agent.runtime import (
+from app.agent.results import (
+    build_agent_result,
     build_internal_error_result,
-    build_v2_result,
-    map_agent_status_to_public_status,
+)
+from app.agent.runtime import (
     resolve_llm_call_count,
     upsert_llm_usage_trace,
 )
 from app.graph import nodes as graph_nodes
-
-
-def test_map_agent_status_to_public_status():
-    assert map_agent_status_to_public_status("ok") == "OK"
-    assert map_agent_status_to_public_status("clarify") == "NEED_CLARIFICATION"
-    assert map_agent_status_to_public_status("direct_answer") == "OK"
-    assert map_agent_status_to_public_status("tool_error") == "TOOL_ERROR"
-    assert map_agent_status_to_public_status("model_error") == "MODEL_ERROR"
-    assert map_agent_status_to_public_status("no_evidence") == "NO_RELEVANT_INFO"
-    assert map_agent_status_to_public_status("error") == "INTERNAL_ERROR"
 
 
 def test_build_result_preserves_public_protocol_without_mutation():
@@ -37,7 +28,7 @@ def test_build_result_preserves_public_protocol_without_mutation():
     }
     original = deepcopy(state)
 
-    result = build_v2_result(state)
+    result = build_agent_result(state).model_dump(mode="json")
 
     assert state == original
     assert result["status"] == "NEED_CLARIFICATION"
@@ -151,10 +142,11 @@ def test_finalize_node_uses_one_trace_snapshot_without_mutating_input(
     updates = graph_nodes.finalize_node(state)
 
     assert state == original
-    assert updates["tool_trace"] is updates["result"]["tool_trace"]
+    assert updates["tool_trace"] == updates["result"]["tool_trace"]
+    assert updates["result"]["tool_trace"] is not updates["tool_trace"]
     assert sum(
         item.get("step") == "llm_usage"
         for item in updates["tool_trace"]
     ) == 1
     assert saved[0]["rewritten_question"] == "改写问题"
-    assert saved[0]["tool_trace"] is updates["tool_trace"]
+    assert saved[0]["tool_trace"] is updates["result"]["tool_trace"]

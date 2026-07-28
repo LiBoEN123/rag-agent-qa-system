@@ -1,4 +1,6 @@
 import app.api.chat as chat_api
+from app.agent.results import create_agent_result
+from app.contracts.chat import AgentResultStatus
 from app.services.chat_service import ChatServiceOutcome, ChatServiceRequest
 
 
@@ -28,18 +30,11 @@ def test_chat_controller_only_adapts_http_context(monkeypatch):
         code="NO_DOCUMENTS",
         message="知识库未准备完成",
         question="原始问题",
-        result={
-            "answer": "",
-            "references": [],
-            "retrieval_confidence": 0.0,
-            "answer_confidence": 0.0,
-            "need_clarification": False,
-            "clarification_question": "",
-            "reason": "知识库未准备完成",
-            "action": "search_knowledge_base",
-            "tool_result_summary": "",
-            "tool_trace": [],
-        },
+        result=create_agent_result(
+            status=AgentResultStatus.NO_RELEVANT_INFO,
+            reason="知识库未准备完成",
+            action="search_knowledge_base",
+        ),
         response_status="empty_index",
     )
     service = FakeChatService(outcome)

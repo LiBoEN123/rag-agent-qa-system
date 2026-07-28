@@ -9,16 +9,18 @@
 | 顺序 | 文件 | 只需要理解 |
 | --- | --- | --- |
 | 1 | `app/services/chat_service.py` | 会话、请求改写、Runtime 和 API 结果收尾如何串联 |
-| 2 | `app/graph/builder.py` | 父图固定入口、节点、边和条件出口 |
-| 3 | `app/graph/state.py` | 唯一完整请求状态及 reducer |
-| 4 | `app/graph/conditions.py` | 框架 Agent、RAG 与 compose 如何分流 |
-| 5 | `app/graph/nodes.py` | `route_node` 如何独占 Router 调用/计时，以及节点如何返回显式更新 |
-| 6 | `app/agent/framework_agent.py` | `create_agent`、调用限制 Middleware 和事件纯投影如何组装 |
-| 7 | `app/agent/tool_events.py` | 标准工具结果和治理事件如何转换为 observation/trace |
-| 8 | `app/agent/answer.py` | RAG 与 compose 如何生成无副作用状态更新 |
-| 9 | `app/agent/framework_middleware.py` | 项目错误分类、预算、循环防护和同批 fail-closed |
-| 10 | `app/agent/framework_tools.py` | 动态 StructuredTool、Registry dispatch 和 RAG handoff |
-| 11 | `app/tools/runtime.py` | 单次工具调用的策略、审计、超时、重试和输出校验 |
+| 2 | `app/contracts/chat.py` | Result status 如何唯一决定 HTTP、API 和 metrics 状态 |
+| 3 | `app/graph/builder.py` | 父图固定入口、节点、边和条件出口 |
+| 4 | `app/graph/state.py` | 唯一完整请求状态及 reducer |
+| 5 | `app/agent/results.py` | AgentRunResult、内部/RAG 状态 mapper 和结果构造 |
+| 6 | `app/graph/conditions.py` | 框架 Agent、RAG 与 compose 如何分流 |
+| 7 | `app/graph/nodes.py` | `route_node` 如何独占 Router 调用/计时，以及节点如何返回显式更新 |
+| 8 | `app/agent/framework_agent.py` | `create_agent`、调用限制 Middleware 和事件纯投影如何组装 |
+| 9 | `app/agent/tool_events.py` | 标准工具结果和治理事件如何转换为 observation/trace |
+| 10 | `app/agent/answer.py` | RAG 与 compose 如何生成无副作用状态更新 |
+| 11 | `app/agent/framework_middleware.py` | 项目错误分类、预算、循环防护和同批 fail-closed |
+| 12 | `app/agent/framework_tools.py` | 动态 StructuredTool、Registry dispatch 和 RAG handoff |
+| 13 | `app/tools/runtime.py` | 单次工具调用的策略、审计、超时、重试和输出校验 |
 
 ## 主调用链
 
@@ -62,6 +64,35 @@ ChatService 不调用 Router，也不生成或注入 decision。`route_node` 是
 | 最终输出 | `result` |
 
 只有框架需要合并的 `messages` 和 append-only `governance_events` 使用 reducer。`observations`、`references` 和 `tool_trace` 由节点返回完整新列表，避免 checkpoint resume 或节点重放时重复追加；`llm_usage` 在 finalize 中执行 upsert。改写问题需要持久化到 trace 时，由 `effective_question != original_question` 派生，不在状态中重复保存。
+
+## 单一结果契约与状态策略
+
+父图内部状态、Runtime 结果和应用层响应是不同职责，固定转换链如下：
+
+```text
+AgentGraphState.status
+→ map_agent_status_to_result_status
+→ AgentRunResult
+→ model_dump(mode="json")
+→ ChatStatusPolicy
+→ ChatServiceOutcome / API data.status / metrics status
+```
+
+RAG 子图协议不变；`map_rag_status_to_agent_status()` 先把 `OK`、
+`NEED_CLARIFICATION`、`NO_RELEVANT_INFO`、`MODEL_ERROR` 和
+`MODEL_BAD_OUTPUT` 收敛到内部 Agent 状态。`MODEL_BAD_OUTPUT` 在这里是 RAG 的真实
+输入状态，但不是 Chat Result status。
+
+`AgentRunResult` 是唯一完整 Runtime 结果模型，拒绝额外字段、非法状态、越界
+confidence、负 LLM 计数以及非字典 references/tool trace。正常 finalize 和所有内部
+错误结果都经过该模型。Pydantic 实例只用于边界校验，写入
+`AgentGraphState.result`、Checkpoint 和返回 ChatService 的值均为普通字典。
+
+`CHAT_STATUS_POLICIES` 是 HTTP status、code/message、公开小写状态、metrics
+状态和错误字段暴露策略的唯一来源。未知 Result status 解析为
+`INTERNAL_ERROR`，不会按成功处理。`EMPTY_QUESTION` 是服务级 400 兼容分支；
+ChatService 调用 Runtime 本身抛出的未知异常继续保留公开
+`code=MODEL_ERROR` 的历史兼容行为，但其完整 result 和 metrics 都按内部错误构造。
 
 ## 当前图
 
@@ -129,7 +160,9 @@ graph TD;
 | `app/graph/state.py` | 声明唯一完整 `AgentGraphState` 及 reducer |
 | `app/graph/conditions.py` | 声明父图无副作用分支条件 |
 | `app/graph/nodes.py` | 独占 Router 调用/计时；组合各节点的显式字段更新 |
+| `app/contracts/chat.py` | 声明唯一 Result-to-HTTP/API/metrics 状态策略 |
 | `app/agent/router.py` | 只产生 agent/direct_answer/clarify 的确定性决策 |
+| `app/agent/results.py` | 校验完整 AgentRunResult；集中内部和 RAG 状态转换 |
 | `app/agent/framework_agent.py` | 组装 `create_agent`；纯投影框架事件 |
 | `app/agent/tool_events.py` | 将工具结果转换为 observation 和兼容 trace |
 | `app/agent/answer.py` | 生成 RAG/compose 的 pure updates |
@@ -142,8 +175,10 @@ graph TD;
 | `app/tools/web_download.py` | 为 HTML/PDF 提供共用 hardened 有限下载适配 |
 | `app/tools/web_fetch.py` | 处理 HTML/XHTML/纯文本并调用 Trafilatura |
 | `app/tools/web_pdf_fetch.py` | 校验 PDF magic；通过 pypdf 提取页范围和有限元数据 |
-| `app/agent/runtime.py` | 构造兼容 decide/LLM trace 与 API 结果；保存 trace |
-| `app/observability/metrics.py` | 从 decide/tool/RAG trace 汇总稳定 metrics |
+| `app/agent/runtime.py` | 构造兼容 decide/LLM trace；保存 trace |
+| `app/services/chat_service.py` | 应用 ChatStatusPolicy；编排 metrics/session |
+| `app/api/responses.py` | 规范化 confidence/LLM usage 并构造 API Schema |
+| `app/observability/metrics.py` | 从 decide/tool/RAG trace 汇总稳定 metrics，不映射状态 |
 | `app/rag/graph/` | 编排检索、证据、生成和引用流程 |
 
 ## 框架与项目边界
@@ -163,9 +198,14 @@ Provider 的模型可见性层只复用 `has_permission()` 检查全部 `ToolSpe
 | 问题 | 首先查看 |
 | --- | --- |
 | 状态字段在哪里定义 | `app/graph/state.py` |
+| 内部状态为什么变成某个 Result status | `app/agent/results.py` |
+| 某 Result status 的 HTTP/code/message 是什么 | `app/contracts/chat.py` |
+| metrics 状态为什么这样记录 | `ChatStatusPolicy.metric_status` |
+| API 字段如何构造 | `app/api/responses.py` |
+| RAG 状态如何进入 Agent | `app/agent/results.py::map_rag_status_to_agent_status` |
 | 工具事件如何进入状态 | `app/agent/framework_agent.py`、`app/agent/tool_events.py` |
 | RAG 结果如何写回 | `app/agent/answer.py`、`rag_subgraph_node` |
-| 最终结果如何构建 | `app/agent/runtime.py`、`finalize_node` |
+| 最终结果如何构建 | `app/agent/results.py`、`finalize_node` |
 | Checkpoint 保存什么 | `AgentGraphState` channels |
 | Graph 为什么走这个分支 | `app/graph/builder.py`、`app/graph/conditions.py` |
 | 请求为什么进入 direct/clarify/agent | `app/agent/router.py`、`app/graph/nodes.py::route_node` |
@@ -194,7 +234,7 @@ Provider 的模型可见性层只复用 `has_permission()` 检查全部 `ToolSpe
 | 模型失败为什么没有回退 | `app/agent/framework_middleware.py`、`adapt_framework_agent_node` |
 | 知识库为什么进入 RAG | `Command.PARENT`、`rag_subgraph_node` |
 | 知识库为什么没有引用 | `app/rag/graph/`、`app/rag/citations.py` |
-| API 为什么返回某状态 | `app/services/chat_service.py`、`app/agent/runtime.py` |
+| API 为什么返回某状态 | `app/contracts/chat.py`、`app/services/chat_service.py` |
 | 图为什么创建 Checkpoint 文件 | `app/graph/checkpointing.py`、`app/graph/runtime.py` |
 | 核心文件为何触发 CI | `scripts/inspect_agent_runtime.py` 的规模预算 |
 
@@ -219,6 +259,9 @@ Provider 的模型可见性层只复用 `has_permission()` 检查全部 `ToolSpe
 - 不为框架已有能力创建自定义 Runtime。
 - 不同时维护两套 Agent Loop。
 - 不在父图状态中嵌套另一套完整业务状态。
+- 不把 `AgentRunResult` 实例写入 Graph State 或 Checkpoint。
+- 不在 Runtime、ChatService、API 或 metrics 中另建状态映射表。
+- 不让 API Response Builder 导入 ChatService 或 Agent Runtime。
 - 不在节点或 helper 中原地修改输入的 observations、references 或 tool_trace。
 - 不从 `builder.py` 源码、AST 或正则反推图结构。
 
@@ -231,6 +274,6 @@ python scripts/inspect_agent_runtime.py --format mermaid
 python scripts/inspect_agent_runtime.py --check
 ```
 
-脚本只使用普通 `build_agent_graph().compile()`，不会调用带 Checkpointer 的缓存入口；也不会初始化模型、DDGS、requests-hardened Manager、Trafilatura、PdfReader、执行 handler、访问网络或读取/重建 RAG 索引。报告验证 `AgentGraphState` 没有嵌套状态且包含全部业务字段，分别列出 Registry 的八个 `registered_tools` 和默认 Context 的 `default_visible_tools`，并验证默认可见集合是注册集合的子集、权限满足、Web Search/Web Fetch/Web PDF 的隐藏与授权可见性；`web_fetch` 模型 Schema 只有 `url` 和 `max_chars`，`web_pdf_fetch` 只有 `url`、`start_page`、`max_pages` 和 `max_chars`。版本来自 `importlib.metadata`，图来自 `get_graph()`/`get_graph(xray=True)`，Mermaid 来自 `draw_mermaid()`，工具参数来自模型可见的 Pydantic JSON Schema。
+脚本只使用普通 `build_agent_graph().compile()`，不会调用带 Checkpointer 的缓存入口；也不会初始化模型、DDGS、requests-hardened Manager、Trafilatura、PdfReader、执行 handler、访问网络或读取/重建 RAG 索引。报告验证 `AgentGraphState` 没有嵌套状态且包含全部业务字段，`AgentRunResult` 字段完整并拒绝 extra，所有 Result status 恰好有一项 policy，Graph result 仍是普通字典，API Response Builder 没有反向依赖，并且旧分散状态表没有残留。报告还分别列出 Registry 的八个 `registered_tools` 和默认 Context 的 `default_visible_tools`，验证默认可见集合、权限及 Web 工具契约。版本来自 `importlib.metadata`，图来自 `get_graph()`/`get_graph(xray=True)`，Mermaid 来自 `draw_mermaid()`，工具参数来自模型可见的 Pydantic JSON Schema。
 
 升级 LangChain、LangGraph 或 Pydantic 时，先运行契约测试和 `--check`。重点确认父图节点未改变、xray 仍能展开 `framework_agent`、model/tools 和调用限制节点仍存在、`ToolRuntime` 注入字段未暴露给模型，并重新生成本页 Mermaid。

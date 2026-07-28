@@ -37,7 +37,7 @@ flowchart TD
         FrameworkAdapt[adapt_framework<br/>框架事件纯投影]
         RAGEntry[rag_subgraph]
         Composer[Answer Composer]
-        Finalize[Finalize / build_v2_result]
+        Finalize[Finalize / AgentRunResult]
 
         Router --> Initialize
         Initialize -->|agent| FrameworkAgent
@@ -189,6 +189,23 @@ flowchart TD
 `/chat` 控制器现在只负责读取 HTTP 请求上下文、调用 `ChatService`、设置状态码，并使用现有 Response Builder 构造响应。Query Rewrite、Runtime 调用、metrics 和 session 存储由 `app/services/chat_service.py` 编排；Router 由 LangGraph 父图的 `route_node` 唯一持有，因此聊天业务仍可脱离 FastAPI 测试且不会形成第二个路由入口。
 
 API 请求与响应 Schema、HTTP 状态语义和 trace 响应头保持不变；ChatService 固定调用 LangGraph 主图，知识库回答统一进入 RAG 子图。
+
+最终结果只经过一条状态链：
+
+```text
+AgentGraphState.status
+→ app/agent/results.py 的内部状态 mapper
+→ AgentRunResult（Pydantic 校验后 dump 为普通 dict）
+→ app/contracts/chat.py 的 ChatStatusPolicy
+→ ChatServiceOutcome / HTTP、API data.status 与 metrics status
+```
+
+RAG 状态先由同一结果模块中的 RAG-to-Agent mapper 写回
+`AgentGraphState.status`。`AgentRunResult` 实例不会写入 LangGraph State 或
+Checkpoint；Graph 的 `result` channel 始终保存 JSON-compatible 普通字典。
+HTTP code/message、公开小写状态和 metrics 状态由唯一
+`CHAT_STATUS_POLICIES` 决定，API Response Builder 不再读取业务状态表，也不依赖
+ChatService 实现。
 
 ## LangChain Tool 适配层
 
@@ -789,21 +806,24 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   │   ├── chat.py              # FastAPI 组装和 /chat HTTP 适配
 │   │   ├── schemas.py           # 请求、响应和引用数据模型
 │   │   ├── diagnostics.py       # 检索、知识库和指标诊断接口
-│   │   ├── responses.py         # 响应构造和业务状态映射
+│   │   ├── responses.py         # API-ready 字段与响应 Schema 构造
 │   │   └── lifecycle.py         # RAG 启动和索引加载流程
+│   ├── contracts/
+│   │   └── chat.py              # 唯一 Chat Result/HTTP/API/metrics 状态策略
 │   ├── agent/
 │   │   ├── __init__.py          # Agent 包入口，不聚合业务函数
 │   │   ├── router.py            # 确定性入口路由
 │   │   ├── rules.py             # Router 问题规范化规则
 │   │   ├── query_rewrite.py     # 多轮追问识别和 Query Rewrite
-│   │   ├── state.py             # Observation 与 API 兼容 Agent 状态
+│   │   ├── state.py             # Observation 与内部 Agent 状态
+│   │   ├── results.py           # AgentRunResult、状态 mapper 与结果构造
 │   │   ├── answer.py            # 最终答案合成
 │   │   ├── framework_agent.py   # create_agent 子图构建与父图结果适配
 │   │   ├── framework_middleware.py # 项目特有 Agent 治理 Middleware
 │   │   ├── framework_tools.py   # 动态框架工具、Context 与 RAG handoff 适配
 │   │   ├── tool_events.py       # 框架工具事件到 observation/trace 的转换
 │   │   ├── guardrails.py        # 错误分类、Stop Reason 与小型指纹辅助
-│   │   └── runtime.py           # Agent 结果、统计和 trace 辅助逻辑
+│   │   └── runtime.py           # Agent 治理统计和 trace 辅助逻辑
 │   ├── graph/
 │   │   ├── state.py             # LangGraph 状态 Schema
 │   │   ├── nodes.py             # 父图业务节点与框架子图薄适配节点
@@ -841,7 +861,7 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   │   ├── registry.py          # 工具注册和分发
 │   │   └── schemas.py           # 工具参数模型
 │   ├── services/
-│   │   └── chat_service.py      # Query Rewrite、路由、Runtime、会话和 metrics 编排
+│   │   └── chat_service.py      # Query Rewrite、Runtime、状态策略、会话和 metrics 编排
 │   ├── llm/                     # 统一模型工厂、调用网关、Schema 和错误类型
 │   ├── storage/                 # SQLite、session 和 Agent trace 存储
 │   ├── observability/

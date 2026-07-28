@@ -15,9 +15,9 @@ from app.agent.framework_agent import (
 )
 from app.agent.guardrails import AgentStopReason
 from app.agent.router import route_agent_action
+from app.agent.results import build_agent_result
 from app.agent.runtime import (
     build_decide_trace,
-    build_v2_result,
     maybe_save_agent_trace,
     resolve_llm_call_count,
     upsert_llm_usage_trace,
@@ -271,7 +271,7 @@ def finalize_node(state: AgentGraphState) -> dict[str, Any]:
         "llm_call_count": llm_call_count,
         "tool_trace": tool_trace,
     }
-    result = build_v2_result(snapshot)
+    result = build_agent_result(snapshot).model_dump(mode="json")
     original_question = str(state.get("original_question") or "")
     effective_question = str(state.get("effective_question") or "")
     maybe_save_agent_trace(

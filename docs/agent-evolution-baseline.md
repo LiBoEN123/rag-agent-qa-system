@@ -456,3 +456,92 @@ Runtime inspection 新增 `single_runtime_state`、`no_nested_agent_state` 和 `
 完成后全量结果为 `675 passed, 1 warning`；Ruff、compileall、Runtime inspection 的 text/JSON/Mermaid/check、pip check 和 diff check 通过。唯一警告仍来自 jieba 对 `pkg_resources` 的弃用提示。自动测试使用隔离 fake，并通过全局 pytest fixture 把审计、metrics、bad case、session/trace SQLite 和 Checkpoint 路径定向到临时目录；没有调用真实 Agent Model、Query Rewrite/RAG Answer Model、搜索引擎、网页/PDF、代理，没有重建真实 RAG 索引或创建生产 Checkpoint。
 
 父图节点与边、LangChain `create_agent`、Middleware 顺序、RAG `Command.PARENT` handoff 与算法、八个 ToolSpec、Provider 权限可见性、ToolRuntime 权限/审批/超时/重试/审计、FastAPI `/chat` Schema、HTTP 状态码、外部 result/status、metrics、bad case、SQLite session/Checkpointer Schema、thread ID、session 和 `tool_call_chain` 均未修改。Result/status 映射统一、Settings 迁移、模块依赖边界、ChatService 进一步拆分和历史文档归档仍留给后续独立整理。
+
+## 25. PR13 单一 Agent Result 契约与状态策略
+
+本节只记录 PR13 增量；PR0–PR12 历史内容保持原样。开始时实际分支为
+`fix/langgraph-runtime-hardening`，HEAD 为
+`0a388b260a0ae78a0ae30cdf2bc9ef3a73895e34`，与任务记录一致，工作区干净。
+修改前现场基线为 `675 passed, 1 warning`；Ruff、`python -m compileall app`、
+`python scripts/inspect_agent_runtime.py --check`、`python -m pip check` 和
+`git diff --check` 全部通过。
+
+修改前状态生产者—消费者矩阵如下。`running` 只作为 initialize 后的中间态；
+若意外进入 finalize 必须 fail closed：
+
+| 内部 AgentStatus | AgentResultStatus | HTTP | code | PublicStatus | MetricStatus | 当前生产者 |
+| --- | --- | ---: | --- | --- | --- | --- |
+| `ok` | `OK` | 200 | `0` | `ok` | `success` | Framework 最终 AI 回答；RAG `OK` |
+| `direct_answer` | `OK` | 200 | `0` | `ok` | `success` | 确定性 Router 短路 |
+| `clarify` | `NEED_CLARIFICATION` | 200 | `NEED_CLARIFICATION` | `clarify` | `clarify` | Router 澄清；RAG `NEED_CLARIFICATION` |
+| `no_evidence` | `NO_RELEVANT_INFO` | 200 | `NO_RELEVANT_INFO` | `no_evidence` | `no_relevant_info` | RAG `NO_RELEVANT_INFO` |
+| `tool_error` | `TOOL_ERROR` | 200 | `TOOL_ERROR` | `error` | `tool_error` | Framework 治理/Runtime 工具终止 |
+| `model_error` | `MODEL_ERROR` | 200 | `MODEL_ERROR` | `error` | `model_error` | Agent Model 失败/空回答；RAG `MODEL_ERROR`/`MODEL_BAD_OUTPUT` |
+| `error` | `INTERNAL_ERROR` | 500 | `INTERNAL_ERROR` | `error` | `internal_error` | 不支持 route、RAG 未知状态、compose 非法状态 |
+| `running`/未知 | `INTERNAL_ERROR` | 500 | `INTERNAL_ERROR` | `error` | `internal_error` | 无合法终态生产者，仅作 fail-closed |
+
+PR13 新增 `app/contracts/chat.py`。其中
+`AgentResultStatus` 只保留 `OK`、`NEED_CLARIFICATION`、
+`NO_RELEVANT_INFO`、`TOOL_ERROR`、`MODEL_ERROR` 和 `INTERNAL_ERROR`；
+不可变 `ChatStatusPolicy` 同时声明 HTTP status、code/message、PublicStatus、
+MetricStatus、默认 reason、日志状态和字段暴露规则。`CHAT_STATUS_POLICIES` 是唯一
+状态策略，未知值解析为内部错误。中立 contracts 层只依赖标准库。
+
+新增 `app/agent/results.py`，集中内部/RAG 状态 mapper、结果摘要和构造。唯一
+`AgentRunResult` 使用项目已有 Pydantic，字段与边界如下：
+
+| 字段 | 类型 | 模型默认值 | 约束/用途 |
+| --- | --- | --- | --- |
+| `status` | `AgentResultStatus` | 必填 | Runtime 与 Chat policy 的唯一键 |
+| `answer`、`reason`、`action`、`tool_result_summary` | `str` | 必填 | 回答、原因、路由动作和摘要 |
+| `references` | `list[dict]` | 必填 | API 引用；错误策略可清空 |
+| `retrieval_confidence`、`answer_confidence` | `float` | 必填 | 0–1；API 继续规范化 |
+| `need_clarification` | `bool` | 必填 | 澄清标志 |
+| `clarification_question` | `str` | 必填 | 澄清文本 |
+| `tool_trace` | `list[dict]` | 必填 | trace、LLM usage 和 metrics 输入 |
+| `router_llm_used` | `Literal[False]` | 必填 | 外部兼容字段 |
+| `decompose_llm_used`、`answer_llm_used` | `bool` | 必填 | LLM usage |
+| `llm_call_count` | `int` | 必填 | 非负 |
+| `timings` | `dict` | 必填 | RAG 阶段耗时 |
+
+模型拒绝 extra。服务级 helper 为特殊分支提供兼容默认值，但 Graph 输出缺失任何
+模型字段、字段类型非法、confidence 越界或 LLM 计数为负都会进入脱敏内部错误路径。
+finalize 构造模型后立即 `model_dump(mode="json")`；Graph State、memory/SQLite
+Checkpoint 和 Runtime 返回继续保存普通字典，不嵌套 Pydantic Result。
+
+删除 `map_agent_status_to_public_status()`、`map_rag_status()`、
+`build_v2_result()`、`CHAT_RESULT_RESPONSE_MAP`、
+`ChatServiceDependencies.response_map`、`response_config`、
+`normalize_metrics_status()` 的独立字典、`ChatService._response_result()`、
+`ChatResponseBuilder.build_from_result()` 和 API 的第二条响应构造路径。ChatService
+从同一 policy 同时获得 HTTP/API 和 metrics 状态，并对 Runtime 结果副本应用字段
+策略；API Response Builder 不再导入 ChatService、Agent Runtime 或 Graph。
+
+引用盘点证明 `MODEL_BAD_OUTPUT` 的生产者只在 RAG 子图，进入 Agent 时已映射为
+`model_error`，因此删除其 Chat Result/metrics 分支但保留 RAG 协议。
+`OUT_OF_SCOPE` 在当前 Chat Runtime 没有生产者，只有旧响应/metrics 表、评测兼容和
+完整 PublicStatus 提及，因此删除其 Chat Result 分支；Search API 的
+`out_of_scope` OpenAPI 字面量不变。
+
+`EMPTY_QUESTION` 继续返回 HTTP 400、`code=EMPTY_QUESTION` 和
+`data.status=clarify`，但 result 现在同样是完整校验结构。ChatService 调用 Runtime
+本身抛出的未知异常继续保留原公开 HTTP 500、`code=MODEL_ERROR` 和 message，
+同时 result/metrics 使用内部错误；ADR 0014 将其记录为服务级兼容例外。除此之外
+六种真实 Result status 的 HTTP、code/message、API status、回答/澄清/引用策略和
+metrics 语义没有有意改变。
+
+Runtime inspection 新增 `agent_result_contract`、`status_policy_complete`、
+`single_status_policy`、`result_is_checkpoint_safe` 和
+`api_response_builder_boundary`，继续保证父图节点/边、Middleware 和八个工具
+不变，且不调用模型、工具、RAG、网络或 Checkpointer。
+
+完成后全量结果为 `721 passed, 1 warning`；Ruff、compileall、Runtime inspection
+的 text/JSON/Mermaid/check、pip check 和 diff check 通过。唯一警告仍来自 jieba
+对 `pkg_resources` 的弃用提示。自动测试使用隔离 fake 和临时路径，没有调用真实
+Agent/Query Rewrite/RAG Answer Model、搜索引擎、网页/PDF、代理，没有重建真实
+RAG 索引、创建生产 Checkpoint 或写生产 metrics、bad case、session/审计文件。
+
+FastAPI `/chat` 请求/响应字段、OpenAPI PublicStatus、SQLite session/Checkpointer
+Schema、thread ID、RAG 引用、八个 ToolSpec、Provider 权限可见性、ToolRuntime
+治理、metrics 字段、bad case、session 和 `tool_call_chain` 保持兼容。Settings
+迁移、模块 import 边界自动检查、ChatService 进一步拆分和历史文档归档仍留给后续。

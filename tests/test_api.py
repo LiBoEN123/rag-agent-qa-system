@@ -3,9 +3,8 @@ from dataclasses import replace
 import pytest
 
 import app.api.chat as chat_api
-from app.agent.runtime import build_internal_error_result
+from app.agent.results import build_internal_error_result
 from app.services.chat_service import (
-    CHAT_RESULT_RESPONSE_MAP,
     ChatService,
     ChatServiceOutcome,
     get_default_chat_service_dependencies,
@@ -80,7 +79,6 @@ def test_internal_error_response_builder_does_not_expose_runtime_exception():
         question="测试异常",
         result=result,
         response_status="error",
-        response_config=CHAT_RESULT_RESPONSE_MAP["INTERNAL_ERROR"],
     )
 
     response = chat_api.build_chat_response_from_outcome(outcome, "trace-error")
@@ -313,6 +311,7 @@ def test_chat_uses_langgraph_once_and_keeps_rewrite_api_protocol(monkeypatch):
             "decompose_llm_used": False,
             "answer_llm_used": False,
             "llm_call_count": 0,
+            "timings": {},
         }
 
     install_chat_service(

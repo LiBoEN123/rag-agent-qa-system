@@ -7,7 +7,6 @@ from app.agent.answer import (
     INTERNAL_ERROR_TEXT,
     build_compose_answer_updates,
     build_rag_answer_updates,
-    map_rag_status,
 )
 
 
@@ -152,12 +151,3 @@ def test_unexpected_state_fails_closed():
     assert updates["reason"] == "Unexpected Agent state before compose: running"
     assert updates["final_answer"] == INTERNAL_ERROR_TEXT
     assert updates["tool_trace"][-1]["mode"] == "error"
-
-
-def test_map_rag_status():
-    assert map_rag_status("OK") == "ok"
-    assert map_rag_status("NEED_CLARIFICATION") == "clarify"
-    assert map_rag_status("NO_RELEVANT_INFO") == "no_evidence"
-    assert map_rag_status("MODEL_ERROR") == "model_error"
-    assert map_rag_status("MODEL_BAD_OUTPUT") == "model_error"
-    assert map_rag_status("unexpected") == "error"

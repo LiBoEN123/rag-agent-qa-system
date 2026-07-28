@@ -7,20 +7,31 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from app.agent.query_rewrite import rewrite_query_with_history
+from app.agent.results import (
+    AgentResultContractError,
+    build_empty_question_result,
+    build_internal_error_result,
+    validate_agent_result_payload,
+)
 from app.common.logging import get_logger
 from app.config import Settings
+from app.contracts.chat import (
+    AgentResultStatus,
+    ChatStatusPolicy,
+    PublicStatus,
+    get_chat_status_policy,
+)
 from app.graph.runtime import run_agent_langgraph
 from app.observability.metrics import (
     attach_query_rewrite_trace,
     build_query_rewrite_trace,
     collect_trace_metrics,
     log_and_write_metrics,
-    normalize_metrics_status,
     now_iso,
     write_bad_cases,
 )
@@ -58,73 +69,29 @@ def _format_tool_call_chain(tool_trace: list[dict[str, Any]]) -> str:
     return " -> ".join(calls) or "none"
 
 
-CHAT_RESULT_RESPONSE_MAP = {
-    "MODEL_ERROR": {
-        "code": "MODEL_ERROR",
-        "message": "模型调用失败",
-        "status": "error",
-        "default_reason": "模型调用失败",
-        "references": [],
-        "need_clarification": False,
-        "clarification_question": "",
-        "log_status": "error",
-    },
-    "NEED_CLARIFICATION": {
-        "code": "NEED_CLARIFICATION",
-        "message": "问题信息不足，需要补充后再回答",
-        "status": "clarify",
-        "default_reason": "问题缺少关键限定信息",
-        "answer": "",
-        "references": [],
-        "need_clarification": True,
-        "log_status": "need_clarification",
-    },
-    "NO_RELEVANT_INFO": {
-        "code": "NO_RELEVANT_INFO",
-        "message": "我没有在文档中找到相关信息",
-        "status": "no_evidence",
-        "default_reason": "模型判断当前上下文不足以支撑回答",
-        "clarification_question": "",
-        "log_status": "no_evidence",
-    },
-    "TOOL_ERROR": {
-        "code": "TOOL_ERROR",
-        "message": "工具调用失败",
-        "status": "error",
-        "default_reason": "工具调用失败",
-        "references": [],
-        "log_status": "error",
-    },
-    "OUT_OF_SCOPE": {
-        "code": "OUT_OF_SCOPE",
-        "message": "问题超出当前知识库范围",
-        "status": "out_of_scope",
-        "default_reason": "问题超出知识库范围",
-        "references": [],
-        "need_clarification": False,
-        "clarification_question": "",
-        "log_status": "out_of_scope",
-    },
-    "MODEL_BAD_OUTPUT": {
-        "code": "MODEL_BAD_OUTPUT",
-        "message": "模型输出格式异常，请稍候重试",
-        "status": "error",
-        "default_reason": "模型返回结构不符合预期",
-        "references": [],
-        "clarification_question": "",
-        "log_status": "error",
-    },
-    "INTERNAL_ERROR": {
-        "code": "INTERNAL_ERROR",
-        "message": "服务器内部错误",
-        "status": "error",
-        "default_reason": "Agent 内部执行异常",
-        "references": [],
-        "need_clarification": False,
-        "clarification_question": "",
-        "log_status": "error",
-    },
-}
+def _apply_status_policy(
+    result: dict[str, Any],
+    policy: ChatStatusPolicy,
+) -> dict[str, Any]:
+    """把唯一状态策略应用到结果副本，不修改 Runtime 原结果。"""
+    resolved = dict(result)
+    resolved["status"] = policy.result_status.value
+    resolved["reason"] = str(
+        result.get("reason") or policy.default_reason
+    )
+    resolved["references"] = list(result.get("references") or [])
+    resolved["tool_trace"] = list(result.get("tool_trace") or [])
+    if not policy.expose_answer:
+        resolved["answer"] = ""
+    if not policy.expose_references:
+        resolved["references"] = []
+    if policy.force_need_clarification is not None:
+        resolved["need_clarification"] = (
+            policy.force_need_clarification
+        )
+    if policy.clear_clarification_question:
+        resolved["clarification_question"] = ""
+    return resolved
 
 
 @dataclass(frozen=True)
@@ -149,8 +116,7 @@ class ChatServiceOutcome:
     message: str
     question: str
     result: dict[str, Any]
-    response_status: str = "ok"
-    response_config: dict[str, Any] | None = None
+    response_status: PublicStatus = "ok"
 
 
 @dataclass(frozen=True)
@@ -164,13 +130,11 @@ class ChatServiceDependencies:
     build_query_rewrite_trace: Callable[[dict], dict]
     attach_query_rewrite_trace: Callable[[dict, dict], dict]
     collect_trace_metrics: Callable[[dict], dict]
-    normalize_metrics_status: Callable[[str], str]
     log_and_write_metrics: Callable[[dict], None]
     write_bad_cases: Callable[[dict], None]
     append_message: Callable[[str | None, str, str], None]
     now_iso: Callable[[], str]
     perf_counter: Callable[[], float]
-    response_map: Mapping[str, dict[str, Any]]
 
 
 @dataclass
@@ -203,13 +167,11 @@ def get_default_chat_service_dependencies() -> ChatServiceDependencies:
         build_query_rewrite_trace=build_query_rewrite_trace,
         attach_query_rewrite_trace=attach_query_rewrite_trace,
         collect_trace_metrics=collect_trace_metrics,
-        normalize_metrics_status=normalize_metrics_status,
         log_and_write_metrics=log_and_write_metrics,
         write_bad_cases=write_bad_cases,
         append_message=append_message,
         now_iso=now_iso,
         perf_counter=time.perf_counter,
-        response_map=CHAT_RESULT_RESPONSE_MAP,
     )
 
 
@@ -265,7 +227,12 @@ class ChatService:
                 code="INTERNAL_ERROR",
                 message="服务器内部错误",
                 question=context.original_question,
-                result=self._response_result(),
+                result=build_internal_error_result(
+                    exc,
+                    runtime_label="ChatService",
+                    answer="",
+                    tool_trace=[],
+                ),
                 response_status="error",
             )
         finally:
@@ -367,13 +334,7 @@ class ChatService:
             code="EMPTY_QUESTION",
             message="问题不能为空，请输入你想查询的内容",
             question=context.original_question,
-            result=self._response_result(
-                need_clarification=True,
-                clarification_question=(
-                    "请直接输入你想查询的具体问题，例如：年假申请流程是什么？"
-                ),
-                reason="用户未输入问题",
-            ),
+            result=build_empty_question_result(),
             response_status="clarify",
         )
 
@@ -447,6 +408,27 @@ class ChatService:
             result,
             context.rewrite_trace,
         )
+        try:
+            result = validate_agent_result_payload(result)
+        except AgentResultContractError as exc:
+            logger.error(
+                "[trace_id=%s] [agent] invalid_result error_type=%s",
+                context.request.trace_id,
+                type(exc).__name__,
+            )
+            result = build_internal_error_result(
+                exc,
+                runtime_label="ChatService Agent result",
+                trace_step="chat_result_contract_error",
+                tool_trace=[
+                    context.rewrite_trace,
+                    {
+                        "step": "chat_result_contract_error",
+                        "status": "error",
+                        "error": "internal_error",
+                    },
+                ],
+            )
         logger.info(
             "[trace_id=%s] [agent] tool_call_chain=%s",
             context.request.trace_id,
@@ -473,9 +455,8 @@ class ChatService:
         result: dict[str, Any],
     ) -> None:
         trace_metrics = self._deps.collect_trace_metrics(result)
-        context.metrics["status"] = self._deps.normalize_metrics_status(
-            result.get("status", "")
-        )
+        policy = get_chat_status_policy(result.get("status", ""))
+        context.metrics["status"] = policy.metric_status
         context.metrics["reference_count"] = len(
             result.get("references") or []
         )
@@ -497,7 +478,9 @@ class ChatService:
                 (timings.get(timing_key, 0) or 0)
             )
         context.metrics["action"] = result.get("action", "")
-        context.metrics["reason"] = result.get("reason", "")
+        context.metrics["reason"] = (
+            result.get("reason") or policy.default_reason
+        )
 
     def _runtime_exception_outcome(
         self,
@@ -528,7 +511,10 @@ class ChatService:
             code="MODEL_ERROR",
             message="处理失败，请稍后重试",
             question=context.original_question,
-            result=self._response_result(
+            result=build_internal_error_result(
+                exc,
+                runtime_label="ChatService Agent invocation",
+                answer="",
                 reason="工具调用或模型调用异常",
                 tool_trace=[context.rewrite_trace],
             ),
@@ -540,50 +526,32 @@ class ChatService:
         context: _ChatContext,
         result: dict[str, Any],
     ) -> ChatServiceOutcome:
-        response_config = self._deps.response_map.get(result["status"])
-        if response_config is not None:
-            logger.warning(
-                "[trace_id=%s] [chat] final_status=%s reason=%s",
-                context.request.trace_id,
-                response_config["log_status"],
-                result.get("reason", response_config["default_reason"]),
-            )
-            context.session_should_store = True
-            context.session_assistant_content = (
-                response_config.get("answer", result.get("answer", ""))
-                or result.get("clarification_question", "")
-                or result.get("reason", response_config["default_reason"])
-            )
-            return ChatServiceOutcome(
-                http_status=(
-                    500
-                    if response_config["code"] == "INTERNAL_ERROR"
-                    else 200
-                ),
-                code=response_config["code"],
-                message=response_config["message"],
-                question=context.original_question,
-                result=result,
-                response_status=response_config["status"],
-                response_config=response_config,
-            )
-
-        logger.info(
-            "[trace_id=%s] [chat] final_status=ok reason=%s",
+        policy = get_chat_status_policy(result.get("status", ""))
+        resolved_result = _apply_status_policy(result, policy)
+        log = (
+            logger.info
+            if policy.result_status is AgentResultStatus.OK
+            else logger.warning
+        )
+        log(
+            "[trace_id=%s] [chat] final_status=%s reason=%s",
             context.request.trace_id,
-            result.get("reason", "正常回答"),
+            policy.log_status,
+            resolved_result["reason"],
         )
         context.session_should_store = True
         context.session_assistant_content = (
-            result["answer"] or result.get("reason", "正常回答")
+            resolved_result["answer"]
+            or resolved_result["clarification_question"]
+            or resolved_result["reason"]
         )
         return ChatServiceOutcome(
-            http_status=200,
-            code=0,
-            message="success",
+            http_status=policy.http_status,
+            code=policy.code,
+            message=policy.message,
             question=context.original_question,
-            result=result,
-            response_status="ok",
+            result=resolved_result,
+            response_status=policy.public_status,
         )
 
     def _write_bad_case(self, record: dict, trace_id: str) -> None:
@@ -664,41 +632,11 @@ class ChatService:
                 exc,
             )
 
-    @staticmethod
-    def _response_result(
-        *,
-        answer: str = "",
-        references: list | None = None,
-        retrieval_confidence: float = 0.0,
-        answer_confidence: float = 0.0,
-        need_clarification: bool = False,
-        clarification_question: str = "",
-        reason: str = "",
-        action: str = "",
-        tool_result_summary: str = "",
-        tool_trace: list | None = None,
-    ) -> dict[str, Any]:
-        """构造非 Runtime 分支供现有 Response Builder 消费的字段。"""
-        return {
-            "answer": answer,
-            "references": references or [],
-            "retrieval_confidence": retrieval_confidence,
-            "answer_confidence": answer_confidence,
-            "need_clarification": need_clarification,
-            "clarification_question": clarification_question,
-            "reason": reason,
-            "action": action,
-            "tool_result_summary": tool_result_summary,
-            "tool_trace": tool_trace or [],
-        }
-
-
 __all__ = [
     "ChatService",
     "ChatServiceDependencies",
     "ChatServiceOutcome",
     "ChatServiceRequest",
-    "CHAT_RESULT_RESPONSE_MAP",
     "create_default_chat_service",
     "get_default_chat_service_dependencies",
 ]

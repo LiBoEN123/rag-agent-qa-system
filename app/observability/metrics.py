@@ -60,20 +60,6 @@ def should_write_bad_case(record: dict) -> bool:
     return False
 
 
-def normalize_metrics_status(result_status: str) -> str:
-    """把内部业务状态映射为指标统计使用的状态名称。"""
-    return {
-        "OK": "success",
-        "NO_RELEVANT_INFO": "no_relevant_info",
-        "TOOL_ERROR": "tool_error",
-        "MODEL_BAD_OUTPUT": "model_bad_output",
-        "NEED_CLARIFICATION": "clarify",
-        "OUT_OF_SCOPE": "out_of_scope",
-        "MODEL_ERROR": "model_error",
-        "INTERNAL_ERROR": "internal_error",
-    }.get(result_status, "internal_error")
-
-
 def extract_llm_usage(
     tool_trace: list | None = None,
     router_llm_used: bool | None = None,
@@ -194,13 +180,6 @@ def attach_query_rewrite_trace(result: dict, rewrite_trace: dict) -> dict:
     if not any(step.get("step") == "query_rewrite" for step in tool_trace):
         tool_trace.insert(0, rewrite_trace)
     result["tool_trace"] = tool_trace
-    result["query_rewrite_used"] = bool(rewrite_trace.get("rewritten", False))
-    result["query_rewrite_llm_used"] = bool(
-        rewrite_trace.get("rewrite_llm_used", False)
-    )
-    result["effective_question_len"] = len(
-        rewrite_trace.get("rewritten_question", "") or ""
-    )
     return result
 
 
