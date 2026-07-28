@@ -430,3 +430,29 @@ FastAPI /chat
 完成后全量结果为 `656 passed, 1 warning`；Ruff、compileall、Runtime inspection 的 text/JSON/Mermaid/check、pip check 和 diff check 通过。唯一警告仍来自 jieba 对 `pkg_resources` 的弃用提示。自动测试没有调用真实模型、搜索引擎、网页/PDF、代理，没有重建真实 RAG 索引、创建生产 Checkpoint 或写生产审计/metrics 文件。
 
 FastAPI `/chat` 请求/响应 Schema、HTTP 业务状态码、SQLite session/Checkpointer Schema、checkpoint thread_id、RAG 检索/重排/证据/引用算法、八个 ToolSpec 名称与 Schema、Provider 权限可见性、ToolRuntime 权限/审批/超时/重试/审计、metrics 字段、bad case、session 和 `tool_call_chain` 均保持兼容。`AgentGraphState`/`AgentState` 统一、Result/status 映射统一、Settings 迁移、模块依赖边界和历史文档归档仍留给后续整理。
+
+## 24. PR12 单一平铺 Agent Runtime State
+
+本节只记录 PR12 增量；PR0–PR11 历史内容保持原样。开始时实际分支为 `fix/langgraph-runtime-hardening`，HEAD 为 `516b26183723934a731340b71471bc6fc318c7c5`，与任务记录一致，工作区干净。修改前现场基线为 `656 passed, 1 warning`；Ruff、`python -m compileall app`、`python scripts/inspect_agent_runtime.py --check`、`python -m pip check` 和 `git diff --check` 全部通过。
+
+修改前父图同时保存请求输入、Router、框架共享字段、`pending_rag_result` 和 result，并嵌套一个完整 Pydantic 业务状态。`trace_id`、`session_id`、问题语义、`top_k` 与 `decompose_top_k` 在两层重复；observations、最终答案、引用、内部 status/reason、LLM 统计和 tool trace 则隐藏在嵌套对象中。Graph 节点和 answer/runtime helper 会取出该对象后原地赋值或 append，再把同一对象塞回父图。
+
+PR12 后 `AgentGraphState` 是一次请求唯一完整状态，字段按以下分组平铺：
+
+- 请求输入：`original_question`、`effective_question`、`top_k`、`decompose_top_k`、`trace_id`、`session_id`。
+- Router：`decision`、`route_cost_ms`。
+- Framework：`messages`、`governance_events`、`framework_events_applied`、迭代/工具/错误计数与连续指纹、`agent_elapsed_ms`、`stop_reason`、`pending_rag_result`。
+- 业务结果：`observations`、`final_answer`、`references`、`status`、`reason`、`decompose_llm_used`、`answer_llm_used`、`llm_call_count`、`tool_trace`。
+- 最终输出：`result`。
+
+删除项目完整 Pydantic 状态类、父图嵌套字段、`_require_agent_state()` 和 `get_effective_question()`。`rewritten_question` 不再存储；持久化 trace 时由有效问题与原问题是否不同来派生。`AgentObservation` 改为 `TypedDict` 普通数据，工具 builder 继续验证正数 step ID 与非负耗时；Runtime 门面继续验证 `top_k` 为 1–10、`decompose_top_k` 为 1–20。
+
+initialize 直接初始化平铺字段。框架事件通过 pure projection 只消费尚未应用的 events，并返回新的 observations、tool trace 和消费位置；RAG 与 compose helper 返回显式 update dict；finalize 解析 LLM 调用数、upsert 唯一 `llm_usage`、用同一 trace 快照构造 result 并持久化。只有 `messages` 和 append-only `governance_events` 保留 reducer，业务列表返回完整新值，避免 checkpoint resume 或节点重放时重复追加。
+
+memory Checkpointer 测试覆盖普通 Agent 回答、计算工具循环、direct_answer 和 clarify，并验证最终 payload 不含嵌套状态或重复改写问题；SQLite 测试使用临时数据库，覆盖完整 Human/AI/Tool/AI 消息循环、普通 dict observation、关闭并重新创建 Runtime 后读取最终 channels。SQLite Saver 表结构、配置模式、数据库路径和 thread ID 算法没有变化；改变的是新运行写入的 State channels。项目不承诺恢复 PR12 之前尚未完成且包含旧内部 payload 的 checkpoint，也不清空用户数据库。
+
+Runtime inspection 新增 `single_runtime_state`、`no_nested_agent_state` 和 `state_has_business_fields`，继续验证固定父图节点/边、Framework 子图、Middleware 与八个 ToolSpec，且不调用模型、工具、网络、RAG 或 Checkpointer。测试还明确覆盖框架投影、RAG 映射、compose、LLM usage 和 result builder 不修改输入。
+
+完成后全量结果为 `675 passed, 1 warning`；Ruff、compileall、Runtime inspection 的 text/JSON/Mermaid/check、pip check 和 diff check 通过。唯一警告仍来自 jieba 对 `pkg_resources` 的弃用提示。自动测试使用隔离 fake，并通过全局 pytest fixture 把审计、metrics、bad case、session/trace SQLite 和 Checkpoint 路径定向到临时目录；没有调用真实 Agent Model、Query Rewrite/RAG Answer Model、搜索引擎、网页/PDF、代理，没有重建真实 RAG 索引或创建生产 Checkpoint。
+
+父图节点与边、LangChain `create_agent`、Middleware 顺序、RAG `Command.PARENT` handoff 与算法、八个 ToolSpec、Provider 权限可见性、ToolRuntime 权限/审批/超时/重试/审计、FastAPI `/chat` Schema、HTTP 状态码、外部 result/status、metrics、bad case、SQLite session/Checkpointer Schema、thread ID、session 和 `tool_call_chain` 均未修改。Result/status 映射统一、Settings 迁移、模块依赖边界、ChatService 进一步拆分和历史文档归档仍留给后续独立整理。

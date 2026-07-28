@@ -9,12 +9,7 @@ def after_initialize_condition(
     state: AgentGraphState,
 ) -> Literal["framework_agent", "compose"]:
     """只有运行中的 Agent 状态进入框架模型，其余确定性状态直接合成。"""
-    agent_state = state.get("agent_state")
-    return (
-        "framework_agent"
-        if agent_state is not None and agent_state.status == "running"
-        else "compose"
-    )
+    return "framework_agent" if state.get("status") == "running" else "compose"
 
 
 def after_framework_condition(

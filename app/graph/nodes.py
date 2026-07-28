@@ -5,21 +5,24 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent.answer import apply_rag_result_to_state, compose_final_answer
+from app.agent.answer import (
+    build_compose_answer_updates,
+    build_rag_answer_updates,
+)
 from app.agent.framework_agent import (
-    apply_framework_events,
     framework_metrics,
+    project_framework_events,
 )
 from app.agent.guardrails import AgentStopReason
 from app.agent.router import route_agent_action
 from app.agent.runtime import (
-    append_llm_usage_trace,
     build_decide_trace,
     build_v2_result,
     maybe_save_agent_trace,
-    normalize_llm_call_count,
+    resolve_llm_call_count,
+    upsert_llm_usage_trace,
+    validate_runtime_counts,
 )
-from app.agent.state import AgentState, get_effective_question
 from app.config import Settings
 from app.graph.state import AgentGraphState
 from app.rag.graph import run_rag_subgraph
@@ -28,14 +31,6 @@ from app.rag.graph import run_rag_subgraph
 def _safe_decision(decision: object) -> dict[str, Any]:
     """将 route 节点写入的内部路由决策安全规整为字典。"""
     return decision if isinstance(decision, dict) else {}
-
-
-def _require_agent_state(state: AgentGraphState) -> AgentState:
-    """读取已初始化的业务状态，缺失时立即失败。"""
-    agent_state = state.get("agent_state")
-    if not isinstance(agent_state, AgentState):
-        raise RuntimeError("LangGraph agent_state is not initialized")
-    return agent_state
 
 
 def _resolve_state_questions(state: AgentGraphState) -> tuple[str, str]:
@@ -60,37 +55,36 @@ def route_node(state: AgentGraphState) -> dict[str, Any]:
     }
 
 
-def initialize_agent_state_node(state: AgentGraphState) -> dict[str, Any]:
-    """创建 API 兼容业务状态和框架消息入口。"""
+def initialize_node(state: AgentGraphState) -> dict[str, Any]:
+    """初始化唯一的平铺父图状态和框架消息入口。"""
     original_question, effective_question = _resolve_state_questions(state)
     decision = _safe_decision(state.get("decision"))
-    agent_state = AgentState(
-        trace_id=state.get("trace_id", ""),
-        session_id=state.get("session_id"),
-        original_question=original_question,
-        rewritten_question=(
-            effective_question if effective_question != original_question else ""
-        ),
+    top_k, decompose_top_k = validate_runtime_counts(
         top_k=state.get("top_k", Settings.TOP_K),
-        decompose_top_k=state.get("decompose_top_k", Settings.DECOMPOSE_TOP_K),
+        decompose_top_k=state.get(
+            "decompose_top_k", Settings.DECOMPOSE_TOP_K
+        ),
     )
-    agent_state.tool_trace.append(
+    tool_trace = [
         build_decide_trace(
             decision,
             route_cost_ms=state.get("route_cost_ms", 0),
         )
-    )
+    ]
     action = str(decision.get("action") or "").strip()
+    status = "running"
+    reason = ""
+    final_answer = ""
     if action == "clarify":
         clarification = (
             str(decision.get("clarification_question") or "").strip()
             or str(decision.get("reason") or "").strip()
             or "问题需要进一步澄清"
         )
-        agent_state.status = "clarify"
-        agent_state.reason = clarification
-        agent_state.final_answer = clarification
-        agent_state.tool_trace.append(
+        status = "clarify"
+        reason = clarification
+        final_answer = clarification
+        tool_trace.append(
             {
                 "step": "clarify",
                 "step_id": 1,
@@ -99,35 +93,47 @@ def initialize_agent_state_node(state: AgentGraphState) -> dict[str, Any]:
             }
         )
     elif action == "direct_answer":
-        agent_state.status = "direct_answer"
-        agent_state.reason = str(
-            decision.get("reason") or "该问题可以直接回答"
-        )
-        agent_state.tool_trace.append(
+        status = "direct_answer"
+        reason = str(decision.get("reason") or "该问题可以直接回答")
+        tool_trace.append(
             {
                 "step": "direct_answer",
                 "step_id": 1,
                 "status": "success",
-                "reason": agent_state.reason,
+                "reason": reason,
             }
         )
     elif action != "agent":
         safe_action = action[:100] or "<missing>"
-        agent_state.status = "error"
-        agent_state.reason = f"Unsupported route action: {safe_action}"
+        status = "error"
+        reason = f"Unsupported route action: {safe_action}"
     return {
         "original_question": original_question,
         "effective_question": effective_question,
+        "top_k": top_k,
+        "decompose_top_k": decompose_top_k,
         "messages": [HumanMessage(content=effective_question)],
         "governance_events": [],
         "framework_events_applied": 0,
         "iteration_count": 0,
         "tool_call_count": 0,
         "tool_error_count": 0,
+        "last_tool_call_fingerprint": "",
+        "consecutive_same_tool_call_count": 0,
+        "last_tool_error_fingerprint": "",
+        "consecutive_same_tool_error_count": 0,
         "agent_elapsed_ms": 0,
         "stop_reason": "",
         "pending_rag_result": {},
-        "agent_state": agent_state,
+        "observations": [],
+        "final_answer": final_answer,
+        "references": [],
+        "status": status,
+        "reason": reason,
+        "decompose_llm_used": False,
+        "answer_llm_used": False,
+        "llm_call_count": 0,
+        "tool_trace": tool_trace,
     }
 
 
@@ -153,8 +159,8 @@ def _last_final_ai(state: AgentGraphState) -> AIMessage | None:
     return None
 
 
-def _apply_stop(agent_state: AgentState, reason: str) -> None:
-    """把框架停止原因映射到现有 API 兼容状态。"""
+def _build_stop_updates(reason: str) -> dict[str, str]:
+    """把框架停止原因映射为 API 兼容状态更新。"""
     tool_errors = {
         AgentStopReason.FATAL_TOOL_ERROR.value,
         AgentStopReason.APPROVAL_REQUIRED.value,
@@ -162,44 +168,46 @@ def _apply_stop(agent_state: AgentState, reason: str) -> None:
         AgentStopReason.RUNTIME_UNAVAILABLE.value,
     }
     if reason in tool_errors:
-        agent_state.status = "tool_error"
-        agent_state.final_answer = "工具调用被治理策略或运行时终止，无法继续本次请求。"
+        status = "tool_error"
+        final_answer = "工具调用被治理策略或运行时终止，无法继续本次请求。"
     else:
-        agent_state.status = "model_error"
-        agent_state.final_answer = "本次请求达到 Agent 执行上限，已安全停止。请缩小问题范围后重试。"
+        status = "model_error"
+        final_answer = "本次请求达到 Agent 执行上限，已安全停止。请缩小问题范围后重试。"
     if reason == "agent_model_call_failed":
-        agent_state.final_answer = "Agent 模型暂时不可用，无法安全选择或继续调用工具。"
-    agent_state.reason = reason
+        final_answer = "Agent 模型暂时不可用，无法安全选择或继续调用工具。"
+    return {
+        "status": status,
+        "final_answer": final_answer,
+        "reason": reason,
+    }
 
 
 def adapt_framework_agent_node(state: AgentGraphState) -> dict[str, Any]:
-    """把 create_agent 事件映射回现有 AgentState/API 兼容字段。"""
-    agent_state = _require_agent_state(state)
-    applied = apply_framework_events(state, agent_state)
+    """把 create_agent 事件映射为平铺状态的显式更新。"""
+    projection = project_framework_events(state)
     events = list(state.get("governance_events", []))
     metrics = framework_metrics(events)
     successful_models = sum(
         item.get("kind") == "model" and item.get("ok") for item in events
     )
-    agent_state.answer_llm_used = successful_models > 0
-    agent_state.llm_call_count = successful_models
     updates: dict[str, Any] = {
-        "agent_state": agent_state,
-        "framework_events_applied": applied,
+        **projection,
         **metrics,
+        "answer_llm_used": successful_models > 0,
+        "llm_call_count": successful_models,
     }
     if state.get("pending_rag_result"):
         return updates
     reason = str(state.get("stop_reason") or "")
     if reason:
-        _apply_stop(agent_state, reason)
+        updates.update(_build_stop_updates(reason))
         return updates
     message = _last_final_ai(state)
     answer = _normalize_ai_content(message.content if message else "")
-    agent_state.final_answer = answer or "模型未生成可用的最终回答。"
-    agent_state.references = []
-    agent_state.status = "ok" if answer else "model_error"
-    agent_state.reason = (
+    updates["final_answer"] = answer or "模型未生成可用的最终回答。"
+    updates["references"] = []
+    updates["status"] = "ok" if answer else "model_error"
+    updates["reason"] = (
         "Agent model produced final answer"
         if answer
         else "Agent model returned empty final answer"
@@ -210,64 +218,88 @@ def adapt_framework_agent_node(state: AgentGraphState) -> dict[str, Any]:
 
 def rag_subgraph_node(state: AgentGraphState) -> dict[str, Any]:
     """消费框架路径的知识库 observation，复用原 RAG 子图。"""
-    agent_state = _require_agent_state(state)
-    applied = apply_framework_events(state, agent_state)
+    projection = project_framework_events(state)
     observation = next(
         (
             item
-            for item in reversed(agent_state.observations)
-            if item.tool_name == "search_knowledge_base" and item.success
+            for item in reversed(projection["observations"])
+            if item.get("tool_name") == "search_knowledge_base"
+            and item.get("success")
         ),
         None,
     )
-    if observation is None or not isinstance(observation.output, dict):
+    if observation is None or not isinstance(observation.get("output"), dict):
         raise RuntimeError("RAG path requires a successful knowledge base observation")
-    chunks = observation.output.get("chunks")
+    chunks = observation["output"].get("chunks")
     if not isinstance(chunks, list):
         raise RuntimeError("Knowledge base observation chunks must be a list")
     rag_result = run_rag_subgraph(
-        question=get_effective_question(agent_state),
-        top_k=agent_state.top_k,
-        decompose_top_k=agent_state.decompose_top_k,
+        question=str(state.get("effective_question") or "").strip(),
+        top_k=int(state.get("top_k", Settings.TOP_K)),
+        decompose_top_k=int(
+            state.get("decompose_top_k", Settings.DECOMPOSE_TOP_K)
+        ),
         retrieved_chunks=chunks,
-        trace_id=agent_state.trace_id,
+        trace_id=str(state.get("trace_id") or ""),
     )
     return {
-        "agent_state": apply_rag_result_to_state(agent_state, rag_result),
-        "framework_events_applied": applied,
+        **projection,
+        **build_rag_answer_updates({**state, **projection}, rag_result),
     }
 
 
-def compose_node(state: AgentGraphState) -> dict[str, AgentState]:
-    """调用现有 Answer Composer。"""
-    return {"agent_state": compose_final_answer(_require_agent_state(state))}
+def compose_node(state: AgentGraphState) -> dict[str, Any]:
+    """返回现有 Answer Composer 的平铺状态更新。"""
+    return build_compose_answer_updates(state)
 
 
 def finalize_node(state: AgentGraphState) -> dict[str, Any]:
-    """复用 API 映射、统计与 trace 持久化。"""
-    agent_state = _require_agent_state(state)
-    decision = _safe_decision(state.get("decision"))
-    normalize_llm_call_count(agent_state)
-    append_llm_usage_trace(agent_state)
-    result = build_v2_result(agent_state, decision)
+    """生成一致的 LLM 统计、trace、API 结果与持久化快照。"""
+    llm_call_count = resolve_llm_call_count(
+        decompose_llm_used=bool(state.get("decompose_llm_used")),
+        answer_llm_used=bool(state.get("answer_llm_used")),
+        current_count=int(state.get("llm_call_count", 0) or 0),
+    )
+    tool_trace = upsert_llm_usage_trace(
+        list(state.get("tool_trace", [])),
+        decompose_llm_used=bool(state.get("decompose_llm_used")),
+        answer_llm_used=bool(state.get("answer_llm_used")),
+        llm_call_count=llm_call_count,
+    )
+    snapshot = {
+        **state,
+        "llm_call_count": llm_call_count,
+        "tool_trace": tool_trace,
+    }
+    result = build_v2_result(snapshot)
+    original_question = str(state.get("original_question") or "")
+    effective_question = str(state.get("effective_question") or "")
     maybe_save_agent_trace(
-        trace_id=agent_state.trace_id,
-        session_id=agent_state.session_id,
-        question=agent_state.original_question,
-        rewritten_question=agent_state.rewritten_question,
+        trace_id=str(state.get("trace_id") or ""),
+        session_id=state.get("session_id"),
+        question=original_question,
+        rewritten_question=(
+            effective_question
+            if effective_question != original_question
+            else ""
+        ),
         final_answer=result.get("answer", ""),
         status=result.get("status", ""),
         reason=result.get("reason", ""),
         tool_trace=result.get("tool_trace", []),
     )
-    return {"agent_state": agent_state, "result": result}
+    return {
+        "llm_call_count": llm_call_count,
+        "tool_trace": tool_trace,
+        "result": result,
+    }
 
 
 __all__ = [
     "adapt_framework_agent_node",
     "compose_node",
     "finalize_node",
-    "initialize_agent_state_node",
+    "initialize_node",
     "rag_subgraph_node",
     "route_node",
 ]

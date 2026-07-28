@@ -32,9 +32,9 @@ flowchart TD
 
     subgraph AgentGraph[LangGraph Agent Graph]
         Router[route<br/>确定性 Router]
-        Initialize[initialize<br/>创建 AgentState 和 HumanMessage]
+        Initialize[initialize<br/>初始化 AgentGraphState 和 HumanMessage]
         FrameworkAgent[framework_agent<br/>LangChain create_agent 子图]
-        FrameworkAdapt[adapt_framework<br/>父图状态薄适配]
+        FrameworkAdapt[adapt_framework<br/>框架事件纯投影]
         RAGEntry[rag_subgraph]
         Composer[Answer Composer]
         Finalize[Finalize / build_v2_result]
@@ -293,7 +293,7 @@ START → route → initialize
 
 `agent` 路径的模型不可用或调用失败会写入 `agent_model_call_failed` 治理事件并受控返回 `MODEL_ERROR`，不会进入第二套执行架构。成功的知识库检索继续进入原 RAG 子图，以保留问题拆分、重排、证据门控、拒答、引用绑定和验证能力。
 
-旧手写 Agent 编排入口和 Planner/Executor 兼容链已经删除。父图只保留 route、initialize、框架 Agent 适配、RAG、compose 和 finalize；`route_node` 独占 Router 调用和计时，`AgentState` 与 Query Rewrite 继续承担业务状态和问题语义。完整 RAG 问答不再提供独立顺序式入口，脚本和测试统一调用当前 LangGraph Runtime。
+旧手写 Agent 编排入口和 Planner/Executor 兼容链已经删除。父图只保留 route、initialize、框架 Agent 适配、RAG、compose 和 finalize；`route_node` 独占 Router 调用和计时，`AgentGraphState` 是一次请求唯一的完整运行状态。节点直接返回平铺字段更新，Query Rewrite 只通过 `original_question` 与 `effective_question` 表达问题语义，不再嵌套完整业务状态或重复保存 `rewritten_question`。完整 RAG 问答不再提供独立顺序式入口，脚本和测试统一调用当前 LangGraph Runtime。
 
 ### LangGraph RAG 子图
 
@@ -310,7 +310,7 @@ LANGGRAPH_CHECKPOINTER=sqlite
 LANGGRAPH_CHECKPOINT_DB_PATH=./data/langgraph_checkpoints.sqlite3
 ```
 
-`memory` 仅适合测试和本地实验，进程退出后状态会丢失；`sqlite` 适合本地运行和开发。当前每次 `/chat` 请求都会根据该请求的 `trace_id` 生成独立且经过摘要处理的 Graph thread，因此同一 `session_id` 的不同请求也不会累积上一轮的 `decision`、`agent_state` 或 `result`。
+`memory` 仅适合测试和本地实验，进程退出后状态会丢失；`sqlite` 适合本地运行和开发。当前每次 `/chat` 请求都会根据该请求的 `trace_id` 生成独立且经过摘要处理的 Graph thread，因此同一 `session_id` 的不同请求也不会累积上一轮的 `decision`、业务结果字段或 `result`。Checkpoint 的 channel payload 直接对应平铺的 `AgentGraphState`，其中 observation 是普通字典；SQLite Saver 的表结构没有变化。
 
 Checkpointer 只保存 Graph 节点执行快照，不替代应用级聊天历史。Query Rewrite 仍从 `SQLITE_DB_PATH` 指定的 session 数据库读取最近消息，用户和助手消息也仍写入该数据库。Checkpoint 文件可能包含用户问题、工具结果、模型回答、引用信息和 Graph 中间状态，不能提交到 Git 仓库，并应按敏感业务数据保护。
 

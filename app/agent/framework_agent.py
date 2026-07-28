@@ -1,7 +1,8 @@
 """构建 create_agent 子图并转换其最小业务事件。"""
 
 import operator
-from typing import Annotated, Any
+from collections.abc import Mapping
+from typing import Annotated, Any, TypedDict
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
@@ -14,7 +15,7 @@ from typing_extensions import NotRequired
 from app.agent.framework_middleware import ProjectToolGovernanceMiddleware
 from app.agent.framework_tools import RegistryToolsMiddleware
 from app.agent.model import get_agent_chat_model
-from app.agent.state import AgentState
+from app.agent.state import AgentObservation
 from app.agent.tool_events import build_tool_observation, build_tool_trace
 from app.config import Settings
 from app.tools.context import ToolInvocationContext
@@ -32,6 +33,14 @@ class FrameworkAgentState(LangChainAgentState):
     agent_elapsed_ms: NotRequired[int]
     stop_reason: NotRequired[Annotated[str, _prefer_stop_reason]]
     pending_rag_result: NotRequired[dict[str, Any]]
+
+
+class FrameworkEventProjection(TypedDict):
+    """框架治理事件投影到父图业务字段后的纯更新。"""
+
+    observations: list[AgentObservation]
+    tool_trace: list[dict[str, Any]]
+    framework_events_applied: int
 
 
 class _DeferredAgentModel:
@@ -122,13 +131,13 @@ def _guardrail_trace(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _tool_trace(
+def _project_tool_event(
     event: dict[str, Any],
-    agent_state: AgentState,
-) -> dict[str, Any]:
+    *,
+    step_id: int,
+) -> tuple[AgentObservation, dict[str, Any]]:
     """把已执行工具事件映射为 observation 和 tool trace。"""
     result = event.get("result") if isinstance(event.get("result"), dict) else {}
-    step_id = len(agent_state.observations) + 1
     tool_name = str(event.get("name") or "")
     tool_args = event.get("args") if isinstance(event.get("args"), dict) else {}
     observation = build_tool_observation(
@@ -137,7 +146,6 @@ def _tool_trace(
         result=result,
         cost_ms=max(0, int(event.get("cost_ms", 0) or 0)),
     )
-    agent_state.observations.append(observation)
     trace = build_tool_trace(
         step_id=step_id,
         tool_name=tool_name,
@@ -154,29 +162,45 @@ def _tool_trace(
             "call_fingerprint": str(event.get("call_fingerprint") or ""),
         }
     )
-    return trace
+    return observation, trace
 
 
-def apply_framework_events(
-    graph_state: dict[str, Any],
-    agent_state: AgentState,
-) -> int:
-    """把框架事件转换为现有 observation/trace，并返回已消费数量。"""
+def project_framework_events(
+    graph_state: Mapping[str, Any],
+) -> FrameworkEventProjection:
+    """把尚未消费的框架事件投影为新的 observation/trace 列表。"""
     events = list(graph_state.get("governance_events", []))
     applied = max(0, int(graph_state.get("framework_events_applied", 0) or 0))
+    observations = [
+        dict(item)
+        for item in graph_state.get("observations", [])
+        if isinstance(item, dict)
+    ]
+    tool_trace = [
+        dict(item)
+        for item in graph_state.get("tool_trace", [])
+        if isinstance(item, dict)
+    ]
     model_index = sum(item.get("kind") == "model" for item in events[:applied])
     for event in events[applied:]:
         if event.get("kind") == "model":
             model_index += 1
-            agent_state.tool_trace.append(_model_trace(event, model_index))
+            tool_trace.append(_model_trace(event, model_index))
             continue
-        trace = (
-            _tool_trace(event, agent_state)
-            if event.get("counted_call")
-            else _guardrail_trace(event)
-        )
-        agent_state.tool_trace.append(trace)
-    return len(events)
+        if event.get("counted_call"):
+            observation, trace = _project_tool_event(
+                event,
+                step_id=len(observations) + 1,
+            )
+            observations.append(observation)
+        else:
+            trace = _guardrail_trace(event)
+        tool_trace.append(trace)
+    return {
+        "observations": observations,
+        "tool_trace": tool_trace,
+        "framework_events_applied": len(events),
+    }
 
 
 def framework_metrics(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -218,4 +242,9 @@ def framework_metrics(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-__all__ = ["apply_framework_events", "build_framework_agent", "framework_metrics"]
+__all__ = [
+    "FrameworkEventProjection",
+    "build_framework_agent",
+    "framework_metrics",
+    "project_framework_events",
+]

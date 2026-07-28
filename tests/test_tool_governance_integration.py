@@ -104,7 +104,10 @@ def test_public_tool_trace_redacts_args_and_summarizes_chunk_output():
         step_id=1,
         tool_name="get_chunk_text",
         success=True,
+        summary="chunk 原文工具执行完成",
         output={"chunk": {"text": chunk_text, "token": "raw-token"}},
+        error="",
+        cost_ms=0,
     )
     trace = build_tool_trace(
         step_id=1,
@@ -113,7 +116,7 @@ def test_public_tool_trace_redacts_args_and_summarizes_chunk_output():
         result={
             "status": "success",
             "ok": True,
-            "output": observation.output,
+            "output": observation["output"],
             "governance": {"decision": "allow", "risk_level": "read_only"},
             "runtime": {"attempt_count": 1},
         },

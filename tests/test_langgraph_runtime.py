@@ -194,6 +194,39 @@ def test_runtime_signature_rejects_external_decision():
     assert "decision" not in inspect.signature(run_agent_langgraph).parameters
 
 
+@pytest.mark.parametrize(
+    ("top_k", "decompose_top_k"),
+    [(0, 10), (11, 10), (5, 0), (5, 21)],
+)
+def test_runtime_rejects_out_of_range_counts_before_graph_invocation(
+    monkeypatch,
+    top_k,
+    decompose_top_k,
+):
+    """删除 Pydantic 嵌套状态后，公开门面仍 fail closed。"""
+
+    def forbidden_graph():
+        raise AssertionError("invalid input must not compile or invoke graph")
+
+    monkeypatch.setattr(
+        graph_runtime,
+        "get_compiled_agent_graph",
+        forbidden_graph,
+    )
+
+    result = run_agent_langgraph(
+        write_bad_cases=lambda record: None,
+        original_question="测试问题",
+        effective_question="测试问题",
+        top_k=top_k,
+        decompose_top_k=decompose_top_k,
+        trace_id="trace-invalid-counts",
+    )
+
+    assert result["status"] == "INTERNAL_ERROR"
+    assert result["tool_trace"][0]["error"] == "internal_error"
+
+
 def test_top_level_graph_error_is_sanitized_but_kept_for_diagnostics(
     monkeypatch,
     caplog,

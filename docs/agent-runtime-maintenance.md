@@ -10,14 +10,14 @@
 | --- | --- | --- |
 | 1 | `app/services/chat_service.py` | 会话、请求改写、Runtime 和 API 结果收尾如何串联 |
 | 2 | `app/graph/builder.py` | 父图固定入口、节点、边和条件出口 |
-| 3 | `app/graph/conditions.py` | 框架 Agent、RAG 与 compose 如何分流 |
-| 4 | `app/graph/nodes.py` | `route_node` 如何独占 Router 调用/计时，以及其他节点如何适配业务状态 |
-| 5 | `app/agent/framework_agent.py` | `create_agent`、调用限制 Middleware 和事件消费如何组装 |
-| 6 | `app/agent/tool_events.py` | 标准工具结果和治理事件如何转换为 observation/trace |
-| 7 | `app/agent/framework_middleware.py` | 项目错误分类、预算、循环防护和同批 fail-closed |
-| 8 | `app/agent/framework_tools.py` | 动态 StructuredTool、Registry dispatch 和 RAG handoff |
-| 9 | `app/tools/providers/local.py` | 请求权限如何过滤模型可见 ToolSpec |
-| 10 | `app/tools/registry.py` | 默认 ToolSpec 如何注册、查询和统一分发 |
+| 3 | `app/graph/state.py` | 唯一完整请求状态及 reducer |
+| 4 | `app/graph/conditions.py` | 框架 Agent、RAG 与 compose 如何分流 |
+| 5 | `app/graph/nodes.py` | `route_node` 如何独占 Router 调用/计时，以及节点如何返回显式更新 |
+| 6 | `app/agent/framework_agent.py` | `create_agent`、调用限制 Middleware 和事件纯投影如何组装 |
+| 7 | `app/agent/tool_events.py` | 标准工具结果和治理事件如何转换为 observation/trace |
+| 8 | `app/agent/answer.py` | RAG 与 compose 如何生成无副作用状态更新 |
+| 9 | `app/agent/framework_middleware.py` | 项目错误分类、预算、循环防护和同批 fail-closed |
+| 10 | `app/agent/framework_tools.py` | 动态 StructuredTool、Registry dispatch 和 RAG handoff |
 | 11 | `app/tools/runtime.py` | 单次工具调用的策略、审计、超时、重试和输出校验 |
 
 ## 主调用链
@@ -48,6 +48,20 @@ ChatService 不调用 Router，也不生成或注入 decision。`route_node` 是
 `web_fetch` 与 `web_search` 一样走普通 ToolMessage 路径：Agent 可先搜索，再从搜索结果选择一个公开 URL 抓取正文。HTML 正文通过 Trafilatura 提取；它不进入 RAG、不持久化网页，也不生成本地 references。
 
 `web_pdf_fetch` 同样是普通 ToolMessage 路径，负责已知公开 PDF 的有限页范围。HTML 与 PDF 共用 `app/tools/web_download.py` 中的 requests-hardened 下载入口；PDF 使用已有 pypdf 提取带 `[Page N]` 边界的文本。它不进入本地 RAG、不持久化 PDF，也不生成本地 references。模型误用 `web_fetch` 读取 PDF 时，可根据内容类型错误 ToolMessage 在同一 `create_agent` 循环中改用 `web_pdf_fetch`，不需要 Router 或父图特判。
+
+## 单一运行状态
+
+`AgentGraphState` 是父图唯一的完整请求状态。节点不再取出嵌套业务对象后原地修改；initialize、框架事件投影、RAG 映射、compose 和 finalize 都返回明确的 LangGraph 字段 updates。
+
+| 分组 | 字段 |
+| --- | --- |
+| 请求输入 | `original_question`、`effective_question`、`top_k`、`decompose_top_k`、`trace_id`、`session_id` |
+| 路由 | `decision`、`route_cost_ms` |
+| 框架治理 | `messages`、`governance_events`、`framework_events_applied`、迭代/工具/错误计数与指纹、`agent_elapsed_ms`、`stop_reason`、`pending_rag_result` |
+| 业务结果 | `observations`、`final_answer`、`references`、`status`、`reason`、`decompose_llm_used`、`answer_llm_used`、`llm_call_count`、`tool_trace` |
+| 最终输出 | `result` |
+
+只有框架需要合并的 `messages` 和 append-only `governance_events` 使用 reducer。`observations`、`references` 和 `tool_trace` 由节点返回完整新列表，避免 checkpoint resume 或节点重放时重复追加；`llm_usage` 在 finalize 中执行 upsert。改写问题需要持久化到 trace 时，由 `effective_question != original_question` 派生，不在状态中重复保存。
 
 ## 当前图
 
@@ -112,11 +126,13 @@ graph TD;
 | 文件 | 唯一主要职责 |
 | --- | --- |
 | `app/graph/builder.py` | 声明父图节点和边 |
+| `app/graph/state.py` | 声明唯一完整 `AgentGraphState` 及 reducer |
 | `app/graph/conditions.py` | 声明父图无副作用分支条件 |
-| `app/graph/nodes.py` | 独占 Router 调用/计时；适配父图业务节点和最终结果 |
+| `app/graph/nodes.py` | 独占 Router 调用/计时；组合各节点的显式字段更新 |
 | `app/agent/router.py` | 只产生 agent/direct_answer/clarify 的确定性决策 |
-| `app/agent/framework_agent.py` | 组装 `create_agent`；消费框架事件 |
+| `app/agent/framework_agent.py` | 组装 `create_agent`；纯投影框架事件 |
 | `app/agent/tool_events.py` | 将工具结果转换为 observation 和兼容 trace |
+| `app/agent/answer.py` | 生成 RAG/compose 的 pure updates |
 | `app/agent/framework_middleware.py` | 执行项目特有 Agent 治理 |
 | `app/agent/framework_tools.py` | 适配动态工具；处理 RAG handoff |
 | `app/tools/providers/local.py` | 按请求 `required_permissions` 过滤模型可见工具 |
@@ -146,6 +162,11 @@ Provider 的模型可见性层只复用 `has_permission()` 检查全部 `ToolSpe
 
 | 问题 | 首先查看 |
 | --- | --- |
+| 状态字段在哪里定义 | `app/graph/state.py` |
+| 工具事件如何进入状态 | `app/agent/framework_agent.py`、`app/agent/tool_events.py` |
+| RAG 结果如何写回 | `app/agent/answer.py`、`rag_subgraph_node` |
+| 最终结果如何构建 | `app/agent/runtime.py`、`finalize_node` |
+| Checkpoint 保存什么 | `AgentGraphState` channels |
 | Graph 为什么走这个分支 | `app/graph/builder.py`、`app/graph/conditions.py` |
 | 请求为什么进入 direct/clarify/agent | `app/agent/router.py`、`app/graph/nodes.py::route_node` |
 | Router 为什么执行两次 | 不应发生；检查调用方是否绕开 `run_agent_langgraph()` 或重复执行父图 |
@@ -197,6 +218,8 @@ Provider 的模型可见性层只复用 `has_permission()` 检查全部 `ToolSpe
 - 不实现第二套参数 Schema。
 - 不为框架已有能力创建自定义 Runtime。
 - 不同时维护两套 Agent Loop。
+- 不在父图状态中嵌套另一套完整业务状态。
+- 不在节点或 helper 中原地修改输入的 observations、references 或 tool_trace。
 - 不从 `builder.py` 源码、AST 或正则反推图结构。
 
 ## 检查与升级
@@ -208,6 +231,6 @@ python scripts/inspect_agent_runtime.py --format mermaid
 python scripts/inspect_agent_runtime.py --check
 ```
 
-脚本只使用普通 `build_agent_graph().compile()`，不会调用带 Checkpointer 的缓存入口；也不会初始化模型、DDGS、requests-hardened Manager、Trafilatura、PdfReader、执行 handler、访问网络或读取/重建 RAG 索引。报告分别列出 Registry 的八个 `registered_tools` 和默认 Context 的 `default_visible_tools`，并验证默认可见集合是注册集合的子集、权限满足、Web Search/Web Fetch/Web PDF 的隐藏与授权可见性；`web_fetch` 模型 Schema 只有 `url` 和 `max_chars`，`web_pdf_fetch` 只有 `url`、`start_page`、`max_pages` 和 `max_chars`。版本来自 `importlib.metadata`，图来自 `get_graph()`/`get_graph(xray=True)`，Mermaid 来自 `draw_mermaid()`，工具参数来自模型可见的 Pydantic JSON Schema。
+脚本只使用普通 `build_agent_graph().compile()`，不会调用带 Checkpointer 的缓存入口；也不会初始化模型、DDGS、requests-hardened Manager、Trafilatura、PdfReader、执行 handler、访问网络或读取/重建 RAG 索引。报告验证 `AgentGraphState` 没有嵌套状态且包含全部业务字段，分别列出 Registry 的八个 `registered_tools` 和默认 Context 的 `default_visible_tools`，并验证默认可见集合是注册集合的子集、权限满足、Web Search/Web Fetch/Web PDF 的隐藏与授权可见性；`web_fetch` 模型 Schema 只有 `url` 和 `max_chars`，`web_pdf_fetch` 只有 `url`、`start_page`、`max_pages` 和 `max_chars`。版本来自 `importlib.metadata`，图来自 `get_graph()`/`get_graph(xray=True)`，Mermaid 来自 `draw_mermaid()`，工具参数来自模型可见的 Pydantic JSON Schema。
 
 升级 LangChain、LangGraph 或 Pydantic 时，先运行契约测试和 `--check`。重点确认父图节点未改变、xray 仍能展开 `framework_agent`、model/tools 和调用限制节点仍存在、`ToolRuntime` 注入字段未暴露给模型，并重新生成本页 Mermaid。

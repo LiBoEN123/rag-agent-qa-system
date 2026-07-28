@@ -174,7 +174,7 @@ def test_max_tool_errors_stops_on_third_failure_without_another_model_call(
     assert len(model.received_messages) == 3
     assert output["tool_error_count"] == 3
     assert output["stop_reason"] == "max_tool_errors_reached"
-    assert output["agent_state"].status == "model_error"
+    assert output["status"] == "model_error"
     assert output["result"]["status"] == "MODEL_ERROR"
 
 

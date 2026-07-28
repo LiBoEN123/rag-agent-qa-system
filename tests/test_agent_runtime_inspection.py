@@ -32,6 +32,7 @@ def test_runtime_report_preserves_graph_contract(monkeypatch):
         for edge in report["parent_graph"]["edges"]
     }
     framework_nodes = set(report["framework_agent"]["nodes"])
+    state_fields = set(report["state_schema"]["fields"])
 
     assert inspection.EXPECTED_PARENT_NODES <= parent_nodes
     assert parent_edges == inspection.EXPECTED_PARENT_EDGES
@@ -47,6 +48,13 @@ def test_runtime_report_preserves_graph_contract(monkeypatch):
     )
     assert any("ModelCallLimitMiddleware" in name for name in framework_nodes)
     assert any("ToolCallLimitMiddleware" in name for name in framework_nodes)
+    assert inspection.BUSINESS_STATE_FIELDS <= state_fields
+    assert "agent_state" not in state_fields
+    assert {
+        "single_runtime_state",
+        "no_nested_agent_state",
+        "state_has_business_fields",
+    } <= {item["name"] for item in report["checks"]}
 
 
 def test_tool_contracts_use_model_facing_json_schema(monkeypatch):

@@ -25,7 +25,11 @@ def test_build_and_compile_graph_has_only_framework_execution_nodes(monkeypatch)
         raise AssertionError("Graph compilation must not call business functions")
 
     monkeypatch.setattr(graph_nodes, "route_agent_action", fail_if_called)
-    monkeypatch.setattr(graph_nodes, "compose_final_answer", fail_if_called)
+    monkeypatch.setattr(
+        graph_nodes,
+        "build_compose_answer_updates",
+        fail_if_called,
+    )
     monkeypatch.setattr(graph_nodes, "maybe_save_agent_trace", fail_if_called)
 
     graph = graph_builder.build_agent_graph().compile().get_graph()
@@ -152,3 +156,18 @@ def test_get_compiled_agent_graph_reuses_compiled_instance():
     second = graph_builder.get_compiled_agent_graph()
 
     assert first is second
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("running", "framework_agent"),
+        ("ok", "compose"),
+        ("clarify", "compose"),
+        (None, "compose"),
+    ],
+)
+def test_after_initialize_condition_reads_flat_status(status, expected):
+    state = {} if status is None else {"status": status}
+
+    assert graph_conditions.after_initialize_condition(state) == expected

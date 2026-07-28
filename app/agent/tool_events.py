@@ -38,8 +38,14 @@ def build_tool_observation(
     cost_ms: int,
 ) -> AgentObservation:
     """将一次框架工具结果规整为 AgentObservation。"""
+    if step_id < 1:
+        raise ValueError("observation step_id must be at least 1")
+    if cost_ms < 0:
+        raise ValueError("observation cost_ms must be non-negative")
     success = bool(result.get("ok", result.get("status") == "success"))
     output = result.get("output") or {}
+    if not isinstance(output, dict):
+        output = {}
     error_code = str(result.get("error_code") or "")
     raw_error = str(result.get("error") or "")
     safe_policy_codes = {
@@ -59,15 +65,15 @@ def build_tool_observation(
     if not success and not error:
         error = "Tool execution failed"
 
-    return AgentObservation(
-        step_id=step_id,
-        tool_name=tool_name,
-        success=success,
-        summary=summarize_tool_result(tool_name, result),
-        output=output,
-        error=error,
-        cost_ms=cost_ms,
-    )
+    return {
+        "step_id": step_id,
+        "tool_name": tool_name,
+        "success": success,
+        "summary": summarize_tool_result(tool_name, result),
+        "output": output,
+        "error": error,
+        "cost_ms": cost_ms,
+    }
 
 
 def build_tool_trace(
@@ -97,10 +103,10 @@ def build_tool_trace(
         "tool_args": sanitized_args,
         "sanitized_tool_args": sanitized_args,
         "tool_status": result.get("status", ""),
-        "success": observation.success,
-        "summary": redact_sensitive_data(observation.summary),
-        "error": redact_sensitive_data(observation.error),
-        "cost_ms": observation.cost_ms,
+        "success": observation["success"],
+        "summary": redact_sensitive_data(observation["summary"]),
+        "error": redact_sensitive_data(observation["error"]),
+        "cost_ms": observation["cost_ms"],
         "error_code": result.get("error_code", ""),
         "tool_call_id": result.get("tool_call_id", ""),
         "policy_decision": governance.get("decision", ""),
@@ -147,9 +153,11 @@ def build_tool_trace(
         trace["top_scores"] = redact_sensitive_data(trace["top_scores"])
         trace["hits"] = redact_sensitive_data(trace["hits"])
     elif spec is not None:
-        trace["output_summary"] = summarize_tool_output(spec, observation.output)
+        trace["output_summary"] = summarize_tool_output(
+            spec, observation["output"]
+        )
     else:
-        trace["output_summary"] = redact_sensitive_data(observation.output)
+        trace["output_summary"] = redact_sensitive_data(observation["output"])
 
     return trace
 

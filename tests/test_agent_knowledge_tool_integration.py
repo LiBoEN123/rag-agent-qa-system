@@ -183,7 +183,7 @@ def test_successful_zero_result_search_is_not_a_tool_error(monkeypatch):
 
     assert result["runtime_calls"] == ["search_knowledge_base"]
     assert result["output"]["tool_error_count"] == 0
-    assert result["output"]["agent_state"].observations[0].success is True
+    assert result["output"]["observations"][0]["success"] is True
     assert result["rag_calls"][0]["retrieved_chunks"] == []
     assert result["output"]["result"]["status"] == "NO_RELEVANT_INFO"
 

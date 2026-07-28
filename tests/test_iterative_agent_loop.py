@@ -2,6 +2,7 @@
 
 import json
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agent import framework_agent, framework_tools
@@ -9,7 +10,7 @@ from app.graph import builder as graph_builder
 from app.graph import checkpointing, runtime as graph_runtime
 from app.graph.builder import build_agent_graph
 from app.graph import nodes as graph_nodes
-from app.graph.nodes import initialize_agent_state_node
+from app.graph.nodes import initialize_node
 from app.tools.context import ToolInvocationContext
 from app.tools import runtime as tool_runtime
 from app.tools.contracts import ToolSpec
@@ -17,6 +18,15 @@ from app.tools.providers import LocalToolProvider
 from app.tools.registry import ToolRegistry
 from app.tools.result import tool_success
 from app.tools.schemas import SearchKnowledgeBaseArgs
+
+
+@pytest.fixture(autouse=True)
+def isolate_tool_audit(monkeypatch):
+    """Agent loop 测试不写生产工具审计文件。"""
+    monkeypatch.setattr(graph_nodes.Settings, "TOOL_AUDIT_ENABLED", False)
+    tool_runtime.reset_tool_runtime()
+    yield
+    tool_runtime.reset_tool_runtime()
 
 
 class FakeToolCallingModel:
@@ -82,7 +92,7 @@ def test_initialize_agent_loop_state_uses_effective_question(monkeypatch):
         10,
     )
 
-    updates = initialize_agent_state_node(
+    updates = initialize_node(
         {
             "original_question": "它什么时候开始？",
             "effective_question": "奖学金申请什么时候开始？",
@@ -113,7 +123,7 @@ def test_agent_loop_answers_without_calling_tools(monkeypatch):
     assert len(model.received_messages) == 1
     assert output["tool_call_count"] == 0
     assert output["stop_reason"] == "completed"
-    assert output["agent_state"].status == "ok"
+    assert output["status"] == "ok"
     assert output["result"]["status"] == "OK"
     assert output["result"]["answer"] == "直接回答"
 
@@ -202,7 +212,7 @@ def test_agent_loop_runs_two_sequential_tool_calls(monkeypatch):
         for message in model.received_messages[2]
     )
     assert output["tool_call_count"] == 2
-    assert [item.output["result"] for item in output["agent_state"].observations] == [
+    assert [item["output"]["result"] for item in output["observations"]] == [
         3,
         12,
     ]
@@ -249,7 +259,7 @@ def test_agent_loop_executes_all_tool_calls_from_one_message(monkeypatch):
         "parallel-2",
     ]
     assert output["tool_call_count"] == 2
-    assert [item.output["result"] for item in output["agent_state"].observations] == [
+    assert [item["output"]["result"] for item in output["observations"]] == [
         4,
         25,
     ]
@@ -296,7 +306,7 @@ def test_agent_loop_allows_model_to_correct_failed_tool_arguments(monkeypatch):
     assert first_payload["ok"] is False
     assert first_payload["error_code"] == "execution_error"
     assert output["tool_error_count"] == 1
-    assert [item.success for item in output["agent_state"].observations] == [
+    assert [item["success"] for item in output["observations"]] == [
         False,
         True,
     ]
@@ -343,7 +353,7 @@ def test_agent_loop_stops_at_max_iterations(monkeypatch):
     assert output["iteration_count"] == 2
     assert output["tool_call_count"] == 2
     assert output["stop_reason"] == "max_iterations_reached"
-    assert output["agent_state"].status == "model_error"
+    assert output["status"] == "model_error"
     assert output["result"]["status"] == "MODEL_ERROR"
 
 
@@ -384,7 +394,7 @@ def test_agent_loop_stops_before_exceeding_tool_call_budget(monkeypatch):
 
     assert len(model.received_messages) == 2
     assert output["tool_call_count"] == 1
-    assert len(output["agent_state"].observations) == 1
+    assert len(output["observations"]) == 1
     assert output["stop_reason"] == "max_tool_calls_reached"
     assert output["result"]["status"] == "MODEL_ERROR"
 
@@ -532,7 +542,7 @@ def test_agent_loop_model_failure_after_tool_does_not_replay_tool(monkeypatch):
 
     assert len(model.received_messages) == 2
     assert output["tool_call_count"] == 1
-    assert len(output["agent_state"].observations) == 1
+    assert len(output["observations"]) == 1
     assert output["stop_reason"] == "agent_model_call_failed"
     assert output["result"]["status"] == "MODEL_ERROR"
 
@@ -683,6 +693,11 @@ def test_sqlite_checkpointer_serializes_full_agent_message_loop(
             "ai",
         ]
         assert messages[2].tool_call_id == "sqlite-calc"
-        assert saved.checkpoint["channel_values"]["result"]["answer"] == "结果是 15。"
+        values = saved.checkpoint["channel_values"]
+        assert values["result"]["answer"] == "结果是 15。"
+        assert values["observations"][0]["output"]["result"] == 15
+        assert type(values["observations"][0]) is dict
+        assert values["tool_trace"] == values["result"]["tool_trace"]
+        assert "agent_state" not in values
     finally:
         graph_builder.reset_agent_graph_runtime()

@@ -20,6 +20,7 @@ warnings.filterwarnings("ignore", message="pkg_resources is deprecated as an API
 from app.agent.framework_agent import build_framework_agent  # noqa: E402
 from app.agent.framework_tools import build_framework_tools  # noqa: E402
 from app.graph.builder import build_agent_graph  # noqa: E402
+from app.graph.state import AgentGraphState  # noqa: E402
 from app.tools.context import (  # noqa: E402
     ToolInvocationContext,
     build_default_tool_context,
@@ -74,6 +75,18 @@ SOURCE_FILE_LIMITS = {
     "app/agent/tool_events.py": 250,
     "app/agent/guardrails.py": 150,
 }
+BUSINESS_STATE_FIELDS = {
+    "observations",
+    "final_answer",
+    "references",
+    "status",
+    "reason",
+    "decompose_llm_used",
+    "answer_llm_used",
+    "llm_call_count",
+    "tool_trace",
+}
+NESTED_STATE_FIELD = "agent_" + "state"
 
 
 def _line_count(relative_path: str) -> int:
@@ -270,6 +283,11 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
         for path, item in source_files.items()
         if item["lines"] > item["limit"]
     ]
+    state_fields = set(AgentGraphState.__annotations__)
+    missing_business_fields = sorted(BUSINESS_STATE_FIELDS - state_fields)
+    nested_state_fields = sorted(
+        {NESTED_STATE_FIELD, "rewritten_question"} & state_fields
+    )
     web_spec = next(
         (
             item
@@ -405,6 +423,24 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
         )
     checks = [
         _check("dependency_versions", not missing_packages, ", ".join(missing_packages)),
+        _check(
+            "single_runtime_state",
+            not nested_state_fields and not missing_business_fields,
+            (
+                f"nested={nested_state_fields}; "
+                f"missing={missing_business_fields}"
+            ),
+        ),
+        _check(
+            "no_nested_" + NESTED_STATE_FIELD,
+            NESTED_STATE_FIELD not in state_fields,
+            "AgentGraphState must not contain a nested runtime state",
+        ),
+        _check(
+            "state_has_business_fields",
+            not missing_business_fields,
+            ", ".join(missing_business_fields),
+        ),
         _check("parent_required_nodes", not missing_parent, ", ".join(missing_parent)),
         _check("parent_forbidden_nodes", not forbidden_parent, ", ".join(forbidden_parent)),
         _check(
@@ -498,6 +534,7 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
     ]
     return {
         "versions": versions,
+        "state_schema": {"fields": sorted(state_fields)},
         "parent_graph": {**parent_data, "xray_nodes": xray_nodes},
         "framework_agent": framework_data,
         "middleware_nodes": sorted(

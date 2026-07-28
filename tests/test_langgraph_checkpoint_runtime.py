@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 import pytest
+from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 
@@ -13,6 +14,7 @@ from app.graph import builder as graph_builder
 from app.graph import checkpointing
 from app.graph import nodes as graph_nodes
 from app.graph import runtime as graph_runtime
+from app.tools import runtime as tool_runtime
 from app.tools.context import ToolInvocationContext
 
 
@@ -27,6 +29,8 @@ def isolate_graph_runtime(monkeypatch, tmp_path):
         tmp_path / "checkpoint.sqlite3",
     )
     monkeypatch.setattr(Settings, "ENABLE_AGENT_TRACE_STORE", False)
+    monkeypatch.setattr(Settings, "TOOL_AUDIT_ENABLED", False)
+    tool_runtime.reset_tool_runtime()
     monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: None)
     monkeypatch.setattr(
         graph_nodes,
@@ -40,6 +44,7 @@ def isolate_graph_runtime(monkeypatch, tmp_path):
         },
     )
     yield
+    tool_runtime.reset_tool_runtime()
     graph_builder.reset_agent_graph_runtime()
 
 
@@ -183,8 +188,8 @@ def test_enabled_runtime_passes_request_scoped_thread_id(
     assert "permissions" not in calls[0]["input"]
 
 
-def test_memory_checkpoint_serializes_real_agent_state(monkeypatch):
-    """默认 Serializer 可真实往返当前 Pydantic AgentState。"""
+def test_memory_checkpoint_serializes_flat_runtime_state(monkeypatch):
+    """默认 Serializer 可真实往返平铺状态、观察结果和 trace。"""
     monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "memory")
     result = _run("trace-memory")
     thread_id = checkpointing.build_checkpoint_thread_id(
@@ -203,13 +208,13 @@ def test_memory_checkpoint_serializes_real_agent_state(monkeypatch):
     assert len(values["messages"]) == 1
     assert values["messages"][0].content == "问题-trace-memory"
     assert values["result"]["status"] == "OK"
-    assert values["agent_state"].trace_id == "trace-memory"
-    assert values["agent_state"].original_question == "问题-trace-memory"
-    assert values["agent_state"].rewritten_question == ""
+    assert values["status"] == "direct_answer"
+    assert values["observations"] == []
+    assert values["tool_trace"] == values["result"]["tool_trace"]
+    assert "agent_state" not in values
+    assert "rewritten_question" not in values
     assert "permissions" not in values
     assert "principal_id" not in values
-    assert "permissions" not in values["agent_state"].model_dump()
-    assert "principal_id" not in values["agent_state"].model_dump()
 
 
 def test_memory_checkpoint_keeps_rewrite_fields_request_scoped(monkeypatch):
@@ -246,12 +251,155 @@ def test_memory_checkpoint_keeps_rewrite_fields_request_scoped(monkeypatch):
 
     assert rewritten_values["original_question"] == "它什么时候开始"
     assert rewritten_values["effective_question"] == rewritten
-    assert rewritten_values["agent_state"].original_question == "它什么时候开始"
-    assert rewritten_values["agent_state"].rewritten_question == rewritten
     assert plain_values["original_question"] == "学校什么时候放假"
     assert plain_values["effective_question"] == "学校什么时候放假"
-    assert plain_values["agent_state"].original_question == "学校什么时候放假"
-    assert plain_values["agent_state"].rewritten_question == ""
+    assert "rewritten_question" not in rewritten_values
+    assert "rewritten_question" not in plain_values
+    assert "agent_state" not in rewritten_values
+    assert "agent_state" not in plain_values
+
+
+def test_memory_checkpoint_preserves_agent_and_clarify_flat_channels(
+    monkeypatch,
+):
+    """memory 模式覆盖普通 Agent 回答和 clarify 的平铺最终状态。"""
+
+    class FinalAnswerModel:
+        def bind_tools(self, tools):
+            del tools
+            return self
+
+        def invoke(self, messages):
+            del messages
+            return AIMessage(content="普通 Agent 回答")
+
+    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "memory")
+    monkeypatch.setattr(
+        graph_nodes,
+        "route_agent_action",
+        lambda question: (
+            {
+                "decision": "clarify",
+                "action": "clarify",
+                "clarification_question": "请补充具体对象",
+                "reason": "问题需要澄清",
+            }
+            if "澄清" in question
+            else {
+                "decision": "agent",
+                "action": "agent",
+                "reason": "进入 Agent",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        framework_agent,
+        "get_agent_chat_model",
+        lambda: FinalAnswerModel(),
+    )
+
+    agent_result = _run(
+        "trace-memory-agent",
+        original_question="普通问题",
+        effective_question="普通问题",
+    )
+    clarify_result = _run(
+        "trace-memory-clarify",
+        original_question="需要澄清",
+        effective_question="需要澄清",
+    )
+    saver = checkpointing.get_checkpointer()
+
+    def values(trace_id):
+        thread_id = checkpointing.build_checkpoint_thread_id(
+            trace_id=trace_id,
+            session_id="session-1",
+        )
+        return saver.get_tuple(
+            {"configurable": {"thread_id": thread_id}}
+        ).checkpoint["channel_values"]
+
+    agent_values = values("trace-memory-agent")
+    clarify_values = values("trace-memory-clarify")
+
+    assert agent_result["status"] == "OK"
+    assert agent_values["status"] == "ok"
+    assert agent_values["final_answer"] == "普通 Agent 回答"
+    assert agent_values["observations"] == []
+    assert "agent_state" not in agent_values
+    assert clarify_result["status"] == "NEED_CLARIFICATION"
+    assert clarify_values["status"] == "clarify"
+    assert clarify_values["final_answer"] == "请补充具体对象"
+    assert "agent_state" not in clarify_values
+
+
+def test_memory_checkpoint_preserves_plain_tool_observation(monkeypatch):
+    """memory 模式可序列化完整工具循环中的普通 dict observation。"""
+
+    class ToolModel:
+        def __init__(self):
+            self.calls = 0
+
+        def bind_tools(self, tools):
+            del tools
+            return self
+
+        def invoke(self, messages):
+            del messages
+            self.calls += 1
+            if self.calls == 1:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "simple_calculator",
+                            "args": {"expression": "2+3"},
+                            "id": "memory-calc",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            return AIMessage(content="结果是 5。")
+
+    model = ToolModel()
+    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "memory")
+    monkeypatch.setattr(
+        graph_nodes,
+        "route_agent_action",
+        lambda question: {
+            "decision": "agent",
+            "action": "agent",
+            "reason": question,
+        },
+    )
+    monkeypatch.setattr(
+        framework_agent,
+        "get_agent_chat_model",
+        lambda: model,
+    )
+
+    result = _run(
+        "trace-memory-tool",
+        original_question="计算 2+3",
+        effective_question="计算 2+3",
+    )
+    thread_id = checkpointing.build_checkpoint_thread_id(
+        trace_id="trace-memory-tool",
+        session_id="session-1",
+    )
+    values = checkpointing.get_checkpointer().get_tuple(
+        {"configurable": {"thread_id": thread_id}}
+    ).checkpoint["channel_values"]
+
+    assert result["status"] == "OK"
+    assert values["observations"][0]["tool_name"] == "simple_calculator"
+    assert values["observations"][0]["output"]["result"] == 5
+    assert type(values["observations"][0]) is dict
+    assert any(
+        item.get("tool_name") == "simple_calculator"
+        for item in values["tool_trace"]
+    )
+    assert "agent_state" not in values
 
 
 def test_same_session_requests_use_independent_checkpoint_threads(monkeypatch):
@@ -306,10 +454,11 @@ def test_sqlite_agent_checkpoint_survives_runtime_reset(monkeypatch, tmp_path):
     assert values["result"]["status"] == "OK"
     assert len(values["messages"]) == 1
     assert values["messages"][0].content == "问题-trace-sqlite"
+    assert values["observations"] == []
+    assert values["tool_trace"] == values["result"]["tool_trace"]
+    assert "agent_state" not in values
     assert "permissions" not in values
     assert "principal_id" not in values
-    assert "permissions" not in values["agent_state"].model_dump()
-    assert "principal_id" not in values["agent_state"].model_dump()
 
 
 def test_checkpoint_write_failure_returns_compatible_error_once(monkeypatch):

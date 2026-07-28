@@ -1,6 +1,9 @@
 """Agent Runtime 结果构造、统计和追踪存储辅助函数。"""
 
+from collections.abc import Mapping
 from typing import Any
+
+from pydantic import TypeAdapter, ValidationError
 
 from app.agent.guardrails import (
     AgentStopReason,
@@ -8,16 +11,16 @@ from app.agent.guardrails import (
     classify_tool_failure,
     stop_reason_for_tool_failure,
 )
-from app.agent.state import AgentState
+from app.common.logging import get_logger
 from app.config import Settings
 from app.storage.traces import save_agent_trace
-from app.common.logging import get_logger
 
 
 logger = get_logger("chat_service")
 
 _INTERNAL_ERROR_MESSAGE = "Agent 内部执行异常，请稍后重试"
 _INTERNAL_ERROR_MARKER = "internal_error"
+_INTEGER_ADAPTER = TypeAdapter(int)
 
 
 def sum_governance_event_costs(events: list[dict[str, Any]]) -> int:
@@ -150,30 +153,37 @@ def map_agent_status_to_public_status(status: str) -> str:
     return mapping.get(str(status or ""), "INTERNAL_ERROR")
 
 
-def summarize_observations_for_result(state: AgentState) -> str:
+def summarize_observations_for_result(
+    *,
+    status: str,
+    reason: str,
+    observations: list[dict[str, Any]],
+) -> str:
     """从 observations 中提取 API 响应使用的工具结果摘要。"""
-    if state.status == "clarify":
+    if status == "clarify":
         return "未调用工具，问题需要澄清"
 
-    if state.status == "direct_answer":
+    if status == "direct_answer":
         return "未调用工具，直接回答"
 
-    if not state.observations:
-        return state.reason or ""
+    if not observations:
+        return reason
 
     summaries = []
-    for observation in state.observations:
-        if observation.tool_name == "search_knowledge_base":
-            output = observation.output if isinstance(observation.output, dict) else {}
+    for observation in observations:
+        if observation.get("tool_name") == "search_knowledge_base":
+            output = observation.get("output")
+            output = output if isinstance(output, dict) else {}
             chunks = output.get("chunks", [])
             count = output.get("count", len(chunks) if isinstance(chunks, list) else 0)
             summaries.append(f"知识库检索完成，召回 {count} 个 chunk")
             continue
 
-        if observation.summary:
-            summaries.append(observation.summary)
+        summary = str(observation.get("summary") or "")
+        if summary:
+            summaries.append(summary)
 
-    return "；".join(summaries[-3:]) if summaries else state.reason or ""
+    return "；".join(summaries[-3:]) if summaries else reason
 
 
 def build_decide_trace(
@@ -199,40 +209,72 @@ def build_decide_trace(
     }
 
 
-def normalize_llm_call_count(state: AgentState) -> None:
-    """保留 Agent Model 与 RAG 回答侧已经累计的精确调用数。"""
-    state.llm_call_count = max(
-        int(bool(state.decompose_llm_used)) + int(bool(state.answer_llm_used)),
-        int(state.llm_call_count or 0),
+def resolve_llm_call_count(
+    *,
+    decompose_llm_used: bool,
+    answer_llm_used: bool,
+    current_count: int,
+) -> int:
+    """解析 Agent Model 与 RAG 回答侧已经累计的精确调用数。"""
+    return max(
+        int(bool(decompose_llm_used)) + int(bool(answer_llm_used)),
+        max(0, int(current_count or 0)),
     )
 
 
-def append_llm_usage_trace(state: AgentState) -> None:
-    """把本次 Runtime 的 LLM 使用情况写入工具 trace。"""
+def upsert_llm_usage_trace(
+    tool_trace: list[dict[str, Any]],
+    *,
+    decompose_llm_used: bool,
+    answer_llm_used: bool,
+    llm_call_count: int,
+) -> list[dict[str, Any]]:
+    """返回包含唯一最新 LLM usage 项的新工具 trace。"""
     usage_trace = {
         "step": "llm_usage",
         "router_llm_used": False,
-        "decompose_llm_used": bool(state.decompose_llm_used),
-        "answer_llm_used": bool(state.answer_llm_used),
-        "llm_call_count": int(state.llm_call_count or 0),
+        "decompose_llm_used": bool(decompose_llm_used),
+        "answer_llm_used": bool(answer_llm_used),
+        "llm_call_count": max(0, int(llm_call_count or 0)),
     }
-
-    for index, step in enumerate(state.tool_trace):
+    updated: list[dict[str, Any]] = []
+    usage_written = False
+    for step in tool_trace:
+        if not isinstance(step, dict):
+            continue
         if step.get("step") == "llm_usage":
-            state.tool_trace[index] = usage_trace
-            return
+            if not usage_written:
+                updated.append(usage_trace)
+                usage_written = True
+            continue
+        updated.append(dict(step))
+    if not usage_written:
+        updated.append(usage_trace)
+    return updated
 
-    state.tool_trace.append(usage_trace)
 
-
-def build_v2_result(state: AgentState, decision: dict) -> dict:
-    """将 AgentState 转换成 API 主流程使用的结果字典。"""
-    public_status = map_agent_status_to_public_status(state.status)
-    need_clarification = state.status == "clarify"
+def build_v2_result(state: Mapping[str, Any]) -> dict[str, Any]:
+    """将平铺 AgentGraphState 转换成 API 主流程结果字典。"""
+    status = str(state.get("status") or "")
+    reason = str(state.get("reason") or "")
+    final_answer = str(state.get("final_answer") or "")
+    references = state.get("references")
+    references = references if isinstance(references, list) else []
+    observations = [
+        item
+        for item in state.get("observations", [])
+        if isinstance(item, dict)
+    ]
+    tool_trace = state.get("tool_trace")
+    tool_trace = tool_trace if isinstance(tool_trace, list) else []
+    decision = state.get("decision")
+    decision = decision if isinstance(decision, dict) else {}
+    public_status = map_agent_status_to_public_status(status)
+    need_clarification = status == "clarify"
     rag_trace = next(
         (
             step
-            for step in reversed(state.tool_trace or [])
+            for step in reversed(tool_trace)
             if step.get("step") == "compose_final_answer" and step.get("mode") == "rag"
         ),
         {},
@@ -241,22 +283,50 @@ def build_v2_result(state: AgentState, decision: dict) -> dict:
 
     return {
         "status": public_status,
-        "answer": state.final_answer or "",
-        "references": state.references or [],
+        "answer": final_answer,
+        "references": references,
         "retrieval_confidence": rag_trace.get("retrieval_confidence", 0.0),
         "answer_confidence": rag_trace.get("answer_confidence", 0.0),
         "need_clarification": need_clarification,
-        "clarification_question": state.final_answer if need_clarification else "",
-        "reason": state.reason or "",
+        "clarification_question": final_answer if need_clarification else "",
+        "reason": reason,
         "action": decision.get("action", ""),
-        "tool_result_summary": summarize_observations_for_result(state),
-        "tool_trace": state.tool_trace or [],
+        "tool_result_summary": summarize_observations_for_result(
+            status=status,
+            reason=reason,
+            observations=observations,
+        ),
+        "tool_trace": tool_trace,
         "router_llm_used": False,
-        "decompose_llm_used": bool(state.decompose_llm_used),
-        "answer_llm_used": bool(state.answer_llm_used),
-        "llm_call_count": int(state.llm_call_count or 0),
+        "decompose_llm_used": bool(state.get("decompose_llm_used")),
+        "answer_llm_used": bool(state.get("answer_llm_used")),
+        "llm_call_count": max(0, int(state.get("llm_call_count", 0) or 0)),
         "timings": dict(timings) if isinstance(timings, dict) else {},
     }
+
+
+def validate_runtime_counts(
+    *,
+    top_k: Any,
+    decompose_top_k: Any,
+) -> tuple[int, int]:
+    """保留公开 Runtime 数字输入原有的边界约束。"""
+
+    def validate(name: str, value: Any, lower: int, upper: int) -> int:
+        if isinstance(value, bool):
+            raise ValueError(f"{name} must be an integer")
+        try:
+            normalized = _INTEGER_ADAPTER.validate_python(value)
+        except ValidationError as exc:
+            raise ValueError(f"{name} must be an integer") from exc
+        if normalized < lower or normalized > upper:
+            raise ValueError(f"{name} must be between {lower} and {upper}")
+        return normalized
+
+    return (
+        validate("top_k", top_k, 1, 10),
+        validate("decompose_top_k", decompose_top_k, 1, 20),
+    )
 
 
 def build_internal_error_result(

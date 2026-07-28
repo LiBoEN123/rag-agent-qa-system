@@ -15,7 +15,7 @@ from app.graph.nodes import (
     adapt_framework_agent_node,
     compose_node,
     finalize_node,
-    initialize_agent_state_node,
+    initialize_node,
     rag_subgraph_node,
     route_node,
 )
@@ -36,7 +36,7 @@ def build_agent_graph(
         context_schema=ToolInvocationContext,
     )
     builder.add_node("route", route_node)
-    builder.add_node("initialize", initialize_agent_state_node)
+    builder.add_node("initialize", initialize_node)
     builder.add_node("framework_agent", build_framework_agent())
     builder.add_node("adapt_framework", adapt_framework_agent_node)
     builder.add_node("rag_subgraph", rag_subgraph_node)

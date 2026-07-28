@@ -7,6 +7,7 @@ from app.agent.runtime import (
     _write_internal_bad_case,
     build_internal_error_result,
     maybe_save_agent_trace,
+    validate_runtime_counts,
 )
 from app.common.logging import get_logger
 from app.config import Settings
@@ -39,14 +40,6 @@ def run_agent_langgraph(
     """同步执行 LangGraph 主图，并返回 API 主流程使用的结果字典。"""
     resolved_original_question = (original_question or "").strip()
     resolved_effective_question = (effective_question or "").strip()
-    graph_input: dict[str, Any] = {
-        "original_question": resolved_original_question,
-        "effective_question": resolved_effective_question,
-        "top_k": top_k,
-        "decompose_top_k": decompose_top_k,
-        "trace_id": trace_id,
-        "session_id": session_id,
-    }
     resolved_tool_context = tool_context or build_default_tool_context(
         trace_id=trace_id,
         session_id=session_id or "",
@@ -54,6 +47,18 @@ def run_agent_langgraph(
     )
 
     try:
+        resolved_top_k, resolved_decompose_top_k = validate_runtime_counts(
+            top_k=top_k,
+            decompose_top_k=decompose_top_k,
+        )
+        graph_input: dict[str, Any] = {
+            "original_question": resolved_original_question,
+            "effective_question": resolved_effective_question,
+            "top_k": resolved_top_k,
+            "decompose_top_k": resolved_decompose_top_k,
+            "trace_id": trace_id,
+            "session_id": session_id,
+        }
         mode = get_checkpointer_mode()
         checkpointer_enabled = mode != "disabled"
         checkpoint_thread_id = (
