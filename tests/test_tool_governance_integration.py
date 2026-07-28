@@ -4,8 +4,8 @@ import json
 
 from pydantic import BaseModel
 
-from app.agent.executor import build_tool_trace_step
-from app.agent.state import AgentObservation, AgentPlanStep
+from app.agent.state import AgentObservation
+from app.agent.tool_events import build_tool_trace
 from app.tools import dispatch_tool
 from app.tools.audit import ToolAuditEvent
 from app.tools.context import ToolInvocationContext
@@ -100,28 +100,24 @@ def test_legacy_dispatch_uses_default_read_only_service_context():
 
 def test_public_tool_trace_redacts_args_and_summarizes_chunk_output():
     chunk_text = "private chunk body " * 100
-    step = AgentPlanStep(
-        step_id=1,
-        action="tool_call",
-        tool_name="get_chunk_text",
-        tool_args={"chunk_id": 1, "password": "raw-password"},
-    )
     observation = AgentObservation(
         step_id=1,
         tool_name="get_chunk_text",
         success=True,
         output={"chunk": {"text": chunk_text, "token": "raw-token"}},
     )
-    trace = build_tool_trace_step(
-        step,
-        {
+    trace = build_tool_trace(
+        step_id=1,
+        tool_name="get_chunk_text",
+        tool_args={"chunk_id": 1, "password": "raw-password"},
+        result={
             "status": "success",
             "ok": True,
             "output": observation.output,
             "governance": {"decision": "allow", "risk_level": "read_only"},
             "runtime": {"attempt_count": 1},
         },
-        observation,
+        observation=observation,
     )
     serialized = json.dumps(trace, ensure_ascii=False)
     assert "raw-password" not in serialized

@@ -58,18 +58,12 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
                 "cost_ms": max(0, _now_ms() - started),
                 "error_type": type(exc).__name__,
             }
-            used_tools = any(
-                item.get("kind") == "tool"
-                for item in request.state.get("governance_events", [])
-            )
-            action = (request.state.get("decision") or {}).get("action")
             return ExtendedModelResponse(
                 ModelResponse(result=[AIMessage(content="Agent model unavailable")]),
                 Command(
                     update={
                         "governance_events": [event],
                         "stop_reason": "agent_model_call_failed",
-                        "fallback_to_legacy": not used_tools and action != "agent",
                     }
                 ),
             )

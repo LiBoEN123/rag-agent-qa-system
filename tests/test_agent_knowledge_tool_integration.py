@@ -1,6 +1,8 @@
 """知识库工具从 Agent Model 到 RAG 子图的严格真实链路测试。"""
 
-from langchain_core.messages import AIMessage
+import json
+
+from langchain_core.messages import AIMessage, ToolMessage
 
 from app.agent import framework_agent, framework_tools
 from app.graph import nodes as graph_nodes
@@ -8,6 +10,7 @@ from app.graph.builder import build_agent_graph
 from app.tools import runtime as tool_runtime
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
+from app.tools.errors import ToolErrorCode, ToolExecutionError
 from app.tools.providers import LocalToolProvider
 from app.tools.registry import ToolRegistry
 from app.tools.result import tool_success
@@ -183,3 +186,91 @@ def test_successful_zero_result_search_is_not_a_tool_error(monkeypatch):
     assert result["output"]["agent_state"].observations[0].success is True
     assert result["rag_calls"][0]["retrieved_chunks"] == []
     assert result["output"]["result"]["status"] == "NO_RELEVANT_INFO"
+
+
+def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
+    monkeypatch,
+):
+    """知识库不可用由工具链返回标准错误，模型读取后仍可安全结束。"""
+
+    class RecoveringModel:
+        def __init__(self):
+            self.calls = 0
+            self.received_messages: list[list] = []
+
+        def bind_tools(self, tools):
+            assert [tool.name for tool in tools] == ["search_knowledge_base"]
+            return self
+
+        def invoke(self, messages):
+            self.received_messages.append(list(messages))
+            self.calls += 1
+            if self.calls == 1:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "search_knowledge_base",
+                            "args": {"query": "测试不可用知识库", "top_k": 5},
+                            "id": "knowledge-unavailable",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            return AIMessage(content="知识库暂时不可用，请稍后重试。")
+
+    registry = ToolRegistry()
+
+    def unavailable_handler(args, context):
+        del args, context
+        raise ToolExecutionError(
+            "knowledge base unavailable",
+            code=ToolErrorCode.DEPENDENCY_UNAVAILABLE,
+            retryable=False,
+        )
+
+    registry.register(
+        ToolSpec(
+            name="search_knowledge_base",
+            version="1.0.0",
+            description="检索本地测试知识库",
+            args_schema={"query": "string", "top_k": "integer"},
+            output_schema={"count": "integer", "chunks": "list"},
+            handler=unavailable_handler,
+            args_model=SearchKnowledgeBaseArgs,
+            required_permissions=("knowledge_base:read",),
+        )
+    )
+    model = RecoveringModel()
+    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(
+        framework_tools,
+        "get_agent_tool_provider",
+        lambda: LocalToolProvider(registry),
+    )
+    context = ToolInvocationContext(
+        trace_id="trace-knowledge-unavailable",
+        permissions=("knowledge_base:read",),
+        source="knowledge_tool_integration_test",
+    )
+
+    output = build_agent_graph().compile().invoke(
+        {
+            "original_question": "知识库问题",
+            "effective_question": "知识库问题",
+            "top_k": 5,
+            "decompose_top_k": 10,
+            "decision": {"action": "agent", "router_llm_used": False},
+            "trace_id": context.trace_id,
+        },
+        context=context,
+    )
+
+    tool_message = model.received_messages[1][-1]
+    assert isinstance(tool_message, ToolMessage)
+    payload = json.loads(tool_message.content)
+    assert payload["ok"] is False
+    assert payload["error_code"] == "dependency_unavailable"
+    assert output["result"]["status"] == "OK"
+    assert output["result"]["answer"] == "知识库暂时不可用，请稍后重试。"
+    assert output["pending_rag_result"] == {}

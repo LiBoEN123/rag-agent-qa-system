@@ -1,14 +1,10 @@
-"""Agent 状态模型模块。
-
-定义计划步骤、工具观察和完整运行状态，统一各执行阶段之间的数据协议。
-"""
+"""Agent observation 与 API 兼容运行状态模型。"""
 
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 
-StepStatus = Literal["pending", "running", "success", "failed", "skipped"]
 AgentStatus = Literal[
     "running",
     "ok",
@@ -19,17 +15,6 @@ AgentStatus = Literal[
     "no_evidence",
     "error",
 ]
-
-
-class AgentPlanStep(BaseModel):
-    """Agent 中的一条计划步骤。"""
-
-    step_id: int = Field(..., ge=1, description="步骤编号，从 1 开始")
-    action: str = Field(..., description="步骤动作，例如 tool_call / final_answer / clarify / direct_answer")
-    tool_name: str = Field(default="", description="当 action=tool_call 时要调用的工具名")
-    tool_args: dict[str, Any] = Field(default_factory=dict, description="工具调用参数")
-    reason: str = Field(default="", description="规划该步骤的原因")
-    status: StepStatus = Field(default="pending", description="步骤执行状态")
 
 
 class AgentObservation(BaseModel):
@@ -56,15 +41,12 @@ class AgentState(BaseModel):
     top_k: int = Field(default=5, ge=1, le=10, description="单次召回数量")
     decompose_top_k: int = Field(default=10, ge=1, le=20, description="多子问题召回合并后的候选上限")
 
-    plan: list[AgentPlanStep] = Field(default_factory=list, description="Agent 执行计划")
     observations: list[AgentObservation] = Field(default_factory=list, description="每一步工具执行后的观察结果")
 
     final_answer: str = Field(default="", description="最终回答")
     references: list[dict[str, Any]] = Field(default_factory=list, description="最终引用")
     status: AgentStatus = Field(default="running", description="Agent 当前状态")
     reason: str = Field(default="", description="状态原因或失败原因")
-
-    max_steps: int = Field(default=5, ge=1, le=10, description="最多允许执行的步骤数")
 
     router_llm_used: bool = Field(default=False, description="是否调用 Router LLM")
     decompose_llm_used: bool = Field(default=False, description="是否调用问题拆分 LLM")
@@ -84,9 +66,7 @@ def get_effective_question(state: AgentState) -> str:
 
 __all__ = [
     "AgentObservation",
-    "AgentPlanStep",
     "AgentState",
     "AgentStatus",
-    "StepStatus",
     "get_effective_question",
 ]

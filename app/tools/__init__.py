@@ -41,13 +41,6 @@ from app.tools.runtime import (
     close_tool_runtime,
     get_tool_runtime,
 )
-from app.tools.langchain_tools import (
-    build_langchain_tools,
-    get_langchain_tool,
-    get_langchain_tool_map,
-    get_langchain_tool_names,
-    get_langchain_tools,
-)
 from app.tools.providers import (
     LocalToolProvider,
     ToolProvider,
@@ -74,17 +67,12 @@ __all__ = [
     "ToolExecutionError",
     "ToolRuntime",
     "build_default_tool_context",
-    "build_langchain_tools",
     "build_tool_args_fingerprint",
     "compare_documents_tool",
     "close_tool_runtime",
     "collect_tool_specs",
     "dispatch_tool",
     "get_chunk_text",
-    "get_langchain_tool",
-    "get_langchain_tool_map",
-    "get_langchain_tool_names",
-    "get_langchain_tools",
     "get_default_tool_provider",
     "get_tool_runtime",
     "list_documents",

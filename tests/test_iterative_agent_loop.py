@@ -143,12 +143,7 @@ def test_agent_loop_returns_single_tool_message_to_model(monkeypatch):
     output = _invoke_graph(
         monkeypatch,
         model,
-        decision={
-            "action": "simple_calculator",
-            "tool_name": "simple_calculator",
-            "tool_args": {"expression": "1+2"},
-            "router_llm_used": False,
-        },
+        decision={"action": "agent", "router_llm_used": False},
     )
 
     assert len(model.received_messages) == 2
@@ -200,7 +195,7 @@ def test_agent_loop_runs_two_sequential_tool_calls(monkeypatch):
     output = _invoke_graph(
         monkeypatch,
         model,
-        decision={"action": "simple_calculator", "router_llm_used": False},
+        decision={"action": "agent", "router_llm_used": False},
     )
 
     assert len(model.received_messages) == 3
@@ -247,7 +242,7 @@ def test_agent_loop_executes_all_tool_calls_from_one_message(monkeypatch):
     output = _invoke_graph(
         monkeypatch,
         model,
-        decision={"action": "simple_calculator", "router_llm_used": False},
+        decision={"action": "agent", "router_llm_used": False},
     )
 
     returned = [
@@ -299,7 +294,7 @@ def test_agent_loop_allows_model_to_correct_failed_tool_arguments(monkeypatch):
     output = _invoke_graph(
         monkeypatch,
         model,
-        decision={"action": "simple_calculator", "router_llm_used": False},
+        decision={"action": "agent", "router_llm_used": False},
     )
 
     first_tool_message = model.received_messages[1][-1]
@@ -348,7 +343,7 @@ def test_agent_loop_stops_at_max_iterations(monkeypatch):
     output = _invoke_graph(
         monkeypatch,
         model,
-        decision={"action": "simple_calculator", "router_llm_used": False},
+        decision={"action": "agent", "router_llm_used": False},
         max_iterations=2,
     )
 
@@ -392,7 +387,7 @@ def test_agent_loop_stops_before_exceeding_tool_call_budget(monkeypatch):
     output = _invoke_graph(
         monkeypatch,
         model,
-        decision={"action": "simple_calculator", "router_llm_used": False},
+        decision={"action": "agent", "router_llm_used": False},
         max_tool_calls=1,
     )
 
@@ -432,7 +427,7 @@ def test_agent_loop_recovers_from_forged_hidden_tool_name(monkeypatch):
     output = _invoke_graph(
         monkeypatch,
         model,
-        decision={"action": "list_documents", "router_llm_used": False},
+        decision={"action": "agent", "router_llm_used": False},
         context=denied_context,
     )
 
@@ -501,7 +496,7 @@ def test_agent_loop_preserves_runtime_context_and_audit_chain(monkeypatch):
     output = _invoke_graph(
         monkeypatch,
         model,
-        decision={"action": "simple_calculator", "router_llm_used": False},
+        decision={"action": "agent", "router_llm_used": False},
         context=context,
     )
 
@@ -522,8 +517,8 @@ def test_agent_loop_preserves_runtime_context_and_audit_chain(monkeypatch):
     assert trace["tool_call_id"]
 
 
-def test_agent_loop_model_failure_after_tool_does_not_repeat_legacy_plan(monkeypatch):
-    """工具后的模型失败受控结束，不降级重放初始 Planner 工具。"""
+def test_agent_loop_model_failure_after_tool_does_not_replay_tool(monkeypatch):
+    """工具后的模型失败受控结束，不通过另一条执行链重放工具。"""
     model = FakeToolCallingModel(
         [
             AIMessage(
@@ -544,12 +539,7 @@ def test_agent_loop_model_failure_after_tool_does_not_repeat_legacy_plan(monkeyp
     output = _invoke_graph(
         monkeypatch,
         model,
-        decision={
-            "action": "simple_calculator",
-            "tool_name": "simple_calculator",
-            "tool_args": {"expression": "8+9"},
-            "router_llm_used": False,
-        },
+        decision={"action": "agent", "router_llm_used": False},
     )
 
     assert len(model.received_messages) == 2
@@ -685,12 +675,7 @@ def test_sqlite_checkpointer_serializes_full_agent_message_loop(
             effective_question="请计算 10+5",
             top_k=5,
             decompose_top_k=10,
-            decision={
-                "action": "simple_calculator",
-                "tool_name": "simple_calculator",
-                "tool_args": {"expression": "10+5"},
-                "router_llm_used": False,
-            },
+            decision={"action": "agent", "router_llm_used": False},
             trace_id="trace-sqlite-loop",
             session_id="session-sqlite-loop",
         )

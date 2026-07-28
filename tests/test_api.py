@@ -179,13 +179,6 @@ def test_chat_uses_rewritten_question_for_follow_up(monkeypatch):
     session_id = "api_follow_up_session"
     clear_session(session_id)
 
-    get_rag_status = lambda: {
-            "ready": True,
-            "message": "ok",
-            "doc_count": 1,
-            "chunk_count": 1,
-        }
-
     rewrite_calls = []
 
     def fake_rewrite(question, history, trace_id=""):
@@ -216,11 +209,11 @@ def test_chat_uses_rewritten_question_for_follow_up(monkeypatch):
     def fake_route(question, top_k, trace_id=""):
         routed_questions.append(question)
         return {
-            "decision": "use_knowledge_base",
-            "action": "search_knowledge_base",
-            "tool_name": "search_knowledge_base",
-            "tool_args": {"query": question, "top_k": top_k},
-            "reason": "测试路由",
+            "decision": "use_agent",
+            "action": "agent",
+            "tool_name": "",
+            "tool_args": {},
+            "reason": "交给 Agent",
             "router_source": "rule_based",
             "router_llm_used": False,
         }
@@ -240,7 +233,7 @@ def test_chat_uses_rewritten_question_for_follow_up(monkeypatch):
             "need_clarification": False,
             "clarification_question": "",
             "reason": "测试通过",
-            "action": "search_knowledge_base",
+            "action": "agent",
             "tool_result_summary": "测试",
             "tool_trace": [
                 {
@@ -256,7 +249,6 @@ def test_chat_uses_rewritten_question_for_follow_up(monkeypatch):
     patch_app(monkeypatch)
     install_chat_service(
         monkeypatch,
-        get_rag_status=get_rag_status,
         rewrite_query_with_history=fake_rewrite,
         route_agent_action=fake_route,
         run_agent_langgraph=fake_run_agent_langgraph,

@@ -31,7 +31,6 @@ class AgentGraphState(TypedDict, total=False):
     consecutive_same_tool_error_count: int
     agent_elapsed_ms: int
     stop_reason: str
-    fallback_to_legacy: bool
     pending_rag_result: dict[str, Any]
     agent_state: AgentState
     result: dict[str, Any]

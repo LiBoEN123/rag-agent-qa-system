@@ -44,15 +44,22 @@ PACKAGES = (
     "requests-hardened",
 )
 EXPECTED_PARENT_NODES = {
-    "route", "initialize", "framework_agent", "adapt_framework", "plan",
-    "execute", "rag_subgraph", "compose", "finalize",
+    "route", "initialize", "framework_agent", "adapt_framework",
+    "rag_subgraph", "compose", "finalize",
 }
-FORBIDDEN_PARENT_NODES = {"agent_model", "governed_tools", "limit_handler"}
+FORBIDDEN_PARENT_NODES = {
+    "plan",
+    "execute",
+    "agent_model",
+    "governed_tools",
+    "limit_handler",
+}
 SOURCE_FILE_LIMITS = {
     "app/graph/nodes.py": 350,
     "app/agent/framework_agent.py": 300,
     "app/agent/framework_middleware.py": 350,
     "app/agent/framework_tools.py": 300,
+    "app/agent/tool_events.py": 250,
     "app/agent/guardrails.py": 150,
 }
 

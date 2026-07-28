@@ -65,7 +65,6 @@ def build_service(
     history=None,
     rewrite_result=None,
     decision=None,
-    rag_status=None,
     runtime_result=None,
     append_error=False,
     metrics_error=False,
@@ -74,7 +73,6 @@ def build_service(
         "history": [],
         "rewrite": [],
         "route": [],
-        "rag_status": 0,
         "langgraph": [],
         "bad_cases": [],
         "messages": [],
@@ -102,7 +100,6 @@ def build_service(
         "router_source": "rule_based",
         "router_llm_used": False,
     }
-    rag_status = rag_status or {"ready": True, "message": "OK"}
     runtime_result = (
         build_runtime_result()
         if runtime_result is None
@@ -130,10 +127,6 @@ def build_service(
         )
         return decision
 
-    def fake_rag_status():
-        calls["rag_status"] += 1
-        return dict(rag_status)
-
     def run_runtime(label, kwargs):
         calls[label].append(kwargs)
         if isinstance(runtime_result, Exception):
@@ -157,7 +150,6 @@ def build_service(
         get_history=fake_get_history,
         rewrite_query_with_history=fake_rewrite,
         route_agent_action=fake_route,
-        get_rag_status=fake_rag_status,
         run_agent_langgraph=lambda **kwargs: run_runtime("langgraph", kwargs),
         build_query_rewrite_trace=build_query_rewrite_trace,
         attach_query_rewrite_trace=attach_query_rewrite_trace,
@@ -274,49 +266,7 @@ def test_question_without_rewrite_is_passed_through_without_extra_llm_count():
     assert calls["metrics"][0]["llm_call_count"] == 0
 
 
-@pytest.mark.parametrize(
-    "action",
-    [
-        "rag_fast_path",
-        # 旧调用方注入的 action 仍保留兼容预检。
-        "search_knowledge_base",
-    ],
-)
-def test_rag_not_ready_stops_before_runtime_and_preserves_session_behavior(
-    action,
-):
-    decision = {
-        "decision": "use_knowledge_base",
-        "action": action,
-        "tool_name": "search_knowledge_base",
-        "reason": "知识库问题",
-        "router_source": "rule_based",
-        "router_llm_used": False,
-    }
-    service, calls = build_service(
-        decision=decision,
-        rag_status={"ready": False, "message": "索引不可用"},
-    )
-
-    outcome = service.handle(make_request())
-
-    assert calls["rag_status"] == 1
-    assert calls["langgraph"] == []
-    assert outcome.http_status == 503
-    assert outcome.code == "NO_DOCUMENTS"
-    assert outcome.response_status == "empty_index"
-    assert outcome.result["reason"] == "知识库未准备完成"
-    assert len(calls["bad_cases"]) == 1
-    assert calls["bad_cases"][0]["error_type"] == "index_not_ready"
-    assert calls["messages"][-1] == (
-        "session-1",
-        "assistant",
-        "索引不可用",
-    )
-    assert len(calls["metrics"]) == 1
-
-
-def test_agent_tool_task_does_not_require_router_level_rag_preflight():
+def test_agent_tool_task_has_no_router_level_rag_preflight():
     decision = {
         "decision": "use_agent",
         "action": "agent",
@@ -328,41 +278,35 @@ def test_agent_tool_task_does_not_require_router_level_rag_preflight():
     }
     service, calls = build_service(
         decision=decision,
-        rag_status={"ready": True, "message": "索引可用"},
         runtime_result=build_runtime_result(action="agent"),
     )
 
     outcome = service.handle(make_request())
 
-    assert calls["rag_status"] == 0
     assert len(calls["langgraph"]) == 1
     assert calls["langgraph"][0]["decision"] is decision
     assert calls["langgraph"][0]["decision"]["action"] == "agent"
     assert outcome.http_status == 200
 
 
-@pytest.mark.parametrize(
-    "action",
-    ["agent", "simple_calculator", "direct_answer", "clarify"],
-)
-def test_non_rag_actions_do_not_check_rag_status(action):
+@pytest.mark.parametrize("action", ["agent", "direct_answer", "clarify"])
+def test_current_route_actions_keep_rag_ready_metric_at_zero(action):
     service, calls = build_service(
         decision={
-            "decision": "use_tool",
+            "decision": "use_agent",
             "action": action,
-            "tool_name": action if action == "simple_calculator" else "",
+            "tool_name": "",
             "reason": "测试",
             "router_source": "rule_based",
             "router_llm_used": False,
         },
-        rag_status={"ready": False, "message": "索引不可用"},
     )
 
     outcome = service.handle(make_request())
 
-    assert calls["rag_status"] == 0
     assert len(calls["langgraph"]) == 1
     assert outcome.http_status == 200
+    assert calls["metrics"][0]["rag_ready_check_cost_ms"] == 0
 
 
 def test_langgraph_runtime_receives_complete_existing_protocol_once():

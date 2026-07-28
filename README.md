@@ -2,7 +2,7 @@
 
 一个面向中文制度类文档的 Agentic RAG 问答系统，支持文档解析、混合检索、重排、引用生成、Agent 路由、多轮追问改写、可观测性和离线评测。
 
-本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。`/chat` 唯一使用 LangGraph Agent Runtime；Router、Planner、Executor 和 Answer Composer 继续作为共享业务模块，传入 `session_id` 时还会结合 SQLite 中最近的会话历史对短追问做 Query Rewrite。
+本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。`/chat` 唯一使用 LangGraph 父图中的 LangChain `create_agent` 执行模型—工具循环；传入 `session_id` 时还会结合 SQLite 中最近的会话历史对短追问做 Query Rewrite。
 
 ## 项目亮点
 
@@ -34,27 +34,18 @@ flowchart TD
 
     subgraph AgentGraph[LangGraph Agent Graph]
         Initialize[initialize<br/>创建 AgentState 和 HumanMessage]
-        InitialAction{初始路由动作}
         FrameworkAgent[framework_agent<br/>LangChain create_agent 子图]
         FrameworkAdapt[adapt_framework<br/>父图状态薄适配]
-        Planner[兼容 Planner]
-        Executor[兼容 Executor]
         RAGEntry[rag_subgraph]
         Composer[Answer Composer]
         Finalize[Finalize / build_v2_result]
 
-        Initialize --> InitialAction
-        InitialAction -->|agent| FrameworkAgent
-        InitialAction -->|rag_fast_path / 澄清 / 直接回答| Planner
+        Initialize -->|agent| FrameworkAgent
+        Initialize -->|direct_answer / clarify / 不支持动作| Composer
 
         FrameworkAgent --> FrameworkAdapt
         FrameworkAdapt -->|知识库检索成功| RAGEntry
         FrameworkAdapt -->|最终回答 / 治理或预算终止| Composer
-        FrameworkAdapt -->|legacy 首轮模型不可用| Planner
-
-        Planner --> Executor
-        Executor -->|知识库检索成功| RAGEntry
-        Executor -->|普通工具 / 澄清 / 错误| Composer
 
         Composer --> Finalize
     end
@@ -134,8 +125,8 @@ flowchart TD
 | 多轮追问 | `session_id` 通过 SQLite 维持最近会话历史，对短追问、指代问题做 Query Rewrite |
 | 答案生成 | 调用 OpenAI-compatible Chat Completions，要求模型返回 JSON |
 | 引用绑定 | 将 `Reference N` 映射回真实文件、`chunk_id`、`snippet` 和分数 |
-| Agent Runtime | LangGraph 父图嵌入 LangChain `create_agent` 子图；框架负责模型—工具循环、参数校验、ToolMessage 和模型/工具调用上限，Planner/Executor 仅保留兼容路径 |
-| Agent 路由 | 正常自然语言请求默认输出 `agent`；`direct_answer` / `clarify` 只做安全短路，`rag_fast_path` 保留为显式和旧协议兼容动作 |
+| Agent Runtime | LangGraph 父图嵌入唯一的 LangChain `create_agent` 子图；框架负责模型—工具循环、参数校验、ToolMessage 和模型/工具调用上限 |
+| Agent 路由 | 正常自然语言请求默认输出 `agent`；`direct_answer` / `clarify` 在 initialize + compose 中安全短路，其他旧 action fail-closed |
 | 工具发现 | `ToolProvider` 按请求权限过滤模型可见 ToolSpec，`RegistryToolsMiddleware` 对模型绑定和实际执行使用同一组请求级 StructuredTool；普通新工具无需修改核心编排 |
 | Agent Guardrail | 工具错误总数、连续相同调用/错误、累计模型与工具耗时预算、同批 fail-closed、无悬空 ToolMessage |
 | 工具调用 | Registry 注册八个生产工具：`search_knowledge_base`、`web_search`、`web_fetch`、`web_pdf_fetch`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text`；默认可见数量由请求权限决定 |
@@ -151,7 +142,7 @@ flowchart TD
 3. 文档切分：Markdown 先按标题层级切分并保留标题路径，普通文本按段落和标点递归切分。
 4. 建立索引：构建 BM25 关键词索引，并使用 SentenceTransformer 生成 embedding；向量、chunk 和 metadata 持久化到 ChromaDB。
 5. 多轮改写：`/chat` 如果传入 `session_id`，会读取最近历史；短追问或指代问题会先改写成独立问题。
-6. Agent 执行：改写后的普通问题由粗粒度 Router 统一送入 `agent`，Agent Model 再根据 Provider 动态提供的工具描述、参数 Schema、AIMessage 与 ToolMessage 迭代选择工具或生成最终回答。这样新增工具和用户口吻不需要写入 Router。显式 `rag_fast_path`、澄清和直接回答保留 Planner/Executor 薄兼容路径；Agent 选择知识库检索后仍统一进入专用 RAG 子图。
+6. Agent 执行：改写后的普通问题由粗粒度 Router 统一送入 `agent`，Agent Model 再根据 Provider 动态提供的工具描述、参数 Schema、AIMessage 与 ToolMessage 迭代选择工具或生成最终回答。`direct_answer` 和 `clarify` 不调用 Agent Model；其他旧 action 明确失败，不会回退知识库。Agent 选择知识库检索后仍统一进入专用 RAG 子图。
 7. 查询拆分：启用 `ENABLE_QUERY_DECOMPOSE` 后，复杂问题可由拆分模型生成子问题。
 8. 混合召回：查询时同时执行 BM25 和 embedding 召回，合并候选 chunk。
 9. 二阶段重排：使用 CrossEncoder reranker 对候选证据重新排序。
@@ -177,7 +168,7 @@ flowchart TD
 
 ## 工程化设计
 
-- 配置通过 `.env` 管理，`.env.example` 提供默认模板，回答模型、路由模型、追问改写模型、拆分模型和评测 Judge 均使用 OpenAI-compatible Chat Completions 配置。
+- 配置通过 `.env` 管理，`.env.example` 提供默认模板，回答/Agent 模型、追问改写模型、拆分模型和评测 Judge 均使用 OpenAI-compatible Chat Completions 配置。
 - 应用内部模型调用统一由 LangChain `ChatOpenAI(base_url=...)` 访问 OpenAI-compatible 服务，各角色原有模型环境变量仍然有效。
 - `requirements.txt` 保留顶层依赖声明，`requirements.lock` 固定 Python 3.12 验证过的版本；Docker 和 CI 均使用 lock 文件安装依赖。
 - 支持 embedding / rerank 模型本地缓存，默认缓存目录为 `./.cache/huggingface/hub`，也可通过 `MODEL_CACHE_DIR`、`HF_HOME` 等环境变量调整。
@@ -186,14 +177,14 @@ flowchart TD
 - 多轮会话历史保存在 `SQLITE_DB_PATH` 指定的 SQLite 数据库中，每个 `session_id` 默认读取最近 6 条 user/assistant 消息，服务重启后仍可继续使用。
 - 设置 `ENABLE_AGENT_TRACE_STORE=true` 后，Agent 的运行摘要和步骤明细会写入同一 SQLite 数据库的 `agent_runs`、`agent_steps` 表。
 - `/chat` 请求支持继承或生成 `trace_id`，响应头返回 `X-Trace-Id` 和 `X-Total-Cost-Ms`。
-- metrics 记录 Query Rewrite、路由、知识库就绪检查、检索、问题拆分、重排、上下文构造、LLM 调用、JSON 解析等阶段耗时和 LLM 调用次数。
+- metrics 记录 Query Rewrite、路由、检索、问题拆分、重排、上下文构造、LLM 调用、JSON 解析等阶段耗时和 LLM 调用次数；兼容字段 `rag_ready_check_cost_ms` 保留为 `0`。
 - bad case 日志用于定位失败样例，包括模型 JSON 解析失败、引用异常、工具异常、内部异常和索引未就绪。
 
 模型客户端统一和 LangGraph 编排彼此独立；LangGraph 主图不改变 RAG 检索、Rerank、ChromaDB 数据结构和引用机制。
 
 ## Chat 应用服务层
 
-`/chat` 控制器现在只负责读取 HTTP 请求上下文、调用 `ChatService`、设置状态码，并使用现有 Response Builder 构造响应。Query Rewrite、Router、RAG Ready Check、Runtime 调用、metrics 和 session 存储由 `app/services/chat_service.py` 统一编排，因此聊天业务可以脱离 FastAPI 进行单元测试。
+`/chat` 控制器现在只负责读取 HTTP 请求上下文、调用 `ChatService`、设置状态码，并使用现有 Response Builder 构造响应。Query Rewrite、Router、Runtime 调用、metrics 和 session 存储由 `app/services/chat_service.py` 统一编排，因此聊天业务可以脱离 FastAPI 进行单元测试。
 
 API 请求与响应 Schema、HTTP 状态语义和 trace 响应头保持不变；ChatService 固定调用 LangGraph 主图，知识库回答统一进入 RAG 子图。
 
@@ -201,7 +192,7 @@ API 请求与响应 Schema、HTTP 状态语义和 trace 响应头保持不变；
 
 `RegistryToolsMiddleware` 在每次模型调用和工具执行时从同一 `ToolProvider` 解析稳定有序的 `ToolSpec`，再构造请求级 LangChain `StructuredTool`。`ToolRuntime` 注入参数不会出现在模型 Schema 中；适配函数从 `runtime.context` 取得 trace、session、principal、permissions、source 和 idempotency key，再调用定义所属的 `ToolRegistry.dispatch()`。Registry 继续统一进入项目 `ToolRuntime.execute()`，参数治理、权限、审批、超时、重试、审计、脱敏和错误码均未绕过。
 
-新增普通本地工具只需创建合法 `ToolSpec` 并注册到 Registry，不需要修改 Router、Planner、Executor 或 Graph。`LocalToolProvider` 复用精确、区分大小写的 `has_permission()`，仅当 Context 满足全部 `required_permissions` 时才向模型暴露工具；空权限要求始终可见。过滤保持 Registry 顺序，不执行完整 Policy、handler、Runtime 或审计，也不会因审批、风险等级或暂缺幂等键隐藏工具。
+新增普通本地工具只需创建合法 `ToolSpec` 并注册到 Registry，不需要修改 Router、父图、`create_agent` 或 Middleware。`LocalToolProvider` 复用精确、区分大小写的 `has_permission()`，仅当 Context 满足全部 `required_permissions` 时才向模型暴露工具；空权限要求始终可见。过滤保持 Registry 顺序，不执行完整 Policy、handler、Runtime 或审计，也不会因审批、风险等级或暂缺幂等键隐藏工具。
 
 模型伪造未绑定的隐藏名称时沿用框架未知工具路径，只返回 `unknown_tool`，不证明工具是否存在，也不泄漏 description、参数 Schema 或缺失权限。模型可见性不是授权替代：所有真实调用仍进入 `ToolRegistry.dispatch() → ToolRuntime.execute()` 做最终权限与执行期治理；绕过模型可见性直接分发无权工具仍返回 `permission_denied`。多 Provider 合并保持 Provider/注册顺序并拒绝重名；当前生产环境只有 `LocalToolProvider`。
 
@@ -289,7 +280,7 @@ python scripts/smoke_test_web_pdf_fetch.py \
 
 ```text
 START → route（可选）→ initialize
-  ├─ rag_fast_path / 澄清 / 直接回答 → plan → execute → RAG 或 compose
+  ├─ direct_answer / clarify / 不支持动作 → compose → finalize
   └─ agent → framework_agent（create_agent 内部 model ↔ tools）
        → adapt_framework
        ├─ search_knowledge_base 成功 → RAG 子图 → finalize
@@ -298,9 +289,9 @@ START → route（可选）→ initialize
        └─ 治理或调用预算终止 → compose → finalize
 ```
 
-`agent` 路径的模型不可用或调用失败会受控停止，不允许 Planner 猜测具体工具；旧具体工具 decision 的首轮失败仍可进入通用 Registry 兼容计划。成功的知识库检索继续进入原 RAG 子图，以保留问题拆分、重排、证据门控、拒答、引用绑定和验证能力。
+`agent` 路径的模型不可用或调用失败会写入 `agent_model_call_failed` 治理事件并受控返回 `MODEL_ERROR`，不会进入第二套执行架构。成功的知识库检索继续进入原 RAG 子图，以保留问题拆分、重排、证据门控、拒答、引用绑定和验证能力。
 
-旧手写 Agent 编排入口已经删除。Planner、Executor、Answer Composer、`AgentState`、Router 和 Query Rewrite 仍由 LangGraph 节点或 ChatService 复用，它们属于共享业务层。完整 RAG 问答不再提供独立顺序式入口，脚本和测试统一调用 `app.rag.graph.run_rag_subgraph()`。
+旧手写 Agent 编排入口和 Planner/Executor 兼容链已经删除。父图只保留 initialize、框架 Agent 适配、RAG、compose 和 finalize；`AgentState`、Router 与 Query Rewrite 继续承担 API 兼容状态和确定性入口职责。完整 RAG 问答不再提供独立顺序式入口，脚本和测试统一调用当前 LangGraph Runtime。
 
 ### LangGraph RAG 子图
 
@@ -465,7 +456,6 @@ streamlit run demo/streamlit_app.py
 | `JUDGE_TIMEOUT` | Judge 模型请求超时秒数 |
 | `JUDGE_MAX_RETRIES` | Judge 模型失败重试次数 |
 | `JUDGE_MAX_TOKENS` | Judge 模型最大输出 token |
-| `AGENT_MAX_STEPS` | Agent 单次请求最多执行的计划步骤数，默认 `5` |
 | `AGENT_MAX_ITERATIONS` | 迭代式 Agent 最大模型轮次，默认 `6` |
 | `AGENT_MAX_TOOL_CALLS` | 迭代式 Agent 最大工具调用总数，默认 `10` |
 | `AGENT_MAX_TOOL_ERRORS` | 累计工具失败上限，第三次失败后停止，默认 `3` |
@@ -519,7 +509,6 @@ LLM_MAX_TOKENS=1024
 LLM_TIMEOUT=60
 LLM_MAX_RETRIES=2
 
-AGENT_MAX_STEPS=5
 AGENT_MAX_ITERATIONS=6
 AGENT_MAX_TOOL_CALLS=10
 AGENT_MAX_TOOL_ERRORS=3
@@ -640,13 +629,13 @@ curl -X POST "http://127.0.0.1:8000/chat" \
 }
 ```
 
-可能返回 `search_knowledge_base`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text`、`clarify`、`direct_answer` 等动作。
+只会返回 `agent`、`clarify` 或 `direct_answer`。具体工具由后续 Agent Model 根据当前可见 Schema 选择。
 
 `web_search` 不作为 Router 关键词 action。普通问题先进入 `agent`，再由 Agent Model 根据动态 Tool Schema 和当前请求权限决定是否调用 Web Search。
 
-`web_fetch` 同样不作为 Router action，也不在 Query Rewrite、Planner 或 Executor 中增加 URL 特判；它由 Agent Model 在普通工具循环中按权限和 Schema 选择。
+`web_fetch` 同样不作为 Router action，也不在 Query Rewrite 或父图中增加 URL 特判；它由 Agent Model 在普通工具循环中按权限和 Schema 选择。
 
-`web_pdf_fetch` 也不增加 PDF Router action 或 Graph/Planner/Executor 特判；模型可根据 `web_fetch` 的类型错误 ToolMessage 在同一框架循环中改用 PDF 工具。
+`web_pdf_fetch` 也不增加 PDF Router action 或父图特判；模型可根据 `web_fetch` 的类型错误 ToolMessage 在同一框架循环中改用 PDF 工具。
 
 ### `/kb_summary`
 
@@ -669,7 +658,6 @@ GET /metrics-summary?limit=20
 | `agent` | 普通问题统一进入 LangChain `create_agent` |
 | `direct_answer` | 由 Answer Composer 生成系统能力说明，不把 Router 的内部 reason 直接暴露为用户回答 |
 | `clarify` | 问题过短、为空或指代不明时追问 |
-| `rag_fast_path` | 仅保留给显式注入或旧协议兼容路径，正常规则入口不主动选择 |
 
 如果 `/chat` 传入 `session_id`，Query Rewrite 会在 Agent Router 之前执行；Router 看到的是改写后的有效问题，响应中的 `data.question` 仍保留原始输入，改写细节记录在 `data.tool_trace` 的 `query_rewrite` step 中。
 
@@ -806,14 +794,12 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   │   ├── router.py            # 确定性入口路由
 │   │   ├── rules.py             # Router 问题规范化规则
 │   │   ├── query_rewrite.py     # 多轮追问识别和 Query Rewrite
-│   │   ├── formatting.py        # 普通工具答案格式化
-│   │   ├── state.py             # Agent 状态模型
-│   │   ├── planner.py           # 执行计划构造
-│   │   ├── executor.py          # 工具步骤执行
+│   │   ├── state.py             # Observation 与 API 兼容 Agent 状态
 │   │   ├── answer.py            # 最终答案合成
 │   │   ├── framework_agent.py   # create_agent 子图构建与父图结果适配
 │   │   ├── framework_middleware.py # 项目特有 Agent 治理 Middleware
 │   │   ├── framework_tools.py   # 动态框架工具、Context 与 RAG handoff 适配
+│   │   ├── tool_events.py       # 框架工具事件到 observation/trace 的转换
 │   │   ├── guardrails.py        # 错误分类、Stop Reason 与小型指纹辅助
 │   │   └── runtime.py           # Agent 结果、统计和 trace 辅助逻辑
 │   ├── graph/
@@ -846,7 +832,6 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   │   ├── compare_documents.py # 双文档证据对比
 │   │   ├── context.py           # 请求级工具调用上下文
 │   │   ├── dispatch.py          # 工具分发与调用日志
-│   │   ├── langchain_tools.py   # LangChain StructuredTool 适配层
 │   │   ├── web_search.py        # DDGS 调用、结果规范化和公开异常映射
 │   │   ├── web_download.py      # HTML/PDF 共用的 hardened 有限下载适配
 │   │   ├── web_fetch.py         # HTML/XHTML/纯文本的 Trafilatura 提取
@@ -862,7 +847,7 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   │   ├── middleware.py        # HTTP trace 和端到端耗时
 │   │   └── metrics.py           # 指标、bad case 和 trace 汇总
 │   ├── common/logging.py        # 公共日志配置
-│   ├── prompts.py               # RAG、问题拆分、路由 Prompt
+│   ├── prompts.py               # RAG、问题拆分和评测 Prompt
 │   └── config.py                # 环境变量配置
 ├── data/
 │   ├── kb/                      # 默认知识库文档目录
@@ -943,10 +928,10 @@ docker run --rm -p 8000:8000 --env-file .env \
 ## 已知限制
 
 - 当前支持 `.txt`、`.md`、`.pdf`、`.docx`；PDF 依赖可提取文本，暂不内置 OCR，旧版 `.doc` 和图片文件暂不支持。
-- 回答模型、路由模型、追问改写模型、拆分模型和 Judge 模型都按 OpenAI-compatible Chat Completions 格式调用。
+- 回答/Agent 模型、追问改写模型、拆分模型和 Judge 模型都按 OpenAI-compatible Chat Completions 格式调用。
 - embedding 和 rerank 模型首次加载较慢，可能需要下载权重。
 - 多轮历史使用本地 SQLite 持久化，适合单实例运行；多实例部署时需要额外规划共享存储和并发策略。
 - SQLite Checkpointer 适合单进程本地开发；高并发、多进程共享、数据持续增长和敏感状态留存需要额外的容量、权限及清理策略。
-- Agent 已通过 `create_agent` 支持 Registry-driven 多轮工具观察、同轮多个工具调用和参数修正，并具备错误次数、重复调用/错误、总耗时和同批 fail-closed 防护；旧 Planner/Executor 只保留兼容路径。
+- Agent 已通过唯一的 `create_agent` 路径支持 Registry-driven 多轮工具观察、同轮多个工具调用和参数修正，并具备错误次数、重复调用/错误、总耗时和同批 fail-closed 防护。
 - 当前尚未实现 Web、SQL、MCP、外部工具动态加载、写工具人工审批恢复或多 Agent。
 - retrieval_confidence 和 answer_confidence 是启发式估计，不等同于严格概率。

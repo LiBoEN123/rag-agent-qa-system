@@ -1,13 +1,10 @@
 import pytest
 from pydantic import BaseModel
 
-from app.agent import executor as agent_executor
 from app.agent.router import (
     route_agent_action,
     route_agent_action_rule_based,
 )
-from app.graph import nodes as graph_nodes
-from app.graph import runtime as graph_runtime
 from app.llm import factory as model_factory
 from app.llm.gateway import ModelGateway
 from app.tools.contracts import ToolSpec
@@ -133,104 +130,3 @@ def test_rule_route_keeps_current_decision_shape():
         "tool_args": {},
         "reason": "交给 Agent 根据当前请求可见的动态工具定义决策",
     }
-
-
-def test_langgraph_uses_search_knowledge_base_tool_once(monkeypatch):
-    """验证 LangGraph 知识库路径通过 LangChain Tool 调用标准检索工具。"""
-    called = {"count": 0}
-    fake_chunk = {
-        "chunk_id": 1,
-        "text": "测试 chunk",
-        "snippet": "测试 chunk",
-        "hybrid_score": 0.9,
-        "bm25_score": 1.0,
-        "vector_score": 0.8,
-        "rerank_score": 0.7,
-        "file_name": "test.md",
-        "metadata": {
-            "chunk_id": 1,
-            "file_name": "test.md",
-        },
-    }
-
-    def fake_langchain_call(step, *, context):
-        """模拟 search_knowledge_base 的 StructuredTool 调用结果。"""
-        called["count"] += 1
-        assert step.tool_name == "search_knowledge_base"
-        assert step.tool_args == {"query": "测试问题", "top_k": 5}
-        assert context.trace_id == "test_trace"
-        return {
-            "status": "success",
-            "ok": True,
-            "tool_name": step.tool_name,
-            "tool_input": step.tool_args,
-            "output": {
-                "count": 1,
-                "chunks": [fake_chunk],
-                "top_chunk_ids": [1],
-                "top_scores": [0.9],
-            },
-            "error": "",
-        }
-
-    def fake_ask(*args, **kwargs):
-        """模拟 RAG 生成结果并校验收到的检索 chunks。"""
-        assert kwargs.get("retrieved_chunks") == [fake_chunk]
-        return {
-            "status": "OK",
-            "answer": "测试答案",
-            "references": [],
-            "final_chunks": [fake_chunk],
-            "retrieval_confidence": 0.9,
-            "answer_confidence": 0.8,
-            "need_clarification": False,
-            "clarification_question": "",
-            "reason": "测试",
-            "tool_trace": [],
-            "decompose_llm_used": False,
-            "answer_llm_used": True,
-            "llm_call_count": 1,
-        }
-
-    monkeypatch.setattr(
-        agent_executor,
-        "_call_langchain_tool",
-        fake_langchain_call,
-    )
-    monkeypatch.setattr(graph_nodes, "run_rag_subgraph", fake_ask)
-
-    result = graph_runtime.run_agent_langgraph(
-        write_bad_cases=lambda record: None,
-        original_question="测试问题",
-        effective_question="测试问题",
-        top_k=5,
-        decompose_top_k=10,
-        decision={
-            "decision": "use_knowledge_base",
-            "action": "search_knowledge_base",
-            "tool_name": "search_knowledge_base",
-            "tool_args": {"query": "测试问题", "top_k": 5},
-            "reason": "测试知识库检索",
-            "router_source": "rule_based",
-            "router_llm_used": False,
-        },
-        trace_id="test_trace",
-    )
-
-    call_tool_steps = [
-        step
-        for step in result["tool_trace"]
-        if step.get("step") == "tool_call"
-        and step.get("tool_name") == "search_knowledge_base"
-    ]
-
-    assert called["count"] == 1
-    assert result["status"] == "OK"
-    assert call_tool_steps
-    assert call_tool_steps[0]["tool_args"] == {"query": "测试问题", "top_k": 5}
-    assert call_tool_steps[0]["tool_status"] == "success"
-    assert call_tool_steps[0]["success"] is True
-    assert call_tool_steps[0]["final_chunk_count"] == 1
-    assert call_tool_steps[0]["top_chunk_ids"] == [1]
-    assert call_tool_steps[0]["top_scores"] == [0.9]
-    assert call_tool_steps[0]["hits"][0]["file_name"] == "test.md"

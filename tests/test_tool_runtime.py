@@ -9,11 +9,10 @@ import pytest
 from pydantic import BaseModel
 
 from app.config import Settings
-from app.tools import get_langchain_tool
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from app.tools.errors import ToolErrorCode, ToolExecutionError
-from app.tools.registry import ToolRegistry
+from app.tools.registry import ToolRegistry, tool_registry
 from app.tools.result import tool_error, tool_success
 from app.tools.runtime import (
     ToolRuntime,
@@ -490,11 +489,13 @@ def test_registry_dispatch_uses_runtime_protocol():
     assert result["runtime"]["attempt_count"] == 1
 
 
-def test_langchain_tool_returns_runtime_extensions():
-    """LangChain Tool 继续走 dispatch_tool 并获得 Runtime 扩展字段。"""
-    tool = get_langchain_tool("simple_calculator", trace_id="runtime-trace")
-    assert tool is not None
-    result = tool.invoke({"expression": "1 + 2"})
+def test_registry_dispatch_returns_runtime_extensions():
+    """直接测试通过 Registry 分发并获得 Runtime 扩展字段。"""
+    result = tool_registry.dispatch(
+        "simple_calculator",
+        {"expression": "1 + 2"},
+        context=ToolInvocationContext(trace_id="runtime-trace"),
+    )
 
     assert result["ok"] is True
     assert result["output"]["result"] == 3

@@ -4,6 +4,10 @@
 - 日期：2026-07-21
 - 决策者：Project Maintainer
 
+> 后续：本文关于保留 Planner/Executor 兼容路径的决定已由
+> [ADR 0011](0011-single-framework-agent-execution-path.md) 取代；框架原生循环、
+> Middleware 治理和 RAG handoff 决定继续有效。
+
 ## 背景
 
 PR1–PR3 在 `app/graph/nodes.py` 中逐步实现模型—工具循环、动态工具绑定、StructuredTool 调用、ToolMessage 批处理、错误分类、指纹、预算、trace 和 RAG 交接。该文件增长到 1276 行，同时承担父图业务节点、Agent Runtime 和工具治理，框架已能提供的能力也由项目重复维护，修改任一错误路径都容易破坏消息协议或条件边。

@@ -6,10 +6,10 @@ from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel, Field
 
 from app.agent import framework_agent, framework_tools
+from app.agent.framework_tools import build_framework_tools
 from app.graph.builder import build_agent_graph
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
-from app.tools.langchain_tools import get_langchain_tool
 from app.tools.providers import LocalToolProvider
 from app.tools.registry import ToolRegistry, tool_registry
 from app.tools.result import tool_success
@@ -126,8 +126,8 @@ def _invoke_dynamic_graph(
     )
 
 
-def test_tool_spec_builds_structured_tool_and_uses_runtime_context():
-    """StructuredTool 完整复用定义、Schema、Registry 和 Runtime Context。"""
+def test_tool_spec_builds_framework_structured_tool_from_provider():
+    """唯一框架适配完整复用 ToolSpec 定义、Schema 与 Registry。"""
     registry = ToolRegistry()
     contexts: list[ToolInvocationContext] = []
     _register_dynamic_tools(registry, contexts)
@@ -140,21 +140,17 @@ def test_tool_spec_builds_structured_tool_and_uses_runtime_context():
     )
     provider = LocalToolProvider(registry)
 
-    tool = get_langchain_tool(
-        "join_texts",
-        context=context,
-        provider=provider,
+    tool = next(
+        item
+        for item in build_framework_tools(provider, context=context)
+        if item.name == "join_texts"
     )
 
-    assert tool is not None
     assert tool.name == "join_texts"
     assert tool.description == registry.get("join_texts").description
-    assert tool.args_schema is JoinTextsArgs
-    result = tool.invoke({"parts": ["a", "b"], "separator": "-"})
-    assert result["ok"] is True
-    assert result["output"] == {"text": "a-b"}
-    assert contexts == [context]
-    assert result["runtime"]["attempt_count"] == 1
+    assert issubclass(tool.args_schema, JoinTextsArgs)
+    assert "runtime" not in tool.tool_call_schema.model_fields
+    assert contexts == []
 
 
 def test_agent_discovers_and_calls_echo_without_core_tool_mapping(monkeypatch):

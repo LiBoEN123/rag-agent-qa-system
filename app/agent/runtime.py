@@ -143,9 +143,6 @@ def get_route_decision_for_trace(decision: dict) -> str:
     """根据路由 action 生成 trace 使用的 route_decision。"""
     action = decision.get("action", "")
 
-    if action == "search_knowledge_base":
-        return "rag"
-
     if action in {"clarify", "direct_answer"}:
         return action
 
@@ -216,33 +213,6 @@ def build_decide_trace(decision: dict, router_llm_used: bool) -> dict[str, Any]:
         "router_confidence": decision.get("router_confidence"),
         "router_fallback_reason": decision.get("router_fallback_reason", ""),
         "router_llm_used": bool(router_llm_used),
-    }
-
-
-def build_plan_trace(state: AgentState) -> dict[str, Any]:
-    """构造 Planner 产物 trace，便于观察计划步骤。"""
-    return {
-        "step": "plan",
-        "status": "success",
-        "plan_size": len(state.plan),
-        "steps": [
-            {
-                "step_id": step.step_id,
-                "action": step.action,
-                "tool_name": step.tool_name,
-                "tool_args": _safe_trace_tool_args(
-                    step.tool_name,
-                    step.tool_args,
-                ),
-                "sanitized_tool_args": _safe_trace_tool_args(
-                    step.tool_name,
-                    step.tool_args,
-                ),
-                "reason": step.reason,
-                "status": step.status,
-            }
-            for step in state.plan
-        ],
     }
 
 

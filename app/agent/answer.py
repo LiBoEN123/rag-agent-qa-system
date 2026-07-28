@@ -1,14 +1,12 @@
-"""Agent 答案合成模块。
-
-映射 RAG 子图结果，或根据普通工具观察结果生成最终回答状态。
-"""
+"""Agent 答案合成与 RAG 结果映射。"""
 
 from typing import Any
 
-from app.agent.state import AgentObservation, AgentState
+from app.agent.state import AgentState
 
 
 ERROR_STATUSES = {"tool_error", "error", "model_error"}
+INTERNAL_ERROR_TEXT = "Agent 内部执行异常，请稍后重试"
 
 DIRECT_ANSWER_TEXT = (
     "我是一个 RAG 知识库问答助手。"
@@ -32,21 +30,6 @@ def map_rag_status(status: str) -> str:
         "model_error": "model_error",
     }
     return mapping.get(normalized, "error")
-
-
-def find_last_successful_observation(state: AgentState) -> AgentObservation | None:
-    """从状态中查找最后一条成功的工具观察结果。"""
-    for observation in reversed(state.observations):
-        if observation.success:
-            return observation
-    return None
-
-
-def _format_tool_answer(tool_name: str, output: dict) -> str:
-    """调用现有工具答案格式化函数，局部导入用于避免循环依赖。"""
-    from app.agent.formatting import format_tool_answer
-
-    return format_tool_answer(tool_name, output)
 
 
 def apply_rag_result_to_state(
@@ -86,44 +69,18 @@ def apply_rag_result_to_state(
     return state
 
 
-def compose_tool_answer(state: AgentState, observation: AgentObservation) -> AgentState:
-    """将成功的普通工具观察结果格式化为最终答案并写回状态。"""
-    try:
-        answer = _format_tool_answer(observation.tool_name, observation.output)
-    except Exception as exc:
-        state.status = "error"
-        state.reason = f"Failed to format tool answer: {exc}"
-        state.final_answer = "工具结果格式化失败，无法生成可靠回答。"
+def compose_final_answer(state: AgentState) -> AgentState:
+    """完成确定性短路、框架回答或稳定错误结果。"""
+    if state.status == "clarify":
         state.tool_trace.append(
             {
                 "step": "compose_final_answer",
-                "mode": "tool",
+                "mode": "clarify",
                 "status": state.status,
+                "answer_len": len(state.final_answer),
                 "reason": state.reason,
             }
         )
-        return state
-
-    state.final_answer = answer
-    state.references = []
-    state.status = "ok"
-    state.reason = "Tool result formatted as final answer"
-    state.tool_trace.append(
-        {
-            "step": "compose_final_answer",
-            "mode": "tool",
-            "tool_name": observation.tool_name,
-            "status": state.status,
-            "answer_len": len(state.final_answer or ""),
-            "reason": state.reason,
-        }
-    )
-    return state
-
-
-def compose_final_answer(state: AgentState) -> AgentState:
-    """根据已完成的工具观察结果生成 Agent 最终回答。"""
-    if state.status == "clarify":
         return state
 
     if state.status == "direct_answer":
@@ -141,11 +98,25 @@ def compose_final_answer(state: AgentState) -> AgentState:
         return state
 
     if state.status in ERROR_STATUSES:
-        if not state.final_answer:
-            if state.reason:
-                state.final_answer = f"工具执行失败，无法生成可靠回答。原因：{state.reason}"
-            else:
-                state.final_answer = "工具执行失败，无法生成可靠回答。"
+        if state.status == "error":
+            state.final_answer = INTERNAL_ERROR_TEXT
+        elif state.status == "model_error" and not state.final_answer:
+            state.final_answer = "Agent 模型暂时不可用，无法安全选择或继续调用工具。"
+        elif not state.final_answer:
+            state.final_answer = (
+                f"工具执行失败，无法生成可靠回答。原因：{state.reason}"
+                if state.reason
+                else "工具执行失败，无法生成可靠回答。"
+            )
+        state.tool_trace.append(
+            {
+                "step": "compose_final_answer",
+                "mode": "error",
+                "status": state.status,
+                "answer_len": len(state.final_answer),
+                "reason": state.reason,
+            }
+        )
         return state
 
     if state.status == "ok" and state.final_answer:
@@ -160,51 +131,23 @@ def compose_final_answer(state: AgentState) -> AgentState:
         )
         return state
 
-    if not state.observations:
-        state.status = "error"
-        state.reason = "No observations available for final answer"
-        state.final_answer = "当前没有可用于生成回答的工具结果。"
-        state.tool_trace.append(
-            {
-                "step": "compose_final_answer",
-                "status": "error",
-                "reason": state.reason,
-            }
-        )
-        return state
-
-    successful_rag_observation = any(
-        observation.tool_name == "search_knowledge_base"
-        and observation.success
-        for observation in state.observations
+    previous_status = state.status
+    state.status = "error"
+    state.reason = f"Unexpected Agent state before compose: {previous_status}"
+    state.final_answer = INTERNAL_ERROR_TEXT
+    state.tool_trace.append(
+        {
+            "step": "compose_final_answer",
+            "mode": "error",
+            "status": state.status,
+            "reason": state.reason,
+        }
     )
-    if successful_rag_observation:
-        raise RuntimeError(
-            "Successful knowledge-base observations must be handled "
-            "by the LangGraph RAG subgraph."
-        )
-
-    observation = find_last_successful_observation(state)
-    if observation is None:
-        state.status = "tool_error"
-        state.reason = state.reason or "No successful tool observation"
-        state.final_answer = "工具没有返回可用结果，无法生成可靠回答。"
-        state.tool_trace.append(
-            {
-                "step": "compose_final_answer",
-                "status": state.status,
-                "reason": state.reason,
-            }
-        )
-        return state
-
-    return compose_tool_answer(state, observation)
+    return state
 
 
 __all__ = [
     "apply_rag_result_to_state",
     "compose_final_answer",
-    "compose_tool_answer",
-    "find_last_successful_observation",
     "map_rag_status",
 ]

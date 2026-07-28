@@ -365,3 +365,22 @@ PR6 完成后为 `565 passed, 1 warning`；Ruff、`python -m compileall app`、�
 新增/整理的测试覆盖空问题、`direct_answer`、`clarify`、普通问题进入 `agent`、不调用 Router 模型、不选择具体工具、新增 Registry Tool 不修改 Router、包级旧 API 不可导出、`llm_router` 模块不存在，以及 ChatService/Graph 继续绑定同一明确模块 Router。只保护旧模型调用、Markdown JSON 解析、旧具体工具 action 与 `ENABLE_LLM_ROUTER` 分支的测试已删除。完成后全量结果为 `721 passed, 1 warning`；唯一警告仍来自 jieba 对 `pkg_resources` 的弃用提示。
 
 父图节点和边、Framework Agent 节点、Middleware 栈、Planner、Executor、`legacy_plan`、`fallback_to_legacy`、AgentState 计划字段、RAG 子图、ToolRegistry、ToolRuntime、Provider、权限/审计、Checkpointer、FastAPI API Schema、HTTP 状态码、SQLite Schema、session、metrics、tool trace 与 `tool_call_chain` 日志均未修改。八个生产工具的名称、参数/输出 Schema、权限、风险等级、timeout、重试、审计与可见性保持不变。自动测试使用隔离 fake，没有调用真实模型、搜索引擎、网页/PDF、代理，没有重建 RAG 索引、创建生产 Checkpoint 或写生产审计文件。
+
+## 22. PR10 单一框架 Agent 执行链
+
+本节只记录 PR10 增量；PR0–PR9 历史内容保持原样。开始时实际分支为 `fix/langgraph-runtime-hardening`，HEAD 为 `ee3fe56c450580fdb8c3630c112eeb10e5050d1e`，工作区干净。修改前本地基线为 `721 passed, 1 warning`；Ruff、`python -m compileall app`、`python scripts/inspect_agent_runtime.py --check`、`python -m pip check` 和 `git diff --check` 全部通过。
+
+修改前引用盘点确认：`planner.py` 和 `executor.py` 由父图 `plan`/`execute` 节点执行；`framework_agent.py` 只为 observation/trace 转换依赖 Executor 并构造虚假 `AgentPlanStep`；`langchain_tools.py` 的生产消费者只剩旧 Executor，此外只有公共 re-export、手工脚本和旧实现测试；`fallback_to_legacy` 贯穿框架状态、模型异常 Middleware、父图适配和条件边；`rag_fast_path` 与具体工具 action 仍由 Planner/ChatService 前置 RAG 检查消费；`AGENT_MAX_STEPS` 只约束旧 Executor；`router_specs()`/`to_router_spec()` 只剩定义和测试。
+
+- 删除 `app/agent/planner.py`、`app/agent/executor.py`、`app/tools/langchain_tools.py` 和无生产消费者的 `app/agent/formatting.py`。删除旧 StructuredTool 公共导出、Router tool-spec 表面、旧实现测试和手工脚本对闭包适配的依赖；手工 Tool Calling 脚本改用 `build_framework_tools()`。
+- 新增 `app/agent/tool_events.py`，只负责把标准工具结果和框架治理事件转换为 `AgentObservation` 与兼容 `tool_call` trace。它不接受计划步骤，不执行工具，不构造 ToolMessage，不调用模型，也不复制 ToolRuntime。
+- 删除 `AgentPlanStep`、`StepStatus`、`AgentState.plan`、`AgentState.max_steps` 和 `AGENT_MAX_STEPS`。保留 observation、稳定步号、框架治理计数、`pending_rag_result`、API 状态和结果映射。
+- 父图节点收缩为 `route`、`initialize`、`framework_agent`、`adapt_framework`、`rag_subgraph`、`compose`、`finalize`。普通 `agent` 进入 `create_agent`；`direct_answer` 和 `clarify` 在 initialize 写入确定性状态并直接 compose；其他旧 action 返回 `INTERNAL_ERROR`，不调用模型或工具。
+- 模型异常只记录失败事件与 `stop_reason=agent_model_call_failed`，经适配和 compose 返回 `MODEL_ERROR`；不再计算工具使用情况，不再写 fallback 状态，也不进入第二套执行链。
+- `search_knowledge_base` 仍经唯一的框架 StructuredTool、Registry 和项目 ToolRuntime。成功结果继续用 `Command.PARENT` 进入原 RAG 子图；知识库不可用则形成标准错误 ToolMessage，Agent Model 可以读取并安全结束。ChatService 删除旧 action 专属 RAG 前置检查和依赖，兼容 metrics 字段 `rag_ready_check_cost_ms` 保留为 `0`。
+- 删除内部 `plan`、`executor` 和旧计划 `final_answer` trace。继续保留 `query_rewrite`、`decide`、`agent_iteration`、`tool_call`、`compose_final_answer`、`llm_usage`，工具 trace 的治理、重试、命中和框架扩展字段不变，`tool_call_chain` 仍只聚合真实 `tool_call`。
+- 自动测试使用真实 `build_agent_graph().compile().invoke(...)`、`create_agent`、RegistryToolsMiddleware、ToolRegistry 和 ToolRuntime，只替换 Agent Model、DDGS、HTTP transport 与 RAG 外部副作用。覆盖无工具回答、计算器、多工具 Web/PDF、知识库 RAG handoff、知识库不可用错误 ToolMessage、模型失败、短路、旧 action fail-closed、memory/sqlite Checkpointer、metrics、session 和终端工具链日志。
+
+完成后全量结果为 `653 passed, 1 warning`；Ruff、compileall、Runtime architecture inspection、pip check 和 diff check 通过。唯一警告仍来自 jieba 对 `pkg_resources` 的弃用提示。自动测试没有调用真实模型、搜索引擎、网页/PDF、代理，没有重建 RAG 索引、创建生产 Checkpoint 或写生产审计文件。
+
+FastAPI `/chat` 请求/响应 Schema、HTTP 业务状态码、SQLite session/Checkpointer Schema、thread_id、RAG 检索/重排/证据/引用算法、八个 ToolSpec 名称与参数/输出 Schema、Provider 权限可见性、ToolRuntime 权限/审批/超时/重试/审计、metrics 字段和 session 行为均未修改。Router 双重所有权、`AgentGraphState`/`AgentState` 统一、Result/status 映射统一、Settings 迁移、模块导入边界和历史文档归档仍留给后续独立整理。

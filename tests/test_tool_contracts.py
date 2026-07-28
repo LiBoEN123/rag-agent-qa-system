@@ -72,7 +72,7 @@ def test_tool_contract_public_exports_are_compatible():
 
 
 def test_tool_spec_normalizes_and_serializes_contract():
-    """合法契约会被规范化，并可安全序列化给 Router 和治理端。"""
+    """合法契约会被规范化，并可安全序列化给治理与检查端。"""
     spec = _make_spec(
         name="  echo_tool  ",
         version=" 1.0.0-beta.1 ",
@@ -98,20 +98,9 @@ def test_tool_spec_normalizes_and_serializes_contract():
         "ticket:create",
     )
 
-    router_spec = spec.to_router_spec()
     contract_spec = spec.to_contract_dict()
-    json.dumps(router_spec)
     json.dumps(contract_spec)
 
-    assert set(router_spec) == {
-        "name",
-        "version",
-        "description",
-        "args_schema",
-        "risk_level",
-        "requires_approval",
-    }
-    assert "handler" not in router_spec
     assert "handler" not in contract_spec
     assert contract_spec["args_model"] == "EchoArgs"
     assert contract_spec["output_model"] == "EchoOutput"

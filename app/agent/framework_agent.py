@@ -11,11 +11,11 @@ from langchain.agents.middleware import (
 from langchain.agents.middleware.types import AgentState as LangChainAgentState
 from typing_extensions import NotRequired
 
-from app.agent.executor import build_observation, build_tool_trace_step
 from app.agent.framework_middleware import ProjectToolGovernanceMiddleware
 from app.agent.framework_tools import RegistryToolsMiddleware
 from app.agent.model import get_agent_chat_model
-from app.agent.state import AgentPlanStep, AgentState
+from app.agent.state import AgentState
+from app.agent.tool_events import build_tool_observation, build_tool_trace
 from app.config import Settings
 from app.tools.context import ToolInvocationContext
 
@@ -32,7 +32,6 @@ class FrameworkAgentState(LangChainAgentState):
     governance_events: NotRequired[Annotated[list[dict[str, Any]], operator.add]]
     agent_elapsed_ms: NotRequired[int]
     stop_reason: NotRequired[Annotated[str, _prefer_stop_reason]]
-    fallback_to_legacy: NotRequired[bool]
     pending_rag_result: NotRequired[dict[str, Any]]
 
 
@@ -130,21 +129,23 @@ def _tool_trace(
 ) -> dict[str, Any]:
     """把已执行工具事件映射为 observation 和 tool trace。"""
     result = event.get("result") if isinstance(event.get("result"), dict) else {}
-    step = AgentPlanStep(
-        step_id=len(agent_state.observations) + 1,
-        action="tool_call",
-        tool_name=str(event.get("name") or ""),
-        tool_args=event.get("args") if isinstance(event.get("args"), dict) else {},
-        reason="Agent model requested tool call",
+    step_id = len(agent_state.observations) + 1
+    tool_name = str(event.get("name") or "")
+    tool_args = event.get("args") if isinstance(event.get("args"), dict) else {}
+    observation = build_tool_observation(
+        step_id=step_id,
+        tool_name=tool_name,
+        result=result,
+        cost_ms=max(0, int(event.get("cost_ms", 0) or 0)),
     )
-    observation = build_observation(
-        step,
-        result,
-        max(0, int(event.get("cost_ms", 0) or 0)),
-    )
-    step.status = "success" if observation.success else "failed"
     agent_state.observations.append(observation)
-    trace = build_tool_trace_step(step, result, observation)
+    trace = build_tool_trace(
+        step_id=step_id,
+        tool_name=tool_name,
+        tool_args=tool_args,
+        result=result,
+        observation=observation,
+    )
     trace.update(
         {
             "failure_kind": str(event.get("failure_kind") or ""),

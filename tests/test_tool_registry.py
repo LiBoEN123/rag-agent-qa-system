@@ -20,40 +20,6 @@ def test_tool_registry_names_include_builtin_tools():
     assert "web_pdf_fetch" in names
 
 
-def test_router_specs_include_search_knowledge_base():
-    """验证 Router 工具描述包含知识库检索工具。"""
-    specs = tool_registry.router_specs()
-    names = {item["name"] for item in specs}
-
-    assert "search_knowledge_base" in names
-
-
-def test_tool_registry_router_specs_shape():
-    """验证 Router 可读取注册工具描述。"""
-    specs = tool_registry.router_specs()
-
-    assert isinstance(specs, list)
-    assert specs
-
-    for spec in specs:
-        assert set(spec) == {
-            "name",
-            "version",
-            "description",
-            "args_schema",
-            "risk_level",
-            "requires_approval",
-        }
-        assert "handler" not in spec
-        assert "args_model" not in spec
-        assert "output_model" not in spec
-        assert "required_permissions" not in spec
-        assert "timeout" not in spec
-        assert "max_retries" not in spec
-
-    json.dumps(specs)
-
-
 def test_builtin_tools_publish_v2_contract_metadata():
     """验证八个注册生产工具发布完整且符合要求的 V2 契约。"""
     specs = tool_registry.contract_specs()
@@ -271,9 +237,3 @@ def test_dispatch_tool_keeps_compatible_entrypoint():
     assert result["ok"] is True
     assert result["status"] == "success"
     assert result["output"]["result"] == 5
-
-
-def test_router_specs_include_compare_documents():
-    """验证 Router 工具描述中包含 compare_documents。"""
-    names = {item["name"] for item in tool_registry.router_specs()}
-    assert "compare_documents" in names

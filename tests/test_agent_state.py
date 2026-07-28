@@ -1,30 +1,13 @@
 import pytest
 from pydantic import ValidationError
 
-from app.agent.state import AgentObservation, AgentPlanStep, AgentState
+from app.agent.state import AgentObservation, AgentState
 from app.graph.state import AgentGraphState
 
 
-def test_agent_plan_step_defaults():
-    """验证计划步骤模型默认状态。"""
-    step = AgentPlanStep(
-        step_id=1,
-        action="tool_call",
-        tool_name="search_knowledge_base",
-        tool_args={"query": "测试问题", "top_k": 5},
-        reason="先检索知识库",
-    )
-
-    assert step.step_id == 1
-    assert step.action == "tool_call"
-    assert step.tool_name == "search_knowledge_base"
-    assert step.tool_args["query"] == "测试问题"
-    assert step.status == "pending"
-
-
 def test_agent_observation_defaults():
-    """验证观察结果模型默认错误信息。"""
-    obs = AgentObservation(
+    """工具 observation 保留稳定字段和安全默认值。"""
+    observation = AgentObservation(
         step_id=1,
         tool_name="search_knowledge_base",
         success=True,
@@ -33,14 +16,14 @@ def test_agent_observation_defaults():
         cost_ms=123,
     )
 
-    assert obs.success is True
-    assert obs.output["count"] == 5
-    assert obs.error == ""
-    assert obs.cost_ms == 123
+    assert observation.success is True
+    assert observation.output["count"] == 5
+    assert observation.error == ""
+    assert observation.cost_ms == 123
 
 
-def test_agent_state_defaults():
-    """验证 AgentState 初始化时使用安全默认值。"""
+def test_agent_state_defaults_without_plan_protocol():
+    """AgentState 不再保存计划或旧步骤上限。"""
     state = AgentState(original_question="普通本科四年制最长学习年限是多少？")
 
     assert state.original_question == "普通本科四年制最长学习年限是多少？"
@@ -48,70 +31,55 @@ def test_agent_state_defaults():
     assert state.top_k == 5
     assert state.decompose_top_k == 10
     assert state.status == "running"
-    assert state.max_steps == 5
-    assert state.plan == []
     assert state.observations == []
     assert state.references == []
     assert state.tool_trace == []
     assert state.llm_call_count == 0
+    assert "plan" not in AgentState.model_fields
+    assert "max_steps" not in AgentState.model_fields
 
 
 def test_agent_state_list_defaults_are_not_shared():
-    """验证 list/dict 字段不会在多个状态对象之间共享。"""
-    state1 = AgentState(original_question="问题1")
-    state2 = AgentState(original_question="问题2")
-
-    state1.plan.append(
-        AgentPlanStep(
+    """可变列表字段不会在不同状态对象之间共享。"""
+    first = AgentState(original_question="问题1")
+    second = AgentState(original_question="问题2")
+    first.observations.append(
+        AgentObservation(
             step_id=1,
-            action="tool_call",
-            tool_name="search_knowledge_base",
+            tool_name="simple_calculator",
+            success=True,
         )
     )
 
-    assert len(state1.plan) == 1
-    assert len(state2.plan) == 0
+    assert len(first.observations) == 1
+    assert second.observations == []
 
 
 def test_agent_state_serialization_round_trip():
-    """验证 AgentState 可以序列化为 dict 后再恢复。"""
+    """AgentState 的 observation 与兼容结果字段可序列化往返。"""
     state = AgentState(
         original_question="普通本科四年制最长学习年限是多少？",
         trace_id="req_test",
-    )
-    state.plan.append(
-        AgentPlanStep(
-            step_id=1,
-            action="tool_call",
-            tool_name="search_knowledge_base",
-            tool_args={"query": "普通本科四年制最长学习年限是多少？", "top_k": 5},
-            reason="先检索知识库",
-            status="success",
-        )
-    )
-    state.observations.append(
-        AgentObservation(
-            step_id=1,
-            tool_name="search_knowledge_base",
-            success=True,
-            summary="检索到 5 个 chunk",
-            output={"count": 5},
-            cost_ms=123,
-        )
+        observations=[
+            AgentObservation(
+                step_id=1,
+                tool_name="search_knowledge_base",
+                success=True,
+                summary="检索到 5 个 chunk",
+                output={"count": 5},
+                cost_ms=123,
+            )
+        ],
     )
 
-    data = state.model_dump()
-    restored = AgentState.model_validate(data)
+    restored = AgentState.model_validate(state.model_dump())
 
     assert restored.original_question == state.original_question
-    assert restored.plan[0].tool_name == state.plan[0].tool_name
     assert restored.observations[0].summary == state.observations[0].summary
 
 
 def test_agent_state_excludes_static_governance_fields_from_checkpoints():
-    state = AgentState(
-        original_question="问题",
-    )
+    state = AgentState(original_question="问题")
     payload = state.model_dump(mode="json")
     restored = AgentState.model_validate(payload)
     static_governance_fields = {
@@ -123,16 +91,15 @@ def test_agent_state_excludes_static_governance_fields_from_checkpoints():
         "request_source",
         "idempotency_key",
     }
+
     assert static_governance_fields.isdisjoint(AgentState.model_fields)
     assert static_governance_fields.isdisjoint(payload)
     assert restored.original_question == "问题"
-    assert all(
-        not hasattr(value, "write")
-        for value in payload.values()
-    )
+    assert all(not hasattr(value, "write") for value in payload.values())
 
 
-def test_graph_state_excludes_static_governance_fields():
+def test_graph_state_excludes_static_governance_and_legacy_fallback_fields():
+    fields = AgentGraphState.__annotations__
     static_governance_fields = {
         "principal_id",
         "principal_type",
@@ -142,15 +109,15 @@ def test_graph_state_excludes_static_governance_fields():
         "request_source",
         "idempotency_key",
     }
-    assert static_governance_fields.isdisjoint(
-        AgentGraphState.__annotations__
-    )
+
+    assert static_governance_fields.isdisjoint(fields)
+    assert "fallback_to_legacy" not in fields
 
 
 def test_agent_state_field_constraints():
-    """验证关键数字字段的约束生效。"""
+    """关键数字字段仍执行 Pydantic 约束。"""
     with pytest.raises(ValidationError):
-        AgentPlanStep(step_id=0, action="tool_call")
+        AgentObservation(step_id=0)
 
     with pytest.raises(ValidationError):
         AgentState(original_question="问题", top_k=0)

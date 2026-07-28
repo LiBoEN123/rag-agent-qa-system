@@ -60,10 +60,6 @@ class ToolRegistry:
         """返回已注册工具名称列表。"""
         return list(self._tools.keys())
 
-    def router_specs(self) -> list[dict]:
-        """返回 Router 可读取的工具描述。"""
-        return [spec.to_router_spec() for spec in self._tools.values()]
-
     def contract_specs(self) -> list[dict]:
         """返回完整且可序列化的工具契约。"""
         return [spec.to_contract_dict() for spec in self._tools.values()]

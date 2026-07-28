@@ -549,7 +549,6 @@ class Settings:
     JUDGE_MAX_RETRIES = int(os.getenv("JUDGE_MAX_RETRIES", "1"))
     JUDGE_MAX_TOKENS = int(os.getenv("JUDGE_MAX_TOKENS", "2048"))
 
-    AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "5"))
     AGENT_MAX_ITERATIONS = env_int("AGENT_MAX_ITERATIONS", "6")
     AGENT_MAX_TOOL_CALLS = env_int("AGENT_MAX_TOOL_CALLS", "10")
     AGENT_MAX_TOOL_ERRORS = env_int("AGENT_MAX_TOOL_ERRORS", "3")

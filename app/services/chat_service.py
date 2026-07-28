@@ -1,7 +1,7 @@
 """聊天应用服务。
 
-在不依赖 FastAPI 的前提下编排会话改写、路由、RAG 就绪检查、Agent
-Runtime、指标和会话存储，并返回供 HTTP 层适配的统一结果。
+在不依赖 FastAPI 的前提下编排会话改写、路由、Agent Runtime、指标和
+会话存储，并返回供 HTTP 层适配的统一结果。
 """
 
 from __future__ import annotations
@@ -25,17 +25,10 @@ from app.observability.metrics import (
     now_iso,
     write_bad_cases,
 )
-from app.rag import get_rag_status
 from app.storage.session import append_message, get_history
 
 
 logger = get_logger("chat_service")
-
-RAG_READY_ACTIONS = {
-    "rag_fast_path",
-    # 兼容仍由旧调用方注入的 RAG action。
-    "search_knowledge_base",
-}
 
 _TIMING_METRIC_KEYS = (
     "retrieve_cost_ms",
@@ -169,7 +162,6 @@ class ChatServiceDependencies:
     get_history: Callable[[str | None], list[dict]]
     rewrite_query_with_history: Callable[..., dict]
     route_agent_action: Callable[..., dict]
-    get_rag_status: Callable[[], dict]
     run_agent_langgraph: Callable[..., dict[str, Any]]
     build_query_rewrite_trace: Callable[[dict], dict]
     attach_query_rewrite_trace: Callable[[dict, dict], dict]
@@ -212,7 +204,6 @@ def get_default_chat_service_dependencies() -> ChatServiceDependencies:
         get_history=get_history,
         rewrite_query_with_history=rewrite_query_with_history,
         route_agent_action=route_agent_action,
-        get_rag_status=get_rag_status,
         run_agent_langgraph=run_agent_langgraph,
         build_query_rewrite_trace=build_query_rewrite_trace,
         attach_query_rewrite_trace=attach_query_rewrite_trace,
@@ -259,10 +250,6 @@ class ChatService:
 
             self._rewrite_question(context)
             self._route_question(context)
-
-            not_ready_outcome = self._check_rag_ready(context)
-            if not_ready_outcome is not None:
-                return not_ready_outcome
 
             try:
                 result = self._run_agent(context)
@@ -481,59 +468,6 @@ class ChatService:
             "[trace_id=%s] [agent] route_final action=%s",
             context.request.trace_id,
             context.action,
-        )
-
-    def _check_rag_ready(
-        self,
-        context: _ChatContext,
-    ) -> ChatServiceOutcome | None:
-        if context.action not in RAG_READY_ACTIONS:
-            return None
-
-        ready_check_start = self._deps.perf_counter()
-        rag_status = self._deps.get_rag_status()
-        ready_check_cost_ms = int(
-            (self._deps.perf_counter() - ready_check_start) * 1000
-        )
-        context.metrics["rag_ready_check_cost_ms"] = ready_check_cost_ms
-        logger.info(
-            "[trace_id=%s] [rag] ready_check_end ready=%s "
-            "rag_ready_check_cost_ms=%s message=%s",
-            context.request.trace_id,
-            rag_status.get("ready"),
-            ready_check_cost_ms,
-            rag_status.get("message", ""),
-        )
-        if rag_status["ready"]:
-            return None
-
-        logger.warning(
-            "[trace_id=%s] [chat] final_status=empty_index "
-            "reason=知识库未准备完成",
-            context.request.trace_id,
-        )
-        context.metrics["status"] = "empty_index"
-        context.metrics["action"] = context.action
-        context.metrics["reason"] = "知识库未准备完成"
-        context.bad_case["route"] = context.action or "rag"
-        context.bad_case["error_type"] = "index_not_ready"
-        context.bad_case["note"] = "知识库未准备完成，请检查知识库"
-        self._write_bad_case(context.bad_case, context.request.trace_id)
-
-        context.session_should_store = True
-        context.session_assistant_content = (
-            rag_status["message"] or "知识库未准备完成"
-        )
-        return ChatServiceOutcome(
-            http_status=503,
-            code="NO_DOCUMENTS",
-            message=rag_status["message"],
-            question=context.original_question,
-            result=self._response_result(
-                reason="知识库未准备完成",
-                tool_trace=[context.rewrite_trace],
-            ),
-            response_status="empty_index",
         )
 
     def _run_agent(self, context: _ChatContext) -> dict[str, Any]:
@@ -822,7 +756,6 @@ __all__ = [
     "ChatServiceOutcome",
     "ChatServiceRequest",
     "CHAT_RESULT_RESPONSE_MAP",
-    "RAG_READY_ACTIONS",
     "create_default_chat_service",
     "get_default_chat_service_dependencies",
 ]

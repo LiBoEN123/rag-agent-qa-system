@@ -3,7 +3,6 @@
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
-from langgraph.runtime import Runtime
 
 from app.agent.answer import apply_rag_result_to_state, compose_final_answer
 from app.agent.framework_agent import (
@@ -11,13 +10,10 @@ from app.agent.framework_agent import (
     framework_metrics,
 )
 from app.agent.guardrails import AgentStopReason
-from app.agent.executor import execute_plan
-from app.agent.planner import build_plan_from_decision
 from app.agent.router import route_agent_action
 from app.agent.runtime import (
     append_llm_usage_trace,
     build_decide_trace,
-    build_plan_trace,
     build_v2_result,
     maybe_save_agent_trace,
     normalize_llm_call_count,
@@ -26,7 +22,6 @@ from app.agent.state import AgentState, get_effective_question
 from app.config import Settings
 from app.graph.state import AgentGraphState
 from app.rag.graph import run_rag_subgraph
-from app.tools.context import ToolInvocationContext
 
 
 def _safe_decision(decision: object) -> dict[str, Any]:
@@ -81,10 +76,44 @@ def initialize_agent_state_node(state: AgentGraphState) -> dict[str, Any]:
         ),
         top_k=state.get("top_k", Settings.TOP_K),
         decompose_top_k=state.get("decompose_top_k", Settings.DECOMPOSE_TOP_K),
-        max_steps=Settings.AGENT_MAX_STEPS,
         router_llm_used=router_llm_used,
     )
     agent_state.tool_trace.append(build_decide_trace(decision, router_llm_used))
+    action = str(decision.get("action") or "").strip()
+    if action == "clarify":
+        clarification = (
+            str(decision.get("clarification_question") or "").strip()
+            or str(decision.get("reason") or "").strip()
+            or "问题需要进一步澄清"
+        )
+        agent_state.status = "clarify"
+        agent_state.reason = clarification
+        agent_state.final_answer = clarification
+        agent_state.tool_trace.append(
+            {
+                "step": "clarify",
+                "step_id": 1,
+                "status": "success",
+                "reason": clarification,
+            }
+        )
+    elif action == "direct_answer":
+        agent_state.status = "direct_answer"
+        agent_state.reason = str(
+            decision.get("reason") or "该问题可以直接回答"
+        )
+        agent_state.tool_trace.append(
+            {
+                "step": "direct_answer",
+                "step_id": 1,
+                "status": "success",
+                "reason": agent_state.reason,
+            }
+        )
+    elif action != "agent":
+        safe_action = action[:100] or "<missing>"
+        agent_state.status = "error"
+        agent_state.reason = f"Unsupported route action: {safe_action}"
     return {
         "original_question": original_question,
         "effective_question": effective_question,
@@ -96,7 +125,6 @@ def initialize_agent_state_node(state: AgentGraphState) -> dict[str, Any]:
         "tool_error_count": 0,
         "agent_elapsed_ms": 0,
         "stop_reason": "",
-        "fallback_to_legacy": False,
         "pending_rag_result": {},
         "agent_state": agent_state,
     }
@@ -159,7 +187,7 @@ def adapt_framework_agent_node(state: AgentGraphState) -> dict[str, Any]:
         "framework_events_applied": applied,
         **metrics,
     }
-    if state.get("fallback_to_legacy") or state.get("pending_rag_result"):
+    if state.get("pending_rag_result"):
         return updates
     reason = str(state.get("stop_reason") or "")
     if reason:
@@ -179,32 +207,8 @@ def adapt_framework_agent_node(state: AgentGraphState) -> dict[str, Any]:
     return updates
 
 
-def plan_node(state: AgentGraphState) -> dict[str, AgentState]:
-    """保留 Planner/Executor 兼容快路径。"""
-    agent_state = _require_agent_state(state)
-    agent_state.plan = build_plan_from_decision(
-        decision=_safe_decision(state.get("decision")),
-        question=get_effective_question(agent_state),
-        top_k=state.get("top_k", Settings.TOP_K),
-    )
-    agent_state.tool_trace.append(build_plan_trace(agent_state))
-    return {"agent_state": agent_state}
-
-
-def execute_node(
-    state: AgentGraphState,
-    runtime: Runtime[ToolInvocationContext],
-) -> dict[str, AgentState]:
-    """通过旧 Executor 执行兼容计划。"""
-    return {
-        "agent_state": execute_plan(
-            _require_agent_state(state), context=runtime.context
-        )
-    }
-
-
 def rag_subgraph_node(state: AgentGraphState) -> dict[str, Any]:
-    """消费框架或兼容路径的知识库 observation，复用原 RAG 子图。"""
+    """消费框架路径的知识库 observation，复用原 RAG 子图。"""
     agent_state = _require_agent_state(state)
     applied = apply_framework_events(state, agent_state)
     observation = next(
@@ -261,10 +265,8 @@ def finalize_node(state: AgentGraphState) -> dict[str, Any]:
 __all__ = [
     "adapt_framework_agent_node",
     "compose_node",
-    "execute_node",
     "finalize_node",
     "initialize_agent_state_node",
-    "plan_node",
     "rag_subgraph_node",
     "route_node",
 ]

@@ -23,18 +23,17 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
     calls = {
         "rewrite": 0,
         "route": 0,
-        "rag_ready": 0,
         "langgraph": 0,
         "session_turn": 0,
         "messages": [],
         "metrics": 0,
     }
     decision = {
-        "decision": "use_knowledge_base",
-        "action": "search_knowledge_base",
-        "tool_name": "search_knowledge_base",
-        "tool_args": {"query": "默认问题", "top_k": 5},
-        "reason": "知识库问题",
+        "decision": "use_agent",
+        "action": "agent",
+        "tool_name": "",
+        "tool_args": {},
+        "reason": "交给 Agent",
         "router_source": "rule_based",
         "router_llm_used": False,
     }
@@ -67,10 +66,6 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
         calls["route"] += 1
         return decision
 
-    def rag_status():
-        calls["rag_ready"] += 1
-        return {"ready": True, "message": "OK"}
-
     def langgraph(**kwargs):
         calls["langgraph"] += 1
         assert kwargs["decision"] is decision
@@ -83,7 +78,7 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
             "need_clarification": False,
             "clarification_question": "",
             "reason": "证据充分",
-            "action": "search_knowledge_base",
+            "action": "agent",
             "tool_result_summary": "知识库检索完成，召回 1 个 chunk",
             "tool_trace": [
                 {
@@ -117,7 +112,6 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
         get_history=lambda session_id: [],
         rewrite_query_with_history=rewrite,
         route_agent_action=route,
-        get_rag_status=rag_status,
         run_agent_langgraph=langgraph,
         append_message=lambda session_id, role, content: calls[
             "messages"
@@ -151,7 +145,6 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
     assert calls == {
         "rewrite": 1,
         "route": 1,
-        "rag_ready": 1,
         "langgraph": 1,
         "session_turn": 1,
         "messages": [

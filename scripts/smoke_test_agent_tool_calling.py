@@ -6,9 +6,9 @@ import json
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent.model import get_agent_chat_model
+from app.agent.framework_tools import build_framework_tools
+from app.agent.model import get_agent_chat_model, get_agent_tool_provider
 from app.tools.context import build_default_tool_context
-from app.tools.langchain_tools import get_langchain_tools
 from app.tools.redaction import redact_sensitive_data
 
 
@@ -43,7 +43,7 @@ def main() -> int:
         raise RuntimeError("回答模型不可用，请先配置 LLM_API_KEY 和模型地址")
 
     context = build_default_tool_context(source="manual_tool_calling_smoke")
-    tools = get_langchain_tools(context=context)
+    tools = build_framework_tools(get_agent_tool_provider(), context=context)
     tool_map = {tool.name: tool for tool in tools}
     print("bound_tool_names:", sorted(tool_map))
     for required_name in ("search_knowledge_base", "simple_calculator"):

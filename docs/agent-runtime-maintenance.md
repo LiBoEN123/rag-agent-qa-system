@@ -10,14 +10,15 @@
 | --- | --- | --- |
 | 1 | `app/services/chat_service.py` | 请求改写、Router、Runtime 和 API 结果收尾如何串联 |
 | 2 | `app/graph/builder.py` | 父图有哪些节点、边和条件出口 |
-| 3 | `app/graph/conditions.py` | legacy、框架 Agent、RAG 与 compose 如何分流 |
+| 3 | `app/graph/conditions.py` | 短路、框架 Agent、RAG 与 compose 如何分流 |
 | 4 | `app/graph/nodes.py` | 父图节点如何适配现有业务状态和最终结果 |
-| 5 | `app/agent/framework_agent.py` | `create_agent`、调用限制 Middleware 和事件转换如何组装 |
-| 6 | `app/agent/framework_middleware.py` | 项目错误分类、预算、循环防护和同批 fail-closed |
-| 7 | `app/agent/framework_tools.py` | 动态 StructuredTool、Registry dispatch 和 RAG handoff |
-| 8 | `app/tools/providers/local.py` | 请求权限如何过滤模型可见 ToolSpec |
-| 9 | `app/tools/registry.py` | 默认 ToolSpec 如何注册、查询和统一分发 |
-| 10 | `app/tools/runtime.py` | 单次工具调用的策略、审计、超时、重试和输出校验 |
+| 5 | `app/agent/framework_agent.py` | `create_agent`、调用限制 Middleware 和事件消费如何组装 |
+| 6 | `app/agent/tool_events.py` | 标准工具结果和治理事件如何转换为 observation/trace |
+| 7 | `app/agent/framework_middleware.py` | 项目错误分类、预算、循环防护和同批 fail-closed |
+| 8 | `app/agent/framework_tools.py` | 动态 StructuredTool、Registry dispatch 和 RAG handoff |
+| 9 | `app/tools/providers/local.py` | 请求权限如何过滤模型可见 ToolSpec |
+| 10 | `app/tools/registry.py` | 默认 ToolSpec 如何注册、查询和统一分发 |
+| 11 | `app/tools/runtime.py` | 单次工具调用的策略、审计、超时、重试和输出校验 |
 
 ## 主调用链
 
@@ -43,7 +44,7 @@ FastAPI
 
 `web_fetch` 与 `web_search` 一样走普通 ToolMessage 路径：Agent 可先搜索，再从搜索结果选择一个公开 URL 抓取正文。HTML 正文通过 Trafilatura 提取；它不进入 RAG、不持久化网页，也不生成本地 references。
 
-`web_pdf_fetch` 同样是普通 ToolMessage 路径，负责已知公开 PDF 的有限页范围。HTML 与 PDF 共用 `app/tools/web_download.py` 中的 requests-hardened 下载入口；PDF 使用已有 pypdf 提取带 `[Page N]` 边界的文本。它不进入本地 RAG、不持久化 PDF，也不生成本地 references。模型误用 `web_fetch` 读取 PDF 时，可根据内容类型错误 ToolMessage 在同一 `create_agent` 循环中改用 `web_pdf_fetch`，不需要 Router、Planner、Executor 或 Graph 特判。
+`web_pdf_fetch` 同样是普通 ToolMessage 路径，负责已知公开 PDF 的有限页范围。HTML 与 PDF 共用 `app/tools/web_download.py` 中的 requests-hardened 下载入口；PDF 使用已有 pypdf 提取带 `[Page N]` 边界的文本。它不进入本地 RAG、不持久化 PDF，也不生成本地 references。模型误用 `web_fetch` 读取 PDF 时，可根据内容类型错误 ToolMessage 在同一 `create_agent` 循环中改用 `web_pdf_fetch`，不需要 Router 或父图特判。
 
 ## 当前图
 
@@ -60,8 +61,6 @@ graph TD;
 	route(route)
 	initialize(initialize)
 	adapt_framework(adapt_framework)
-	plan(plan)
-	execute(execute)
 	rag_subgraph(rag_subgraph)
 	compose(compose)
 	finalize(finalize)
@@ -69,15 +68,11 @@ graph TD;
 	__start__ -.-> initialize;
 	__start__ -.-> route;
 	adapt_framework -.-> compose;
-	adapt_framework -. &nbsp;legacy_plan&nbsp; .-> plan;
 	adapt_framework -.-> rag_subgraph;
 	compose --> finalize;
-	execute -.-> compose;
-	execute -.-> rag_subgraph;
 	framework_agent\3aProjectToolGovernanceMiddleware\2eafter_agent --> adapt_framework;
+	initialize -.-> compose;
 	initialize -.-> framework_agent\3a__start__;
-	initialize -. &nbsp;legacy_plan&nbsp; .-> plan;
-	plan --> execute;
 	rag_subgraph --> finalize;
 	route --> initialize;
 	finalize --> __end__;
@@ -117,7 +112,8 @@ graph TD;
 | `app/graph/builder.py` | 声明父图节点和边 |
 | `app/graph/conditions.py` | 声明父图无副作用分支条件 |
 | `app/graph/nodes.py` | 适配父图业务节点和最终结果 |
-| `app/agent/framework_agent.py` | 组装 `create_agent`；转换框架事件 |
+| `app/agent/framework_agent.py` | 组装 `create_agent`；消费框架事件 |
+| `app/agent/tool_events.py` | 将工具结果转换为 observation 和兼容 trace |
 | `app/agent/framework_middleware.py` | 执行项目特有 Agent 治理 |
 | `app/agent/framework_tools.py` | 适配动态工具；处理 RAG handoff |
 | `app/tools/providers/local.py` | 按请求 `required_permissions` 过滤模型可见工具 |
@@ -165,7 +161,10 @@ Provider 的模型可见性层只复用 `has_permission()` 检查全部 `ToolSpe
 | 为什么 Web Fetch 没有 RAG references | `web_fetch` 是普通工具路径，不进入本地 RAG |
 | 为什么 Web PDF 没有 RAG references | `web_pdf_fetch` 是普通工具路径，不写入本地知识库 |
 | 工具可见但为什么执行被拒绝 | `app/tools/policy.py`、`app/tools/runtime.py` |
+| 工具 trace 为什么这样生成 | `app/agent/tool_events.py` |
 | ToolMessage 为什么异常 | `app/agent/framework_middleware.py`、`app/agent/framework_tools.py` |
+| 模型失败为什么没有回退 | `app/agent/framework_middleware.py`、`adapt_framework_agent_node` |
+| 知识库为什么进入 RAG | `Command.PARENT`、`rag_subgraph_node` |
 | 知识库为什么没有引用 | `app/rag/graph/`、`app/rag/citations.py` |
 | API 为什么返回某状态 | `app/services/chat_service.py`、`app/agent/runtime.py` |
 | 图为什么创建 Checkpoint 文件 | `app/graph/checkpointing.py`、`app/graph/runtime.py` |
@@ -179,7 +178,7 @@ Provider 的模型可见性层只复用 `has_permission()` 检查全部 `ToolSpe
 4. 注册到相应 `ToolRegistry`。
 5. 增加工具行为、权限和错误结果测试。
 
-正常情况下不需要修改 Router、Planner、Executor、Parent Graph、`create_agent` 或 Middleware。新增权限要求后应分别测试无权 Context 不可见、有权 Context 可见，以及直接 dispatch 的 Runtime 最终拒绝。模型可见 Schema 来自 StructuredTool/Pydantic，检查脚本不会维护第二份参数 Schema。
+正常情况下不需要修改 Router、Parent Graph、`create_agent` 或 Middleware。新增权限要求后应分别测试无权 Context 不可见、有权 Context 可见，以及直接 dispatch 的 Runtime 最终拒绝。模型可见 Schema 来自 StructuredTool/Pydantic，检查脚本不会维护第二份参数 Schema。
 
 ## 不应该做什么
 

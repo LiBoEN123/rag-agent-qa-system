@@ -209,17 +209,6 @@ class ToolSpec:
                 f"风险等级 {self.risk_level.value!r} 必须要求人工审批",
             )
 
-    def to_router_spec(self) -> dict[str, Any]:
-        """返回 Router 选择工具所需的安全描述。"""
-        return {
-            "name": self.name,
-            "version": self.version,
-            "description": self.description,
-            "args_schema": self.args_schema,
-            "risk_level": self.risk_level.value,
-            "requires_approval": self.requires_approval,
-        }
-
     def to_contract_dict(self) -> dict[str, Any]:
         """返回不含运行时对象且可 JSON 序列化的完整契约。"""
         return {
