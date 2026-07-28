@@ -47,6 +47,18 @@ EXPECTED_PARENT_NODES = {
     "route", "initialize", "framework_agent", "adapt_framework",
     "rag_subgraph", "compose", "finalize",
 }
+EXPECTED_PARENT_EDGES = {
+    ("__start__", "route", False),
+    ("route", "initialize", False),
+    ("initialize", "framework_agent", True),
+    ("initialize", "compose", True),
+    ("framework_agent", "adapt_framework", False),
+    ("adapt_framework", "rag_subgraph", True),
+    ("adapt_framework", "compose", True),
+    ("rag_subgraph", "finalize", False),
+    ("compose", "finalize", False),
+    ("finalize", "__end__", False),
+}
 FORBIDDEN_PARENT_NODES = {
     "plan",
     "execute",
@@ -235,8 +247,14 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
     }
 
     parent_nodes = set(parent_data["nodes"])
+    parent_edges = {
+        (edge["source"], edge["target"], edge["conditional"])
+        for edge in parent_data["edges"]
+    }
     framework_nodes = set(framework_data["nodes"])
     missing_parent = sorted(EXPECTED_PARENT_NODES - parent_nodes)
+    missing_parent_edges = sorted(EXPECTED_PARENT_EDGES - parent_edges)
+    unexpected_parent_edges = sorted(parent_edges - EXPECTED_PARENT_EDGES)
     forbidden_parent = sorted(FORBIDDEN_PARENT_NODES & parent_nodes)
     missing_framework = sorted({"model", "tools"} - framework_nodes)
     missing_limits = [
@@ -389,6 +407,14 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
         _check("dependency_versions", not missing_packages, ", ".join(missing_packages)),
         _check("parent_required_nodes", not missing_parent, ", ".join(missing_parent)),
         _check("parent_forbidden_nodes", not forbidden_parent, ", ".join(forbidden_parent)),
+        _check(
+            "parent_graph_edges",
+            not missing_parent_edges and not unexpected_parent_edges,
+            (
+                f"missing={missing_parent_edges}; "
+                f"unexpected={unexpected_parent_edges}"
+            ),
+        ),
         _check("framework_core_nodes", not missing_framework, ", ".join(missing_framework)),
         _check("framework_call_limits", not missing_limits, ", ".join(missing_limits)),
         _check("parent_xray_subgraph", xray_has_agent, "framework model/tools visible"),

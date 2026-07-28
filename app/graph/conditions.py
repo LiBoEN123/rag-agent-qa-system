@@ -5,11 +5,6 @@ from typing import Literal
 from app.graph.state import AgentGraphState
 
 
-def route_condition(state: AgentGraphState) -> Literal["route", "initialize"]:
-    """仅在调用方没有提供路由决策时执行 Router。"""
-    return "route" if state.get("decision") is None else "initialize"
-
-
 def after_initialize_condition(
     state: AgentGraphState,
 ) -> Literal["framework_agent", "compose"]:
@@ -34,5 +29,4 @@ def after_framework_condition(
 __all__ = [
     "after_framework_condition",
     "after_initialize_condition",
-    "route_condition",
 ]

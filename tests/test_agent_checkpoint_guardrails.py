@@ -186,7 +186,6 @@ def test_sqlite_serializes_success_correction_repeat_and_budget_stops(
                 effective_question=f"checkpoint {label}",
                 top_k=5,
                 decompose_top_k=10,
-                decision={"action": "agent", "router_llm_used": False},
                 trace_id=f"trace-checkpoint-{label}",
                 session_id="session-checkpoint",
             )

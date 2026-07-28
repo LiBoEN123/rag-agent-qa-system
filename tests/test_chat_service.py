@@ -43,6 +43,12 @@ def build_runtime_result(status="OK", answer="测试回答", **overrides):
         "tool_result_summary": "测试摘要",
         "tool_trace": [
             {
+                "step": "decide",
+                "decision_type": "direct_answer",
+                "action": "direct_answer",
+                "route_cost_ms": 7,
+            },
+            {
                 "step": "llm_usage",
                 "router_llm_used": False,
                 "decompose_llm_used": False,
@@ -64,7 +70,6 @@ def build_service(
     *,
     history=None,
     rewrite_result=None,
-    decision=None,
     runtime_result=None,
     append_error=False,
     metrics_error=False,
@@ -72,7 +77,6 @@ def build_service(
     calls = {
         "history": [],
         "rewrite": [],
-        "route": [],
         "langgraph": [],
         "bad_cases": [],
         "messages": [],
@@ -90,15 +94,6 @@ def build_service(
         "reason": "no rewrite",
         "rewrite_llm_used": False,
         "error": "",
-    }
-    decision = decision or {
-        "decision": "direct_answer",
-        "action": "direct_answer",
-        "tool_name": "",
-        "tool_args": {},
-        "reason": "直接回答",
-        "router_source": "rule_based",
-        "router_llm_used": False,
     }
     runtime_result = (
         build_runtime_result()
@@ -120,12 +115,6 @@ def build_service(
             result.get("rewritten_question") or question
         )
         return result
-
-    def fake_route(question, top_k, trace_id=""):
-        calls["route"].append(
-            {"question": question, "top_k": top_k, "trace_id": trace_id}
-        )
-        return decision
 
     def run_runtime(label, kwargs):
         calls[label].append(kwargs)
@@ -149,7 +138,6 @@ def build_service(
         settings=settings,
         get_history=fake_get_history,
         rewrite_query_with_history=fake_rewrite,
-        route_agent_action=fake_route,
         run_agent_langgraph=lambda **kwargs: run_runtime("langgraph", kwargs),
         build_query_rewrite_trace=build_query_rewrite_trace,
         attach_query_rewrite_trace=attach_query_rewrite_trace,
@@ -202,7 +190,6 @@ def test_empty_question_skips_business_dependencies_and_writes_metrics_once():
     assert outcome.result["need_clarification"] is True
     assert calls["history"] == []
     assert calls["rewrite"] == []
-    assert calls["route"] == []
     assert calls["langgraph"] == []
     assert calls["messages"] == []
     assert len(calls["metrics"]) == 1
@@ -230,14 +217,13 @@ def test_rewrite_routes_and_runs_once_with_original_question_preserved():
 
     assert calls["history"] == ["session-1"]
     assert len(calls["rewrite"]) == 1
-    assert calls["route"][0]["question"] == rewritten_question
     assert "question" not in calls["langgraph"][0]
     assert calls["langgraph"][0]["original_question"] == "原始问题"
     assert (
         calls["langgraph"][0]["effective_question"]
         == rewritten_question
     )
-    assert calls["langgraph"][0]["decision"]["action"] == "direct_answer"
+    assert "decision" not in calls["langgraph"][0]
     assert outcome.question == "原始问题"
     assert outcome.http_status == 200
     assert outcome.code == 0
@@ -252,6 +238,7 @@ def test_rewrite_routes_and_runs_once_with_original_question_preserved():
     ]
     assert len(calls["metrics"]) == 1
     assert calls["metrics"][0]["llm_call_count"] == 1
+    assert calls["metrics"][0]["route_cost_ms"] == 7
 
 
 def test_question_without_rewrite_is_passed_through_without_extra_llm_count():
@@ -259,7 +246,6 @@ def test_question_without_rewrite_is_passed_through_without_extra_llm_count():
 
     service.handle(make_request())
 
-    assert calls["route"][0]["question"] == "原始问题"
     assert "question" not in calls["langgraph"][0]
     assert calls["langgraph"][0]["original_question"] == "原始问题"
     assert calls["langgraph"][0]["effective_question"] == "原始问题"
@@ -267,39 +253,21 @@ def test_question_without_rewrite_is_passed_through_without_extra_llm_count():
 
 
 def test_agent_tool_task_has_no_router_level_rag_preflight():
-    decision = {
-        "decision": "use_agent",
-        "action": "agent",
-        "tool_name": "",
-        "tool_args": {},
-        "reason": "对比两份文档",
-        "router_source": "rule_based",
-        "router_llm_used": False,
-    }
     service, calls = build_service(
-        decision=decision,
         runtime_result=build_runtime_result(action="agent"),
     )
 
     outcome = service.handle(make_request())
 
     assert len(calls["langgraph"]) == 1
-    assert calls["langgraph"][0]["decision"] is decision
-    assert calls["langgraph"][0]["decision"]["action"] == "agent"
+    assert "decision" not in calls["langgraph"][0]
     assert outcome.http_status == 200
 
 
 @pytest.mark.parametrize("action", ["agent", "direct_answer", "clarify"])
 def test_current_route_actions_keep_rag_ready_metric_at_zero(action):
     service, calls = build_service(
-        decision={
-            "decision": "use_agent",
-            "action": action,
-            "tool_name": "",
-            "reason": "测试",
-            "router_source": "rule_based",
-            "router_llm_used": False,
-        },
+        runtime_result=build_runtime_result(action=action),
     )
 
     outcome = service.handle(make_request())
@@ -323,7 +291,7 @@ def test_langgraph_runtime_receives_complete_existing_protocol_once():
     assert kwargs["decompose_top_k"] == 8
     assert kwargs["trace_id"] == "trace-1"
     assert kwargs["session_id"] == "session-1"
-    assert kwargs["decision"]["action"] == "direct_answer"
+    assert "decision" not in kwargs
     assert kwargs["bad_case"]["question"] == "原始问题"
     assert callable(kwargs["write_bad_cases"])
     assert {
@@ -426,30 +394,19 @@ def test_known_runtime_statuses_reuse_existing_response_mapping(
 
 
 def test_langgraph_internal_error_result_maps_to_http_500():
-    decision = {
-        "decision": "direct_answer",
-        "action": "direct_answer",
-        "tool_name": "",
-        "tool_args": {},
-        "reason": "直接回答",
-        "router_source": "rule_based",
-        "router_llm_used": False,
-    }
     result = build_internal_error_result(
         RuntimeError("sensitive runtime failure"),
-        decision,
         runtime_label="LangGraph Agent",
         trace_step="agent_langgraph_error",
     )
     service, calls = build_service(
-        decision=decision,
         runtime_result=result,
     )
 
     outcome = service.handle(make_request())
 
     assert len(calls["langgraph"]) == 1
-    assert calls["langgraph"][0]["decision"] is decision
+    assert "decision" not in calls["langgraph"][0]
     assert outcome.http_status == 500
     assert outcome.code == "INTERNAL_ERROR"
     assert outcome.response_status == "error"

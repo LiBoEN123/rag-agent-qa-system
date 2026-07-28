@@ -11,6 +11,7 @@ from app.api import lifecycle
 from app.config import Settings
 from app.graph import builder as graph_builder
 from app.graph import checkpointing
+from app.graph import nodes as graph_nodes
 from app.graph import runtime as graph_runtime
 from app.tools.context import ToolInvocationContext
 
@@ -27,20 +28,19 @@ def isolate_graph_runtime(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(Settings, "ENABLE_AGENT_TRACE_STORE", False)
     monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: None)
+    monkeypatch.setattr(
+        graph_nodes,
+        "route_agent_action",
+        lambda question: {
+            "decision": "direct_answer",
+            "action": "direct_answer",
+            "reason": question.removeprefix("问题-"),
+            "router_source": "rule_based",
+            "router_confidence": 1.0,
+        },
+    )
     yield
     graph_builder.reset_agent_graph_runtime()
-
-
-def _decision(label: str = "能力说明") -> dict:
-    return {
-        "decision": "direct_answer",
-        "action": "direct_answer",
-        "tool_name": "",
-        "tool_args": {},
-        "reason": label,
-        "router_source": "rule_based",
-        "router_llm_used": False,
-    }
 
 
 def _run(
@@ -58,7 +58,6 @@ def _run(
         effective_question=resolved_effective_question,
         top_k=5,
         decompose_top_k=10,
-        decision=_decision(trace_id),
         trace_id=trace_id,
         session_id=session_id,
     )

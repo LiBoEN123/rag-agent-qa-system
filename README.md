@@ -10,7 +10,7 @@
 - 混合检索：BM25 负责关键词精确匹配，SentenceTransformer Embedding 负责语义召回，提升中文问答召回稳定性。
 - CrossEncoder rerank：对候选 chunk 做二阶段重排，缓解初召回排序不准的问题。
 - ChromaDB 持久化：chunk 文本、metadata 和 embedding 持久化保存，服务重启可复用索引缓存。
-- 确定性入口 Router：只处理空问题、少量稳定直答和明确澄清；其他自然语言请求统一进入 `agent`，具体工具由 Agent Model 根据当前请求可见的动态 Tool Schema 选择。
+- 图内确定性入口 Router：由 LangGraph 父图在每次 Runtime 调用时执行一次，只处理空问题、少量稳定直答和明确澄清；其他自然语言请求统一进入 `agent`，具体工具由 Agent Model 根据当前请求可见的动态 Tool Schema 选择。
 - 框架原生 Agent Runtime：LangGraph 父图嵌入 LangChain `create_agent` 子图，由框架管理模型—工具循环、参数校验、ToolMessage 和调用上限。
 - 权限感知的 Registry-driven 工具发现：Provider 按请求权限只暴露满足 `required_permissions` 的工具，Middleware 将其注入模型和执行层；工具仍经 `StructuredTool → ToolRegistry → ToolRuntime` 执行。
 - Agent 循环防护：工具错误总数、连续相同调用、连续相同错误和模型/工具累计耗时均有独立预算；终止错误对同批后续调用 fail-closed，并补齐关联 ToolMessage。
@@ -29,10 +29,9 @@ flowchart TD
     API --> Service[ChatService]
     Service --> History[(SQLite Session History)]
     History --> Rewrite[Query Rewrite]
-    Rewrite --> Router[Agent Router]
-    Router --> Initialize
 
     subgraph AgentGraph[LangGraph Agent Graph]
+        Router[route<br/>确定性 Router]
         Initialize[initialize<br/>创建 AgentState 和 HumanMessage]
         FrameworkAgent[framework_agent<br/>LangChain create_agent 子图]
         FrameworkAdapt[adapt_framework<br/>父图状态薄适配]
@@ -40,6 +39,7 @@ flowchart TD
         Composer[Answer Composer]
         Finalize[Finalize / build_v2_result]
 
+        Router --> Initialize
         Initialize -->|agent| FrameworkAgent
         Initialize -->|direct_answer / clarify / 不支持动作| Composer
 
@@ -49,6 +49,8 @@ flowchart TD
 
         Composer --> Finalize
     end
+
+    Rewrite --> Router
 
     subgraph ToolRuntime[受治理工具执行链]
         Provider[LocalToolProvider]
@@ -126,7 +128,7 @@ flowchart TD
 | 答案生成 | 调用 OpenAI-compatible Chat Completions，要求模型返回 JSON |
 | 引用绑定 | 将 `Reference N` 映射回真实文件、`chunk_id`、`snippet` 和分数 |
 | Agent Runtime | LangGraph 父图嵌入唯一的 LangChain `create_agent` 子图；框架负责模型—工具循环、参数校验、ToolMessage 和模型/工具调用上限 |
-| Agent 路由 | 正常自然语言请求默认输出 `agent`；`direct_answer` / `clarify` 在 initialize + compose 中安全短路，其他旧 action fail-closed |
+| Agent 路由 | 父图 `route` 是唯一 Router 所有者；所有 Runtime 调用先路由再 initialize。正常请求输出 `agent`，`direct_answer` / `clarify` 在 initialize + compose 中安全短路 |
 | 工具发现 | `ToolProvider` 按请求权限过滤模型可见 ToolSpec，`RegistryToolsMiddleware` 对模型绑定和实际执行使用同一组请求级 StructuredTool；普通新工具无需修改核心编排 |
 | Agent Guardrail | 工具错误总数、连续相同调用/错误、累计模型与工具耗时预算、同批 fail-closed、无悬空 ToolMessage |
 | 工具调用 | Registry 注册八个生产工具：`search_knowledge_base`、`web_search`、`web_fetch`、`web_pdf_fetch`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text`；默认可见数量由请求权限决定 |
@@ -142,7 +144,7 @@ flowchart TD
 3. 文档切分：Markdown 先按标题层级切分并保留标题路径，普通文本按段落和标点递归切分。
 4. 建立索引：构建 BM25 关键词索引，并使用 SentenceTransformer 生成 embedding；向量、chunk 和 metadata 持久化到 ChromaDB。
 5. 多轮改写：`/chat` 如果传入 `session_id`，会读取最近历史；短追问或指代问题会先改写成独立问题。
-6. Agent 执行：改写后的普通问题由粗粒度 Router 统一送入 `agent`，Agent Model 再根据 Provider 动态提供的工具描述、参数 Schema、AIMessage 与 ToolMessage 迭代选择工具或生成最终回答。`direct_answer` 和 `clarify` 不调用 Agent Model；其他旧 action 明确失败，不会回退知识库。Agent 选择知识库检索后仍统一进入专用 RAG 子图。
+6. Agent 执行：ChatService 把改写后的问题直接交给 LangGraph Runtime；父图入口 `route` 执行一次粗粒度 Router，再进入 initialize。普通问题由 Agent Model 根据 Provider 动态提供的工具描述、参数 Schema、AIMessage 与 ToolMessage 迭代选择工具或生成最终回答。`direct_answer` 和 `clarify` 不调用 Agent Model；外部旧 decision 会被图内 Router 覆盖。Agent 选择知识库检索后仍统一进入专用 RAG 子图。
 7. 查询拆分：启用 `ENABLE_QUERY_DECOMPOSE` 后，复杂问题可由拆分模型生成子问题。
 8. 混合召回：查询时同时执行 BM25 和 embedding 召回，合并候选 chunk。
 9. 二阶段重排：使用 CrossEncoder reranker 对候选证据重新排序。
@@ -184,7 +186,7 @@ flowchart TD
 
 ## Chat 应用服务层
 
-`/chat` 控制器现在只负责读取 HTTP 请求上下文、调用 `ChatService`、设置状态码，并使用现有 Response Builder 构造响应。Query Rewrite、Router、Runtime 调用、metrics 和 session 存储由 `app/services/chat_service.py` 统一编排，因此聊天业务可以脱离 FastAPI 进行单元测试。
+`/chat` 控制器现在只负责读取 HTTP 请求上下文、调用 `ChatService`、设置状态码，并使用现有 Response Builder 构造响应。Query Rewrite、Runtime 调用、metrics 和 session 存储由 `app/services/chat_service.py` 编排；Router 由 LangGraph 父图的 `route_node` 唯一持有，因此聊天业务仍可脱离 FastAPI 测试且不会形成第二个路由入口。
 
 API 请求与响应 Schema、HTTP 状态语义和 trace 响应头保持不变；ChatService 固定调用 LangGraph 主图，知识库回答统一进入 RAG 子图。
 
@@ -274,12 +276,12 @@ python scripts/smoke_test_web_pdf_fetch.py \
 
 项目当前唯一 Agent Runtime 是 LangGraph 父图中的 LangChain `create_agent` 子图。旧 `agent_model`、`governed_tools` 和 `limit_handler` 自定义循环已经删除，不提供双实现或运行时回滚开关；需要回滚版本时使用 Git commit、tag 或 release。
 
-当前请求链路为 `FastAPI → ChatService → Query Rewrite → Router → LangGraph Agent Graph → RAG Subgraph / 迭代工具循环 → Finalize → Session / Metrics → API Response`。ChatService 会把已经生成的 Router decision 传给主图，因此 Query Rewrite、Router 和 LangGraph Runtime 在单次请求中各执行一次。正常 Router 不枚举工具意图，也不调用 Router LLM；它把普通请求交给能看到动态工具 Schema 的 Agent Model。
+当前请求链路为 `FastAPI → ChatService → Session History / Query Rewrite → run_agent_langgraph → route → initialize → framework_agent / compose → Finalize → Session / Metrics → API Response`。ChatService 不调用 Router，也不生成或传入 decision；正常 `/chat`、离线评测和其他 Runtime 调用方都共享父图入口的同一个 Router。Router 不枚举工具意图，也不调用模型；它把普通请求交给能看到动态工具 Schema 的 Agent Model。
 
 主图的核心结构为：
 
 ```text
-START → route（可选）→ initialize
+START → route → initialize
   ├─ direct_answer / clarify / 不支持动作 → compose → finalize
   └─ agent → framework_agent（create_agent 内部 model ↔ tools）
        → adapt_framework
@@ -291,7 +293,7 @@ START → route（可选）→ initialize
 
 `agent` 路径的模型不可用或调用失败会写入 `agent_model_call_failed` 治理事件并受控返回 `MODEL_ERROR`，不会进入第二套执行架构。成功的知识库检索继续进入原 RAG 子图，以保留问题拆分、重排、证据门控、拒答、引用绑定和验证能力。
 
-旧手写 Agent 编排入口和 Planner/Executor 兼容链已经删除。父图只保留 initialize、框架 Agent 适配、RAG、compose 和 finalize；`AgentState`、Router 与 Query Rewrite 继续承担 API 兼容状态和确定性入口职责。完整 RAG 问答不再提供独立顺序式入口，脚本和测试统一调用当前 LangGraph Runtime。
+旧手写 Agent 编排入口和 Planner/Executor 兼容链已经删除。父图只保留 route、initialize、框架 Agent 适配、RAG、compose 和 finalize；`route_node` 独占 Router 调用和计时，`AgentState` 与 Query Rewrite 继续承担业务状态和问题语义。完整 RAG 问答不再提供独立顺序式入口，脚本和测试统一调用当前 LangGraph Runtime。
 
 ### LangGraph RAG 子图
 
@@ -594,7 +596,7 @@ curl -X POST "http://127.0.0.1:8000/chat" \
 | `data.action` | Agent 选择的动作 |
 | `data.tool_result_summary` | 工具或 RAG 路径摘要 |
 | `data.tool_trace` | Query Rewrite、路由、工具调用、检索命中、最终状态等过程信息 |
-| `data.router_llm_used` | 本次请求是否调用 Router LLM |
+| `data.router_llm_used` | 兼容字段；确定性 Router 不调用模型，因此固定为 `false` |
 | `data.decompose_llm_used` | 本次请求是否调用问题拆分 LLM |
 | `data.answer_llm_used` | 本次请求是否调用最终回答 LLM |
 | `data.llm_call_count` | 本次请求累计 LLM 调用次数 |
@@ -620,7 +622,7 @@ curl -X POST "http://127.0.0.1:8000/chat" \
 
 ### `/decide`
 
-`/decide` 用于观察 Agent Router 对问题的路由结果。
+`/decide` 用于观察父图 `route_node` 对问题产生的确定性路由结果；它复用同一 Router 所有者，但不执行后续 Agent、工具或 RAG。
 
 ```json
 {
@@ -657,7 +659,7 @@ GET /metrics-summary?limit=20
 | --- | --- |
 | `agent` | 普通问题统一进入 LangChain `create_agent` |
 | `direct_answer` | 由 Answer Composer 生成系统能力说明，不把 Router 的内部 reason 直接暴露为用户回答 |
-| `clarify` | 问题过短、为空或指代不明时追问 |
+| `clarify` | 明确指代不明时追问；完全空问题仍由 ChatService 在进入 Runtime 前返回兼容的 400 响应 |
 
 如果 `/chat` 传入 `session_id`，Query Rewrite 会在 Agent Router 之前执行；Router 看到的是改写后的有效问题，响应中的 `data.question` 仍保留原始输入，改写细节记录在 `data.tool_trace` 的 `query_rewrite` step 中。
 

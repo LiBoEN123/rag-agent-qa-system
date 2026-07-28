@@ -5,11 +5,7 @@ import importlib.util
 import pytest
 
 import app.agent as agent_package
-from app.agent.router import (
-    add_router_metadata,
-    route_agent_action,
-    route_agent_action_rule_based,
-)
+from app.agent.router import route_agent_action
 from app.graph import nodes as graph_nodes
 from app.services.chat_service import get_default_chat_service_dependencies
 
@@ -27,6 +23,8 @@ REMOVED_ROUTER_EXPORTS = (
     "ROUTER_ALLOWED_ACTIONS",
     "ROUTER_ACTION_TO_DECISION",
     "HIGH_CONFIDENCE_RULE_ACTIONS",
+    "add_router_metadata",
+    "route_agent_action_rule_based",
 )
 
 
@@ -50,15 +48,13 @@ def test_agent_package_has_no_business_function_reexports():
 
 
 def test_current_router_surface_remains_importable_from_explicit_module():
-    """当前生产所需 Router 函数继续由明确模块路径提供。"""
+    """当前生产只保留明确模块路径下的最小 Router 函数。"""
     assert callable(route_agent_action)
-    assert callable(route_agent_action_rule_based)
-    assert callable(add_router_metadata)
 
 
-def test_production_entrypoints_share_explicit_router_function():
-    """ChatService 与 Graph 节点继续使用同一个确定性 Router。"""
+def test_only_graph_node_owns_the_router_in_chat_runtime():
+    """ChatService 不再持有 Router，父图 route 节点是唯一所有者。"""
     dependencies = get_default_chat_service_dependencies()
 
-    assert dependencies.route_agent_action is route_agent_action
+    assert not hasattr(dependencies, "route_agent_action")
     assert graph_nodes.route_agent_action is route_agent_action

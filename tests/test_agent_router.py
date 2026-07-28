@@ -1,10 +1,9 @@
+import inspect
+
 import pytest
 from pydantic import BaseModel
 
-from app.agent.router import (
-    route_agent_action,
-    route_agent_action_rule_based,
-)
+from app.agent.router import route_agent_action
 from app.llm import factory as model_factory
 from app.llm.gateway import ModelGateway
 from app.tools.contracts import ToolSpec
@@ -20,17 +19,13 @@ def test_empty_question_returns_clarify_without_router_model(monkeypatch):
     monkeypatch.setattr(ModelGateway, "invoke_text", fail_model_call)
     monkeypatch.setattr(model_factory, "_create_model", fail_model_call)
 
-    decision = route_agent_action(" \n ", 5, trace_id="router-test")
+    decision = route_agent_action(" \n ")
 
     assert decision["decision"] == "clarify"
     assert decision["action"] == "clarify"
-    assert decision["tool_name"] == ""
-    assert decision["tool_args"] == {}
     assert decision["clarification_question"]
     assert decision["router_source"] == "rule_based_guardrail"
     assert decision["router_confidence"] == 1.0
-    assert decision["router_llm_used"] is False
-    assert decision["router_fallback_reason"] == ""
 
 
 @pytest.mark.parametrize(
@@ -39,14 +34,11 @@ def test_empty_question_returns_clarify_without_router_model(monkeypatch):
 )
 def test_capability_questions_return_direct_answer(question):
     """少量稳定的系统能力问题继续走 direct_answer。"""
-    decision = route_agent_action(question, 5)
+    decision = route_agent_action(question)
 
     assert decision["decision"] == "direct_answer"
     assert decision["action"] == "direct_answer"
-    assert decision["tool_name"] == ""
-    assert decision["tool_args"] == {}
     assert decision["router_source"] == "rule_based"
-    assert decision["router_llm_used"] is False
 
 
 @pytest.mark.parametrize(
@@ -55,15 +47,12 @@ def test_capability_questions_return_direct_answer(question):
 )
 def test_ambiguous_references_return_clarify(question):
     """少量明确指代不明的问题继续走 clarify。"""
-    decision = route_agent_action(question, 5)
+    decision = route_agent_action(question)
 
     assert decision["decision"] == "clarify"
     assert decision["action"] == "clarify"
-    assert decision["tool_name"] == ""
-    assert decision["tool_args"] == {}
     assert "具体指" in decision["clarification_question"]
     assert decision["router_source"] == "rule_based"
-    assert decision["router_llm_used"] is False
 
 
 @pytest.mark.parametrize(
@@ -80,16 +69,19 @@ def test_ambiguous_references_return_clarify(question):
 )
 def test_normal_questions_enter_agent_without_concrete_tool_choice(question):
     """普通问题统一进入 Agent，Router 不选择工具或构造参数。"""
-    decision = route_agent_action(question, 5)
+    decision = route_agent_action(question)
 
     assert decision["decision"] == "use_agent"
     assert decision["action"] == "agent"
-    assert decision["tool_name"] == ""
-    assert decision["tool_args"] == {}
     assert decision["router_source"] == "rule_based"
     assert decision["router_confidence"] == 1.0
-    assert decision["router_llm_used"] is False
-    assert decision["router_fallback_reason"] == ""
+    assert set(decision) == {
+        "decision",
+        "action",
+        "reason",
+        "router_source",
+        "router_confidence",
+    }
 
 
 def test_registered_tool_does_not_require_router_change(monkeypatch):
@@ -99,7 +91,7 @@ def test_registered_tool_does_not_require_router_change(monkeypatch):
         value: str = ""
 
     monkeypatch.setattr(tool_registry, "_tools", dict(tool_registry._tools))
-    before = route_agent_action("调用刚注册的新能力处理这段输入", 5)
+    before = route_agent_action("调用刚注册的新能力处理这段输入")
     tool_registry.register(
         ToolSpec(
             name="pr9_test_tool",
@@ -111,22 +103,15 @@ def test_registered_tool_does_not_require_router_change(monkeypatch):
             handler=lambda args, context: {"value": args.get("value", "")},
         )
     )
-    after = route_agent_action("调用刚注册的新能力处理这段输入", 5)
+    after = route_agent_action("调用刚注册的新能力处理这段输入")
 
     assert "pr9_test_tool" in tool_registry.names()
     assert after == before
     assert after["action"] == "agent"
-    assert after["tool_name"] == ""
 
 
-def test_rule_route_keeps_current_decision_shape():
-    """规则函数继续返回供 Graph/API 兼容层消费的现有字段。"""
-    decision = route_agent_action_rule_based("普通问题", 3)
+def test_router_signature_contains_only_question():
+    """Router 不接受工具参数、trace 元数据或外部 decision。"""
+    signature = inspect.signature(route_agent_action)
 
-    assert decision == {
-        "decision": "use_agent",
-        "action": "agent",
-        "tool_name": "",
-        "tool_args": {},
-        "reason": "交给 Agent 根据当前请求可见的动态工具定义决策",
-    }
+    assert list(signature.parameters) == ["question"]

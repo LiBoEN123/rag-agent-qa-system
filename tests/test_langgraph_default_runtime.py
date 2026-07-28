@@ -22,20 +22,10 @@ class _Request:
 def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
     calls = {
         "rewrite": 0,
-        "route": 0,
         "langgraph": 0,
         "session_turn": 0,
         "messages": [],
         "metrics": 0,
-    }
-    decision = {
-        "decision": "use_agent",
-        "action": "agent",
-        "tool_name": "",
-        "tool_args": {},
-        "reason": "交给 Agent",
-        "router_source": "rule_based",
-        "router_llm_used": False,
     }
     reference = {
         "reference_id": "Reference 1",
@@ -62,13 +52,9 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
             "error": "",
         }
 
-    def route(question, top_k, trace_id=""):
-        calls["route"] += 1
-        return decision
-
     def langgraph(**kwargs):
         calls["langgraph"] += 1
-        assert kwargs["decision"] is decision
+        assert "decision" not in kwargs
         return {
             "status": "OK",
             "answer": "LangGraph 默认回答",
@@ -111,7 +97,6 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
         get_default_chat_service_dependencies(),
         get_history=lambda session_id: [],
         rewrite_query_with_history=rewrite,
-        route_agent_action=route,
         run_agent_langgraph=langgraph,
         append_message=lambda session_id, role, content: calls[
             "messages"
@@ -144,7 +129,6 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
     assert response.status_code == 200
     assert calls == {
         "rewrite": 1,
-        "route": 1,
         "langgraph": 1,
         "session_turn": 1,
         "messages": [

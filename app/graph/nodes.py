@@ -1,5 +1,6 @@
 """LangGraph 父图业务节点与框架 Agent 薄适配。"""
 
+import time
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -25,7 +26,7 @@ from app.rag.graph import run_rag_subgraph
 
 
 def _safe_decision(decision: object) -> dict[str, Any]:
-    """将外部路由决策安全规整为字典。"""
+    """将 route 节点写入的内部路由决策安全规整为字典。"""
     return decision if isinstance(decision, dict) else {}
 
 
@@ -46,14 +47,16 @@ def _resolve_state_questions(state: AgentGraphState) -> tuple[str, str]:
 
 
 def route_node(state: AgentGraphState) -> dict[str, Any]:
-    """调用现有 Router，并把决策写回父图。"""
+    """执行并计时唯一的确定性 Router，把结果写回父图。"""
     _, effective_question = _resolve_state_questions(state)
+    started = time.perf_counter()
+    decision = route_agent_action(effective_question)
     return {
-        "decision": route_agent_action(
-            effective_question,
-            state.get("top_k", Settings.TOP_K),
-            trace_id=state.get("trace_id", ""),
-        )
+        "decision": decision,
+        "route_cost_ms": max(
+            0,
+            int((time.perf_counter() - started) * 1000),
+        ),
     }
 
 
@@ -61,12 +64,6 @@ def initialize_agent_state_node(state: AgentGraphState) -> dict[str, Any]:
     """创建 API 兼容业务状态和框架消息入口。"""
     original_question, effective_question = _resolve_state_questions(state)
     decision = _safe_decision(state.get("decision"))
-    router_llm_used = bool(
-        decision.get(
-            "router_llm_used",
-            decision.get("router_source") in {"llm", "rule_based_fallback"},
-        )
-    )
     agent_state = AgentState(
         trace_id=state.get("trace_id", ""),
         session_id=state.get("session_id"),
@@ -76,9 +73,13 @@ def initialize_agent_state_node(state: AgentGraphState) -> dict[str, Any]:
         ),
         top_k=state.get("top_k", Settings.TOP_K),
         decompose_top_k=state.get("decompose_top_k", Settings.DECOMPOSE_TOP_K),
-        router_llm_used=router_llm_used,
     )
-    agent_state.tool_trace.append(build_decide_trace(decision, router_llm_used))
+    agent_state.tool_trace.append(
+        build_decide_trace(
+            decision,
+            route_cost_ms=state.get("route_cost_ms", 0),
+        )
+    )
     action = str(decision.get("action") or "").strip()
     if action == "clarify":
         clarification = (

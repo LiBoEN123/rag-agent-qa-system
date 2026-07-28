@@ -9,7 +9,6 @@ from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_tools
-from app.agent.router import route_agent_action
 from app.api.responses import CHAT_RESULT_RESPONSE_MAP
 from app.graph import builder as graph_builder
 from app.graph import nodes as graph_nodes
@@ -186,6 +185,7 @@ def test_chat_service_runs_real_langgraph_provider_and_runtime(monkeypatch):
     handler_contexts: list[ToolInvocationContext] = []
     handler_args: list[dict] = []
     runtime_calls: list[tuple[str, ToolInvocationContext]] = []
+    routed_questions: list[str] = []
 
     def handler(args, context):
         handler_args.append(dict(args))
@@ -211,6 +211,13 @@ def test_chat_service_runs_real_langgraph_provider_and_runtime(monkeypatch):
         return original_execute(self, tool_name, tool_args, context=context)
 
     monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", recording_execute)
+    original_route = graph_nodes.route_agent_action
+
+    def recording_route(question):
+        routed_questions.append(question)
+        return original_route(question)
+
+    monkeypatch.setattr(graph_nodes, "route_agent_action", recording_route)
     monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
@@ -248,12 +255,12 @@ def test_chat_service_runs_real_langgraph_provider_and_runtime(monkeypatch):
     def rewrite(question, history, trace_id=""):
         return {
             "original_question": question,
-            "rewritten_question": question,
-            "history_used": False,
-            "rewritten": False,
-            "need_check": False,
-            "need_rewrite": False,
-            "reason": "integration passthrough",
+            "rewritten_question": "请执行改写后的完整 Agent 工具主路径",
+            "history_used": True,
+            "rewritten": True,
+            "need_check": True,
+            "need_rewrite": True,
+            "reason": "integration rewrite",
             "rewrite_llm_used": False,
             "error": "",
         }
@@ -262,7 +269,6 @@ def test_chat_service_runs_real_langgraph_provider_and_runtime(monkeypatch):
         settings=SimpleNamespace(TOP_K=5, DECOMPOSE_TOP_K=10),
         get_history=lambda session_id: [],
         rewrite_query_with_history=rewrite,
-        route_agent_action=route_agent_action,
         run_agent_langgraph=run_agent_langgraph,
         build_query_rewrite_trace=build_query_rewrite_trace,
         attach_query_rewrite_trace=attach_query_rewrite_trace,
@@ -299,7 +305,12 @@ def test_chat_service_runs_real_langgraph_provider_and_runtime(monkeypatch):
     assert outcome.code == 0
     assert outcome.result["status"] == "OK"
     assert outcome.result["answer"] == "ChatService 主路径完成。"
+    assert outcome.question == "请走完整 Agent 工具主路径"
+    assert routed_questions == ["请执行改写后的完整 Agent 工具主路径"]
     assert model.calls == 2
+    assert model.received_messages[0][0].content == (
+        "请执行改写后的完整 Agent 工具主路径"
+    )
     assert model.bound_tool_names == ["chat_echo"]
     assert isinstance(model.received_messages[1][-1], ToolMessage)
     tool_payload = json.loads(model.received_messages[1][-1].content)
@@ -322,6 +333,12 @@ def test_chat_service_runs_real_langgraph_provider_and_runtime(monkeypatch):
         ),
     ]
     assert len(metric_writes) == 1
+    decide_trace = next(
+        step
+        for step in outcome.result["tool_trace"]
+        if step.get("step") == "decide"
+    )
+    assert metric_writes[0]["route_cost_ms"] == decide_trace["route_cost_ms"]
     assert bad_cases == []
 
 
@@ -441,7 +458,6 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
         settings=SimpleNamespace(TOP_K=5, DECOMPOSE_TOP_K=10),
         get_history=lambda session_id: [],
         rewrite_query_with_history=rewrite,
-        route_agent_action=route_agent_action,
         run_agent_langgraph=run_agent_langgraph,
         build_query_rewrite_trace=build_query_rewrite_trace,
         attach_query_rewrite_trace=attach_query_rewrite_trace,
@@ -640,7 +656,6 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
         settings=SimpleNamespace(TOP_K=5, DECOMPOSE_TOP_K=10),
         get_history=lambda session_id: [],
         rewrite_query_with_history=rewrite,
-        route_agent_action=route_agent_action,
         run_agent_langgraph=run_agent_langgraph,
         build_query_rewrite_trace=build_query_rewrite_trace,
         attach_query_rewrite_trace=attach_query_rewrite_trace,

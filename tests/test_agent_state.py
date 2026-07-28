@@ -1,6 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
+from app.agent.framework_agent import FrameworkAgentState
 from app.agent.state import AgentObservation, AgentState
 from app.graph.state import AgentGraphState
 
@@ -35,6 +36,7 @@ def test_agent_state_defaults_without_plan_protocol():
     assert state.references == []
     assert state.tool_trace == []
     assert state.llm_call_count == 0
+    assert "router_llm_used" not in AgentState.model_fields
     assert "plan" not in AgentState.model_fields
     assert "max_steps" not in AgentState.model_fields
 
@@ -112,6 +114,7 @@ def test_graph_state_excludes_static_governance_and_legacy_fallback_fields():
 
     assert static_governance_fields.isdisjoint(fields)
     assert "fallback_to_legacy" not in fields
+    assert "decision" not in FrameworkAgentState.__annotations__
 
 
 def test_agent_state_field_constraints():

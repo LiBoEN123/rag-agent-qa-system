@@ -384,3 +384,49 @@ PR6 完成后为 `565 passed, 1 warning`；Ruff、`python -m compileall app`、�
 完成后全量结果为 `653 passed, 1 warning`；Ruff、compileall、Runtime architecture inspection、pip check 和 diff check 通过。唯一警告仍来自 jieba 对 `pkg_resources` 的弃用提示。自动测试没有调用真实模型、搜索引擎、网页/PDF、代理，没有重建 RAG 索引、创建生产 Checkpoint 或写生产审计文件。
 
 FastAPI `/chat` 请求/响应 Schema、HTTP 业务状态码、SQLite session/Checkpointer Schema、thread_id、RAG 检索/重排/证据/引用算法、八个 ToolSpec 名称与参数/输出 Schema、Provider 权限可见性、ToolRuntime 权限/审批/超时/重试/审计、metrics 字段和 session 行为均未修改。Router 双重所有权、`AgentGraphState`/`AgentState` 统一、Result/status 映射统一、Settings 迁移、模块导入边界和历史文档归档仍留给后续独立整理。
+
+## 23. PR11 Graph-owned Router
+
+本节只记录 PR11 增量；PR0–PR10 历史内容保持原样。开始时实际分支为 `fix/langgraph-runtime-hardening`，HEAD 为 `5277d0bdf53b556aec8d541ce606b8392089f50f`，与任务记录一致，工作区干净。修改前现场基线为 `653 passed, 1 warning`；Ruff、`python -m compileall app`、`python scripts/inspect_agent_runtime.py --check`、`python -m pip check` 和 `git diff --check` 全部通过。
+
+修改前 Router/decision 引用按用途分类如下：
+
+| 类别 | 修改前引用与行为 | PR11 处理 |
+| --- | --- | --- |
+| A. 当前生产调用 | ChatService 调用 `route_agent_action()`、保存 decision/action、计时后注入 Runtime；父图在 decision 缺失时调用 Router；`/decide` 诊断端点也直接调用 Router | ChatService 删除 Router 所有权；父图固定执行 route；`/decide` 复用 `route_node` |
+| B. 测试调用 | ChatService 依赖注入 fake Router；Runtime/编译图测试广泛注入 decision；Router 测试保护 top_k、trace_id、tool_name/tool_args 和薄兼容函数 | 删除旧实现断言，改为验证唯一图内 Router、旧 decision 被覆盖、最小内部协议和兼容 trace |
+| C. 评测/脚本调用 | `agent_eval.py` 已直接调用 `run_agent_langgraph()`，但把第一条 decide trace 的 tool_name 当作实际工具；检查脚本接受 `START → initialize` | 评测从真实 `tool_call` trace 读取首个工具和有序工具列表；检查脚本验证完整固定父图边 |
+| D. 文档提及 | README、维护指南和 PR9/PR10 历史仍描述 ChatService Router、可选 route 和双所有权 | 当前架构文档更新；历史 PR0–PR10 原文保留，新增本节与 ADR 0012 |
+| E. 仅定义或兼容字段 | `add_router_metadata()`、`route_agent_action_rule_based()` 只形成三层薄转发；内部 decision/AgentState 保留失效 Router LLM 与具体工具字段；外部 result/trace/metrics 仍有兼容消费者 | 删除内部薄函数和死字段；外部兼容字段在 trace/result/metrics 边界显式生成 |
+
+新请求链为：
+
+```text
+FastAPI /chat
+→ ChatService
+→ Session History / Query Rewrite
+→ run_agent_langgraph
+→ route
+→ initialize
+→ framework_agent / compose
+→ adapt_framework
+→ rag_subgraph / compose
+→ finalize
+→ ChatService metrics / session
+→ API Response
+```
+
+- 父图入口从 conditional START 改为固定 `START → route → initialize`，删除 `route_condition`。所有正常 Graph 调用执行一次确定性 Router；直接编译图注入的旧 decision 会被 route 节点覆盖。
+- ChatService 删除 Router import、依赖注入、`_route_question()`、内部 decision/action、Router 日志与独立计时；Runtime 门面删除 decision 参数和 graph input 注入。顶层异常不再伪造提前路由 action，bad case route 优先留空。
+- `route_agent_action(question)` 只接收问题并返回 `agent`、`direct_answer` 或 `clarify`。内部 RouteDecision 删除 top_k、trace_id、tool_name/tool_args、router_llm_used 和 fallback 元数据；`add_router_metadata()` 与 `route_agent_action_rule_based()` 删除。具体工具仍由 `create_agent` 根据动态 Tool Schema 选择。
+- `route_node` 使用 `time.perf_counter()` 计时并把 `decision`、`route_cost_ms` 写入 Graph State。initialize 创建的 decide trace 继续包含稳定的 route/action/source/confidence 字段，以及空 tool_name/tool_args/sanitized_tool_args、空 router_fallback_reason、`router_llm_used=false` 和实际 route_cost_ms。
+- `collect_trace_metrics()` 从 decide trace 提取 route_cost_ms，ChatService 将其写入原 metrics 字段。空问题仍在 ChatService 短路并保持 0；Router 前/Graph 顶层异常没有 decide trace时也保持 0。
+- `AgentState.router_llm_used` 与 `FrameworkAgentState.decision` 删除。LLM 调用数只累计 Agent Model、Query Decompose 和 RAG Answer Model；Query Rewrite Model 仍由 ChatService trace 汇总追加。外部 Agent result、llm_usage/decide trace、API 和 metrics 继续输出 `router_llm_used=false`。
+- `agent_eval.py` 的 actual_decision 来自 decide trace，actual_action 来自 result/decide，actual_tool 来自第一条真实 tool_call，并额外记录全部真实工具名的有序 `actual_tools`。
+- Runtime inspection 固定验证 `START → route → initialize`、后续条件边及 finalize/END 边，不再接受 `START → initialize`。Framework Agent 子图、Middleware 栈和八个生产工具未改变。
+
+测试使用真实 `build_agent_graph().compile().invoke(...)`、`run_agent_langgraph()`、`create_agent`、RegistryToolsMiddleware、ToolRegistry 和 ToolRuntime，只替换 Agent Model、Query Rewrite Model、DDGS、HTTP transport 与 RAG 外部副作用。覆盖普通 Agent、direct_answer、clarify、Query Rewrite 后路由、Router 单次调用、外部 decision 覆盖、route metrics、真实 tool_call 评测、memory/sqlite Checkpointer、API/session/tool_call_chain 和内部异常兼容。
+
+完成后全量结果为 `656 passed, 1 warning`；Ruff、compileall、Runtime inspection 的 text/JSON/Mermaid/check、pip check 和 diff check 通过。唯一警告仍来自 jieba 对 `pkg_resources` 的弃用提示。自动测试没有调用真实模型、搜索引擎、网页/PDF、代理，没有重建真实 RAG 索引、创建生产 Checkpoint 或写生产审计/metrics 文件。
+
+FastAPI `/chat` 请求/响应 Schema、HTTP 业务状态码、SQLite session/Checkpointer Schema、checkpoint thread_id、RAG 检索/重排/证据/引用算法、八个 ToolSpec 名称与 Schema、Provider 权限可见性、ToolRuntime 权限/审批/超时/重试/审计、metrics 字段、bad case、session 和 `tool_call_chain` 均保持兼容。`AgentGraphState`/`AgentState` 统一、Result/status 映射统一、Settings 迁移、模块依赖边界和历史文档归档仍留给后续整理。

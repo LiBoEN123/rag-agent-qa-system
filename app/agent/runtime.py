@@ -12,9 +12,6 @@ from app.agent.state import AgentState
 from app.config import Settings
 from app.storage.traces import save_agent_trace
 from app.common.logging import get_logger
-from app.tools.audit import sanitize_tool_input
-from app.tools.redaction import redact_sensitive_data
-from app.tools.registry import tool_registry
 
 
 logger = get_logger("chat_service")
@@ -125,20 +122,6 @@ def build_tool_governance_event(
     }
 
 
-def _safe_trace_tool_args(tool_name: str, value: object) -> object:
-    """按工具契约脱敏并截断 Router/Planner trace 中的参数。"""
-    args = value if isinstance(value, dict) else {}
-    spec = tool_registry.get(tool_name)
-    if spec is None:
-        return redact_sensitive_data(args)
-    return sanitize_tool_input(spec, args)
-
-
-def _safe_decision(decision: dict | None) -> dict:
-    """把外部传入的路由决策规整为可安全读取的字典。"""
-    return decision if isinstance(decision, dict) else {}
-
-
 def get_route_decision_for_trace(decision: dict) -> str:
     """根据路由 action 生成 trace 使用的 route_decision。"""
     action = decision.get("action", "")
@@ -193,43 +176,42 @@ def summarize_observations_for_result(state: AgentState) -> str:
     return "；".join(summaries[-3:]) if summaries else state.reason or ""
 
 
-def build_decide_trace(decision: dict, router_llm_used: bool) -> dict[str, Any]:
-    """构造 Agent 开始阶段的路由决策 trace。"""
-    tool_name = str(decision.get("tool_name") or "")
-    sanitized_args = _safe_trace_tool_args(
-        tool_name,
-        decision.get("tool_args", {}),
-    )
+def build_decide_trace(
+    decision: dict,
+    *,
+    route_cost_ms: int = 0,
+) -> dict[str, Any]:
+    """将最小内部路由协议扩展为稳定的外部兼容 trace。"""
     return {
         "step": "decide",
         "route_decision": get_route_decision_for_trace(decision),
         "decision_type": decision.get("decision", ""),
         "action": decision.get("action", ""),
-        "tool_name": tool_name,
-        "tool_args": sanitized_args,
-        "sanitized_tool_args": sanitized_args,
+        "tool_name": "",
+        "tool_args": {},
+        "sanitized_tool_args": {},
         "reason": decision.get("reason", ""),
         "router_source": decision.get("router_source", ""),
         "router_confidence": decision.get("router_confidence"),
-        "router_fallback_reason": decision.get("router_fallback_reason", ""),
-        "router_llm_used": bool(router_llm_used),
+        "router_fallback_reason": "",
+        "router_llm_used": False,
+        "route_cost_ms": max(0, int(route_cost_ms or 0)),
     }
 
 
 def normalize_llm_call_count(state: AgentState) -> None:
-    """补齐 Router LLM 计数，并保留 answer 侧可能已经累计的更精确计数。"""
-    answer_side_count = max(
+    """保留 Agent Model 与 RAG 回答侧已经累计的精确调用数。"""
+    state.llm_call_count = max(
         int(bool(state.decompose_llm_used)) + int(bool(state.answer_llm_used)),
         int(state.llm_call_count or 0),
     )
-    state.llm_call_count = int(bool(state.router_llm_used)) + answer_side_count
 
 
 def append_llm_usage_trace(state: AgentState) -> None:
     """把本次 Runtime 的 LLM 使用情况写入工具 trace。"""
     usage_trace = {
         "step": "llm_usage",
-        "router_llm_used": bool(state.router_llm_used),
+        "router_llm_used": False,
         "decompose_llm_used": bool(state.decompose_llm_used),
         "answer_llm_used": bool(state.answer_llm_used),
         "llm_call_count": int(state.llm_call_count or 0),
@@ -269,7 +251,7 @@ def build_v2_result(state: AgentState, decision: dict) -> dict:
         "action": decision.get("action", ""),
         "tool_result_summary": summarize_observations_for_result(state),
         "tool_trace": state.tool_trace or [],
-        "router_llm_used": bool(state.router_llm_used),
+        "router_llm_used": False,
         "decompose_llm_used": bool(state.decompose_llm_used),
         "answer_llm_used": bool(state.answer_llm_used),
         "llm_call_count": int(state.llm_call_count or 0),
@@ -279,7 +261,6 @@ def build_v2_result(state: AgentState, decision: dict) -> dict:
 
 def build_internal_error_result(
     exc: Exception,
-    decision: dict | None = None,
     *,
     runtime_label: str = "Agent Runtime",
     trace_step: str = "agent_runtime_error",
@@ -288,7 +269,6 @@ def build_internal_error_result(
 
     ``exc`` 仅供调用方写入内部日志和 bad case；其内容不得进入返回结果。
     """
-    decision = _safe_decision(decision)
     return {
         "status": "INTERNAL_ERROR",
         "answer": _INTERNAL_ERROR_MESSAGE,
@@ -298,7 +278,7 @@ def build_internal_error_result(
         "need_clarification": False,
         "clarification_question": "",
         "reason": _INTERNAL_ERROR_MESSAGE,
-        "action": decision.get("action", ""),
+        "action": "",
         "tool_result_summary": "",
         "tool_trace": [
             {

@@ -38,7 +38,6 @@ def test_build_result_preserves_public_protocol():
 def test_internal_error_result_keeps_compatible_schema():
     result = build_internal_error_result(
         RuntimeError("graph exploded"),
-        {"action": "direct_answer"},
         runtime_label="LangGraph Agent",
         trace_step="agent_langgraph_error",
     )
@@ -46,7 +45,7 @@ def test_internal_error_result_keeps_compatible_schema():
     assert result["status"] == "INTERNAL_ERROR"
     assert result["answer"] == "Agent 内部执行异常，请稍后重试"
     assert result["reason"] == "Agent 内部执行异常，请稍后重试"
-    assert result["action"] == "direct_answer"
+    assert result["action"] == ""
     assert result["references"] == []
     assert result["tool_trace"] == [
         {

@@ -120,6 +120,7 @@ def collect_trace_metrics(result: dict) -> dict:
     tool_called = False
     tool_success = False
     tool_name = ""
+    route_cost_ms = 0
     real_tools = {
         "simple_calculator",
         "list_documents",
@@ -133,6 +134,11 @@ def collect_trace_metrics(result: dict) -> dict:
         rag_timings = {}
 
     for step in tool_trace:
+        if step.get("step") == "decide":
+            route_cost_ms = max(
+                0,
+                int(step.get("route_cost_ms", 0) or 0),
+            )
         current_tool_name = step.get("tool_name", "")
         if current_tool_name == "search_knowledge_base":
             retrieved_count = step.get("final_chunk_count", retrieved_count)
@@ -153,6 +159,7 @@ def collect_trace_metrics(result: dict) -> dict:
         "tool_called": tool_called,
         "tool_success": tool_success,
         "tool_name": tool_name,
+        "route_cost_ms": route_cost_ms,
         **extract_llm_usage(
             tool_trace,
             router_llm_used=bool(result.get("router_llm_used", False)),

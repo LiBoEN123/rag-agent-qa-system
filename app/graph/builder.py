@@ -10,7 +10,6 @@ from app.graph.checkpointing import get_checkpointer
 from app.graph.conditions import (
     after_framework_condition,
     after_initialize_condition,
-    route_condition,
 )
 from app.graph.nodes import (
     adapt_framework_agent_node,
@@ -44,14 +43,7 @@ def build_agent_graph(
     builder.add_node("compose", compose_node)
     builder.add_node("finalize", finalize_node)
 
-    builder.add_conditional_edges(
-        START,
-        route_condition,
-        {
-            "route": "route",
-            "initialize": "initialize",
-        },
-    )
+    builder.add_edge(START, "route")
     builder.add_edge("route", "initialize")
     builder.add_conditional_edges(
         "initialize",

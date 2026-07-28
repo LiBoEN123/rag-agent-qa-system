@@ -100,7 +100,6 @@ def _invoke_dynamic_graph(
     model: FakeAgentModel,
     context: ToolInvocationContext,
     question: str = "调用动态测试工具",
-    include_decision: bool = True,
 ):
     """把独立 Provider 注入现有 Graph，不修改任何编排分支。"""
     provider = LocalToolProvider(registry)
@@ -118,8 +117,6 @@ def _invoke_dynamic_graph(
         "trace_id": context.trace_id,
         "session_id": context.session_id,
     }
-    if include_decision:
-        graph_input["decision"] = {"decision": "use_agent", "action": "agent"}
     return build_agent_graph().compile().invoke(
         graph_input,
         context=context,
@@ -203,7 +200,7 @@ def test_agent_discovers_and_calls_echo_without_core_tool_mapping(monkeypatch):
 
 
 def test_new_tool_request_reaches_agent_without_router_changes(monkeypatch):
-    """新工具和新口吻在未预置 decision 时仍由正常入口动态发现。"""
+    """新工具和新口吻经固定 route 入口后仍由 Agent 动态发现。"""
     registry = ToolRegistry()
     contexts: list[ToolInvocationContext] = []
     _register_dynamic_tools(registry, contexts)
@@ -234,11 +231,10 @@ def test_new_tool_request_reaches_agent_without_router_changes(monkeypatch):
         model=model,
         context=context,
         question="请用刚增加的处理能力原样接住这句话",
-        include_decision=False,
     )
 
     assert output["decision"]["action"] == "agent"
-    assert output["decision"]["tool_name"] == ""
+    assert "tool_name" not in output["decision"]
     assert model.bound_tool_names == ["echo_text", "join_texts"]
     assert output["result"]["answer"] == "任意新口吻"
     assert contexts == [context]

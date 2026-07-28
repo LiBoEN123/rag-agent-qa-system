@@ -1,6 +1,6 @@
 """聊天应用服务。
 
-在不依赖 FastAPI 的前提下编排会话改写、路由、Agent Runtime、指标和
+在不依赖 FastAPI 的前提下编排会话改写、Agent Runtime、指标和
 会话存储，并返回供 HTTP 层适配的统一结果。
 """
 
@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.agent.query_rewrite import rewrite_query_with_history
-from app.agent.router import route_agent_action
 from app.common.logging import get_logger
 from app.config import Settings
 from app.graph.runtime import run_agent_langgraph
@@ -161,7 +160,6 @@ class ChatServiceDependencies:
     settings: Any
     get_history: Callable[[str | None], list[dict]]
     rewrite_query_with_history: Callable[..., dict]
-    route_agent_action: Callable[..., dict]
     run_agent_langgraph: Callable[..., dict[str, Any]]
     build_query_rewrite_trace: Callable[[dict], dict]
     attach_query_rewrite_trace: Callable[[dict, dict], dict]
@@ -191,8 +189,6 @@ class _ChatContext:
     final_top_k: int = 0
     decompose_top_k: int = 0
     rewrite_trace: dict[str, Any] = field(default_factory=dict)
-    decision: dict[str, Any] = field(default_factory=dict)
-    action: str = ""
     session_should_store: bool = False
     session_assistant_content: str = ""
 
@@ -203,7 +199,6 @@ def get_default_chat_service_dependencies() -> ChatServiceDependencies:
         settings=Settings,
         get_history=get_history,
         rewrite_query_with_history=rewrite_query_with_history,
-        route_agent_action=route_agent_action,
         run_agent_langgraph=run_agent_langgraph,
         build_query_rewrite_trace=build_query_rewrite_trace,
         attach_query_rewrite_trace=attach_query_rewrite_trace,
@@ -249,7 +244,6 @@ class ChatService:
             )
 
             self._rewrite_question(context)
-            self._route_question(context)
 
             try:
                 result = self._run_agent(context)
@@ -433,43 +427,6 @@ class ChatService:
             context.effective_question,
         )
 
-    def _route_question(self, context: _ChatContext) -> None:
-        route_start = self._deps.perf_counter()
-        context.decision = self._deps.route_agent_action(
-            context.effective_question,
-            context.final_top_k,
-            trace_id=context.request.trace_id,
-        )
-        route_cost_ms = int(
-            (self._deps.perf_counter() - route_start) * 1000
-        )
-        context.metrics["route_cost_ms"] = route_cost_ms
-        context.action = context.decision.get("action") or ""
-        context.metrics["router_llm_used"] = bool(
-            context.decision.get(
-                "router_llm_used",
-                context.decision.get("router_source")
-                in {"llm", "rule_based_fallback"},
-            )
-        )
-        context.metrics["llm_call_count"] = (
-            int(context.metrics["query_rewrite_llm_used"])
-            + int(context.metrics["router_llm_used"])
-        )
-        logger.info(
-            "[trace_id=%s] [agent] route_end action=%s route_cost_ms=%s "
-            "reason=%s",
-            context.request.trace_id,
-            context.action,
-            route_cost_ms,
-            context.decision.get("reason", ""),
-        )
-        logger.info(
-            "[trace_id=%s] [agent] route_final action=%s",
-            context.request.trace_id,
-            context.action,
-        )
-
     def _run_agent(self, context: _ChatContext) -> dict[str, Any]:
         agent_start = self._deps.perf_counter()
         logger.info(
@@ -482,7 +439,6 @@ class ChatService:
             effective_question=context.effective_question,
             top_k=context.final_top_k,
             decompose_top_k=context.decompose_top_k,
-            decision=context.decision,
             trace_id=context.request.trace_id,
             session_id=context.session_id or None,
             bad_case=context.bad_case,
@@ -532,6 +488,7 @@ class ChatService:
             "decompose_llm_used",
             "answer_llm_used",
             "llm_call_count",
+            "route_cost_ms",
         ):
             context.metrics[key] = trace_metrics[key]
         timings = trace_metrics["timings"]
@@ -539,10 +496,7 @@ class ChatService:
             context.metrics[timing_key] = int(
                 (timings.get(timing_key, 0) or 0)
             )
-        context.metrics["action"] = result.get(
-            "action",
-            context.action,
-        )
+        context.metrics["action"] = result.get("action", "")
         context.metrics["reason"] = result.get("reason", "")
 
     def _runtime_exception_outcome(
@@ -556,27 +510,16 @@ class ChatService:
             exc,
         )
         context.metrics["status"] = "internal_error"
-        context.metrics["action"] = context.action
-        context.metrics["tool_name"] = context.decision.get("tool_name", "")
-        context.metrics["tool_called"] = bool(
-            context.decision.get("tool_name", "")
-        )
+        context.metrics["action"] = ""
+        context.metrics["tool_name"] = ""
+        context.metrics["tool_called"] = False
         context.metrics["tool_success"] = False
-        context.metrics["router_llm_used"] = bool(
-            context.decision.get(
-                "router_llm_used",
-                context.decision.get("router_source")
-                in {"llm", "rule_based_fallback"},
-            )
-        )
-        context.metrics["llm_call_count"] = (
-            int(context.metrics["query_rewrite_llm_used"])
-            + int(context.metrics["router_llm_used"])
+        context.metrics["router_llm_used"] = False
+        context.metrics["llm_call_count"] = int(
+            context.metrics["query_rewrite_llm_used"]
         )
         context.metrics["reason"] = str(exc)
-        context.bad_case["route"] = (
-            context.action or context.decision.get("decision", "")
-        )
+        context.bad_case["route"] = ""
         context.bad_case["error_type"] = "internal_error"
         context.bad_case["note"] = f"Agent Runtime 执行异常：{exc}"
         self._write_bad_case(context.bad_case, context.request.trace_id)

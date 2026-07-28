@@ -48,7 +48,6 @@ class AgentState(BaseModel):
     status: AgentStatus = Field(default="running", description="Agent 当前状态")
     reason: str = Field(default="", description="状态原因或失败原因")
 
-    router_llm_used: bool = Field(default=False, description="是否调用 Router LLM")
     decompose_llm_used: bool = Field(default=False, description="是否调用问题拆分 LLM")
     answer_llm_used: bool = Field(default=False, description="是否调用最终回答 LLM")
     llm_call_count: int = Field(default=0, ge=0, description="本次请求累计 LLM 调用次数")

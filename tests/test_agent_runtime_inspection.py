@@ -27,9 +27,16 @@ def test_runtime_report_preserves_graph_contract(monkeypatch):
     _knowledge_only(monkeypatch)
     report = inspection.inspect_runtime()
     parent_nodes = set(report["parent_graph"]["nodes"])
+    parent_edges = {
+        (edge["source"], edge["target"], edge["conditional"])
+        for edge in report["parent_graph"]["edges"]
+    }
     framework_nodes = set(report["framework_agent"]["nodes"])
 
     assert inspection.EXPECTED_PARENT_NODES <= parent_nodes
+    assert parent_edges == inspection.EXPECTED_PARENT_EDGES
+    assert ("__start__", "initialize", False) not in parent_edges
+    assert ("__start__", "initialize", True) not in parent_edges
     assert inspection.FORBIDDEN_PARENT_NODES.isdisjoint(parent_nodes)
     assert {"model", "tools"} <= framework_nodes
     assert any(

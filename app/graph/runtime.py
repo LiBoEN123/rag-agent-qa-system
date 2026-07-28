@@ -28,7 +28,6 @@ def run_agent_langgraph(
     write_bad_cases: Callable[[dict[str, Any]], None] | None,
     top_k: int,
     decompose_top_k: int,
-    decision: dict[str, Any] | None = None,
     trace_id: str = "",
     session_id: str | None = None,
     bad_case: dict[str, Any] | None = None,
@@ -40,13 +39,11 @@ def run_agent_langgraph(
     """同步执行 LangGraph 主图，并返回 API 主流程使用的结果字典。"""
     resolved_original_question = (original_question or "").strip()
     resolved_effective_question = (effective_question or "").strip()
-    decision_for_error = decision if isinstance(decision, dict) else {}
     graph_input: dict[str, Any] = {
         "original_question": resolved_original_question,
         "effective_question": resolved_effective_question,
         "top_k": top_k,
         "decompose_top_k": decompose_top_k,
-        "decision": decision,
         "trace_id": trace_id,
         "session_id": session_id,
     }
@@ -124,7 +121,6 @@ def run_agent_langgraph(
         )
         result = build_internal_error_result(
             exc,
-            decision_for_error,
             runtime_label="LangGraph Agent",
             trace_step="agent_langgraph_error",
         )

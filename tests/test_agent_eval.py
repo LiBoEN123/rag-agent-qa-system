@@ -83,7 +83,7 @@ def test_evaluate_one_case_checks_tool_output_keys(monkeypatch):
                     "step": "decide",
                     "decision_type": "use_tool",
                     "action": "compare_documents",
-                    "tool_name": "compare_documents",
+                    "tool_name": "",
                 },
                 {
                     "step": "tool_call",
@@ -123,6 +123,8 @@ def test_evaluate_one_case_checks_tool_output_keys(monkeypatch):
     assert row["passed"] is True
     assert row["error_type"] == "ok"
     assert row["tool_output_keys_pass"] is True
+    assert row["actual_tool"] == "compare_documents"
+    assert row["actual_tools"] == ["compare_documents"]
 
 
 def test_agent_eval_calls_langgraph_runtime_once(monkeypatch):
@@ -147,3 +149,4 @@ def test_agent_eval_calls_langgraph_runtime_once(monkeypatch):
     assert len(calls) == 1
     assert calls[0]["original_question"] == "测试"
     assert calls[0]["effective_question"] == "测试"
+    assert "decision" not in calls[0]

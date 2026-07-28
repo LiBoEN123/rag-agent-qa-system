@@ -70,7 +70,6 @@ def test_internal_error_response_builder_does_not_expose_runtime_exception():
     )
     result = build_internal_error_result(
         RuntimeError(sensitive_message),
-        {"action": "direct_answer"},
         runtime_label="LangGraph Agent",
         trace_step="agent_langgraph_error",
     )
@@ -109,22 +108,12 @@ def test_chat_langgraph_internal_error_result_returns_http_500(monkeypatch):
         "/home/test-user/project/checkpoints.sqlite: "
         "model request failed with api_key=sk-test-secret"
     )
-    decision = {
-        "decision": "direct_answer",
-        "action": "direct_answer",
-        "tool_name": "",
-        "tool_args": {},
-        "reason": "直接回答",
-        "router_source": "rule_based",
-        "router_llm_used": False,
-    }
     runtime_calls = []
 
     def fake_run_agent_langgraph(**kwargs):
         runtime_calls.append(kwargs)
         return build_internal_error_result(
             RuntimeError(sensitive_message),
-            kwargs["decision"],
             runtime_label="LangGraph Agent",
             trace_step="agent_langgraph_error",
         )
@@ -143,7 +132,6 @@ def test_chat_langgraph_internal_error_result_returns_http_500(monkeypatch):
             "rewrite_llm_used": False,
             "error": "",
         },
-        route_agent_action=lambda question, top_k, trace_id="": decision,
         run_agent_langgraph=fake_run_agent_langgraph,
     )
 
@@ -157,7 +145,7 @@ def test_chat_langgraph_internal_error_result_returns_http_500(monkeypatch):
     response_text = response_body.model_dump_json()
 
     assert len(runtime_calls) == 1
-    assert runtime_calls[0]["decision"] is decision
+    assert "decision" not in runtime_calls[0]
     assert http_response.status_code == 500
     assert payload["code"] == "INTERNAL_ERROR"
     assert payload["data"]["status"] == "error"
@@ -175,7 +163,7 @@ def test_chat_langgraph_internal_error_result_returns_http_500(monkeypatch):
 
 
 def test_chat_uses_rewritten_question_for_follow_up(monkeypatch):
-    """验证 /chat 第二轮追问会用改写后的问题进入 Router 和 Agent。"""
+    """验证 /chat 第二轮追问会用改写后的问题进入 LangGraph。"""
     session_id = "api_follow_up_session"
     clear_session(session_id)
 
@@ -202,20 +190,6 @@ def test_chat_uses_rewritten_question_for_follow_up(monkeypatch):
             "reason": "no history",
             "rewrite_llm_used": False,
             "error": "",
-        }
-
-    routed_questions = []
-
-    def fake_route(question, top_k, trace_id=""):
-        routed_questions.append(question)
-        return {
-            "decision": "use_agent",
-            "action": "agent",
-            "tool_name": "",
-            "tool_args": {},
-            "reason": "交给 Agent",
-            "router_source": "rule_based",
-            "router_llm_used": False,
         }
 
     agent_questions = []
@@ -250,7 +224,6 @@ def test_chat_uses_rewritten_question_for_follow_up(monkeypatch):
     install_chat_service(
         monkeypatch,
         rewrite_query_with_history=fake_rewrite,
-        route_agent_action=fake_route,
         run_agent_langgraph=fake_run_agent_langgraph,
     )
 
@@ -279,7 +252,6 @@ def test_chat_uses_rewritten_question_for_follow_up(monkeypatch):
     assert rewrite_calls[1]["question"] == "那休学创业呢？"
     assert rewrite_calls[1]["history"][0]["role"] == "user"
     assert rewrite_calls[1]["history"][0]["content"] == "普通本科四年制专业最长学习年限是多少？"
-    assert routed_questions[-1] == rewritten_question
     assert agent_questions[-1] == rewritten_question
     assert body["data"]["question"] == "那休学创业呢？"
     assert body["data"]["tool_trace"][0]["step"] == "query_rewrite"
@@ -290,13 +262,12 @@ def test_chat_uses_rewritten_question_for_follow_up(monkeypatch):
     clear_session(session_id)
 
 
-def test_chat_uses_langgraph_once_and_keeps_rewrite_route_api_protocol(monkeypatch):
-    """唯一 Runtime 只调用一次，且保留改写、路由和 API 协议。"""
+def test_chat_uses_langgraph_once_and_keeps_rewrite_api_protocol(monkeypatch):
+    """唯一 Runtime 只调用一次，且保留改写和 API 协议。"""
     patch_app(monkeypatch)
 
     calls = {
         "rewrite": 0,
-        "route": 0,
         "langgraph": 0,
     }
     runtime_kwargs: dict = {}
@@ -314,21 +285,6 @@ def test_chat_uses_langgraph_once_and_keeps_rewrite_route_api_protocol(monkeypat
             "rewrite_llm_used": False,
             "error": "",
         }
-
-    decision = {
-        "decision": "direct_answer",
-        "action": "direct_answer",
-        "tool_name": "",
-        "tool_args": {},
-        "reason": "测试直接回答",
-        "router_source": "rule_based",
-        "router_llm_used": False,
-    }
-
-    def fake_route(question, top_k, trace_id=""):
-        calls["route"] += 1
-        assert question == "改写后的问题"
-        return decision
 
     def fake_langgraph_runner(**kwargs):
         calls["langgraph"] += 1
@@ -362,7 +318,6 @@ def test_chat_uses_langgraph_once_and_keeps_rewrite_route_api_protocol(monkeypat
     install_chat_service(
         monkeypatch,
         rewrite_query_with_history=fake_rewrite,
-        route_agent_action=fake_route,
         run_agent_langgraph=fake_langgraph_runner,
     )
 
@@ -380,7 +335,6 @@ def test_chat_uses_langgraph_once_and_keeps_rewrite_route_api_protocol(monkeypat
 
     assert calls == {
         "rewrite": 1,
-        "route": 1,
         "langgraph": 1,
     }
     assert "question" not in runtime_kwargs
@@ -388,7 +342,7 @@ def test_chat_uses_langgraph_once_and_keeps_rewrite_route_api_protocol(monkeypat
     assert runtime_kwargs["effective_question"] == "改写后的问题"
     assert runtime_kwargs["top_k"] == 4
     assert runtime_kwargs["decompose_top_k"] == 8
-    assert runtime_kwargs["decision"] is decision
+    assert "decision" not in runtime_kwargs
     assert runtime_kwargs["session_id"] == "runtime-switch-session"
     assert body["code"] == 0
     assert body["data"]["answer"] == "langgraph answer"

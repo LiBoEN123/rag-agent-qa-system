@@ -17,7 +17,7 @@ from app.rag import (
     rebuild_and_persist_index,
 )
 from app.config import Settings
-from app.agent.router import route_agent_action
+from app.graph.nodes import route_node
 from app.observability import create_trace_id
 from app.rag.retrieval import safe_float, should_refuse
 from app.observability.metrics import (
@@ -186,9 +186,7 @@ _diagnostics_router = create_diagnostics_router(
         rerank=lambda *args, **kwargs: rerank(*args, **kwargs),
         should_refuse=lambda *args, **kwargs: should_refuse(*args, **kwargs),
         safe_float=lambda value: safe_float(value),
-        route_agent_action=lambda *args, **kwargs: route_agent_action(
-            *args, **kwargs
-        ),
+        route_node=lambda state: route_node(state),
         read_recent_metrics=lambda limit: read_recent_metrics(limit),
     )
 )

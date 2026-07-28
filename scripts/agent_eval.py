@@ -129,36 +129,33 @@ def init_rag_for_eval(force_rebuild: bool = False) -> None:
 # =========================
 # 5. 从 Agent 结果中提取实际行为
 # =========================
-def get_first_trace(result: dict) -> dict:
-    """从 Agent 结果中取出第一条 tool_trace。"""
-    trace = result.get("tool_trace") or []
-    if isinstance(trace, list) and trace:
-        first = trace[0]
-        if isinstance(first, dict):
-            return first
-    return {}
-
-
 def extract_actual_fields(result: dict) -> dict:
-    """
-    Agent 返回里：
-    - result["status"] 是最终状态
-    - result["action"] 是最终动作
-    - result["tool_trace"][0]["decision_type"] 是路由决策
-    - result["tool_trace"][0]["tool_name"] 是工具名
-    """
+    """从 decide 与真实 tool_call trace 中提取路由和工具行为。"""
+    trace = [
+        step
+        for step in (result.get("tool_trace") or [])
+        if isinstance(step, dict)
+    ]
+    decide_trace = next(
+        (step for step in trace if step.get("step") == "decide"),
+        {},
+    )
+    actual_tools = [
+        str(step.get("tool_name") or "")
+        for step in trace
+        if step.get("step") == "tool_call" and step.get("tool_name")
+    ]
 
-    first_trace = get_first_trace(result)
-
-    actual_decision = first_trace.get("decision_type", "")
-    actual_action = result.get("action") or first_trace.get("action", "")
-    actual_tool = first_trace.get("tool_name", "")
+    actual_decision = decide_trace.get("decision_type", "")
+    actual_action = result.get("action") or decide_trace.get("action", "")
+    actual_tool = actual_tools[0] if actual_tools else ""
     actual_status = result.get("status", "")
 
     return {
         "actual_decision": actual_decision,
         "actual_action": actual_action,
         "actual_tool": actual_tool,
+        "actual_tools": actual_tools,
         "actual_status": actual_status,
     }
 
@@ -429,6 +426,7 @@ def evaluate_one_case(case: dict, top_k: int) -> dict:
 
             "expected_tool": expected_tool,
             "actual_tool": actual["actual_tool"],
+            "actual_tools": actual["actual_tools"],
 
             "expected_status": expected_status,
             "actual_status": actual["actual_status"],
@@ -478,6 +476,7 @@ def evaluate_one_case(case: dict, top_k: int) -> dict:
 
             "expected_tool": case.get("expected_tool", ""),
             "actual_tool": "",
+            "actual_tools": [],
 
             "expected_status": case.get("expected_status", ""),
             "actual_status": "",

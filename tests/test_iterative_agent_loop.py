@@ -43,7 +43,6 @@ def _invoke_graph(
     monkeypatch,
     model,
     *,
-    decision,
     max_iterations=6,
     max_tool_calls=10,
     context=None,
@@ -58,7 +57,6 @@ def _invoke_graph(
             "effective_question": "请计算 1+2",
             "top_k": 5,
             "decompose_top_k": 10,
-            "decision": decision,
             "trace_id": "trace-loop",
             "session_id": "session-loop",
         },
@@ -110,7 +108,6 @@ def test_agent_loop_answers_without_calling_tools(monkeypatch):
     output = _invoke_graph(
         monkeypatch,
         model,
-        decision={"action": "agent", "router_llm_used": False},
     )
 
     assert len(model.received_messages) == 1
@@ -143,7 +140,6 @@ def test_agent_loop_returns_single_tool_message_to_model(monkeypatch):
     output = _invoke_graph(
         monkeypatch,
         model,
-        decision={"action": "agent", "router_llm_used": False},
     )
 
     assert len(model.received_messages) == 2
@@ -195,7 +191,6 @@ def test_agent_loop_runs_two_sequential_tool_calls(monkeypatch):
     output = _invoke_graph(
         monkeypatch,
         model,
-        decision={"action": "agent", "router_llm_used": False},
     )
 
     assert len(model.received_messages) == 3
@@ -242,7 +237,6 @@ def test_agent_loop_executes_all_tool_calls_from_one_message(monkeypatch):
     output = _invoke_graph(
         monkeypatch,
         model,
-        decision={"action": "agent", "router_llm_used": False},
     )
 
     returned = [
@@ -294,7 +288,6 @@ def test_agent_loop_allows_model_to_correct_failed_tool_arguments(monkeypatch):
     output = _invoke_graph(
         monkeypatch,
         model,
-        decision={"action": "agent", "router_llm_used": False},
     )
 
     first_tool_message = model.received_messages[1][-1]
@@ -343,7 +336,6 @@ def test_agent_loop_stops_at_max_iterations(monkeypatch):
     output = _invoke_graph(
         monkeypatch,
         model,
-        decision={"action": "agent", "router_llm_used": False},
         max_iterations=2,
     )
 
@@ -387,7 +379,6 @@ def test_agent_loop_stops_before_exceeding_tool_call_budget(monkeypatch):
     output = _invoke_graph(
         monkeypatch,
         model,
-        decision={"action": "agent", "router_llm_used": False},
         max_tool_calls=1,
     )
 
@@ -427,7 +418,6 @@ def test_agent_loop_recovers_from_forged_hidden_tool_name(monkeypatch):
     output = _invoke_graph(
         monkeypatch,
         model,
-        decision={"action": "agent", "router_llm_used": False},
         context=denied_context,
     )
 
@@ -496,7 +486,6 @@ def test_agent_loop_preserves_runtime_context_and_audit_chain(monkeypatch):
     output = _invoke_graph(
         monkeypatch,
         model,
-        decision={"action": "agent", "router_llm_used": False},
         context=context,
     )
 
@@ -539,7 +528,6 @@ def test_agent_loop_model_failure_after_tool_does_not_replay_tool(monkeypatch):
     output = _invoke_graph(
         monkeypatch,
         model,
-        decision={"action": "agent", "router_llm_used": False},
     )
 
     assert len(model.received_messages) == 2
@@ -616,7 +604,6 @@ def test_agent_selected_knowledge_search_keeps_rag_citation_path(monkeypatch):
     output = _invoke_graph(
         monkeypatch,
         model,
-        decision={"action": "agent", "router_llm_used": False},
     )
 
     assert len(model.received_messages) == 1
@@ -675,7 +662,6 @@ def test_sqlite_checkpointer_serializes_full_agent_message_loop(
             effective_question="请计算 10+5",
             top_k=5,
             decompose_top_k=10,
-            decision={"action": "agent", "router_llm_used": False},
             trace_id="trace-sqlite-loop",
             session_id="session-sqlite-loop",
         )

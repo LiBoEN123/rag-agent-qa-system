@@ -8,10 +8,10 @@
 
 | 顺序 | 文件 | 只需要理解 |
 | --- | --- | --- |
-| 1 | `app/services/chat_service.py` | 请求改写、Router、Runtime 和 API 结果收尾如何串联 |
-| 2 | `app/graph/builder.py` | 父图有哪些节点、边和条件出口 |
-| 3 | `app/graph/conditions.py` | 短路、框架 Agent、RAG 与 compose 如何分流 |
-| 4 | `app/graph/nodes.py` | 父图节点如何适配现有业务状态和最终结果 |
+| 1 | `app/services/chat_service.py` | 会话、请求改写、Runtime 和 API 结果收尾如何串联 |
+| 2 | `app/graph/builder.py` | 父图固定入口、节点、边和条件出口 |
+| 3 | `app/graph/conditions.py` | 框架 Agent、RAG 与 compose 如何分流 |
+| 4 | `app/graph/nodes.py` | `route_node` 如何独占 Router 调用/计时，以及其他节点如何适配业务状态 |
 | 5 | `app/agent/framework_agent.py` | `create_agent`、调用限制 Middleware 和事件消费如何组装 |
 | 6 | `app/agent/tool_events.py` | 标准工具结果和治理事件如何转换为 observation/trace |
 | 7 | `app/agent/framework_middleware.py` | 项目错误分类、预算、循环防护和同批 fail-closed |
@@ -25,8 +25,9 @@
 ```text
 FastAPI
 → ChatService
-→ Router
-→ LangGraph Parent Graph
+→ Session History / Query Rewrite
+→ run_agent_langgraph
+→ LangGraph Parent Graph: route → initialize
 → LangChain create_agent
 → RegistryToolsMiddleware / ProjectToolGovernanceMiddleware
 → StructuredTool
@@ -37,6 +38,8 @@ FastAPI
 → RAG Subgraph 或 Compose
 → Finalize
 ```
+
+ChatService 不调用 Router，也不生成或注入 decision。`route_node` 是生产代码中确定性 Router 的唯一所有者；正常 `/chat`、评测脚本和其他 `run_agent_langgraph()` 调用都会先经过它一次。Router 只决定 `agent`、`direct_answer` 或 `clarify`，具体工具始终由 `create_agent` 根据请求可见 Schema 选择。
 
 `search_knowledge_base` 与普通工具一样由 Agent Model 根据动态 Schema 选择，并经过相同的 Registry/Runtime 治理链。成功结果通过 `Command.PARENT` 和 `pending_rag_result` 回到父图，再进入原 RAG 子图。不要把它移回 Router 或绕过 Runtime。
 
@@ -65,8 +68,7 @@ graph TD;
 	compose(compose)
 	finalize(finalize)
 	__end__([<p>__end__</p>]):::last
-	__start__ -.-> initialize;
-	__start__ -.-> route;
+	__start__ --> route;
 	adapt_framework -.-> compose;
 	adapt_framework -.-> rag_subgraph;
 	compose --> finalize;
@@ -111,7 +113,8 @@ graph TD;
 | --- | --- |
 | `app/graph/builder.py` | 声明父图节点和边 |
 | `app/graph/conditions.py` | 声明父图无副作用分支条件 |
-| `app/graph/nodes.py` | 适配父图业务节点和最终结果 |
+| `app/graph/nodes.py` | 独占 Router 调用/计时；适配父图业务节点和最终结果 |
+| `app/agent/router.py` | 只产生 agent/direct_answer/clarify 的确定性决策 |
 | `app/agent/framework_agent.py` | 组装 `create_agent`；消费框架事件 |
 | `app/agent/tool_events.py` | 将工具结果转换为 observation 和兼容 trace |
 | `app/agent/framework_middleware.py` | 执行项目特有 Agent 治理 |
@@ -123,7 +126,8 @@ graph TD;
 | `app/tools/web_download.py` | 为 HTML/PDF 提供共用 hardened 有限下载适配 |
 | `app/tools/web_fetch.py` | 处理 HTML/XHTML/纯文本并调用 Trafilatura |
 | `app/tools/web_pdf_fetch.py` | 校验 PDF magic；通过 pypdf 提取页范围和有限元数据 |
-| `app/agent/runtime.py` | 构造 API 兼容结果；保存 trace |
+| `app/agent/runtime.py` | 构造兼容 decide/LLM trace 与 API 结果；保存 trace |
+| `app/observability/metrics.py` | 从 decide/tool/RAG trace 汇总稳定 metrics |
 | `app/rag/graph/` | 编排检索、证据、生成和引用流程 |
 
 ## 框架与项目边界
@@ -143,8 +147,11 @@ Provider 的模型可见性层只复用 `has_permission()` 检查全部 `ToolSpe
 | 问题 | 首先查看 |
 | --- | --- |
 | Graph 为什么走这个分支 | `app/graph/builder.py`、`app/graph/conditions.py` |
-| 请求为什么没有进入 Agent | `app/services/chat_service.py`、`app/agent/router.py` 的确定性入口规则 |
-| 模型为什么选择某个工具 | `app/agent/framework_tools.py`、ToolSpec description/Pydantic Schema 和 Agent Model |
+| 请求为什么进入 direct/clarify/agent | `app/agent/router.py`、`app/graph/nodes.py::route_node` |
+| Router 为什么执行两次 | 不应发生；检查调用方是否绕开 `run_agent_langgraph()` 或重复执行父图 |
+| Router 耗时 | `decide` trace 的 `route_cost_ms`、`collect_trace_metrics()` |
+| 模型为什么选择工具 | `app/agent/framework_tools.py`、ToolSpec description/Pydantic Schema 和 Agent Model |
+| 工具为什么失败 | `app/tools/runtime.py`、Policy 和对应 ToolSpec handler |
 | 模型为什么看不到某个工具 | `app/tools/providers/local.py`、`ToolSpec.required_permissions` |
 | Web Search 为什么模型看不到 | `TOOL_DEFAULT_PERMISSIONS`、`app/tools/providers/local.py` |
 | Web Search 为什么执行失败 | `app/tools/web_search.py`、`app/tools/runtime.py` |

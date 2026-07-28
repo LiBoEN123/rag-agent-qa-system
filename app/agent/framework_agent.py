@@ -28,7 +28,6 @@ def _prefer_stop_reason(left: str, right: str) -> str:
 class FrameworkAgentState(LangChainAgentState):
     """create_agent 与父图共享的最小治理状态。"""
 
-    decision: NotRequired[dict[str, Any] | None]
     governance_events: NotRequired[Annotated[list[dict[str, Any]], operator.add]]
     agent_elapsed_ms: NotRequired[int]
     stop_reason: NotRequired[Annotated[str, _prefer_stop_reason]]

@@ -1,4 +1,6 @@
 import json
+import inspect
+from types import SimpleNamespace
 
 import pytest
 from langchain_core.messages import AIMessage
@@ -55,38 +57,56 @@ def isolate_graph_and_trace_store(monkeypatch):
     graph_builder.get_compiled_agent_graph.cache_clear()
 
 
-def _run(*, decision, original="测试问题", effective="测试问题"):
+def _run(*, original="测试问题", effective="测试问题"):
     return run_agent_langgraph(
         write_bad_cases=lambda record: None,
         original_question=original,
         effective_question=effective,
         top_k=5,
         decompose_top_k=10,
-        decision=decision,
         trace_id="trace-runtime",
         session_id="session-runtime",
     )
 
 
-def test_runtime_without_decision_routes_once_and_forwards_trace_id(monkeypatch):
-    calls: list[tuple] = []
+def test_runtime_routes_once_with_effective_question_and_records_cost(monkeypatch):
+    calls: list[str] = []
     decision = {
         "decision": "direct_answer",
         "action": "direct_answer",
         "reason": "能力说明",
-        "router_llm_used": False,
+        "router_source": "rule_based",
+        "router_confidence": 1.0,
     }
 
-    def fake_route(question, top_k, trace_id=""):
-        calls.append((question, top_k, trace_id))
+    def fake_route(question):
+        calls.append(question)
         return decision
 
+    clock = iter((10.0, 10.125))
     monkeypatch.setattr(graph_nodes, "route_agent_action", fake_route)
-    result = _run(decision=None, original="你能做什么？", effective="你能做什么？")
+    monkeypatch.setattr(
+        graph_nodes,
+        "time",
+        SimpleNamespace(perf_counter=lambda: next(clock)),
+    )
+    result = _run(
+        original="它能做什么？",
+        effective="你能做什么？",
+    )
 
     assert result["status"] == "OK"
     assert result["action"] == "direct_answer"
-    assert calls == [("你能做什么？", 5, "trace-runtime")]
+    assert result["router_llm_used"] is False
+    assert result["llm_call_count"] == 0
+    assert calls == ["你能做什么？"]
+    decide_trace = next(
+        step for step in result["tool_trace"] if step.get("step") == "decide"
+    )
+    assert decide_trace["route_cost_ms"] == 125
+    assert decide_trace["tool_name"] == ""
+    assert decide_trace["tool_args"] == {}
+    assert decide_trace["router_llm_used"] is False
 
 
 def test_framework_no_tool_answer_uses_effective_question(monkeypatch):
@@ -94,7 +114,6 @@ def test_framework_no_tool_answer_uses_effective_question(monkeypatch):
     monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
 
     result = _run(
-        decision={"decision": "use_agent", "action": "agent"},
         original="它什么时候开始",
         effective="研究生奖学金申请什么时候开始",
     )
@@ -116,7 +135,7 @@ def test_framework_model_exception_returns_model_error_without_fallback(
     model = FakeModel(RuntimeError("model unavailable"))
     monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
 
-    result = _run(decision={"decision": "use_agent", "action": "agent"})
+    result = _run()
 
     assert result["status"] == "MODEL_ERROR"
     assert result["answer"] == "Agent 模型暂时不可用，无法安全选择或继续调用工具。"
@@ -136,26 +155,14 @@ def test_direct_answer_and_clarify_preserve_public_protocol(monkeypatch):
         ),
     )
 
-    direct = _run(
-        decision={
-            "decision": "direct_answer",
-            "action": "direct_answer",
-            "reason": "能力说明",
-        }
-    )
-    clarify = _run(
-        decision={
-            "decision": "clarify",
-            "action": "clarify",
-            "clarification_question": "请补充具体对象。",
-        }
-    )
+    direct = _run(original="你能做什么？", effective="你能做什么？")
+    clarify = _run(original="这个怎么配置", effective="这个怎么配置")
 
     assert RESULT_FIELDS <= set(direct)
     assert direct["status"] == "OK"
     assert direct["answer"]
     assert clarify["status"] == "NEED_CLARIFICATION"
-    assert clarify["clarification_question"] == "请补充具体对象。"
+    assert "具体指" in clarify["clarification_question"]
 
 
 @pytest.mark.parametrize("malformed_output", [None, {}, {"result": None}])
@@ -174,12 +181,17 @@ def test_runtime_rejects_missing_or_invalid_graph_result(
         lambda: MalformedGraph(),
     )
 
-    result = _run(decision={"action": "agent"})
+    result = _run()
 
     assert result["status"] == "INTERNAL_ERROR"
     assert result["references"] == []
     assert result["tool_trace"][0]["step"] == "agent_langgraph_error"
     assert result["reason"] == "Agent 内部执行异常，请稍后重试"
+
+
+def test_runtime_signature_rejects_external_decision():
+    """Runtime 门面不再公开可绕过图内 Router 的 decision 参数。"""
+    assert "decision" not in inspect.signature(run_agent_langgraph).parameters
 
 
 def test_top_level_graph_error_is_sanitized_but_kept_for_diagnostics(

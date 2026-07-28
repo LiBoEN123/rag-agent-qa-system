@@ -2,6 +2,7 @@ import pytest
 
 from app.agent import framework_agent
 from app.graph import builder as graph_builder
+from app.graph import conditions as graph_conditions
 from app.graph import nodes as graph_nodes
 from app.tools.context import ToolInvocationContext
 from app.tools.runtime import ToolRuntime
@@ -32,6 +33,7 @@ def test_build_and_compile_graph_has_only_framework_execution_nodes(monkeypatch)
     edges = {(edge.source, edge.target) for edge in graph.edges}
 
     assert calls == []
+    assert not hasattr(graph_conditions, "route_condition")
     assert node_names == {
         "route",
         "initialize",
@@ -42,38 +44,36 @@ def test_build_and_compile_graph_has_only_framework_execution_nodes(monkeypatch)
         "finalize",
     }
     assert {"plan", "execute"}.isdisjoint(node_names)
+    assert ("__start__", "route") in edges
+    assert ("__start__", "initialize") not in edges
+    assert ("route", "initialize") in edges
     assert ("framework_agent", "adapt_framework") in edges
     assert ("rag_subgraph", "finalize") in edges
     assert ("compose", "finalize") in edges
 
 
 @pytest.mark.parametrize(
-    ("decision", "expected_status"),
+    ("question", "injected_decision", "expected_status"),
     [
         (
-            {
-                "decision": "direct_answer",
-                "action": "direct_answer",
-                "reason": "能力说明",
-            },
+            "你能做什么？",
+            {"decision": "clarify", "action": "clarify"},
             "OK",
         ),
         (
-            {
-                "decision": "clarify",
-                "action": "clarify",
-                "clarification_question": "请补充具体对象。",
-            },
+            "这个怎么配置",
+            {"decision": "direct_answer", "action": "direct_answer"},
             "NEED_CLARIFICATION",
         ),
     ],
 )
 def test_short_circuits_do_not_initialize_or_call_agent_model(
     monkeypatch,
-    decision,
+    question,
+    injected_decision,
     expected_status,
 ):
-    """direct_answer 与 clarify 从 initialize 直接进入 compose。"""
+    """route 覆盖旧注入后，direct_answer 与 clarify 直接进入 compose。"""
 
     def fail_model():
         raise AssertionError("short circuit must not initialize Agent Model")
@@ -81,11 +81,11 @@ def test_short_circuits_do_not_initialize_or_call_agent_model(
     monkeypatch.setattr(framework_agent, "get_agent_chat_model", fail_model)
     output = graph_builder.build_agent_graph().compile().invoke(
         {
-            "original_question": "测试问题",
-            "effective_question": "测试问题",
+            "original_question": question,
+            "effective_question": question,
             "top_k": 5,
             "decompose_top_k": 10,
-            "decision": decision,
+            "decision": injected_decision,
             "trace_id": "trace-short",
         },
         context=ToolInvocationContext(trace_id="trace-short"),
@@ -111,7 +111,7 @@ def test_legacy_route_actions_fail_closed_without_model_or_tool(
     monkeypatch,
     action,
 ):
-    """旧内部 action 不再触发工具选择、RAG 回退或框架模型。"""
+    """旧注入 action 被图内 Router 覆盖，不能触发模型或工具。"""
     calls = {"model": 0, "tool": 0}
 
     def fail_model():
@@ -127,8 +127,8 @@ def test_legacy_route_actions_fail_closed_without_model_or_tool(
     monkeypatch.setattr(ToolRuntime, "execute", fail_tool)
     output = graph_builder.build_agent_graph().compile().invoke(
         {
-            "original_question": "测试问题",
-            "effective_question": "测试问题",
+            "original_question": "你能做什么？",
+            "effective_question": "你能做什么？",
             "top_k": 5,
             "decompose_top_k": 10,
             "decision": {
@@ -143,9 +143,8 @@ def test_legacy_route_actions_fail_closed_without_model_or_tool(
     )
 
     assert calls == {"model": 0, "tool": 0}
-    assert output["result"]["status"] == "INTERNAL_ERROR"
-    assert output["result"]["answer"] == "Agent 内部执行异常，请稍后重试"
-    assert output["result"]["reason"] == f"Unsupported route action: {action}"
+    assert output["decision"]["action"] == "direct_answer"
+    assert output["result"]["status"] == "OK"
 
 
 def test_get_compiled_agent_graph_reuses_compiled_instance():
