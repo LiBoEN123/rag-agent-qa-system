@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_tools
-from app.agent import route_agent_action
+from app.agent.router import route_agent_action
 from app.api.responses import CHAT_RESULT_RESPONSE_MAP
 from app.graph import builder as graph_builder
 from app.graph import nodes as graph_nodes

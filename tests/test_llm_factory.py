@@ -55,7 +55,6 @@ def test_answer_model_uses_existing_configuration(monkeypatch):
 @pytest.mark.parametrize(
     ("getter_name", "key_name", "url_name", "model_name"),
     [
-        ("get_router_model", "ROUTER_API_KEY", "ROUTER_API_URL", "ROUTER_MODEL_NAME"),
         (
             "get_query_rewrite_model",
             "QUERY_REWRITE_API_KEY",
@@ -72,7 +71,7 @@ def test_role_models_reuse_answer_key_when_independent_key_is_empty(
     url_name,
     model_name,
 ):
-    """保持 Router、Rewrite、Judge 已有的 Answer Key 复用策略。"""
+    """保持 Rewrite、Judge 已有的 Answer Key 复用策略。"""
     monkeypatch.setattr(factory.Settings, "LLM_API_KEY", "shared-answer-key")
     monkeypatch.setattr(factory.Settings, key_name, "")
     monkeypatch.setattr(factory.Settings, url_name, "https://models.example.test/v1")

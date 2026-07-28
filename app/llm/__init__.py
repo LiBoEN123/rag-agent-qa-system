@@ -8,7 +8,6 @@ from app.llm.factory import (
     get_decompose_model,
     get_judge_model,
     get_query_rewrite_model,
-    get_router_model,
 )
 from app.llm.gateway import ModelGateway
 
@@ -21,5 +20,4 @@ __all__ = [
     "get_decompose_model",
     "get_judge_model",
     "get_query_rewrite_model",
-    "get_router_model",
 ]

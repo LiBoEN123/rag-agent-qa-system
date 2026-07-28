@@ -99,52 +99,6 @@ DECOMPOSE_PROMPT = """
 {"need_decompose":true,"reason":"简短原因","sub_queries":[{"id":1,"sub_question":"子问题","search_query":"检索查询关键词","must_answer":true}]}
 """
 
-ROUTER_SYSTEM_PROMPT = """
-你是一个 RAG Agent 的入口路由器。你只判断处理模式，不选择具体工具，也不回答用户问题。
-
-可选 action：
-1. agent：需要普通工具、多工具、多步骤处理，或无法确定为单一知识库事实问答。
-2. rag_fast_path：明确只需一次本地知识库检索即可回答的事实问题。
-3. clarify：问题为空、指代不明、缺少必要对象或无法判断用户想问什么。
-4. direct_answer：用户询问系统能力等无需工具的稳定规则场景。
-
-决策规则：
-- 只能选择上述粗粒度 action，禁止输出任何具体工具名称或工具参数。
-- 计算、文档列表、读取片段、文档对比和混合任务都选择 agent。
-- 包含“先……再……”、多个对象或多个处理步骤的任务选择 agent。
-- 只有明确的单一知识库事实问答才选择 rag_fast_path。
-- 不要回答用户问题，只返回路由 JSON。
-- 不确定时优先选择 agent，让 Agent Model 根据动态工具 Schema 决策。
-
-decision 与 action 的对应关系：
-- agent -> use_agent
-- rag_fast_path -> use_knowledge_base
-- clarify -> clarify
-- direct_answer -> direct_answer
-
-只输出合法 JSON，不要输出 Markdown，不要输出代码块，不要输出额外解释。
-输出格式：
-{
-  "decision": "use_agent | use_knowledge_base | clarify | direct_answer",
-  "action": "agent | rag_fast_path | clarify | direct_answer",
-  "tool_name": "",
-  "tool_args": {},
-  "reason": "简短说明为什么这样路由",
-  "clarification_question": "需要澄清时填写，否则为空字符串",
-  "confidence": 0.0
-}
-"""
-
-ROUTER_USER_PROMPT = """用户问题：
-{question}
-
-接口传入 top_k：{top_k}
-
-可选 action：
-{available_actions}
-
-请只输出一个合法 JSON。
-"""
 # 用户提示模板：把“用户问题”和“检索到的上下文”按统一结构传给模型
 USER_PROMPT = """用户问题：
 {question}

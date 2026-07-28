@@ -11,8 +11,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.agent import route_agent_action
 from app.agent.query_rewrite import rewrite_query_with_history
+from app.agent.router import route_agent_action
 from app.common.logging import get_logger
 from app.config import Settings
 from app.graph.runtime import run_agent_langgraph

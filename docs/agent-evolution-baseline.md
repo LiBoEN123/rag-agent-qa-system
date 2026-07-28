@@ -342,3 +342,26 @@ PR6 完成后为 `565 passed, 1 warning`；Ruff、`python -m compileall app`、�
 - 真实 `build_agent_graph().compile().invoke(...)` 测试覆盖 `web_search → web_pdf_fetch → final answer`，以及 `web_fetch` 误读 PDF 收到 unsupported content type ToolMessage 后改用 `web_pdf_fetch` 的恢复链。ToolMessage call ID、Registry/ToolRuntime 调用、页码正文、tool trace 顺序、脱敏 `tool_call_chain`、空本地 references 和不进入 RAG 均已验证。
 - 自动测试使用确定性两页 PDF fixture、Fake DDGS 和 Fake hardened Manager/Session/Response；加密、空白、超页数和损坏 PDF 在测试中通过 pypdf 生成。完成后全量结果为 `698 passed, 1 warning`；唯一警告仍来自 jieba 对 `pkg_resources` 的弃用提示。自动测试没有访问真实模型、搜索引擎、PDF URL、代理、RAG 索引、生产 Checkpoint 或生产审计文件；按任务约束未运行真实网络 PDF 冒烟。
 - Agent Graph、Middleware 栈、Router、Planner、Executor、FastAPI API Schema、SQLite Schema、Checkpointer、本地 RAG 算法和原七个工具业务契约均未修改。`web_pdf_fetch` 只走普通 ToolMessage，不设置 `pending_rag_result`，不写 ChromaDB/BM25/manifest/知识库目录，不产生本地 RAG references，也不永久保存 PDF。
+
+## 21. PR9 删除失效 LLM Router 兼容层
+
+本节只记录 PR9 增量；PR0–PR8 历史内容保持原样。开始时实际分支为 `fix/langgraph-runtime-hardening`，HEAD 为 `59d67591882559d702487f0ce739aab954f53c4e`，与任务记录一致，工作区干净。修改前本地基线为 `709 passed, 1 warning`；Ruff、`python -m compileall app`、`python scripts/inspect_agent_runtime.py --check`、`python -m pip check` 和 `git diff --check` 全部通过。
+
+修改前先用仓库级 `rg`、明确导入路径和实际 `/chat` 调用链逐类核对引用：
+
+| 删除类别 | 修改前生产引用 | 测试/文档引用 | 结论 |
+| --- | --- | --- | --- |
+| `app/agent/llm_router.py`、`call_router_llm()`、`parse_router_json_output()` | 仅由 `router.py` 中无人调用的 `route_agent_action_by_llm()` 引用，并由 `app.agent.__init__` re-export；当前 `route_agent_action()` 不到达该链 | `tests/test_agent_router.py` 直接测试旧模型调用/JSON 解析；README 记录兼容层 | 删除模块、旧调用测试和文档描述 |
+| `route_agent_action_by_llm()`、`validate_route_decision()`、Router action/tool 常量及 normalizer | 只在 `router.py` 内组成旧 Router 输出兼容解析，或由 `app.agent.__init__` re-export；生产入口无调用方 | 旧 Router 测试直接导入和断言 | 删除函数、常量、旧解析测试和公共导出 |
+| `get_router_model()` 与 Router 专属 Settings | 只服务已删除的 `llm_router.py`；`app.llm.__init__` 仅做 re-export | Factory 参数化测试、README 和 `.env.example` | 删除模型工厂入口、缓存清理项、全部 Router 专属环境配置和导出；保留 Answer、Query Rewrite、Decompose、Compare、Judge 与 Agent Chat Model |
+| `ROUTER_SYSTEM_PROMPT`、`ROUTER_USER_PROMPT` | 只由已删除的 `llm_router.py` 导入 | 旧 Router 调用测试间接覆盖 | 删除 Prompt，不改其他 RAG/Agent Prompt |
+| `extract_chunk_id()`、数学表达式辅助、文档对比规则辅助及 `COMPARE_DOCUMENT_KEYWORDS` | 只有定义和 `app.agent.__init__` re-export；生产代码无消费者 | 无现行行为消费者 | 删除；`rules.py` 只保留确定性入口实际使用的 `normalize_question()` |
+| `app.agent` 业务函数聚合导出 | `api/chat.py`、`chat_service.py`、`graph/nodes.py` 从包级导入 Router，`answer.py` 从包级导入 formatter | 部分测试从包级导入 Router | 生产和集成测试改为明确模块导入；`app.agent.__all__` 收缩为空，不影响显式子模块导入 |
+
+保留的 `route_agent_action()` 仍只执行确定性入口规则：空问题返回 `clarify`，少量系统能力问题返回 `direct_answer`，少量明确指代不明问题返回 `clarify`，其他普通问题稳定返回 `action="agent"`。现有 `decision`、`action`、`tool_name`、`tool_args`、`reason`、`clarification_question`（适用场景）、`router_source`、`router_confidence`、`router_llm_used` 和 `router_fallback_reason` 结构未做统一重构；`router_llm_used` 继续输出 `False`。显式注入/旧协议使用的 `rag_fast_path` 消费路径也继续保留在 ChatService、Graph 和 Planner/Executor 兼容层，本 PR 只删除已无入口的 Router LLM 生产者。
+
+普通工具选择继续由 LangChain `create_agent` 根据 `RegistryToolsMiddleware` 注入的当前可见 StructuredTool/Pydantic Schema 完成，执行边界仍为 `StructuredTool → ToolRegistry.dispatch() → ToolRuntime.execute() → ToolSpec.handler`。新增 Registry Tool 的回归测试证明 Router 输出不随注册工具集合变化，也不需要修改 Router。
+
+新增/整理的测试覆盖空问题、`direct_answer`、`clarify`、普通问题进入 `agent`、不调用 Router 模型、不选择具体工具、新增 Registry Tool 不修改 Router、包级旧 API 不可导出、`llm_router` 模块不存在，以及 ChatService/Graph 继续绑定同一明确模块 Router。只保护旧模型调用、Markdown JSON 解析、旧具体工具 action 与 `ENABLE_LLM_ROUTER` 分支的测试已删除。完成后全量结果为 `721 passed, 1 warning`；唯一警告仍来自 jieba 对 `pkg_resources` 的弃用提示。
+
+父图节点和边、Framework Agent 节点、Middleware 栈、Planner、Executor、`legacy_plan`、`fallback_to_legacy`、AgentState 计划字段、RAG 子图、ToolRegistry、ToolRuntime、Provider、权限/审计、Checkpointer、FastAPI API Schema、HTTP 状态码、SQLite Schema、session、metrics、tool trace 与 `tool_call_chain` 日志均未修改。八个生产工具的名称、参数/输出 Schema、权限、风险等级、timeout、重试、审计与可见性保持不变。自动测试使用隔离 fake，没有调用真实模型、搜索引擎、网页/PDF、代理，没有重建 RAG 索引、创建生产 Checkpoint 或写生产审计文件。

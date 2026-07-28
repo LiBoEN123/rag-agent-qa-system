@@ -44,7 +44,7 @@ def find_last_successful_observation(state: AgentState) -> AgentObservation | No
 
 def _format_tool_answer(tool_name: str, output: dict) -> str:
     """调用现有工具答案格式化函数，局部导入用于避免循环依赖。"""
-    from app.agent import format_tool_answer
+    from app.agent.formatting import format_tool_answer
 
     return format_tool_answer(tool_name, output)
 

@@ -111,21 +111,6 @@ def get_answer_model() -> Any | None:
 
 
 @lru_cache(maxsize=1)
-def get_router_model() -> Any | None:
-    """返回 Agent Router 模型。"""
-    return _create_model(
-        role="router",
-        api_key=Settings.ROUTER_API_KEY or Settings.LLM_API_KEY,
-        api_url=Settings.ROUTER_API_URL,
-        model_name=Settings.ROUTER_MODEL_NAME,
-        temperature=Settings.ROUTER_TEMPERATURE,
-        max_tokens=Settings.ROUTER_MAX_TOKENS,
-        timeout=Settings.ROUTER_TIMEOUT,
-        max_retries=Settings.ROUTER_MAX_RETRIES,
-    )
-
-
-@lru_cache(maxsize=1)
 def get_query_rewrite_model() -> Any | None:
     """返回多轮 Query Rewrite 模型。"""
     return _create_model(
@@ -203,7 +188,6 @@ def get_judge_model(
 def clear_model_factory_cache() -> None:
     """清理全部角色的模型缓存，供测试或配置刷新使用。"""
     get_answer_model.cache_clear()
-    get_router_model.cache_clear()
     get_query_rewrite_model.cache_clear()
     get_decompose_model.cache_clear()
     get_compare_model.cache_clear()

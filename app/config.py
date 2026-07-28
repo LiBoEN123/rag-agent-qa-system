@@ -549,15 +549,6 @@ class Settings:
     JUDGE_MAX_RETRIES = int(os.getenv("JUDGE_MAX_RETRIES", "1"))
     JUDGE_MAX_TOKENS = int(os.getenv("JUDGE_MAX_TOKENS", "2048"))
 
-    ENABLE_LLM_ROUTER = env_bool("ENABLE_LLM_ROUTER", "false")
-    ROUTER_API_KEY = os.getenv("ROUTER_API_KEY") or LLM_API_KEY
-    ROUTER_MODEL_NAME = os.getenv("ROUTER_MODEL_NAME", MODEL_NAME)
-    ROUTER_API_URL = os.getenv("ROUTER_API_URL", LLM_API_URL)
-    ROUTER_TIMEOUT = int(os.getenv("ROUTER_TIMEOUT", "10"))
-    ROUTER_MAX_RETRIES = int(os.getenv("ROUTER_MAX_RETRIES", "1"))
-    ROUTER_MAX_TOKENS = int(os.getenv("ROUTER_MAX_TOKENS", "512"))
-    ROUTER_TEMPERATURE = float(os.getenv("ROUTER_TEMPERATURE", "0.0"))
-
     AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "5"))
     AGENT_MAX_ITERATIONS = env_int("AGENT_MAX_ITERATIONS", "6")
     AGENT_MAX_TOOL_CALLS = env_int("AGENT_MAX_TOOL_CALLS", "10")

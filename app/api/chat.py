@@ -17,7 +17,7 @@ from app.rag import (
     rebuild_and_persist_index,
 )
 from app.config import Settings
-from app.agent import route_agent_action
+from app.agent.router import route_agent_action
 from app.observability import create_trace_id
 from app.rag.retrieval import safe_float, should_refuse
 from app.observability.metrics import (

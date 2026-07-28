@@ -10,7 +10,7 @@
 - 混合检索：BM25 负责关键词精确匹配，SentenceTransformer Embedding 负责语义召回，提升中文问答召回稳定性。
 - CrossEncoder rerank：对候选 chunk 做二阶段重排，缓解初召回排序不准的问题。
 - ChromaDB 持久化：chunk 文本、metadata 和 embedding 持久化保存，服务重启可复用索引缓存。
-- Agent-first 粗粒度 Router：除空问题、稳定直答和明确澄清外，自然语言请求默认进入 `agent`，避免静态路由在模型看到动态工具前误分流；`rag_fast_path` 保留为显式/旧协议兼容入口。
+- 确定性入口 Router：只处理空问题、少量稳定直答和明确澄清；其他自然语言请求统一进入 `agent`，具体工具由 Agent Model 根据当前请求可见的动态 Tool Schema 选择。
 - 框架原生 Agent Runtime：LangGraph 父图嵌入 LangChain `create_agent` 子图，由框架管理模型—工具循环、参数校验、ToolMessage 和调用上限。
 - 权限感知的 Registry-driven 工具发现：Provider 按请求权限只暴露满足 `required_permissions` 的工具，Middleware 将其注入模型和执行层；工具仍经 `StructuredTool → ToolRegistry → ToolRuntime` 执行。
 - Agent 循环防护：工具错误总数、连续相同调用、连续相同错误和模型/工具累计耗时均有独立预算；终止错误对同批后续调用 fail-closed，并补齐关联 ToolMessage。
@@ -465,14 +465,6 @@ streamlit run demo/streamlit_app.py
 | `JUDGE_TIMEOUT` | Judge 模型请求超时秒数 |
 | `JUDGE_MAX_RETRIES` | Judge 模型失败重试次数 |
 | `JUDGE_MAX_TOKENS` | Judge 模型最大输出 token |
-| `ENABLE_LLM_ROUTER` | 是否启用 LLM Agent 路由，默认 `false` |
-| `ROUTER_API_KEY` | 路由模型 API Key；为空时复用回答模型 Key |
-| `ROUTER_MODEL_NAME` | 路由模型名称 |
-| `ROUTER_API_URL` | 路由模型接口地址 |
-| `ROUTER_TIMEOUT` | 路由模型请求超时秒数 |
-| `ROUTER_MAX_RETRIES` | 路由模型失败重试次数 |
-| `ROUTER_MAX_TOKENS` | 路由模型最大输出 token |
-| `ROUTER_TEMPERATURE` | 路由模型温度 |
 | `AGENT_MAX_STEPS` | Agent 单次请求最多执行的计划步骤数，默认 `5` |
 | `AGENT_MAX_ITERATIONS` | 迭代式 Agent 最大模型轮次，默认 `6` |
 | `AGENT_MAX_TOOL_CALLS` | 迭代式 Agent 最大工具调用总数，默认 `10` |
@@ -526,12 +518,6 @@ TEMPERATURE=0.1
 LLM_MAX_TOKENS=1024
 LLM_TIMEOUT=60
 LLM_MAX_RETRIES=2
-
-ENABLE_LLM_ROUTER=false
-ROUTER_API_KEY=
-ROUTER_MODEL_NAME=deepseek-chat
-ROUTER_API_URL=https://api.deepseek.com/v1/chat/completions
-ROUTER_TIMEOUT=10
 
 AGENT_MAX_STEPS=5
 AGENT_MAX_ITERATIONS=6
@@ -676,21 +662,18 @@ GET /metrics-summary?limit=20
 
 ## Agent 路由与工具
 
-当前支持的 action：
+正常 `/chat` 的确定性 Router action：
 
 | action | 路径 |
 | --- | --- |
-| `search_knowledge_base` | 走 RAG 检索、重排、生成、引用绑定 |
-| `compare_documents` | 按主题检索两个指定文档，返回双方证据并标记可能的差异或冲突 |
-| `simple_calculator` | 调用安全四则运算工具 |
-| `list_documents` | 返回当前知识库文档数量和列表 |
-| `get_chunk_text` | 根据 `chunk_id` 返回完整 chunk 文本 |
+| `agent` | 普通问题统一进入 LangChain `create_agent` |
 | `direct_answer` | 由 Answer Composer 生成系统能力说明，不把 Router 的内部 reason 直接暴露为用户回答 |
 | `clarify` | 问题过短、为空或指代不明时追问 |
+| `rag_fast_path` | 仅保留给显式注入或旧协议兼容路径，正常规则入口不主动选择 |
 
 如果 `/chat` 传入 `session_id`，Query Rewrite 会在 Agent Router 之前执行；Router 看到的是改写后的有效问题，响应中的 `data.question` 仍保留原始输入，改写细节记录在 `data.tool_trace` 的 `query_rewrite` step 中。
 
-`ENABLE_LLM_ROUTER` 作为旧配置项保留，但正常自然语言入口不再让 Router LLM 抢先选择 RAG；否则它无法知道 Provider 中是否刚注册了适用工具。LLM Router 的调用与旧 JSON 校验函数仍保留给兼容调用方，生产默认入口采用 Agent-first 分流。
+Router 不调用独立模型，也不解析具体工具 action。普通问题进入 `create_agent` 后，Agent Model 根据 `RegistryToolsMiddleware` 注入的当前可见 StructuredTool/Pydantic Schema 选择 `search_knowledge_base`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text`、`web_search`、`web_fetch` 或 `web_pdf_fetch`；执行仍统一经过 `ToolRegistry` 和 `ToolRuntime`。
 
 ## 索引构建与缓存
 
@@ -819,10 +802,9 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   │   ├── responses.py         # 响应构造和业务状态映射
 │   │   └── lifecycle.py         # RAG 启动和索引加载流程
 │   ├── agent/
-│   │   ├── __init__.py          # Agent 公共入口
-│   │   ├── router.py            # 路由决策与结果校验
-│   │   ├── rules.py             # 数学、chunk 和文档对比规则
-│   │   ├── llm_router.py        # LLM Router 调用与解析
+│   │   ├── __init__.py          # Agent 包入口，不聚合业务函数
+│   │   ├── router.py            # 确定性入口路由
+│   │   ├── rules.py             # Router 问题规范化规则
 │   │   ├── query_rewrite.py     # 多轮追问识别和 Query Rewrite
 │   │   ├── formatting.py        # 普通工具答案格式化
 │   │   ├── state.py             # Agent 状态模型

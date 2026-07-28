@@ -147,6 +147,8 @@ Provider 的模型可见性层只复用 `has_permission()` 检查全部 `ToolSpe
 | 问题 | 首先查看 |
 | --- | --- |
 | Graph 为什么走这个分支 | `app/graph/builder.py`、`app/graph/conditions.py` |
+| 请求为什么没有进入 Agent | `app/services/chat_service.py`、`app/agent/router.py` 的确定性入口规则 |
+| 模型为什么选择某个工具 | `app/agent/framework_tools.py`、ToolSpec description/Pydantic Schema 和 Agent Model |
 | 模型为什么看不到某个工具 | `app/tools/providers/local.py`、`ToolSpec.required_permissions` |
 | Web Search 为什么模型看不到 | `TOOL_DEFAULT_PERMISSIONS`、`app/tools/providers/local.py` |
 | Web Search 为什么执行失败 | `app/tools/web_search.py`、`app/tools/runtime.py` |

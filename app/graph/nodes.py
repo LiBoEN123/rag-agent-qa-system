@@ -5,7 +5,6 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.runtime import Runtime
 
-from app.agent import route_agent_action
 from app.agent.answer import apply_rag_result_to_state, compose_final_answer
 from app.agent.framework_agent import (
     apply_framework_events,
@@ -14,6 +13,7 @@ from app.agent.framework_agent import (
 from app.agent.guardrails import AgentStopReason
 from app.agent.executor import execute_plan
 from app.agent.planner import build_plan_from_decision
+from app.agent.router import route_agent_action
 from app.agent.runtime import (
     append_llm_usage_trace,
     build_decide_trace,
