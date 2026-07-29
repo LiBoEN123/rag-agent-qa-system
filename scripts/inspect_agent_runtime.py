@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import configparser
 import json
 import re
 import sys
@@ -16,6 +17,7 @@ from pydantic_settings import BaseSettings
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+IMPORT_LINTER_CONFIG = PROJECT_ROOT / ".importlinter"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -115,6 +117,24 @@ AGENT_RESULT_FIELDS = {
     "answer_llm_used",
     "llm_call_count",
     "timings",
+}
+IMPORT_LINTER_CONTRACT_SECTIONS = {
+    "application_layer_contract": (
+        "importlinter:contract:application-layers",
+        "layers",
+    ),
+    "top_level_acyclic_contract": (
+        "importlinter:contract:top-level-acyclic",
+        "acyclic_siblings",
+    ),
+    "http_framework_boundary": (
+        "importlinter:contract:http-framework-only-in-api",
+        "forbidden",
+    ),
+    "settings_framework_boundary": (
+        "importlinter:contract:pydantic-settings-only-in-config",
+        "forbidden",
+    ),
 }
 
 
@@ -256,6 +276,44 @@ def _tool_data(
 
 def _check(name: str, passed: bool, detail: str) -> dict[str, Any]:
     return {"name": name, "passed": passed, "detail": detail}
+
+
+def _inspect_import_linter_config() -> dict[str, bool]:
+    """读取公开合同配置；实际 import graph 仍由 lint-imports 验证。"""
+    parser = configparser.ConfigParser()
+    configured = IMPORT_LINTER_CONFIG.is_file()
+    if configured:
+        parser.read(IMPORT_LINTER_CONFIG, encoding="utf-8")
+
+    contract_status = {
+        report_name: (
+            parser.has_section(section)
+            and parser.get(section, "type", fallback="") == contract_type
+        )
+        for report_name, (
+            section,
+            contract_type,
+        ) in IMPORT_LINTER_CONTRACT_SECTIONS.items()
+    }
+    zero_import_ignores = all(
+        option != "ignore_imports"
+        for section in parser.sections()
+        for option in parser.options(section)
+    )
+    return {
+        "import_linter_configured": (
+            configured
+            and parser.has_section("importlinter")
+            and parser.get(
+                "importlinter",
+                "root_package",
+                fallback="",
+            )
+            == "app"
+        ),
+        **contract_status,
+        "zero_import_ignores": zero_import_ignores,
+    }
 
 
 def inspect_runtime(
@@ -498,6 +556,7 @@ def inspect_runtime(
         == default_has_fetch_permission
     )
     pdf_authorized_visibility_ok = True
+    module_boundaries = _inspect_import_linter_config()
     registered_tool_count_ok = len(registered_tools) == 8
     if enforce_default_registry:
         default_context = build_default_tool_context(
@@ -564,6 +623,17 @@ def inspect_runtime(
             no_import_time_dotenv,
             "dotenv loader must be absent",
         ),
+        *[
+            _check(
+                name,
+                passed,
+                (
+                    ".importlinter must declare the expected public contract "
+                    "without ignore_imports"
+                ),
+            )
+            for name, passed in module_boundaries.items()
+        ],
         _check(
             "single_runtime_state",
             not nested_state_fields and not missing_business_fields,
@@ -712,6 +782,7 @@ def inspect_runtime(
             "frozen": immutable_settings,
             "env_file_disabled_for_inspection": True,
         },
+        "module_boundaries": module_boundaries,
         "state_schema": {"fields": sorted(state_fields)},
         "agent_result_contract": {
             "model": AgentRunResult.__name__,
@@ -769,6 +840,11 @@ def render_text(report: dict[str, Any]) -> str:
     lines.extend(
         f"- {Path(path).name}: {item['lines']} / {item['limit']}"
         for path, item in report["source_files"].items()
+    )
+    lines.extend(["", "Module boundary contracts"])
+    lines.extend(
+        f"- {name}: {'configured' if configured else 'missing'}"
+        for name, configured in report["module_boundaries"].items()
     )
     return "\n".join(lines)
 

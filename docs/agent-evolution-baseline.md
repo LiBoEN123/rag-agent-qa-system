@@ -592,3 +592,85 @@ FastAPI `/chat` Schema 和 HTTP 状态、Agent Result、RAG 算法、八个 Tool
 Provider 权限、Tool Runtime 治理/审计、SQLite Schema、metrics、bad case、
 session 与 `tool_call_chain` 没有有意改变。Import Linter 和正式模块依赖合同、
 ChatService 进一步拆分及历史文档归档继续留给后续阶段。
+
+## 27. PR15 可执行模块依赖合同
+
+本节只记录 PR15 增量，不改写 PR0–PR14 历史。修改前实际分支为
+`fix/langgraph-runtime-hardening`，HEAD 为
+`b59614dcea8c60b4be7907d0b6cdc2ab870c57f1`，与任务记录一致，工作区干净。
+修改前本地基线为 `751 passed, 1 warning`；Ruff、
+`python -m compileall app scripts`、Runtime inspection check、
+`python -m pip check` 和 `git diff --check` 均通过。
+
+依赖准入在 Python 3.12.3 环境确认 `import-linter==2.13` 要求 Python >=3.10、
+许可证为 BSD-2-Clause，并明确声明支持 Python 3.12。pip index 返回 2.13 为当前
+候选版本；dry-run 只新增 `import-linter==2.13` 与 `grimp==3.15`，复用现有 click、
+rich 和 typing-extensions。FastAPI 与 Uvicorn 只属于未安装的 `ui` extra；基础安装
+没有升级或降级 FastAPI、Pydantic、pydantic-settings、LangChain、LangGraph、
+ChromaDB 等核心依赖。顶层依赖同时写入 `requirements.txt` 和
+`requirements.lock`。
+
+修改前用仓库级 `rg` 检查所有直接与函数内 `app` import、FastAPI/Starlette、
+pydantic-settings、API/Service/Graph/Agent/Tools/RAG 引用，再由 Import Linter
+构建真实图。关键引用分类如下：
+
+| Importer | Imported module | 形式 | 当前职责 | 目标方向 | 处理 |
+| --- | --- | --- | --- | --- | --- |
+| `app.observability.middleware` | `fastapi` | 直接 | HTTP trace/timing middleware | 违规：observability 不能依赖 HTTP 框架 | 移到 `app.api.middleware`，删除旧文件且不保留 re-export |
+| `app.common.logging` | Uvicorn access logger | import-time logger lookup | URL 解码和 access-log 全局配置 | 职责错位：common 必须框架无关 | filter/config 移到 `app.api.http_logging`，lifespan 显式调用 |
+| `app.config` | `pydantic_settings` | 直接 | 唯一 AppSettings 实现 | 合法且必须封装于 config | 保留；其他 app package 没有直接导入 |
+| `app.tools.knowledge_base` | `app.rag` | 函数内 | 受治理知识库工具调用 RAG 能力 | 合法：tools → rag | 保留函数内依赖，不作为规避 |
+| `app.tools.compare_documents` | `app.rag` | 函数内/包门面 | 工具使用 RAG citation/index 状态 | 合法：tools → rag | 保留，动态 RAG 状态门面不变 |
+| `app.api.lifecycle` | `app.graph` / `app.tools` | 函数内 | 组合根启动/关闭资源 | 合法：api → lower layers | 保留 |
+| `app.rag.__init__` | `app.rag.graph` | 函数内 | 延迟 RAG 子图与动态索引状态门面 | 同层且有运行时语义 | 保留 `__getattr__` 和延迟入口 |
+
+初始 Import Linter 结果为 application layers、top-level acyclic 和 foundation
+三项通过，HTTP 合同准确发现一条
+`app.observability.middleware → fastapi` 违规。pydantic-settings forbidden
+合同按默认语义还会把
+`业务模块 → app.config → pydantic_settings` 的合法间接封装链判为违规；根据
+Import Linter 2.13 公共选项改为 `allow_indirect_imports = True`，只禁止其他模块
+直接绕过 config。该调整没有 ignore。修改前未发现顶层 package 循环、基础层反向
+依赖、Service/API、Graph/Service、Agent/Graph、RAG/Tools 等反向链，也未发现需要
+删除的错误包级 re-export。
+
+最终 `.importlinter` 有五项原生合同：
+
+1. application layers：
+   `api → services → graph → agent → tools → rag → llm
+   → storage/observability → contracts/config/common`；
+2. top-level acyclic：`app` 顶层 package 无循环；
+3. foundation boundary：contracts/config/common 不依赖应用或基础设施层；
+4. HTTP framework boundary：FastAPI/Starlette 只能存在于 API 组合层；
+5. pydantic-settings boundary：只有 config 可以直接依赖 pydantic-settings。
+
+`storage : observability` 暂时同层，`contracts | config | common` 彼此独立。
+`ignore_imports = 0`。没有动态 import 逃生口、自研 AST/import graph 分析器、
+Service Locator 或新全局 Registry。
+
+HTTP 迁移保留 `/chat` 原有 trace ID 继承/生成、`request_enter_time`、
+`request_enter_perf`、`X-Trace-Id`、`X-Total-Cost-Ms`、chat 专属日志和异常传播。
+Uvicorn filter 保留 URL 解码和控制字符转义，配置函数幂等，且只在 FastAPI
+lifespan 启动路径显式调用。新增测试覆盖 middleware 全部行为、common import 无
+副作用、显式/重复 Uvicorn 配置，以及官方 `lint-imports` 全图合同。
+
+Runtime inspection 新增 `module_boundaries` 报告及
+`import_linter_configured`、`application_layer_contract`、
+`top_level_acyclic_contract`、`http_framework_boundary`、
+`settings_framework_boundary`、`zero_import_ignores` 六项检查。它只通过
+`configparser` 读取 `.importlinter` 的公开结构，不重新实现依赖图。CI 在 Ruff
+之后、Runtime inspection 之前执行 `lint-imports`，非零退出码会直接阻止 CI。
+
+最终验证为 `761 passed, 1 warning`；`lint-imports` 普通/verbose 均为
+`5 kept, 0 broken`，Ruff、compileall、Runtime inspection 的
+text/JSON/Mermaid/check、pip check 和 diff check 均通过。唯一警告仍来自 jieba
+对 `pkg_resources` 的弃用提示。自动测试只使用 fake、临时目录和隔离副作用，没有
+调用真实模型、搜索、网页/PDF、代理，没有重建真实 RAG 索引、创建生产 Checkpoint
+或写生产 metrics、session、bad case、trace、工具审计文件。
+
+FastAPI `/chat` 请求/响应 Schema、HTTP 状态码和 headers、Agent Graph 节点/边、
+AgentRunResult、ChatStatusPolicy、RAG 算法与引用、八个 ToolSpec、Provider 可见性、
+ToolRuntime 权限/审批/超时/重试/审计、AppSettings 环境变量和缓存语义、SQLite
+session/Checkpointer Schema、metrics、bad case、session、tool trace、
+`tool_call_chain`、Web SSRF 与 PDF 行为均未改变。仍未处理 ChatService 进一步拆分、
+API Controller 进一步拆分和历史文档归档。

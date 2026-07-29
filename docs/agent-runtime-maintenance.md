@@ -79,6 +79,26 @@ Graph/Checkpointer，再依次失效 Model、Registry、Settings 缓存；生产
 进程。不要恢复模块级 `settings = get_settings()`、全局 `tool_registry` 或可变
 Settings 类属性。
 
+## 可执行模块边界
+
+`.importlinter` 是生产包依赖图的权威合同，完整规则和新增模块放置指南见
+[模块依赖边界](architecture/module-boundaries.md)。主方向是：
+
+```text
+api → services → graph → agent → tools → rag → llm
+    → storage/observability → contracts/config/common
+```
+
+API 是组合根，可以跨层组装依赖；所有低层都不能反向依赖 API。FastAPI 与
+Starlette 只能由 `app.api` 使用，HTTP middleware 位于
+`app/api/middleware.py`。`app/api/http_logging.py` 独占 Uvicorn access-log
+适配，并由 lifespan 显式配置；`app.common.logging` 只创建框架无关 logger。
+
+`pydantic_settings` 只能由 `app.config` 直接导入。其他模块依赖
+`AppSettings`、`get_settings()` 或明确 config helper，因此 Settings 外部包合同使用
+Import Linter 原生的 `allow_indirect_imports = True`：允许经过 `app.config` 的合法
+间接链，但仍禁止其他模块直接绕过配置门面。合同没有 `ignore_imports`。
+
 ## 单一运行状态
 
 `AgentGraphState` 是父图唯一的完整请求状态。节点不再取出嵌套业务对象后原地修改；initialize、框架事件投影、RAG 映射、compose 和 finalize 都返回明确的 LangGraph 字段 updates。
@@ -206,7 +226,10 @@ graph TD;
 | `app/tools/web_pdf_fetch.py` | 校验 PDF magic；通过 pypdf 提取页范围和有限元数据 |
 | `app/agent/runtime.py` | 构造兼容 decide/LLM trace；保存 trace |
 | `app/services/chat_service.py` | 应用 ChatStatusPolicy；编排 metrics/session |
+| `app/api/middleware.py` | 适配 FastAPI Request；维护 `/chat` trace 与端到端响应头 |
+| `app/api/http_logging.py` | 显式、幂等配置 Uvicorn access-log URL 展示 |
 | `app/api/responses.py` | 规范化 confidence/LLM usage 并构造 API Schema |
+| `app/common/logging.py` | 构造框架无关的应用 logger，不修改 Uvicorn 全局状态 |
 | `app/observability/metrics.py` | 从 decide/tool/RAG trace 汇总稳定 metrics，不映射状态 |
 | `app/rag/graph/` | 编排检索、证据、生成和引用流程 |
 
@@ -291,6 +314,9 @@ Provider 的模型可见性层只复用 `has_permission()` 检查全部 `ToolSpe
 - 不把 `AgentRunResult` 实例写入 Graph State 或 Checkpoint。
 - 不在 Runtime、ChatService、API 或 metrics 中另建状态映射表。
 - 不让 API Response Builder 导入 ChatService 或 Agent Runtime。
+- 不让 API 以外的生产包导入 FastAPI、Starlette 或承载 Uvicorn 适配。
+- 不让 `app.config` 以外的生产模块直接导入 `pydantic_settings`。
+- 不用函数内 import、`importlib` 或 `ignore_imports` 隐藏依赖方向。
 - 不在节点或 helper 中原地修改输入的 observations、references 或 tool_trace。
 - 不从 `builder.py` 源码、AST 或正则反推图结构。
 
@@ -301,8 +327,10 @@ python scripts/inspect_agent_runtime.py
 python scripts/inspect_agent_runtime.py --format json
 python scripts/inspect_agent_runtime.py --format mermaid
 python scripts/inspect_agent_runtime.py --check
+lint-imports
+lint-imports --verbose
 ```
 
-脚本只使用普通 `build_agent_graph().compile()`，不会调用带 Checkpointer 的缓存入口；也不会初始化模型、DDGS、requests-hardened Manager、Trafilatura、PdfReader、执行 handler、访问网络或读取/重建 RAG 索引。报告验证 `AgentGraphState` 没有嵌套状态且包含全部业务字段，`AgentRunResult` 字段完整并拒绝 extra，所有 Result status 恰好有一项 policy，Graph result 仍是普通字典，API Response Builder 没有反向依赖，并且旧分散状态表没有残留。报告还分别列出 Registry 的八个 `registered_tools` 和默认 Context 的 `default_visible_tools`，验证默认可见集合、权限及 Web 工具契约。版本来自 `importlib.metadata`，图来自 `get_graph()`/`get_graph(xray=True)`，Mermaid 来自 `draw_mermaid()`，工具参数来自模型可见的 Pydantic JSON Schema。
+脚本只使用普通 `build_agent_graph().compile()`，不会调用带 Checkpointer 的缓存入口；也不会初始化模型、DDGS、requests-hardened Manager、Trafilatura、PdfReader、执行 handler、访问网络或读取/重建 RAG 索引。报告验证 `AgentGraphState` 没有嵌套状态且包含全部业务字段，`AgentRunResult` 字段完整并拒绝 extra，所有 Result status 恰好有一项 policy，Graph result 仍是普通字典，API Response Builder 没有反向依赖，并且旧分散状态表没有残留。报告还分别列出 Registry 的八个 `registered_tools` 和默认 Context 的 `default_visible_tools`，验证默认可见集合、权限及 Web 工具契约。它只读取 `.importlinter` 的公开配置结构，报告 `import_linter_configured`、四项关键合同和 `zero_import_ignores`；不分析或复制 import graph。版本来自 `importlib.metadata`，图来自 `get_graph()`/`get_graph(xray=True)`，Mermaid 来自 `draw_mermaid()`，工具参数来自模型可见的 Pydantic JSON Schema。实际模块方向必须由官方 `lint-imports` 全量检查。
 
-升级 LangChain、LangGraph 或 Pydantic 时，先运行契约测试和 `--check`。重点确认父图节点未改变、xray 仍能展开 `framework_agent`、model/tools 和调用限制节点仍存在、`ToolRuntime` 注入字段未暴露给模型，并重新生成本页 Mermaid。
+升级 LangChain、LangGraph、Pydantic 或调整 package 时，先运行 `lint-imports`、契约测试和 `--check`。重点确认父图节点未改变、xray 仍能展开 `framework_agent`、model/tools 和调用限制节点仍存在、`ToolRuntime` 注入字段未暴露给模型，并重新生成本页 Mermaid。

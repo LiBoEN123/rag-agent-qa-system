@@ -1,0 +1,80 @@
+[importlinter]
+root_package = app
+include_external_packages = True
+
+[importlinter:contract:application-layers]
+name = Application modules follow one dependency direction
+type = layers
+layers =
+    app.api
+    app.services
+    app.graph
+    app.agent
+    app.tools
+    app.rag
+    app.llm
+    app.storage : app.observability
+    app.contracts | app.config | app.common
+
+[importlinter:contract:top-level-acyclic]
+name = Top-level application packages are acyclic
+type = acyclic_siblings
+ancestors =
+    app
+depth = 0
+
+[importlinter:contract:foundation-does-not-depend-on-application]
+name = Foundation modules do not depend on application modules
+type = forbidden
+source_modules =
+    app.config
+    app.contracts
+    app.common
+forbidden_modules =
+    app.api
+    app.services
+    app.graph
+    app.agent
+    app.tools
+    app.rag
+    app.llm
+    app.storage
+    app.observability
+
+[importlinter:contract:http-framework-only-in-api]
+name = FastAPI and Starlette are HTTP adapter dependencies
+type = forbidden
+source_modules =
+    app.services
+    app.graph
+    app.agent
+    app.tools
+    app.rag
+    app.llm
+    app.storage
+    app.observability
+    app.contracts
+    app.config
+    app.common
+forbidden_modules =
+    fastapi
+    starlette
+
+[importlinter:contract:pydantic-settings-only-in-config]
+name = pydantic-settings is encapsulated by app.config
+type = forbidden
+source_modules =
+    app.api
+    app.services
+    app.graph
+    app.agent
+    app.tools
+    app.rag
+    app.llm
+    app.storage
+    app.observability
+    app.contracts
+    app.common
+forbidden_modules =
+    pydantic_settings
+allow_indirect_imports = True

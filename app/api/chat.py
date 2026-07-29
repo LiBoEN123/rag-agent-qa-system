@@ -3,8 +3,10 @@
 组装 FastAPI 应用，并把 HTTP 请求与响应适配到独立聊天应用服务。
 """
 
-from fastapi import FastAPI, Response, Request
 from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request, Response
+
 from app.rag import (
     preview_docs,
     preview_chunks,
@@ -24,11 +26,11 @@ from app.observability.metrics import (
     extract_llm_usage,
     read_recent_metrics,
 )
-from app.observability.middleware import trace_and_timing_middleware
 from app.api.diagnostics import (
     DiagnosticsDependencies,
     create_diagnostics_router,
 )
+from app.api.http_logging import configure_uvicorn_access_log
 from app.api.responses import ChatResponseBuilder
 from app.api.lifecycle import (
     StartupDependencies,
@@ -37,6 +39,7 @@ from app.api.lifecycle import (
     initialize_agent_graph_runtime,
     initialize_rag,
 )
+from app.api.middleware import trace_and_timing_middleware
 from app.api.schemas import (
     ChatData,
     ChatRequest,
@@ -55,6 +58,7 @@ from app.services.chat_service import (
 async def lifespan(_app: FastAPI):
     """启动时初始化 RAG/Graph，关闭时释放可选 Checkpointer。"""
     try:
+        configure_uvicorn_access_log()
         start_on_event()
         yield
     finally:

@@ -70,7 +70,21 @@ def test_runtime_report_preserves_graph_contract(
         "no_static_settings_class",
         "no_manual_env_parsers",
         "no_import_time_dotenv",
+        "import_linter_configured",
+        "application_layer_contract",
+        "top_level_acyclic_contract",
+        "http_framework_boundary",
+        "settings_framework_boundary",
+        "zero_import_ignores",
     } <= {item["name"] for item in report["checks"]}
+    assert report["module_boundaries"] == {
+        "import_linter_configured": True,
+        "application_layer_contract": True,
+        "top_level_acyclic_contract": True,
+        "http_framework_boundary": True,
+        "settings_framework_boundary": True,
+        "zero_import_ignores": True,
+    }
     assert report["agent_result_contract"]["model"] == "AgentRunResult"
     assert report["agent_result_contract"]["extra"] == "forbid"
     assert {

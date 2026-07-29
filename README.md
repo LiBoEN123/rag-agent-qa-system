@@ -173,6 +173,7 @@ flowchart TD
 - 配置通过 `.env` 管理，`.env.example` 提供默认模板，回答/Agent 模型、追问改写模型、拆分模型和评测 Judge 均使用 OpenAI-compatible Chat Completions 配置。
 - 应用内部模型调用统一由 LangChain `ChatOpenAI(base_url=...)` 访问 OpenAI-compatible 服务，各角色原有模型环境变量仍然有效。
 - `requirements.txt` 保留顶层依赖声明，`requirements.lock` 固定 Python 3.12 验证过的版本；Docker 和 CI 均使用 lock 文件安装依赖。
+- `.importlinter` 使用 Import Linter 2.13 固化应用包的单向依赖、顶层无环、基础层、HTTP 框架和 Settings 框架边界；CI 在 Ruff 后执行全量 `lint-imports`。
 - 支持 embedding / rerank 模型本地缓存，默认缓存目录为 `./.cache/huggingface/hub`，也可通过 `MODEL_CACHE_DIR`、`HF_HOME` 等环境变量调整。
 - 支持 ChromaDB 持久化，默认将向量、chunk 文本、metadata 和文档注册信息保存到 `data/chroma/`。
 - 启动时基于 manifest 判断是否需要重建索引；知识库文件、chunk 参数、embedding/rerank 模型或 pipeline 版本变化会触发重建。
@@ -189,6 +190,12 @@ flowchart TD
 `/chat` 控制器现在只负责读取 HTTP 请求上下文、调用 `ChatService`、设置状态码，并使用现有 Response Builder 构造响应。Query Rewrite、Runtime 调用、metrics 和 session 存储由 `app/services/chat_service.py` 编排；Router 由 LangGraph 父图的 `route_node` 唯一持有，因此聊天业务仍可脱离 FastAPI 测试且不会形成第二个路由入口。
 
 API 请求与响应 Schema、HTTP 状态语义和 trace 响应头保持不变；ChatService 固定调用 LangGraph 主图，知识库回答统一进入 RAG 子图。
+
+FastAPI middleware 与 Uvicorn access-log 适配分别位于
+`app/api/middleware.py` 和 `app/api/http_logging.py`。Uvicorn filter 只在
+FastAPI lifespan 启动时显式、幂等安装；导入 `app.common.logging` 不再修改全局
+logger。完整依赖规则见
+[模块依赖边界](docs/architecture/module-boundaries.md)。
 
 最终结果只经过一条状态链：
 
@@ -351,16 +358,19 @@ python scripts/smoke_test_agent_tool_calling.py
 
 ```bash
 python scripts/inspect_agent_runtime.py
+python scripts/inspect_agent_runtime.py --format json
 python scripts/inspect_agent_runtime.py --format mermaid
 python scripts/inspect_agent_runtime.py --check
+lint-imports
 ```
 
-图结构、维护路径、文件职责和常见问题定位见 [Agent Runtime 维护指南](docs/agent-runtime-maintenance.md)。CI 会运行 `--check`，阻止旧自定义循环节点回归、关键框架节点消失、工具契约失效或核心文件超过架构预算。
+图结构、维护路径、文件职责和常见问题定位见 [Agent Runtime 维护指南](docs/agent-runtime-maintenance.md)。Runtime inspection 只确认 `.importlinter` 及关键合同声明存在；真实 import graph 由独立 `lint-imports` 验证。CI 会同时运行二者，阻止模块反向依赖、旧自定义循环节点回归、关键框架节点消失、工具契约失效或核心文件超过架构预算。
 
 ## Agent 演进文档
 
 - [当前演进基线](docs/agent-evolution-baseline.md)
 - [Agent Runtime 维护指南](docs/agent-runtime-maintenance.md)
+- [模块依赖边界](docs/architecture/module-boundaries.md)
 - [ADR 0001：开源 Agent 技术栈](docs/adr/0001-open-source-agent-stack.md)
 - [ADR 0002：迭代式 Agent Loop](docs/adr/0002-iterative-agent-loop.md)
 - [ADR 0003：工具治理边界](docs/adr/0003-tool-governance-boundary.md)
@@ -371,6 +381,12 @@ python scripts/inspect_agent_runtime.py --check
 - [ADR 0008：开源 Web Search 生产工具](docs/adr/0008-open-source-web-search-tool.md)
 - [ADR 0009：安全 Web Fetch 网页正文工具](docs/adr/0009-secure-web-fetch-tool.md)
 - [ADR 0010：安全 Web PDF 页范围读取工具](docs/adr/0010-secure-web-pdf-fetch-tool.md)
+- [ADR 0011：单一框架 Agent 执行链](docs/adr/0011-single-framework-agent-execution-path.md)
+- [ADR 0012：Graph 独占确定性 Router](docs/adr/0012-graph-owned-deterministic-routing.md)
+- [ADR 0013：单一平铺 Agent Runtime State](docs/adr/0013-single-flat-agent-runtime-state.md)
+- [ADR 0014：单一 Agent Result 契约](docs/adr/0014-single-agent-result-contract.md)
+- [ADR 0015：pydantic-settings 配置](docs/adr/0015-pydantic-settings-configuration.md)
+- [ADR 0016：可执行模块依赖边界](docs/adr/0016-enforced-module-dependency-boundaries.md)
 
 ## 快速启动
 
@@ -760,6 +776,8 @@ python scripts/summarize_logs.py
 ```bash
 python -m compileall -q app scripts
 ruff check app tests scripts
+lint-imports
+python scripts/inspect_agent_runtime.py --check
 python -m pytest -q
 ```
 
@@ -824,6 +842,8 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   ├── main.py                  # 正式 ASGI 入口：app.main:app
 │   ├── api/
 │   │   ├── chat.py              # FastAPI 组装和 /chat HTTP 适配
+│   │   ├── middleware.py        # HTTP trace 和端到端耗时
+│   │   ├── http_logging.py      # 显式 Uvicorn access-log 适配
 │   │   ├── schemas.py           # 请求、响应和引用数据模型
 │   │   ├── diagnostics.py       # 检索、知识库和指标诊断接口
 │   │   ├── responses.py         # API-ready 字段与响应 Schema 构造
@@ -886,9 +906,8 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   ├── storage/                 # SQLite、session 和 Agent trace 存储
 │   ├── observability/
 │   │   ├── __init__.py          # trace_id 生成
-│   │   ├── middleware.py        # HTTP trace 和端到端耗时
 │   │   └── metrics.py           # 指标、bad case 和 trace 汇总
-│   ├── common/logging.py        # 公共日志配置
+│   ├── common/logging.py        # 框架无关的公共日志构造
 │   ├── prompts.py               # RAG、问题拆分和评测 Prompt
 │   └── config.py                # 环境变量配置
 ├── data/
@@ -914,7 +933,8 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 ├── tests/                       # 单元测试和接口测试
 ├── logs/                        # metrics、bad_cases、tool_calls
 ├── outputs/                     # 评测和日志汇总输出
-├── .github/workflows/tests.yml  # 编译、Ruff 和 pytest CI
+├── .github/workflows/tests.yml  # 编译、Ruff、Import Linter、inspection 和 pytest CI
+├── .importlinter                # 可执行模块依赖合同
 ├── .env.example
 ├── Dockerfile
 ├── docker-compose.yml
