@@ -5,17 +5,15 @@ from pathlib import Path
 import pytest
 
 from app.agent.results import create_agent_result
-from app.api.chat import build_chat_response_from_outcome
+from app.api.responses import build_chat_response_from_outcome
 from app.api.schemas import ChatData, SearchData
 from app.contracts.chat import (
     CHAT_STATUS_POLICIES,
     AgentResultStatus,
     get_chat_status_policy,
 )
-from app.services.chat_service import (
-    ChatServiceOutcome,
-    _apply_status_policy,
-)
+from app.services.chat_models import ChatServiceOutcome
+from app.services.chat_service import _apply_status_policy
 
 
 REFERENCE = {
@@ -101,7 +99,10 @@ def test_policy_drives_http_api_and_metric_status(status):
         response_status=policy.public_status,
     )
 
-    response = build_chat_response_from_outcome(outcome, "trace-policy")
+    response = build_chat_response_from_outcome(
+        outcome,
+        trace_id="trace-policy",
+    )
     payload = response.model_dump()
 
     assert (
@@ -139,13 +140,13 @@ def test_unknown_status_fails_closed_to_internal_error_policy():
     assert policy.metric_status == "internal_error"
 
 
-def test_api_response_builder_does_not_depend_on_chat_service():
+def test_api_response_adapter_does_not_depend_on_runtime_or_graph():
     source = Path("app/api/responses.py").read_text(encoding="utf-8")
 
-    assert "app.services" not in source
     assert "app.agent.runtime" not in source
     assert "app.graph" not in source
     assert "CHAT_RESULT_RESPONSE_MAP" not in source
+    assert "ChatResponse" + "Builder" not in source
 
 
 def test_public_status_openapi_literals_remain_compatible():

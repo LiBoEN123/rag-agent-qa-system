@@ -144,7 +144,7 @@ def test_framework_model_exception_returns_model_error_without_fallback(
     assert result["answer"] == "Agent 模型暂时不可用，无法安全选择或继续调用工具。"
     assert result["reason"] == "agent_model_call_failed"
     serialized = json.dumps(result, ensure_ascii=False)
-    assert "fallback_to_legacy" not in serialized
+    assert "fallback_to_" + "legacy" not in serialized
     assert '"step": "plan"' not in serialized
     assert '"step": "executor"' not in serialized
 

@@ -8,24 +8,26 @@
 
 | 顺序 | 文件 | 只需要理解 |
 | --- | --- | --- |
-| 1 | `app/services/chat_service.py` | 会话、请求改写、Runtime 和 API 结果收尾如何串联 |
-| 2 | `app/contracts/chat.py` | Result status 如何唯一决定 HTTP、API 和 metrics 状态 |
-| 3 | `app/graph/builder.py` | 父图固定入口、节点、边和条件出口 |
-| 4 | `app/graph/state.py` | 唯一完整请求状态及 reducer |
-| 5 | `app/agent/results.py` | AgentRunResult、内部/RAG 状态 mapper 和结果构造 |
-| 6 | `app/graph/conditions.py` | 框架 Agent、RAG 与 compose 如何分流 |
-| 7 | `app/graph/nodes.py` | `route_node` 如何独占 Router 调用/计时，以及节点如何返回显式更新 |
-| 8 | `app/agent/framework_agent.py` | `create_agent`、调用限制 Middleware 和事件纯投影如何组装 |
-| 9 | `app/agent/tool_events.py` | 标准工具结果和治理事件如何转换为 observation/trace |
-| 10 | `app/agent/answer.py` | RAG 与 compose 如何生成无副作用状态更新 |
-| 11 | `app/agent/framework_middleware.py` | 项目错误分类、预算、循环防护和同批 fail-closed |
-| 12 | `app/agent/framework_tools.py` | 动态 StructuredTool、Registry dispatch 和 RAG handoff |
-| 13 | `app/tools/runtime.py` | 单次工具调用的策略、审计、超时、重试和输出校验 |
+| 1 | `app/api/application.py`、`app/api/chat.py` | FastAPI 如何组装，以及 HTTP 如何进入 ChatService |
+| 2 | `app/services/chat_service.py`、`chat_models.py`、`chat_telemetry.py` | 应用流程、数据模型和 telemetry 如何分工 |
+| 3 | `app/contracts/chat.py` | Result status 如何唯一决定 HTTP、API 和 metrics 状态 |
+| 4 | `app/graph/builder.py` | 父图固定入口、节点、边和条件出口 |
+| 5 | `app/graph/state.py` | 唯一完整请求状态及 reducer |
+| 6 | `app/agent/results.py` | AgentRunResult、内部/RAG 状态 mapper 和结果构造 |
+| 7 | `app/graph/conditions.py` | 框架 Agent、RAG 与 compose 如何分流 |
+| 8 | `app/graph/nodes.py` | `route_node` 如何独占 Router 调用/计时，以及节点如何返回显式更新 |
+| 9 | `app/agent/framework_agent.py` | `create_agent`、调用限制 Middleware 和事件纯投影如何组装 |
+| 10 | `app/agent/tool_events.py` | 标准工具结果和治理事件如何转换为 observation/trace |
+| 11 | `app/agent/answer.py` | RAG 与 compose 如何生成无副作用状态更新 |
+| 12 | `app/agent/framework_middleware.py` | 项目错误分类、预算、循环防护和同批 fail-closed |
+| 13 | `app/agent/framework_tools.py` | 动态 StructuredTool、Registry dispatch 和 RAG handoff |
+| 14 | `app/tools/runtime.py` | 单次工具调用的策略、审计、超时、重试和输出校验 |
 
 ## 主调用链
 
 ```text
-FastAPI
+FastAPI application
+→ Chat Router
 → ChatService
 → Session History / Query Rewrite
 → run_agent_langgraph
@@ -225,10 +227,16 @@ graph TD;
 | `app/tools/web_fetch.py` | 处理 HTML/XHTML/纯文本并调用 Trafilatura |
 | `app/tools/web_pdf_fetch.py` | 校验 PDF magic；通过 pypdf 提取页范围和有限元数据 |
 | `app/agent/runtime.py` | 构造兼容 decide/LLM trace；保存 trace |
-| `app/services/chat_service.py` | 应用 ChatStatusPolicy；编排 metrics/session |
+| `app/services/chat_models.py` | 声明框架无关 Chat 请求、结果和内部上下文 |
+| `app/services/chat_service.py` | 编排 Settings、Query Rewrite、Runtime、状态策略和 session |
+| `app/services/chat_telemetry.py` | 初始化/合并/finalize metrics，安全写 bad case，格式化工具调用链 |
+| `app/api/application.py` | 创建 FastAPI；组装 lifespan、middleware 和全部 Router |
+| `app/api/chat.py` | 把 `/chat` HTTP 上下文适配为 ChatServiceRequest |
+| `app/api/health.py` | 提供无外部依赖的进程存活检查 |
+| `app/api/lifecycle.py` | 校验并初始化 RAG/Graph；关闭 Graph/Tool Runtime |
 | `app/api/middleware.py` | 适配 FastAPI Request；维护 `/chat` trace 与端到端响应头 |
 | `app/api/http_logging.py` | 显式、幂等配置 Uvicorn access-log URL 展示 |
-| `app/api/responses.py` | 规范化 confidence/LLM usage 并构造 API Schema |
+| `app/api/responses.py` | 沿单一具体函数规范化 confidence/LLM usage 并构造 ChatResponse |
 | `app/common/logging.py` | 构造框架无关的应用 logger，不修改 Uvicorn 全局状态 |
 | `app/observability/metrics.py` | 从 decide/tool/RAG trace 汇总稳定 metrics，不映射状态 |
 | `app/rag/graph/` | 编排检索、证据、生成和引用流程 |
@@ -313,7 +321,7 @@ Provider 的模型可见性层只复用 `has_permission()` 检查全部 `ToolSpe
 - 不在父图状态中嵌套另一套完整业务状态。
 - 不把 `AgentRunResult` 实例写入 Graph State 或 Checkpoint。
 - 不在 Runtime、ChatService、API 或 metrics 中另建状态映射表。
-- 不让 API Response Builder 导入 ChatService 或 Agent Runtime。
+- 不让 API response adapter 导入 Agent Runtime 或 Graph。
 - 不让 API 以外的生产包导入 FastAPI、Starlette 或承载 Uvicorn 适配。
 - 不让 `app.config` 以外的生产模块直接导入 `pydantic_settings`。
 - 不用函数内 import、`importlib` 或 `ignore_imports` 隐藏依赖方向。
@@ -331,6 +339,6 @@ lint-imports
 lint-imports --verbose
 ```
 
-脚本只使用普通 `build_agent_graph().compile()`，不会调用带 Checkpointer 的缓存入口；也不会初始化模型、DDGS、requests-hardened Manager、Trafilatura、PdfReader、执行 handler、访问网络或读取/重建 RAG 索引。报告验证 `AgentGraphState` 没有嵌套状态且包含全部业务字段，`AgentRunResult` 字段完整并拒绝 extra，所有 Result status 恰好有一项 policy，Graph result 仍是普通字典，API Response Builder 没有反向依赖，并且旧分散状态表没有残留。报告还分别列出 Registry 的八个 `registered_tools` 和默认 Context 的 `default_visible_tools`，验证默认可见集合、权限及 Web 工具契约。它只读取 `.importlinter` 的公开配置结构，报告 `import_linter_configured`、四项关键合同和 `zero_import_ignores`；不分析或复制 import graph。版本来自 `importlib.metadata`，图来自 `get_graph()`/`get_graph(xray=True)`，Mermaid 来自 `draw_mermaid()`，工具参数来自模型可见的 Pydantic JSON Schema。实际模块方向必须由官方 `lint-imports` 全量检查。
+脚本只使用普通 `build_agent_graph().compile()`，不会调用带 Checkpointer 的缓存入口；也不会初始化模型、DDGS、requests-hardened Manager、Trafilatura、PdfReader、执行 handler、访问网络或读取/重建 RAG 索引。报告验证 `AgentGraphState` 没有嵌套状态且包含全部业务字段，`AgentRunResult` 字段完整并拒绝 extra，所有 Result status 恰好有一项 policy，Graph result 仍是普通字典，API response adapter 没有 Runtime/Graph 反向依赖，并检查 application factory、独立 Chat Router、ChatService/telemetry 分工、当前架构文档和历史归档。报告还分别列出 Registry 的八个 `registered_tools` 和默认 Context 的 `default_visible_tools`，验证默认可见集合、权限及 Web 工具契约。它只读取 `.importlinter` 的公开配置结构，报告 `import_linter_configured`、四项关键合同和 `zero_import_ignores`；不分析或复制 import graph。版本来自 `importlib.metadata`，图来自 `get_graph()`/`get_graph(xray=True)`，Mermaid 来自 `draw_mermaid()`，工具参数来自模型可见的 Pydantic JSON Schema。实际模块方向必须由官方 `lint-imports` 全量检查。
 
 升级 LangChain、LangGraph、Pydantic 或调整 package 时，先运行 `lint-imports`、契约测试和 `--check`。重点确认父图节点未改变、xray 仍能展开 `framework_agent`、model/tools 和调用限制节点仍存在、`ToolRuntime` 注入字段未暴露给模型，并重新生成本页 Mermaid。

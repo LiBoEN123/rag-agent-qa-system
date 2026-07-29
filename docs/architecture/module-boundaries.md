@@ -21,10 +21,10 @@ app.api
 更高层。`app.storage : app.observability` 暂时属于同一层，允许保留必要的相互
 依赖。`app.contracts | app.config | app.common` 是三个彼此独立的基础模块。
 
-`app.main` 是只导出 ASGI app 的进程入口，允许依赖 API；当前并不直接导入
-FastAPI。`app.rebuild_kb` 是维护命令入口，负责组装 config 与 RAG。`app.prompts`
-是无应用层 import 的共享常量模块。这些单文件入口不用于规避 package 合同，仍受
-顶层无环检查覆盖。
+`app.main` 是只调用 `app.api.application.create_app()` 并导出 ASGI app 的进程
+入口，允许依赖 API；当前并不直接导入 FastAPI。`app.rebuild_kb` 是维护命令入口，
+负责组装 config 与 RAG。`app.prompts` 是无应用层 import 的共享常量模块。这些
+单文件入口不用于规避 package 合同，仍受顶层无环检查覆盖。
 
 ## Package 职责
 
@@ -45,9 +45,11 @@ FastAPI。`app.rebuild_kb` 是维护命令入口，负责组装 config 与 RAG�
 
 ## API 组合根
 
-API 负责把 HTTP 请求转换为框架无关的 `ChatServiceRequest`，组装 RAG、Graph、
-Tools、Diagnostics 和 Response Builder，再把 `ChatServiceOutcome` 映射回 HTTP。
-因此 `app.api` 可以跨层直接组装依赖，不要求通过无价值包装器逐层转发。
+`app/api/application.py` 是 FastAPI 组合根，组装 lifespan、middleware、Chat、
+health 和 diagnostics Router 及其默认依赖。`app/api/chat.py` 只把 HTTP 请求转换
+为框架无关的 `ChatServiceRequest`；`app/api/responses.py` 再把
+`ChatServiceOutcome` 映射回 HTTP Schema。因此 `app.api` 可以跨层直接组装依赖，
+不要求通过无价值包装器逐层转发。
 
 限制只沿反方向生效：ChatService、Graph、Agent、Tools、RAG、LLM、Storage、
 Observability 和基础层都不能导入 API。ChatService 继续接收框架无关 Request 并
@@ -55,12 +57,14 @@ Observability 和基础层都不能导入 API。ChatService 继续接收框架�
 
 ## HTTP 框架边界
 
-FastAPI 与 Starlette 只允许出现在 `app.api`；`app.main` 也被允许作为 ASGI 入口，
-但当前只 re-export `app.api.chat.app`。
+FastAPI 与 Starlette 只允许出现在 `app.api`；`app.main` 只导入 application
+factory 并公开 `app`。
 
 - `app/api/middleware.py` 拥有 `/chat` trace ID、`request_enter_time`、
   `request_enter_perf` 和 `X-Trace-Id`/`X-Total-Cost-Ms`。
 - `app/api/http_logging.py` 拥有 Uvicorn access-log URL 解码与控制字符转义。
+- `app/api/application.py` 拥有 FastAPI 实例、Router 注册和 lifespan 组合。
+- `app/api/lifecycle.py` 拥有 RAG/Graph 初始化与 Runtime 关闭细节。
 - lifespan 显式、幂等调用 `configure_uvicorn_access_log()`。
 - `app.common.logging` 只提供 `get_logger()`；导入它不会修改全局 Uvicorn logger。
 - `app.observability` 只保留 metrics、trace ID 和框架无关数据处理。

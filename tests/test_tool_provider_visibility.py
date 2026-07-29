@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_tools
 from app.graph.builder import build_agent_graph
-from app.tools import runtime as tool_runtime
+import app.tools.runtime as tool_runtime
 from app.tools.context import ToolInvocationContext, has_permission
 from app.tools.contracts import ToolRiskLevel, ToolSpec
 from app.tools.providers import LocalToolProvider

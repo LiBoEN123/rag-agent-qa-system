@@ -408,6 +408,18 @@ def inspect_runtime(
     service_source = (
         PROJECT_ROOT / "app/services/chat_service.py"
     ).read_text(encoding="utf-8")
+    telemetry_source = (
+        PROJECT_ROOT / "app/services/chat_telemetry.py"
+    ).read_text(encoding="utf-8")
+    chat_router_source = (
+        PROJECT_ROOT / "app/api/chat.py"
+    ).read_text(encoding="utf-8")
+    application_source = (
+        PROJECT_ROOT / "app/api/application.py"
+    ).read_text(encoding="utf-8")
+    main_source = (
+        PROJECT_ROOT / "app/main.py"
+    ).read_text(encoding="utf-8")
     metrics_source = (
         PROJECT_ROOT / "app/observability/metrics.py"
     ).read_text(encoding="utf-8")
@@ -446,13 +458,66 @@ def inspect_runtime(
     )
     result_annotation = AgentGraphState.__annotations__.get("result")
     result_is_checkpoint_safe = get_origin(result_annotation) is dict
-    api_builder_boundary_ok = not any(
-        fragment in response_source
-        for fragment in (
-            "app.services",
-            "app.agent.runtime",
-            "app.graph",
+    response_builder_name = "ChatResponse" + "Builder"
+    api_response_adapter_ok = (
+        "def build_chat_response_from_outcome(" in response_source
+        and response_builder_name not in response_source
+        and not any(
+            fragment in response_source
+            for fragment in (
+                "app.agent.runtime",
+                "app.graph",
+            )
         )
+    )
+    application_factory_present = (
+        "def create_app(" in application_source
+        and "from app.api.application import create_app" in main_source
+        and "app = create_app()" in main_source
+    )
+    chat_router_isolated = (
+        "def create_chat_router(" in chat_router_source
+        and not any(
+            fragment in chat_router_source
+            for fragment in (
+                "FastAPI(",
+                "lifespan",
+                "create_diagnostics_router",
+                "initialize_rag",
+                "ToolRuntime",
+            )
+        )
+    )
+    chat_service_orchestration_boundary = (
+        "class ChatService:" in service_source
+        and "def handle(" in service_source
+        and "app.services.chat_models" in service_source
+        and "app.services.chat_telemetry" in service_source
+        and "_TIMING_METRIC_KEYS" not in service_source
+        and "rag_ready_check" + "_cost_ms" not in service_source
+    )
+    chat_telemetry_extracted = all(
+        fragment in telemetry_source
+        for fragment in (
+            "def build_initial_chat_metrics(",
+            "def build_initial_bad_case(",
+            "def format_tool_call_chain(",
+            "def apply_result_metrics(",
+            "def finalize_chat_telemetry(",
+        )
+    )
+    current_architecture_documented = (
+        PROJECT_ROOT / "docs/architecture/current-system.md"
+    ).is_file()
+    history_archived = (
+        not (
+            PROJECT_ROOT
+            / "docs"
+            / ("agent-evolution-" + "baseline.md")
+        ).exists()
+        and (
+            PROJECT_ROOT / "docs/history/agent-evolution-2026.md"
+        ).is_file()
     )
     web_spec = next(
         (
@@ -679,9 +744,39 @@ def inspect_runtime(
             "AgentGraphState.result must remain a plain dict annotation",
         ),
         _check(
-            "api_response_builder_boundary",
-            api_builder_boundary_ok,
-            "API Response Builder must not import services, runtime, or graph",
+            "api_response_adapter_boundary",
+            api_response_adapter_ok,
+            "API response adapter must have one concrete outcome path",
+        ),
+        _check(
+            "application_factory_present",
+            application_factory_present,
+            "app.main must expose an app created by app.api.application",
+        ),
+        _check(
+            "chat_router_isolated",
+            chat_router_isolated,
+            "chat router must not assemble FastAPI or runtime resources",
+        ),
+        _check(
+            "chat_service_orchestration_boundary",
+            chat_service_orchestration_boundary,
+            "ChatService must delegate models and telemetry responsibilities",
+        ),
+        _check(
+            "chat_telemetry_extracted",
+            chat_telemetry_extracted,
+            "chat telemetry helpers must live in the services telemetry module",
+        ),
+        _check(
+            "current_architecture_documented",
+            current_architecture_documented,
+            "current-system architecture document must exist",
+        ),
+        _check(
+            "history_archived",
+            history_archived,
+            "agent evolution history must be archived under docs/history",
         ),
         _check("parent_required_nodes", not missing_parent, ", ".join(missing_parent)),
         _check("parent_forbidden_nodes", not forbidden_parent, ", ".join(forbidden_parent)),

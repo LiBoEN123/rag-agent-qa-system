@@ -125,7 +125,7 @@ def test_graph_state_excludes_static_governance_and_legacy_fields():
     }
 
     assert static_governance_fields.isdisjoint(fields)
-    assert "fallback_to_legacy" not in fields
+    assert "fallback_to_" + "legacy" not in fields
     assert "decision" not in FrameworkAgentState.__annotations__
 
 

@@ -13,8 +13,8 @@ from app.observability.metrics import (
 from app.services.chat_service import (
     ChatService,
     ChatServiceDependencies,
-    ChatServiceRequest,
 )
+from app.services.chat_models import ChatServiceRequest
 
 
 class IncrementingClock:
@@ -263,7 +263,7 @@ def test_agent_tool_task_has_no_router_level_rag_preflight():
 
 
 @pytest.mark.parametrize("action", ["agent", "direct_answer", "clarify"])
-def test_current_route_actions_keep_rag_ready_metric_at_zero(action):
+def test_current_route_actions_do_not_emit_retired_rag_ready_metric(action):
     service, calls = build_service(
         runtime_result=build_runtime_result(action=action),
     )
@@ -272,7 +272,7 @@ def test_current_route_actions_keep_rag_ready_metric_at_zero(action):
 
     assert len(calls["langgraph"]) == 1
     assert outcome.http_status == 200
-    assert calls["metrics"][0]["rag_ready_check_cost_ms"] == 0
+    assert "rag_ready_check" + "_cost_ms" not in calls["metrics"][0]
 
 
 def test_langgraph_runtime_receives_complete_existing_protocol_once():

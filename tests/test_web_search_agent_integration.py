@@ -10,7 +10,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from app.agent import framework_agent
 from app.graph import nodes as graph_nodes
 from app.graph.builder import build_agent_graph
-from app.tools import runtime as tool_runtime
+import app.tools.runtime as tool_runtime
 from app.tools.context import ToolInvocationContext
 from app.tools.registry import get_tool_registry
 

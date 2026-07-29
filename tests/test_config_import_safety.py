@@ -18,6 +18,8 @@ IMPORT_TARGETS = (
     "app.graph.runtime",
     "app.services.chat_service",
     "app.api.chat",
+    "app.api.application",
+    "app.main",
     "scripts.inspect_agent_runtime",
 )
 
@@ -105,7 +107,8 @@ sqlite3.connect = forbidden
 from app import config
 from app.graph import builder, checkpointing
 from app.llm import factory
-from app.tools import registry, runtime
+import app.tools.registry as registry
+import app.tools.runtime as runtime
 
 assert config.get_settings.cache_info().currsize == 0
 assert registry.get_tool_registry.cache_info().currsize == 0

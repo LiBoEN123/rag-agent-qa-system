@@ -1,5 +1,10 @@
 # Agent Evolution Baseline
 
+> 归档说明：本文件记录 2026 年 PR0～PR16 的架构演进，仅用于历史追溯。
+> 当前系统结构请阅读
+> [`docs/architecture/current-system.md`](../architecture/current-system.md)。
+> 下文 PR0～PR15 中的旧架构描述按原始事实保留，不代表当前实现。
+
 ## 1. 基线信息
 
 本基线冻结 PR0 开始时的代码、测试、质量检查和架构事实，不改变业务行为。
@@ -674,3 +679,60 @@ ToolRuntime 权限/审批/超时/重试/审计、AppSettings 环境变量和缓�
 session/Checkpointer Schema、metrics、bad case、session、tool trace、
 `tool_call_chain`、Web SSRF 与 PDF 行为均未改变。仍未处理 ChatService 进一步拆分、
 API Controller 进一步拆分和历史文档归档。
+
+## 27. PR16 最终代码收口与历史归档
+
+PR16 开始于 `8a584c3`，工作区干净；修改前实际基线为
+`761 passed, 1 warning`、Import Linter `5 kept, 0 broken`，Ruff、compileall、
+Runtime Inspection、pip check 和 diff check 均通过。OpenAPI 同时冻结了全部路由及
+`ChatRequest`、`ChatResponse`、`ChatData`、`SearchResponse`。
+
+修改前引用矩阵确认：
+
+- `ChatResponseBuilder` 只有 `app/api/chat.py` 的一个生产实例，其他引用都是测试，
+  因此替换为 `app/api/responses.py::build_chat_response_from_outcome()` 的单一路径；
+- `app.services` 和 `app.tools` 的 package 聚合出口没有生产调用，测试可改为从具体
+  职责模块导入，因此两个 `__init__.py` 收缩为包说明；
+- `model_bad_output_count`、`out_of_scope_count` 和 `empty_index_count` 只在
+  diagnostics summary 定义，没有当前 Chat metrics writer 生产者；Search API 的
+  `empty_index` / `out_of_scope` Schema 字面量属于另一契约并保留；
+- 旧 RAG ready 检查耗时字段只在 ChatService 初始化为 0、终端日志、测试和历史
+  说明中出现，没有 API、summary、脚本或监控消费者，因此从当前 metrics 删除；
+- `app.rag.__init__` 的动态索引状态和延迟 `run_rag_subgraph()` 有真实运行时重新
+  绑定语义，完整保留。
+
+最终应用入口为 `app.main → app.api.application.create_app()`。
+`application.py` 组装 lifespan、HTTP middleware、Chat/health/diagnostics Router；
+`chat.py` 只处理 `/chat` HTTP 适配；`responses.py` 只沿一个具体函数构造
+`ChatResponse`；`lifecycle.py` 继续拥有 RAG/Graph 初始化和 Runtime 关闭逻辑。
+模块导入不执行 lifespan，也不存在全局可变 ChatService。
+
+`ChatServiceRequest`、`ChatServiceOutcome` 和内部 `ChatRequestContext` 移至
+`chat_models.py`；metrics/bad case 初始化、Result metrics 合并、工具调用链格式化、
+最终耗时与安全持久化移至 `chat_telemetry.py`。`ChatService.handle()` 继续按
+Settings 快照、空问题、top-k、Query Rewrite、LangGraph Runtime、状态策略、
+session、telemetry 的顺序同步编排。Runtime 调用异常仍公开
+`HTTP 500 / MODEL_ERROR / 处理失败，请稍后重试`，Service 自身未知异常仍公开
+`HTTP 500 / INTERNAL_ERROR / 服务器内部错误`。
+
+新增 `docs/architecture/current-system.md` 作为当前架构入口，本文件移动到
+`docs/history/agent-evolution-2026.md`。Runtime Inspection 新增 application
+factory、独立 Chat Router、Service orchestration、telemetry 提取、当前文档和历史
+归档检查，不使用文件行数判断新职责。
+
+最终全量测试为 `775 passed, 1 warning`；Import Linter 保持
+`5 kept, 0 broken`，OpenAPI 冻结快照逐字节相同。Ruff、compileall、Runtime
+Inspection 的 text/JSON/Mermaid/check、pip check 和 diff check 均通过。唯一警告
+仍来自 jieba 对 `pkg_resources` 的弃用提示。自动测试没有调用真实模型、搜索、
+网页/PDF 或代理，也没有重建真实 RAG 索引或写生产持久化路径。
+
+FastAPI 路由、Chat/Search Schema、HTTP status、trace headers、LangGraph 父图、
+`create_agent`、`AgentGraphState`、`AgentRunResult`、`ChatStatusPolicy`、RAG
+算法、八个 ToolSpec、Registry/Runtime、Settings 环境变量及 SQLite、Chroma、
+Checkpointer Schema 均未改变。metrics 只删除经引用证明无生产者的旧 summary
+计数和永久零值字段；session、bad case、tool trace 与 `tool_call_chain` 语义保持。
+
+PR16 完成后，本轮 Agent Runtime 与代码架构整理结束。
+
+后续只有在真实需求、缺陷、性能问题或新功能出现时才修改相关模块，不再继续以
+“架构清理”名义拆分 PR。本轮架构整理已完成，不再规划 PR17 清理任务。

@@ -3,7 +3,7 @@ import json
 from app.tools.registry import ToolRegistry, ToolSpec
 from app.tools.context import ToolInvocationContext
 from app.tools.schemas import SearchKnowledgeBaseArgs
-from app.tools import dispatch_tool
+from app.tools.dispatch import dispatch_tool
 
 
 def test_tool_registry_names_include_builtin_tools(tool_registry):

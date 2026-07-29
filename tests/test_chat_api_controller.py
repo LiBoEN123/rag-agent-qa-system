@@ -1,7 +1,10 @@
-import app.api.chat as chat_api
+from fastapi import Response
+
 from app.agent.results import create_agent_result
+from app.api.chat import create_chat_router
+from app.api.schemas import ChatRequest
 from app.contracts.chat import AgentResultStatus
-from app.services.chat_service import ChatServiceOutcome, ChatServiceRequest
+from app.services.chat_models import ChatServiceOutcome, ChatServiceRequest
 
 
 class DummyState:
@@ -24,7 +27,7 @@ class FakeChatService:
         return self.outcome
 
 
-def test_chat_controller_only_adapts_http_context(monkeypatch):
+def test_chat_controller_only_adapts_http_context():
     outcome = ChatServiceOutcome(
         http_status=503,
         code="NO_DOCUMENTS",
@@ -38,11 +41,11 @@ def test_chat_controller_only_adapts_http_context(monkeypatch):
         response_status="empty_index",
     )
     service = FakeChatService(outcome)
-    monkeypatch.setattr(chat_api, "chat_service", service)
-    response = chat_api.Response()
+    response = Response()
+    ask_api = create_chat_router(service).routes[0].endpoint
 
-    api_result = chat_api.ask_api(
-        chat_api.ChatRequest(
+    api_result = ask_api(
+        ChatRequest(
             question="原始问题",
             top_k=4,
             decompose_top_k=8,

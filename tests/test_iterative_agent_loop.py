@@ -12,7 +12,7 @@ from app.graph.builder import build_agent_graph
 from app.graph import nodes as graph_nodes
 from app.graph.nodes import initialize_node
 from app.tools.context import ToolInvocationContext
-from app.tools import runtime as tool_runtime
+import app.tools.runtime as tool_runtime
 from app.tools.contracts import ToolSpec
 from app.tools.providers import LocalToolProvider
 from app.tools.registry import ToolRegistry

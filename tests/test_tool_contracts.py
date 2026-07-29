@@ -6,10 +6,11 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from app.tools import ToolRiskLevel, ToolSpec
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import (
+    ToolRiskLevel,
     ToolRiskLevel as ContractToolRiskLevel,
+    ToolSpec,
 )
 from app.tools.contracts import ToolSpec as ContractToolSpec
 from app.tools.registry import (

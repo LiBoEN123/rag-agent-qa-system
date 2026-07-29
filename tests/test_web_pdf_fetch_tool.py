@@ -16,7 +16,7 @@ from pydantic import ValidationError
 from pypdf import PdfReader, PdfWriter
 
 from app.config import AppSettings
-from app.tools import runtime as tool_runtime
+import app.tools.runtime as tool_runtime
 from app.tools.audit import NullToolAuditSink
 from app.tools.context import ToolInvocationContext
 from app.tools.errors import ToolErrorCode, ToolExecutionError

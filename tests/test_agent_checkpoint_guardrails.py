@@ -7,7 +7,7 @@ from app.agent import framework_agent, framework_tools
 from app.graph import builder as graph_builder
 from app.graph import checkpointing
 from app.graph.runtime import run_agent_langgraph
-from app.tools import runtime as tool_runtime
+import app.tools.runtime as tool_runtime
 from app.tools.contracts import ToolSpec
 from app.tools.providers import LocalToolProvider
 from app.tools.registry import ToolRegistry

@@ -2,6 +2,9 @@
 
 一个面向中文制度类文档的 Agentic RAG 问答系统，支持文档解析、混合检索、重排、引用生成、Agent 路由、多轮追问改写、可观测性和离线评测。
 
+当前实现的职责、调用链和持久化边界见
+[当前系统架构](docs/architecture/current-system.md)。
+
 本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。`/chat` 唯一使用 LangGraph 父图中的 LangChain `create_agent` 执行模型—工具循环；传入 `session_id` 时还会结合 SQLite 中最近的会话历史对短追问做 Query Rewrite。
 
 ## 项目亮点
@@ -180,14 +183,20 @@ flowchart TD
 - 多轮会话历史保存在 `SQLITE_DB_PATH` 指定的 SQLite 数据库中，每个 `session_id` 默认读取最近 6 条 user/assistant 消息，服务重启后仍可继续使用。
 - 设置 `ENABLE_AGENT_TRACE_STORE=true` 后，Agent 的运行摘要和步骤明细会写入同一 SQLite 数据库的 `agent_runs`、`agent_steps` 表。
 - `/chat` 请求支持继承或生成 `trace_id`，响应头返回 `X-Trace-Id` 和 `X-Total-Cost-Ms`。
-- metrics 记录 Query Rewrite、路由、检索、问题拆分、重排、上下文构造、LLM 调用、JSON 解析等阶段耗时和 LLM 调用次数；兼容字段 `rag_ready_check_cost_ms` 保留为 `0`。
+- metrics 记录 Query Rewrite、路由、Agent、检索、问题拆分、重排、上下文构造、LLM 调用、JSON 解析等阶段耗时和 LLM 调用次数。
 - bad case 日志用于定位失败样例，包括模型 JSON 解析失败、引用异常、工具异常、内部异常和索引未就绪。
 
 模型客户端统一和 LangGraph 编排彼此独立；LangGraph 主图不改变 RAG 检索、Rerank、ChromaDB 数据结构和引用机制。
 
 ## Chat 应用服务层
 
-`/chat` 控制器现在只负责读取 HTTP 请求上下文、调用 `ChatService`、设置状态码，并使用现有 Response Builder 构造响应。Query Rewrite、Runtime 调用、metrics 和 session 存储由 `app/services/chat_service.py` 编排；Router 由 LangGraph 父图的 `route_node` 唯一持有，因此聊天业务仍可脱离 FastAPI 测试且不会形成第二个路由入口。
+`app/api/application.py` 是 FastAPI 组合根；`app/api/chat.py` 只负责读取 HTTP
+请求上下文、调用已注入的 `ChatService`、设置状态码，并委托
+`app/api/responses.py` 的具体函数构造响应。Query Rewrite、Runtime 调用、状态策略
+和 session 由 `app/services/chat_service.py` 编排，metrics、bad case 与
+`tool_call_chain` 收尾位于 `app/services/chat_telemetry.py`。Router 由 LangGraph
+父图的 `route_node` 唯一持有，因此聊天业务可脱离 FastAPI 测试且不会形成第二个
+路由入口。
 
 API 请求与响应 Schema、HTTP 状态语义和 trace 响应头保持不变；ChatService 固定调用 LangGraph 主图，知识库回答统一进入 RAG 子图。
 
@@ -211,8 +220,8 @@ RAG 状态先由同一结果模块中的 RAG-to-Agent mapper 写回
 `AgentGraphState.status`。`AgentRunResult` 实例不会写入 LangGraph State 或
 Checkpoint；Graph 的 `result` channel 始终保存 JSON-compatible 普通字典。
 HTTP code/message、公开小写状态和 metrics 状态由唯一
-`CHAT_STATUS_POLICIES` 决定，API Response Builder 不再读取业务状态表，也不依赖
-ChatService 实现。
+`CHAT_STATUS_POLICIES` 决定，API response adapter 不再读取业务状态表或依赖
+Agent Runtime。
 
 ## LangChain Tool 适配层
 
@@ -300,7 +309,7 @@ python scripts/smoke_test_web_pdf_fetch.py \
 
 项目当前唯一 Agent Runtime 是 LangGraph 父图中的 LangChain `create_agent` 子图。旧 `agent_model`、`governed_tools` 和 `limit_handler` 自定义循环已经删除，不提供双实现或运行时回滚开关；需要回滚版本时使用 Git commit、tag 或 release。
 
-当前请求链路为 `FastAPI → ChatService → Session History / Query Rewrite → run_agent_langgraph → route → initialize → framework_agent / compose → Finalize → Session / Metrics → API Response`。ChatService 不调用 Router，也不生成或传入 decision；正常 `/chat`、离线评测和其他 Runtime 调用方都共享父图入口的同一个 Router。Router 不枚举工具意图，也不调用模型；它把普通请求交给能看到动态工具 Schema 的 Agent Model。
+当前请求链路为 `FastAPI application → Chat Router → ChatService → Session History / Query Rewrite → run_agent_langgraph → route → initialize → framework_agent / compose → Finalize → Session / Metrics → API Response`。ChatService 不调用 Router，也不生成或传入 decision；正常 `/chat`、离线评测和其他 Runtime 调用方都共享父图入口的同一个 Router。Router 不枚举工具意图，也不调用模型；它把普通请求交给能看到动态工具 Schema 的 Agent Model。
 
 主图的核心结构为：
 
@@ -366,11 +375,12 @@ lint-imports
 
 图结构、维护路径、文件职责和常见问题定位见 [Agent Runtime 维护指南](docs/agent-runtime-maintenance.md)。Runtime inspection 只确认 `.importlinter` 及关键合同声明存在；真实 import graph 由独立 `lint-imports` 验证。CI 会同时运行二者，阻止模块反向依赖、旧自定义循环节点回归、关键框架节点消失、工具契约失效或核心文件超过架构预算。
 
-## Agent 演进文档
+## 文档入口
 
-- [当前演进基线](docs/agent-evolution-baseline.md)
+- [当前系统架构](docs/architecture/current-system.md)
 - [Agent Runtime 维护指南](docs/agent-runtime-maintenance.md)
 - [模块依赖边界](docs/architecture/module-boundaries.md)
+- [2026 年 Agent 演进归档](docs/history/agent-evolution-2026.md)
 - [ADR 0001：开源 Agent 技术栈](docs/adr/0001-open-source-agent-stack.md)
 - [ADR 0002：迭代式 Agent Loop](docs/adr/0002-iterative-agent-loop.md)
 - [ADR 0003：工具治理边界](docs/adr/0003-tool-governance-boundary.md)
@@ -841,13 +851,15 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 ├── app/
 │   ├── main.py                  # 正式 ASGI 入口：app.main:app
 │   ├── api/
-│   │   ├── chat.py              # FastAPI 组装和 /chat HTTP 适配
+│   │   ├── application.py       # FastAPI 组合根、lifespan 和 Router 注册
+│   │   ├── chat.py              # /chat HTTP Router
+│   │   ├── health.py            # 轻量进程存活检查
 │   │   ├── middleware.py        # HTTP trace 和端到端耗时
 │   │   ├── http_logging.py      # 显式 Uvicorn access-log 适配
 │   │   ├── schemas.py           # 请求、响应和引用数据模型
 │   │   ├── diagnostics.py       # 检索、知识库和指标诊断接口
-│   │   ├── responses.py         # API-ready 字段与响应 Schema 构造
-│   │   └── lifecycle.py         # RAG 启动和索引加载流程
+│   │   ├── responses.py         # ChatOutcome 到 HTTP Schema 的单一路径
+│   │   └── lifecycle.py         # RAG/Graph 初始化和 Runtime 关闭
 │   ├── contracts/
 │   │   └── chat.py              # 唯一 Chat Result/HTTP/API/metrics 状态策略
 │   ├── agent/
@@ -887,7 +899,7 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   │   ├── citations.py         # 引用可靠性检查
 │   │   └── debug.py             # 文档和 chunk 调试查询
 │   ├── tools/
-│   │   ├── __init__.py          # 工具公共入口
+│   │   ├── __init__.py          # 包说明；业务从具体职责模块导入
 │   │   ├── result.py            # 统一成功/失败返回协议
 │   │   ├── calculator.py        # 安全四则运算
 │   │   ├── knowledge_base.py    # 文档、chunk 和检索工具
@@ -901,7 +913,9 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   │   ├── registry.py          # 工具注册和分发
 │   │   └── schemas.py           # 工具参数模型
 │   ├── services/
-│   │   └── chat_service.py      # Query Rewrite、Runtime、状态策略、会话和 metrics 编排
+│   │   ├── chat_models.py       # 框架无关请求、结果和内部上下文
+│   │   ├── chat_service.py      # Query Rewrite、Runtime、状态策略和会话编排
+│   │   └── chat_telemetry.py    # metrics、bad case 和 tool_call_chain 收尾
 │   ├── llm/                     # 统一模型工厂、调用网关、Schema 和错误类型
 │   ├── storage/                 # SQLite、session 和 Agent trace 存储
 │   ├── observability/
@@ -930,6 +944,12 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   └── test_local_llm.py        # 本地模型接口测试
 ├── demo/
 │   └── streamlit_app.py         # Streamlit Demo 页面
+├── docs/
+│   ├── architecture/
+│   │   ├── current-system.md    # 当前实现的主要架构入口
+│   │   └── module-boundaries.md # 可执行模块依赖方向
+│   └── history/
+│       └── agent-evolution-2026.md # PR0～PR16 历史演进归档
 ├── tests/                       # 单元测试和接口测试
 ├── logs/                        # metrics、bad_cases、tool_calls
 ├── outputs/                     # 评测和日志汇总输出
@@ -995,5 +1015,6 @@ docker run --rm -p 8000:8000 --env-file .env \
 - 多轮历史使用本地 SQLite 持久化，适合单实例运行；多实例部署时需要额外规划共享存储和并发策略。
 - SQLite Checkpointer 适合单进程本地开发；高并发、多进程共享、数据持续增长和敏感状态留存需要额外的容量、权限及清理策略。
 - Agent 已通过唯一的 `create_agent` 路径支持 Registry-driven 多轮工具观察、同轮多个工具调用和参数修正，并具备错误次数、重复调用/错误、总耗时和同批 fail-closed 防护。
-- 当前尚未实现 Web、SQL、MCP、外部工具动态加载、写工具人工审批恢复或多 Agent。
+- 当前尚未实现 Streaming、Interrupt/Resume、SQL、MCP、写工具的跨请求人工审批恢复或多 Agent。
+- 当前 Checkpointer 面向单进程本地使用，不是生产级分布式 Checkpointer。
 - retrieval_confidence 和 answer_confidence 是启发式估计，不等同于严格概率。

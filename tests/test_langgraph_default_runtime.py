@@ -2,7 +2,10 @@
 
 from dataclasses import replace
 
-import app.api.chat as chat_api
+from fastapi import Response
+
+from app.api.chat import create_chat_router
+from app.api.schemas import ChatRequest
 from app.services.chat_service import (
     ChatService,
     get_default_chat_service_dependencies,
@@ -114,11 +117,11 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
         original_save_session_turn(context)
 
     monkeypatch.setattr(service, "_save_session_turn", save_session_turn)
-    monkeypatch.setattr(chat_api, "chat_service", service)
-    response = chat_api.Response()
+    response = Response()
+    ask_api = create_chat_router(service).routes[0].endpoint
 
-    result = chat_api.ask_api(
-        chat_api.ChatRequest(
+    result = ask_api(
+        ChatRequest(
             question="默认问题",
             top_k=5,
             session_id="session-default",

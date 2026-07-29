@@ -19,9 +19,9 @@ from app.observability.metrics import (
 from app.services.chat_service import (
     ChatService,
     ChatServiceDependencies,
-    ChatServiceRequest,
 )
-from app.tools import runtime as tool_runtime
+from app.services.chat_models import ChatServiceRequest
+import app.tools.runtime as tool_runtime
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from app.tools.providers import LocalToolProvider

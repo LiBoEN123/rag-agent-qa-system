@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from app.agent.query_rewrite import rewrite_query_with_history
@@ -23,7 +23,6 @@ from app.config import AppSettings, get_settings
 from app.contracts.chat import (
     AgentResultStatus,
     ChatStatusPolicy,
-    PublicStatus,
     get_chat_status_policy,
 )
 from app.graph.runtime import run_agent_langgraph
@@ -36,38 +35,23 @@ from app.observability.metrics import (
     write_bad_cases,
 )
 from app.storage.session import append_message, get_history
-
-
-logger = get_logger("chat_service")
-
-_TIMING_METRIC_KEYS = (
-    "retrieve_cost_ms",
-    "decompose_cost_ms",
-    "rerank_cost_ms",
-    "retrieve_with_sub_queries_cost_ms",
-    "context_build_cost_ms",
-    "llm_cost_ms",
-    "parse_cost_ms",
-    "rag_answer_cost_ms",
+from app.services.chat_models import (
+    ChatRequestContext,
+    ChatServiceOutcome,
+    ChatServiceRequest,
+)
+from app.services.chat_telemetry import (
+    apply_result_metrics,
+    build_initial_bad_case,
+    build_initial_chat_metrics,
+    finalize_chat_telemetry,
+    log_chat_process_start,
+    log_tool_call_chain,
+    safe_write_bad_case,
 )
 
 
-def _format_tool_call_chain(tool_trace: list[dict[str, Any]]) -> str:
-    """把工具 trace 压缩为适合终端单行展示的调用链。"""
-    calls = []
-    for step in tool_trace:
-        if step.get("step") != "tool_call":
-            continue
-        tool_name = " ".join(str(step.get("tool_name") or "").split())[:100]
-        if not tool_name:
-            continue
-        tool_status = " ".join(
-            str(step.get("tool_status") or "unknown").split()
-        )[:40]
-        cost_ms = max(0, int(step.get("cost_ms", 0) or 0))
-        calls.append(f"{tool_name}({tool_status},{cost_ms}ms)")
-    return " -> ".join(calls) or "none"
-
+logger = get_logger("chat_service")
 
 def _apply_status_policy(
     result: dict[str, Any],
@@ -95,31 +79,6 @@ def _apply_status_policy(
 
 
 @dataclass(frozen=True)
-class ChatServiceRequest:
-    """一次聊天业务调用所需的框架无关输入。"""
-
-    question: str
-    top_k: int | None
-    decompose_top_k: int | None
-    session_id: str
-    trace_id: str
-    request_enter_time: str = ""
-    request_enter_perf: float | None = None
-
-
-@dataclass(frozen=True)
-class ChatServiceOutcome:
-    """聊天业务结果及其 HTTP 适配元数据。"""
-
-    http_status: int
-    code: int | str
-    message: str
-    question: str
-    result: dict[str, Any]
-    response_status: PublicStatus = "ok"
-
-
-@dataclass(frozen=True)
 class ChatServiceDependencies:
     """ChatService 的可替换业务边界和副作用依赖。"""
 
@@ -135,26 +94,6 @@ class ChatServiceDependencies:
     append_message: Callable[[str | None, str, str], None]
     now_iso: Callable[[], str]
     perf_counter: Callable[[], float]
-
-
-@dataclass
-class _ChatContext:
-    """单次 handle 调用内部共享的可变处理上下文。"""
-
-    request: ChatServiceRequest
-    process_start_perf: float
-    process_start_time: str
-    request_enter_perf: float
-    original_question: str
-    session_id: str
-    effective_question: str
-    metrics: dict[str, Any]
-    bad_case: dict[str, Any]
-    final_top_k: int = 0
-    decompose_top_k: int = 0
-    rewrite_trace: dict[str, Any] = field(default_factory=dict)
-    session_should_store: bool = False
-    session_assistant_content: str = ""
 
 
 def get_default_chat_service_dependencies() -> ChatServiceDependencies:
@@ -239,7 +178,10 @@ class ChatService:
         finally:
             self._finalize(context)
 
-    def _initialize_context(self, request: ChatServiceRequest) -> _ChatContext:
+    def _initialize_context(
+        self,
+        request: ChatServiceRequest,
+    ) -> ChatRequestContext:
         process_start_perf = self._deps.perf_counter()
         process_start_time = self._deps.now_iso()
         request_enter_perf = (
@@ -252,63 +194,7 @@ class ChatService:
         original_question = (request.question or "").strip()
         session_id = (request.session_id or "").strip()
 
-        logger.info(
-            "[trace_id=%s] [chat] process_start queue_wait_ms=%s "
-            "question_len=%s session_id=%s preview=%s",
-            request.trace_id,
-            queue_wait_ms,
-            len(original_question),
-            session_id or "-",
-            original_question[:50],
-        )
-
-        metrics = {
-            "trace_id": request.trace_id,
-            "request_enter_time": request_enter_time,
-            "process_start_time": process_start_time,
-            "end_time": "",
-            "queue_wait_ms": queue_wait_ms,
-            "latency_ms": 0,
-            "total_cost_ms": 0,
-            "route_cost_ms": 0,
-            "rag_ready_check_cost_ms": 0,
-            "agent_cost_ms": 0,
-            "retrieve_cost_ms": 0,
-            "decompose_cost_ms": 0,
-            "rerank_cost_ms": 0,
-            "retrieve_with_sub_queries_cost_ms": 0,
-            "context_build_cost_ms": 0,
-            "llm_cost_ms": 0,
-            "parse_cost_ms": 0,
-            "rag_answer_cost_ms": 0,
-            "status": "internal_error",
-            "question_len": len(original_question),
-            "reference_count": 0,
-            "retrieved_count": 0,
-            "tool_called": False,
-            "tool_success": False,
-            "tool_name": "",
-            "router_llm_used": False,
-            "decompose_llm_used": False,
-            "answer_llm_used": False,
-            "llm_call_count": 0,
-            "query_rewrite_used": False,
-            "query_rewrite_llm_used": False,
-            "effective_question_len": len(original_question),
-            "action": "",
-            "reason": "",
-        }
-        bad_case = {
-            "created_at": self._deps.now_iso(),
-            "trace_id": request.trace_id,
-            "question": original_question,
-            "answer": "",
-            "references": [],
-            "route": "",
-            "error_type": "",
-            "note": "",
-        }
-        return _ChatContext(
+        context = ChatRequestContext(
             request=request,
             process_start_perf=process_start_perf,
             process_start_time=process_start_time,
@@ -316,13 +202,24 @@ class ChatService:
             original_question=original_question,
             session_id=session_id,
             effective_question=original_question,
-            metrics=metrics,
-            bad_case=bad_case,
+            metrics={},
+            bad_case={},
         )
+        context.metrics = build_initial_chat_metrics(
+            context,
+            request_enter_time=request_enter_time,
+            queue_wait_ms=queue_wait_ms,
+        )
+        context.bad_case = build_initial_bad_case(
+            context,
+            created_at=self._deps.now_iso(),
+        )
+        log_chat_process_start(context, queue_wait_ms=queue_wait_ms)
+        return context
 
     def _empty_question_outcome(
         self,
-        context: _ChatContext,
+        context: ChatRequestContext,
     ) -> ChatServiceOutcome:
         logger.warning(
             "[trace_id=%s] [chat] final_status=clarify reason=用户未输入问题",
@@ -339,7 +236,7 @@ class ChatService:
             response_status="clarify",
         )
 
-    def _rewrite_question(self, context: _ChatContext) -> None:
+    def _rewrite_question(self, context: ChatRequestContext) -> None:
         history = self._deps.get_history(context.session_id)
         rewrite_result = self._deps.rewrite_query_with_history(
             question=context.original_question,
@@ -389,7 +286,7 @@ class ChatService:
             context.effective_question,
         )
 
-    def _run_agent(self, context: _ChatContext) -> dict[str, Any]:
+    def _run_agent(self, context: ChatRequestContext) -> dict[str, Any]:
         agent_start = self._deps.perf_counter()
         logger.info(
             "[trace_id=%s] [agent] runtime_start agent_runtime=langgraph",
@@ -430,10 +327,9 @@ class ChatService:
                     },
                 ],
             )
-        logger.info(
-            "[trace_id=%s] [agent] tool_call_chain=%s",
+        log_tool_call_chain(
             context.request.trace_id,
-            _format_tool_call_chain(result.get("tool_trace") or []),
+            result.get("tool_trace") or [],
         )
         agent_cost_ms = int(
             (self._deps.perf_counter() - agent_start) * 1000
@@ -452,40 +348,21 @@ class ChatService:
 
     def _collect_result_metrics(
         self,
-        context: _ChatContext,
+        context: ChatRequestContext,
         result: dict[str, Any],
     ) -> None:
         trace_metrics = self._deps.collect_trace_metrics(result)
         policy = get_chat_status_policy(result.get("status", ""))
-        context.metrics["status"] = policy.metric_status
-        context.metrics["reference_count"] = len(
-            result.get("references") or []
-        )
-        for key in (
-            "retrieved_count",
-            "tool_called",
-            "tool_success",
-            "tool_name",
-            "router_llm_used",
-            "decompose_llm_used",
-            "answer_llm_used",
-            "llm_call_count",
-            "route_cost_ms",
-        ):
-            context.metrics[key] = trace_metrics[key]
-        timings = trace_metrics["timings"]
-        for timing_key in _TIMING_METRIC_KEYS:
-            context.metrics[timing_key] = int(
-                (timings.get(timing_key, 0) or 0)
-            )
-        context.metrics["action"] = result.get("action", "")
-        context.metrics["reason"] = (
-            result.get("reason") or policy.default_reason
+        apply_result_metrics(
+            context.metrics,
+            result,
+            trace_metrics,
+            policy,
         )
 
     def _runtime_exception_outcome(
         self,
-        context: _ChatContext,
+        context: ChatRequestContext,
         exc: Exception,
     ) -> ChatServiceOutcome:
         logger.exception(
@@ -506,7 +383,11 @@ class ChatService:
         context.bad_case["route"] = ""
         context.bad_case["error_type"] = "internal_error"
         context.bad_case["note"] = f"Agent Runtime 执行异常：{exc}"
-        self._write_bad_case(context.bad_case, context.request.trace_id)
+        safe_write_bad_case(
+            context.bad_case,
+            trace_id=context.request.trace_id,
+            write_bad_cases=self._deps.write_bad_cases,
+        )
         return ChatServiceOutcome(
             http_status=500,
             code="MODEL_ERROR",
@@ -524,7 +405,7 @@ class ChatService:
 
     def _build_result_outcome(
         self,
-        context: _ChatContext,
+        context: ChatRequestContext,
         result: dict[str, Any],
     ) -> ChatServiceOutcome:
         policy = get_chat_status_policy(result.get("status", ""))
@@ -555,17 +436,7 @@ class ChatService:
             response_status=policy.public_status,
         )
 
-    def _write_bad_case(self, record: dict, trace_id: str) -> None:
-        try:
-            self._deps.write_bad_cases(record)
-        except Exception as exc:
-            logger.warning(
-                "[trace_id=%s] [bad_case] write_failed error=%s",
-                trace_id,
-                str(exc)[:200],
-            )
-
-    def _save_session_turn(self, context: _ChatContext) -> None:
+    def _save_session_turn(self, context: ChatRequestContext) -> None:
         if not context.session_id:
             return
         try:
@@ -588,56 +459,19 @@ class ChatService:
                 str(exc)[:200],
             )
 
-    def _finalize(self, context: _ChatContext) -> None:
-        process_end_perf = self._deps.perf_counter()
-        context.metrics["end_time"] = self._deps.now_iso()
-        context.metrics["latency_ms"] = int(
-            (process_end_perf - context.process_start_perf) * 1000
-        )
-        context.metrics["total_cost_ms"] = int(
-            (process_end_perf - context.request_enter_perf) * 1000
-        )
+    def _finalize(self, context: ChatRequestContext) -> None:
         if context.session_should_store:
             self._save_session_turn(context)
-
-        logger.info(
-            "[trace_id=%s] [chat] process_end status=%s queue_wait_ms=%s "
-            "latency_ms=%s total_cost_ms=%s route_cost_ms=%s "
-            "rag_ready_check_cost_ms=%s agent_cost_ms=%s "
-            "retrieve_cost_ms=%s decompose_cost_ms=%s rerank_cost_ms=%s "
-            "llm_cost_ms=%s llm_call_count=%s query_rewrite_used=%s "
-            "query_rewrite_llm_used=%s effective_question_len=%s",
-            context.request.trace_id,
-            context.metrics.get("status"),
-            context.metrics.get("queue_wait_ms"),
-            context.metrics.get("latency_ms"),
-            context.metrics.get("total_cost_ms"),
-            context.metrics.get("route_cost_ms"),
-            context.metrics.get("rag_ready_check_cost_ms"),
-            context.metrics.get("agent_cost_ms"),
-            context.metrics.get("retrieve_cost_ms"),
-            context.metrics.get("decompose_cost_ms"),
-            context.metrics.get("rerank_cost_ms"),
-            context.metrics.get("llm_cost_ms"),
-            context.metrics.get("llm_call_count"),
-            context.metrics.get("query_rewrite_used"),
-            context.metrics.get("query_rewrite_llm_used"),
-            context.metrics.get("effective_question_len"),
+        finalize_chat_telemetry(
+            context,
+            now_iso=self._deps.now_iso,
+            perf_counter=self._deps.perf_counter,
+            log_and_write_metrics=self._deps.log_and_write_metrics,
         )
-        try:
-            self._deps.log_and_write_metrics(context.metrics)
-        except Exception as exc:
-            logger.exception(
-                "[trace_id=%s] [metrics] write_failed error=%s",
-                context.request.trace_id,
-                exc,
-            )
 
 __all__ = [
     "ChatService",
     "ChatServiceDependencies",
-    "ChatServiceOutcome",
-    "ChatServiceRequest",
     "create_default_chat_service",
     "get_default_chat_service_dependencies",
 ]

@@ -1,12 +1,18 @@
+"""聊天 API、health 与应用服务适配的兼容回归。"""
+
 from dataclasses import replace
 
 import pytest
+from fastapi import Response
 
-import app.api.chat as chat_api
 from app.agent.results import build_internal_error_result
+from app.api.chat import create_chat_router
+from app.api.health import create_health_router
+from app.api.responses import build_chat_response_from_outcome
+from app.api.schemas import ChatRequest
+from app.services.chat_models import ChatServiceOutcome
 from app.services.chat_service import (
     ChatService,
-    ChatServiceOutcome,
     get_default_chat_service_dependencies,
 )
 from app.storage.session import clear_session, get_history
@@ -18,23 +24,6 @@ def use_temporary_sqlite_database(settings_env, tmp_path):
     settings_env(sqlite_db_path=tmp_path / "api.sqlite")
 
 
-def patch_app(monkeypatch):
-    """隔离索引、路由和指标依赖，让 API 测试只关注响应结构。"""
-    monkeypatch.setattr(chat_api, "needs_rebuild", lambda data_dir: (False, "test"), raising=False)
-    monkeypatch.setattr(chat_api, "index_cache_exists", lambda : True, raising=False)
-    monkeypatch.setattr(chat_api, "load_index_cache", lambda : (True, "test"), raising=False)
-
-
-def install_chat_service(monkeypatch, **overrides):
-    """用显式注入依赖安装一次隔离外部副作用的 ChatService。"""
-    dependencies = replace(
-        get_default_chat_service_dependencies(),
-        log_and_write_metrics=lambda record: None,
-        **overrides,
-    )
-    monkeypatch.setattr(chat_api, "chat_service", ChatService(dependencies))
-
-
 class DummyState:
     pass
 
@@ -43,16 +32,45 @@ class DummyRequest:
     def __init__(self):
         self.state = DummyState()
 
-def test_health(monkeypatch):
-    """验证 /health 接口返回成功状态。"""
-    patch_app(monkeypatch)
-    resp = chat_api.health()
 
-    assert resp["code"] == 0
-    assert resp["data"]["status"] == "ok"
+def build_chat_service(**overrides) -> ChatService:
+    """构造不写生产 metrics 的显式 ChatService。"""
+    dependencies = replace(
+        get_default_chat_service_dependencies(),
+        log_and_write_metrics=lambda record: None,
+        **overrides,
+    )
+    return ChatService(dependencies)
 
 
-def test_internal_error_response_builder_does_not_expose_runtime_exception():
+def ask_api(
+    service: ChatService,
+    request: ChatRequest,
+    *,
+    http_request: DummyRequest | None = None,
+    response: Response | None = None,
+):
+    """调用真实 Chat Router 端点，同时保持依赖由 Router 闭包持有。"""
+    endpoint = create_chat_router(service).routes[0].endpoint
+    return endpoint(
+        request,
+        http_request or DummyRequest(),
+        response or Response(),
+    )
+
+
+def test_health():
+    """验证 /health 接口返回成功状态且不依赖外部资源。"""
+    response = create_health_router().routes[0].endpoint()
+
+    assert response == {
+        "code": 0,
+        "message": "success",
+        "data": {"status": "ok"},
+    }
+
+
+def test_internal_error_response_adapter_does_not_expose_runtime_exception():
     sensitive_message = (
         "/home/test-user/project/checkpoints.sqlite: "
         "model request failed with api_key=sk-test-secret"
@@ -71,7 +89,10 @@ def test_internal_error_response_builder_does_not_expose_runtime_exception():
         response_status="error",
     )
 
-    response = chat_api.build_chat_response_from_outcome(outcome, "trace-error")
+    response = build_chat_response_from_outcome(
+        outcome,
+        trace_id="trace-error",
+    )
     body = response.model_dump()
     response_text = response.model_dump_json()
 
@@ -91,7 +112,7 @@ def test_internal_error_response_builder_does_not_expose_runtime_exception():
     ]
 
 
-def test_chat_langgraph_internal_error_result_returns_http_500(monkeypatch):
+def test_chat_langgraph_internal_error_result_returns_http_500():
     sensitive_message = (
         "/home/test-user/project/checkpoints.sqlite: "
         "model request failed with api_key=sk-test-secret"
@@ -106,9 +127,7 @@ def test_chat_langgraph_internal_error_result_returns_http_500(monkeypatch):
             trace_step="agent_langgraph_error",
         )
 
-    patch_app(monkeypatch)
-    install_chat_service(
-        monkeypatch,
+    service = build_chat_service(
         rewrite_query_with_history=lambda question, history, trace_id="": {
             "original_question": question,
             "rewritten_question": question,
@@ -122,12 +141,11 @@ def test_chat_langgraph_internal_error_result_returns_http_500(monkeypatch):
         },
         run_agent_langgraph=fake_run_agent_langgraph,
     )
-
-    http_response = chat_api.Response()
-    response_body = chat_api.ask_api(
-        chat_api.ChatRequest(question="触发 LangGraph 内部异常"),
-        DummyRequest(),
-        http_response,
+    http_response = Response()
+    response_body = ask_api(
+        service,
+        ChatRequest(question="触发 LangGraph 内部异常"),
+        response=http_response,
     )
     payload = response_body.model_dump()
     response_text = response_body.model_dump_json()
@@ -150,11 +168,10 @@ def test_chat_langgraph_internal_error_result_returns_http_500(monkeypatch):
     assert "model request failed" not in response_text
 
 
-def test_chat_uses_rewritten_question_for_follow_up(monkeypatch):
+def test_chat_uses_rewritten_question_for_follow_up():
     """验证 /chat 第二轮追问会用改写后的问题进入 LangGraph。"""
     session_id = "api_follow_up_session"
     clear_session(session_id)
-
     rewrite_calls = []
 
     def fake_rewrite(question, history, trace_id=""):
@@ -162,14 +179,15 @@ def test_chat_uses_rewritten_question_for_follow_up(monkeypatch):
         if question == "那休学创业呢？":
             return {
                 "original_question": question,
-                "rewritten_question": "普通本科四年制专业中，休学创业学生的最长学习年限是多少？",
+                "rewritten_question": (
+                    "普通本科四年制专业中，休学创业学生的最长学习年限是多少？"
+                ),
                 "history_used": True,
                 "rewritten": True,
                 "reason": "测试改写",
                 "rewrite_llm_used": False,
                 "error": "",
             }
-
         return {
             "original_question": question,
             "rewritten_question": question,
@@ -183,7 +201,6 @@ def test_chat_uses_rewritten_question_for_follow_up(monkeypatch):
     agent_questions = []
 
     def fake_run_agent_langgraph(**kwargs):
-        """模拟 LangGraph 并记录收到的改写后问题。"""
         question = kwargs["effective_question"]
         agent_questions.append(question)
         return {
@@ -208,56 +225,51 @@ def test_chat_uses_rewritten_question_for_follow_up(monkeypatch):
             ],
         }
 
-    patch_app(monkeypatch)
-    install_chat_service(
-        monkeypatch,
+    service = build_chat_service(
         rewrite_query_with_history=fake_rewrite,
         run_agent_langgraph=fake_run_agent_langgraph,
     )
-
-    chat_api.ask_api(
-        chat_api.ChatRequest(
+    ask_api(
+        service,
+        ChatRequest(
             session_id=session_id,
             question="普通本科四年制专业最长学习年限是多少？",
             top_k=5,
         ),
-        DummyRequest(),
-        chat_api.Response(),
     )
-    second_resp = chat_api.ask_api(
-        chat_api.ChatRequest(
+    second_response = ask_api(
+        service,
+        ChatRequest(
             session_id=session_id,
             question="那休学创业呢？",
             top_k=5,
         ),
-        DummyRequest(),
-        chat_api.Response(),
     )
 
-    body = second_resp.model_dump()
-    rewritten_question = "普通本科四年制专业中，休学创业学生的最长学习年限是多少？"
-
+    body = second_response.model_dump()
+    rewritten_question = (
+        "普通本科四年制专业中，休学创业学生的最长学习年限是多少？"
+    )
     assert rewrite_calls[1]["question"] == "那休学创业呢？"
-    assert rewrite_calls[1]["history"][0]["role"] == "user"
-    assert rewrite_calls[1]["history"][0]["content"] == "普通本科四年制专业最长学习年限是多少？"
+    assert rewrite_calls[1]["history"][0] == {
+        "role": "user",
+        "content": "普通本科四年制专业最长学习年限是多少？",
+    }
     assert agent_questions[-1] == rewritten_question
     assert body["data"]["question"] == "那休学创业呢？"
     assert body["data"]["tool_trace"][0]["step"] == "query_rewrite"
     assert body["data"]["tool_trace"][0]["original_question"] == "那休学创业呢？"
-    assert body["data"]["tool_trace"][0]["rewritten_question"] == rewritten_question
+    assert (
+        body["data"]["tool_trace"][0]["rewritten_question"]
+        == rewritten_question
+    )
     assert body["data"]["tool_trace"][0]["rewritten"] is True
-
     clear_session(session_id)
 
 
-def test_chat_uses_langgraph_once_and_keeps_rewrite_api_protocol(monkeypatch):
+def test_chat_uses_langgraph_once_and_keeps_rewrite_api_protocol():
     """唯一 Runtime 只调用一次，且保留改写和 API 协议。"""
-    patch_app(monkeypatch)
-
-    calls = {
-        "rewrite": 0,
-        "langgraph": 0,
-    }
+    calls = {"rewrite": 0, "langgraph": 0}
     runtime_kwargs: dict = {}
 
     def fake_rewrite(question, history, trace_id=""):
@@ -304,28 +316,22 @@ def test_chat_uses_langgraph_once_and_keeps_rewrite_api_protocol(monkeypatch):
             "timings": {},
         }
 
-    install_chat_service(
-        monkeypatch,
+    service = build_chat_service(
         rewrite_query_with_history=fake_rewrite,
         run_agent_langgraph=fake_langgraph_runner,
     )
-
-    response = chat_api.ask_api(
-        chat_api.ChatRequest(
+    response = ask_api(
+        service,
+        ChatRequest(
             session_id="runtime-switch-session",
             question="原始问题",
             top_k=4,
             decompose_top_k=8,
         ),
-        DummyRequest(),
-        chat_api.Response(),
     )
     body = response.model_dump()
 
-    assert calls == {
-        "rewrite": 1,
-        "langgraph": 1,
-    }
+    assert calls == {"rewrite": 1, "langgraph": 1}
     assert "question" not in runtime_kwargs
     assert runtime_kwargs["original_question"] == "原始问题"
     assert runtime_kwargs["effective_question"] == "改写后的问题"

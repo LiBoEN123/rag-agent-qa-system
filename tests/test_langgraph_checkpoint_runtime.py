@@ -15,7 +15,7 @@ from app.graph import builder as graph_builder
 from app.graph import checkpointing
 from app.graph import nodes as graph_nodes
 from app.graph import runtime as graph_runtime
-from app.tools import runtime as tool_runtime
+import app.tools.runtime as tool_runtime
 from app.tools.context import ToolInvocationContext
 
 

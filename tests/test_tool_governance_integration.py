@@ -6,10 +6,10 @@ from pydantic import BaseModel
 
 from app.agent.state import AgentObservation
 from app.agent.tool_events import build_tool_trace
-from app.tools import dispatch_tool
 from app.tools.audit import ToolAuditEvent
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolRiskLevel, ToolSpec
+from app.tools.dispatch import dispatch_tool
 from app.tools.registry import ToolRegistry
 from app.tools.result import tool_success
 from app.tools.runtime import ToolRuntime

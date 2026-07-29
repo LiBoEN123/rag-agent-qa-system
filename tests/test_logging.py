@@ -4,7 +4,7 @@ import asyncio
 import importlib
 import logging
 
-import app.api.chat as chat_api
+import app.api.application as api_application
 from app.api.http_logging import (
     DecodedUvicornAccessFilter,
     configure_uvicorn_access_log,
@@ -75,28 +75,29 @@ def test_fastapi_lifespan_explicitly_configures_uvicorn_access(monkeypatch):
     calls = []
 
     monkeypatch.setattr(
-        chat_api,
+        api_application,
         "configure_uvicorn_access_log",
         lambda: calls.append("configure_http_logging"),
     )
     monkeypatch.setattr(
-        chat_api,
-        "start_on_event",
+        api_application,
+        "start_application_resources",
         lambda: calls.append("start"),
     )
     monkeypatch.setattr(
-        chat_api,
+        api_application,
         "close_tool_runtime",
         lambda: calls.append("close_tools"),
     )
     monkeypatch.setattr(
-        chat_api,
+        api_application,
         "close_agent_graph_runtime",
         lambda: calls.append("close_graph"),
     )
 
     async def run_lifespan():
-        async with chat_api.lifespan(chat_api.app):
+        application = api_application.create_app()
+        async with api_application.lifespan(application):
             assert calls == ["configure_http_logging", "start"]
 
     asyncio.run(run_lifespan())
