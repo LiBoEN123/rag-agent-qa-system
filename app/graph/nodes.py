@@ -23,7 +23,7 @@ from app.agent.runtime import (
     upsert_llm_usage_trace,
     validate_runtime_counts,
 )
-from app.config import Settings
+from app.config import get_settings
 from app.graph.state import AgentGraphState
 from app.rag.graph import run_rag_subgraph
 
@@ -57,12 +57,13 @@ def route_node(state: AgentGraphState) -> dict[str, Any]:
 
 def initialize_node(state: AgentGraphState) -> dict[str, Any]:
     """初始化唯一的平铺父图状态和框架消息入口。"""
+    settings = get_settings()
     original_question, effective_question = _resolve_state_questions(state)
     decision = _safe_decision(state.get("decision"))
     top_k, decompose_top_k = validate_runtime_counts(
-        top_k=state.get("top_k", Settings.TOP_K),
+        top_k=state.get("top_k", settings.top_k),
         decompose_top_k=state.get(
-            "decompose_top_k", Settings.DECOMPOSE_TOP_K
+            "decompose_top_k", settings.decompose_top_k
         ),
     )
     tool_trace = [
@@ -218,6 +219,7 @@ def adapt_framework_agent_node(state: AgentGraphState) -> dict[str, Any]:
 
 def rag_subgraph_node(state: AgentGraphState) -> dict[str, Any]:
     """消费框架路径的知识库 observation，复用原 RAG 子图。"""
+    settings = get_settings()
     projection = project_framework_events(state)
     observation = next(
         (
@@ -235,9 +237,9 @@ def rag_subgraph_node(state: AgentGraphState) -> dict[str, Any]:
         raise RuntimeError("Knowledge base observation chunks must be a list")
     rag_result = run_rag_subgraph(
         question=str(state.get("effective_question") or "").strip(),
-        top_k=int(state.get("top_k", Settings.TOP_K)),
+        top_k=int(state.get("top_k", settings.top_k)),
         decompose_top_k=int(
-            state.get("decompose_top_k", Settings.DECOMPOSE_TOP_K)
+            state.get("decompose_top_k", settings.decompose_top_k)
         ),
         retrieved_chunks=chunks,
         trace_id=str(state.get("trace_id") or ""),

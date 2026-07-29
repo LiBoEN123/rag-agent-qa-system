@@ -8,7 +8,7 @@ from app.tools.context import (
     build_default_tool_context,
 )
 from app.tools.errors import ToolErrorCode
-from app.tools.registry import tool_registry
+from app.tools.registry import get_tool_registry
 from app.tools.result import tool_error
 from app.tools.runtime import execute_registered_tool
 
@@ -67,7 +67,7 @@ def dispatch_tool(
     )
     try:
         return execute_registered_tool(
-            registry=tool_registry,
+            registry=get_tool_registry(),
             tool_name=tool_name,
             tool_args=tool_args,
             context=invocation_context,

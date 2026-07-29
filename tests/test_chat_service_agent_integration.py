@@ -3,7 +3,6 @@
 import json
 from importlib import import_module
 from pathlib import Path
-from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
@@ -176,7 +175,11 @@ class IncrementingClock:
         return self.value
 
 
-def test_chat_service_runs_real_langgraph_provider_and_runtime(monkeypatch):
+def test_chat_service_runs_real_langgraph_provider_and_runtime(
+    monkeypatch,
+    settings_env,
+):
+    """ChatService 通过真实 LangGraph、Provider 与 Runtime 完成工具调用。"""
     graph_builder.reset_agent_graph_runtime()
     tool_runtime.reset_tool_runtime()
     registry = ToolRegistry()
@@ -222,28 +225,18 @@ def test_chat_service_runs_real_langgraph_provider_and_runtime(monkeypatch):
         "get_agent_tool_provider",
         lambda: LocalToolProvider(registry),
     )
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_ITERATIONS", 6)
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_TOOL_CALLS", 10)
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_TOOL_ERRORS", 3)
-    monkeypatch.setattr(
-        graph_nodes.Settings,
-        "AGENT_MAX_CONSECUTIVE_SAME_TOOL_CALLS",
-        2,
+    settings = settings_env(
+        agent_max_iterations=6,
+        agent_max_tool_calls=10,
+        agent_max_tool_errors=3,
+        agent_max_consecutive_same_tool_calls=2,
+        agent_max_consecutive_same_tool_errors=2,
+        agent_max_total_cost_ms=120000,
+        langgraph_checkpointer="disabled",
+        tool_default_principal_id="chat-user",
+        tool_default_permissions=("knowledge_base:read",),
+        tool_audit_enabled=False,
     )
-    monkeypatch.setattr(
-        graph_nodes.Settings,
-        "AGENT_MAX_CONSECUTIVE_SAME_TOOL_ERRORS",
-        2,
-    )
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_TOTAL_COST_MS", 120000)
-    monkeypatch.setattr(graph_nodes.Settings, "LANGGRAPH_CHECKPOINTER", "disabled")
-    monkeypatch.setattr(graph_nodes.Settings, "TOOL_DEFAULT_PRINCIPAL_ID", "chat-user")
-    monkeypatch.setattr(
-        graph_nodes.Settings,
-        "TOOL_DEFAULT_PERMISSIONS",
-        ("knowledge_base:read",),
-    )
-    monkeypatch.setattr(graph_nodes.Settings, "TOOL_AUDIT_ENABLED", False)
 
     session_writes: list[tuple[str, str, str]] = []
     metric_writes: list[dict] = []
@@ -264,7 +257,7 @@ def test_chat_service_runs_real_langgraph_provider_and_runtime(monkeypatch):
         }
 
     dependencies = ChatServiceDependencies(
-        settings=SimpleNamespace(TOP_K=5, DECOMPOSE_TOP_K=10),
+        settings_provider=lambda: settings,
         get_history=lambda session_id: [],
         rewrite_query_with_history=rewrite,
         run_agent_langgraph=run_agent_langgraph,
@@ -340,7 +333,9 @@ def test_chat_service_runs_real_langgraph_provider_and_runtime(monkeypatch):
 
 def test_chat_service_completes_web_search_and_fetch_through_production_chain(
     monkeypatch,
+    settings_env,
 ):
+    """ChatService 通过生产调用链完成 Web 搜索与抓取。"""
     web_search_module = import_module("app.tools.web_search")
     web_download_module = import_module("app.tools.web_download")
     graph_builder.reset_agent_graph_runtime()
@@ -412,24 +407,22 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     monkeypatch.setattr(web_download_module, "Manager", FakeManager)
     monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_ITERATIONS", 6)
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_TOOL_CALLS", 10)
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_TOOL_ERRORS", 3)
-    monkeypatch.setattr(
-        graph_nodes.Settings, "AGENT_MAX_CONSECUTIVE_SAME_TOOL_CALLS", 2
+    settings = settings_env(
+        agent_max_iterations=6,
+        agent_max_tool_calls=10,
+        agent_max_tool_errors=3,
+        agent_max_consecutive_same_tool_calls=2,
+        agent_max_consecutive_same_tool_errors=2,
+        agent_max_total_cost_ms=120000,
+        langgraph_checkpointer="disabled",
+        tool_default_principal_id="web-user",
+        tool_default_permissions=(
+            "knowledge_base:read",
+            "web:search",
+            "web:fetch",
+        ),
+        tool_audit_enabled=False,
     )
-    monkeypatch.setattr(
-        graph_nodes.Settings, "AGENT_MAX_CONSECUTIVE_SAME_TOOL_ERRORS", 2
-    )
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_TOTAL_COST_MS", 120000)
-    monkeypatch.setattr(graph_nodes.Settings, "LANGGRAPH_CHECKPOINTER", "disabled")
-    monkeypatch.setattr(graph_nodes.Settings, "TOOL_DEFAULT_PRINCIPAL_ID", "web-user")
-    monkeypatch.setattr(
-        graph_nodes.Settings,
-        "TOOL_DEFAULT_PERMISSIONS",
-        ("knowledge_base:read", "web:search", "web:fetch"),
-    )
-    monkeypatch.setattr(graph_nodes.Settings, "TOOL_AUDIT_ENABLED", False)
 
     session_writes = []
     metric_writes = []
@@ -451,7 +444,7 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
         }
 
     dependencies = ChatServiceDependencies(
-        settings=SimpleNamespace(TOP_K=5, DECOMPOSE_TOP_K=10),
+        settings_provider=lambda: settings,
         get_history=lambda session_id: [],
         rewrite_query_with_history=rewrite,
         run_agent_langgraph=run_agent_langgraph,
@@ -532,6 +525,7 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
 
 def test_chat_service_completes_search_and_pdf_fetch_without_rag(
     monkeypatch,
+    settings_env,
 ):
     """ChatService 保持原 API，并记录脱敏多工具调用链。"""
     web_search_module = import_module("app.tools.web_search")
@@ -609,24 +603,22 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
             AssertionError(f"web PDF must not enter RAG: {args} {kwargs}")
         ),
     )
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_ITERATIONS", 6)
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_TOOL_CALLS", 10)
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_TOOL_ERRORS", 3)
-    monkeypatch.setattr(
-        graph_nodes.Settings, "AGENT_MAX_CONSECUTIVE_SAME_TOOL_CALLS", 2
+    settings = settings_env(
+        agent_max_iterations=6,
+        agent_max_tool_calls=10,
+        agent_max_tool_errors=3,
+        agent_max_consecutive_same_tool_calls=2,
+        agent_max_consecutive_same_tool_errors=2,
+        agent_max_total_cost_ms=120000,
+        langgraph_checkpointer="disabled",
+        tool_default_principal_id="web-user",
+        tool_default_permissions=(
+            "knowledge_base:read",
+            "web:search",
+            "web:fetch",
+        ),
+        tool_audit_enabled=False,
     )
-    monkeypatch.setattr(
-        graph_nodes.Settings, "AGENT_MAX_CONSECUTIVE_SAME_TOOL_ERRORS", 2
-    )
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_TOTAL_COST_MS", 120000)
-    monkeypatch.setattr(graph_nodes.Settings, "LANGGRAPH_CHECKPOINTER", "disabled")
-    monkeypatch.setattr(graph_nodes.Settings, "TOOL_DEFAULT_PRINCIPAL_ID", "web-user")
-    monkeypatch.setattr(
-        graph_nodes.Settings,
-        "TOOL_DEFAULT_PERMISSIONS",
-        ("knowledge_base:read", "web:search", "web:fetch"),
-    )
-    monkeypatch.setattr(graph_nodes.Settings, "TOOL_AUDIT_ENABLED", False)
 
     session_writes = []
     metric_writes = []
@@ -647,7 +639,7 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
         }
 
     dependencies = ChatServiceDependencies(
-        settings=SimpleNamespace(TOP_K=5, DECOMPOSE_TOP_K=10),
+        settings_provider=lambda: settings,
         get_history=lambda session_id: [],
         rewrite_query_with_history=rewrite,
         run_agent_langgraph=run_agent_langgraph,

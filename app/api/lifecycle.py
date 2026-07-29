@@ -4,9 +4,10 @@
 """
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Callable
 
 from app.common.logging import get_logger
+from app.config import AppSettings
 
 
 logger = get_logger("chat_service")
@@ -14,7 +15,7 @@ logger = get_logger("chat_service")
 
 @dataclass(frozen=True)
 class StartupDependencies:
-    settings: Any
+    settings: AppSettings
     needs_rebuild: Callable
     index_cache_exists: Callable
     load_index_cache: Callable
@@ -22,22 +23,21 @@ class StartupDependencies:
 
 
 def initialize_rag(deps: StartupDependencies) -> None:
-    """校验配置，并在启动时加载或重建 RAG 索引。"""
-    deps.settings.validate()
-    data_dir = str(deps.settings.RAG_FILE_PATH)
+    """在启动时加载或重建 RAG 索引。"""
+    data_dir = str(deps.settings.rag_file_path)
     needs_rebuild, reason = deps.needs_rebuild(data_dir)
     logger.info("[startup] needs_rebuild=%s reason=%s", needs_rebuild, reason)
 
     should_rebuild = (
         needs_rebuild
         or not deps.index_cache_exists()
-        or deps.settings.AUTO_REBUILD_ON_STARTUP
+        or deps.settings.auto_rebuild_on_startup
     )
     if should_rebuild:
         ok, message = deps.rebuild_and_persist_index(
             data_dir=data_dir,
-            chunk_size=deps.settings.CHUNK_SIZE,
-            chunk_overlap=deps.settings.CHUNK_OVERLAP,
+            chunk_size=deps.settings.chunk_size,
+            chunk_overlap=deps.settings.chunk_overlap,
         )
         logger.info("[startup] %s", message)
         if not ok:
@@ -52,20 +52,18 @@ def initialize_rag(deps: StartupDependencies) -> None:
     logger.warning("[startup] 缓存加载失败，降级为重建")
     _, message = deps.rebuild_and_persist_index(
         data_dir=data_dir,
-        chunk_size=deps.settings.CHUNK_SIZE,
-        chunk_overlap=deps.settings.CHUNK_OVERLAP,
+        chunk_size=deps.settings.chunk_size,
+        chunk_overlap=deps.settings.chunk_overlap,
     )
     logger.info("[startup] %s", message)
 
 
-def validate_agent_graph_configuration(settings: Any) -> str:
+def validate_agent_graph_configuration(settings: AppSettings) -> str:
     """校验 Checkpointer，并预编译无副作用的 LangGraph 主图。"""
-    from app.config import validate_langgraph_checkpointer
-
-    mode = validate_langgraph_checkpointer(settings.LANGGRAPH_CHECKPOINTER)
+    mode = settings.langgraph_checkpointer
     from app.graph.builder import get_compiled_agent_graph
 
-    get_compiled_agent_graph()
+    get_compiled_agent_graph(settings)
     logger.info(
         "[startup] agent_runtime=langgraph checkpointer_mode=%s validated",
         mode,
@@ -73,7 +71,7 @@ def validate_agent_graph_configuration(settings: Any) -> str:
     return mode
 
 
-def initialize_agent_graph_runtime(settings: Any) -> None:
+def initialize_agent_graph_runtime(settings: AppSettings) -> None:
     """执行 Checkpointer 配置校验和 LangGraph 预编译。"""
     validate_agent_graph_configuration(settings)
 

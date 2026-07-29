@@ -5,7 +5,7 @@
 
 from typing import Any
 
-from app.config import Settings as _Settings
+from app.config import get_settings
 from app.rag import pipeline as _pipeline
 
 
@@ -57,7 +57,7 @@ get_chunk_full_text = _pipeline.get_chunk_full_text
 
 def __getattr__(name: str):
     """动态读取重建索引时可能被重新绑定的运行时状态。"""
-    # Index state is rebound during rebuild/load, so resolve it dynamically.
+    # 重建或加载索引时会重新绑定状态，因此这里必须动态解析。
     if name in {
         "chunks",
         "texts",
@@ -76,18 +76,23 @@ def __getattr__(name: str):
 
 def run_rag_subgraph(
     question: str,
-    top_k: int = _Settings.TOP_K,
-    decompose_top_k: int = _Settings.DECOMPOSE_TOP_K,
+    top_k: int | None = None,
+    decompose_top_k: int | None = None,
     retrieved_chunks: list[dict[str, Any]] | None = None,
     trace_id: str = "",
 ) -> dict[str, Any]:
     """延迟调用 LangGraph RAG 子图，避免 RAG 门面导入时编译或执行图。"""
+    settings = get_settings()
     from app.rag.graph import run_rag_subgraph as graph_runner
 
     return graph_runner(
         question=question,
-        top_k=top_k,
-        decompose_top_k=decompose_top_k,
+        top_k=settings.top_k if top_k is None else top_k,
+        decompose_top_k=(
+            settings.decompose_top_k
+            if decompose_top_k is None
+            else decompose_top_k
+        ),
         retrieved_chunks=retrieved_chunks,
         trace_id=trace_id,
     )

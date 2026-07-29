@@ -15,12 +15,12 @@ import requests
 from pydantic import ValidationError
 from pypdf import PdfReader, PdfWriter
 
-from app.config import Settings, validate_web_pdf_config
+from app.config import AppSettings
 from app.tools import runtime as tool_runtime
 from app.tools.audit import NullToolAuditSink
 from app.tools.context import ToolInvocationContext
 from app.tools.errors import ToolErrorCode, ToolExecutionError
-from app.tools.registry import ToolRegistry, tool_registry
+from app.tools.registry import ToolRegistry, get_tool_registry
 from app.tools.result import tool_success
 from app.tools.runtime import ToolRuntime
 from app.tools.schemas import WebPdfFetchArgs, WebPdfFetchOutput
@@ -98,23 +98,26 @@ class CollectingAuditSink:
 
 
 @pytest.fixture(autouse=True)
-def isolate_web_pdf_fetch(monkeypatch):
+def isolate_web_pdf_fetch(settings_env):
     """固定 PDF 与共享网络配置，并隔离 Runtime 和生产审计。"""
     tool_runtime.reset_tool_runtime()
-    monkeypatch.setattr(Settings, "WEB_FETCH_CONNECT_TIMEOUT", 3.0)
-    monkeypatch.setattr(Settings, "WEB_FETCH_READ_TIMEOUT", 10.0)
-    monkeypatch.setattr(Settings, "WEB_FETCH_MAX_REDIRECTS", 5)
-    monkeypatch.setattr(Settings, "WEB_FETCH_USER_AGENT", "rag-agent-qa-system/1.0")
-    monkeypatch.setattr(Settings, "WEB_FETCH_PROXY", None)
-    monkeypatch.setattr(Settings, "WEB_PDF_MAX_RESPONSE_BYTES", 10_000_000)
-    monkeypatch.setattr(Settings, "WEB_PDF_MAX_DOCUMENT_PAGES", 1000)
-    monkeypatch.setattr(Settings, "TOOL_AUDIT_ENABLED", False)
+    settings_env(
+        web_fetch_connect_timeout=3.0,
+        web_fetch_read_timeout=10.0,
+        web_fetch_max_redirects=5,
+        web_fetch_user_agent="rag-agent-qa-system/1.0",
+        web_fetch_proxy="",
+        web_pdf_max_response_bytes=10_000_000,
+        web_pdf_max_document_pages=1000,
+        tool_audit_enabled=False,
+    )
     yield
     tool_runtime.reset_tool_runtime()
 
 
 def _pdf_spec():
-    spec = tool_registry.get("web_pdf_fetch")
+    """返回默认注册表中的 PDF 抓取工具契约。"""
+    spec = get_tool_registry().get("web_pdf_fetch")
     assert spec is not None
     return spec
 
@@ -266,36 +269,31 @@ def test_web_pdf_output_validates_lengths_pages_and_fixed_fields():
 
 
 def test_web_pdf_configuration_accepts_safe_values():
-    validate_web_pdf_config(
-        max_response_bytes=10_000_000,
-        max_document_pages=1000,
-        tool_timeout_seconds=45,
-        connect_timeout=3,
-        read_timeout=10,
+    """PDF 抓取配置接受满足安全与预算约束的取值。"""
+    AppSettings(
+        _env_file=None,
+        web_pdf_max_response_bytes=10_000_000,
+        web_pdf_max_document_pages=1000,
+        web_pdf_tool_timeout_seconds=45,
+        web_fetch_connect_timeout=3,
+        web_fetch_read_timeout=10,
     )
 
 
 @pytest.mark.parametrize(
-    ("overrides", "message"),
+    "overrides",
     [
-        ({"max_response_bytes": 0}, "WEB_PDF_MAX_RESPONSE_BYTES"),
-        ({"max_response_bytes": True}, "WEB_PDF_MAX_RESPONSE_BYTES"),
-        ({"max_document_pages": 0}, "WEB_PDF_MAX_DOCUMENT_PAGES"),
-        ({"tool_timeout_seconds": 0}, "WEB_PDF_TOOL_TIMEOUT_SECONDS"),
-        ({"tool_timeout_seconds": 13}, "WEB_PDF_TOOL_TIMEOUT_SECONDS"),
+        {"web_pdf_max_response_bytes": 0},
+        {"web_pdf_max_response_bytes": True},
+        {"web_pdf_max_document_pages": 0},
+        {"web_pdf_tool_timeout_seconds": 0},
+        {"web_pdf_tool_timeout_seconds": 13},
     ],
 )
-def test_web_pdf_configuration_rejects_invalid_values(overrides, message):
-    values = {
-        "max_response_bytes": 10_000_000,
-        "max_document_pages": 1000,
-        "tool_timeout_seconds": 45,
-        "connect_timeout": 3,
-        "read_timeout": 10,
-    }
-    values.update(overrides)
-    with pytest.raises(ValueError, match=message):
-        validate_web_pdf_config(**values)
+def test_web_pdf_configuration_rejects_invalid_values(overrides):
+    """PDF 抓取配置拒绝越界值和布尔冒充数值。"""
+    with pytest.raises(ValidationError):
+        AppSettings(_env_file=None, **overrides)
 
 
 @pytest.mark.parametrize(
@@ -473,23 +471,31 @@ def test_unexpected_parser_error_is_redacted_and_non_retryable(monkeypatch):
     assert "secret" not in str(raised.value)
 
 
-def test_document_page_limit_and_start_page_range(monkeypatch):
-    monkeypatch.setattr(Settings, "WEB_PDF_MAX_DOCUMENT_PAGES", 1)
+def test_document_page_limit_and_start_page_range(
+    monkeypatch,
+    settings_env,
+):
+    """文档页数上限与起始页范围均受到校验。"""
+    settings_env(web_pdf_max_document_pages=1)
     _install_fake_manager(monkeypatch, [FakeResponse(), FakeResponse()])
 
     with pytest.raises(ToolExecutionError) as too_many:
         web_pdf_fetch_handler(_args(), ToolInvocationContext())
     assert too_many.value.code is ToolErrorCode.INVALID_RESULT
 
-    monkeypatch.setattr(Settings, "WEB_PDF_MAX_DOCUMENT_PAGES", 1000)
+    settings_env(web_pdf_max_document_pages=1000)
     with pytest.raises(ToolExecutionError) as out_of_range:
         web_pdf_fetch_handler(_args(start_page=3), ToolInvocationContext())
     assert out_of_range.value.code is ToolErrorCode.INVALID_ARGUMENTS
     assert out_of_range.value.retryable is False
 
 
-def test_pdf_download_byte_limit_uses_shared_streaming_boundary(monkeypatch):
-    monkeypatch.setattr(Settings, "WEB_PDF_MAX_RESPONSE_BYTES", len(PDF_BYTES) - 1)
+def test_pdf_download_byte_limit_uses_shared_streaming_boundary(
+    monkeypatch,
+    settings_env,
+):
+    """PDF 下载通过共享流式边界实施字节上限。"""
+    settings_env(web_pdf_max_response_bytes=len(PDF_BYTES) - 1)
     response = FakeResponse(content_length=str(len(PDF_BYTES)))
     managers = _install_fake_manager(monkeypatch, [response])
 
@@ -678,12 +684,16 @@ def test_runtime_total_timeout_bounds_pdf_download(monkeypatch):
     assert result["runtime"]["timed_out"] is True
 
 
-def test_pdf_audit_never_records_url_body_metadata_or_proxy(monkeypatch):
+def test_pdf_audit_never_records_url_body_metadata_or_proxy(
+    monkeypatch,
+    settings_env,
+):
+    """PDF 审计不记录 URL、正文、元数据或代理地址。"""
     proxy = "http://audit-secret-proxy.example:8080"
     url = "https://example.com/private.pdf?secret=1"
     body_marker = "Governed PDF page one"
     metadata_marker = "Governed Web PDF Fixture"
-    monkeypatch.setattr(Settings, "WEB_FETCH_PROXY", proxy)
+    settings_env(web_fetch_proxy=proxy)
     _install_fake_manager(monkeypatch, [FakeResponse()])
     sink = CollectingAuditSink()
     registry = ToolRegistry()

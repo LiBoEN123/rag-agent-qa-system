@@ -3,7 +3,7 @@
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from app.tools.providers.base import is_tool_visible
-from app.tools.registry import ToolRegistry, tool_registry
+from app.tools.registry import ToolRegistry, get_tool_registry
 
 
 class LocalToolProvider:
@@ -40,7 +40,7 @@ class LocalToolProvider:
 
 def get_default_tool_provider() -> LocalToolProvider:
     """构造默认本地 Provider，不持有请求级 Context。"""
-    return LocalToolProvider(tool_registry)
+    return LocalToolProvider(get_tool_registry())
 
 
 __all__ = ["LocalToolProvider", "get_default_tool_provider"]

@@ -13,7 +13,7 @@ from app.agent.runtime import (
     validate_runtime_counts,
 )
 from app.common.logging import get_logger
-from app.config import Settings
+from app.config import get_settings
 from app.graph.builder import get_compiled_agent_graph
 from app.graph.checkpointing import (
     build_checkpoint_thread_id,
@@ -41,12 +41,14 @@ def run_agent_langgraph(
     tool_context: ToolInvocationContext | None = None,
 ) -> dict[str, Any]:
     """同步执行 LangGraph 主图，并返回 API 主流程使用的结果字典。"""
+    settings = get_settings()
     resolved_original_question = (original_question or "").strip()
     resolved_effective_question = (effective_question or "").strip()
     resolved_tool_context = tool_context or build_default_tool_context(
         trace_id=trace_id,
         session_id=session_id or "",
         source="chat_api",
+        settings=settings,
     )
 
     try:
@@ -62,7 +64,7 @@ def run_agent_langgraph(
             "trace_id": trace_id,
             "session_id": session_id,
         }
-        mode = get_checkpointer_mode()
+        mode = get_checkpointer_mode(settings)
         checkpointer_enabled = mode != "disabled"
         checkpoint_thread_id = (
             build_checkpoint_thread_id(
@@ -80,11 +82,11 @@ def run_agent_langgraph(
             mode if checkpointer_enabled else "disabled",
             checkpoint_thread_id or "-",
         )
-        graph = get_compiled_agent_graph()
+        graph = get_compiled_agent_graph(settings)
         graph_config: dict[str, Any] = {
             "recursion_limit": max(
                 25,
-                Settings.AGENT_MAX_ITERATIONS * 8 + 20,
+                settings.agent_max_iterations * 8 + 20,
             ),
             "max_concurrency": 1,
         }

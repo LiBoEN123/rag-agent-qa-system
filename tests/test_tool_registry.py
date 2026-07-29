@@ -1,12 +1,12 @@
 import json
 
-from app.tools.registry import ToolRegistry, ToolSpec, tool_registry
+from app.tools.registry import ToolRegistry, ToolSpec
 from app.tools.context import ToolInvocationContext
 from app.tools.schemas import SearchKnowledgeBaseArgs
 from app.tools import dispatch_tool
 
 
-def test_tool_registry_names_include_builtin_tools():
+def test_tool_registry_names_include_builtin_tools(tool_registry):
     """验证内置工具已注册到统一注册中心。"""
     names = tool_registry.names()
 
@@ -20,7 +20,7 @@ def test_tool_registry_names_include_builtin_tools():
     assert "web_pdf_fetch" in names
 
 
-def test_builtin_tools_publish_v2_contract_metadata():
+def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
     """验证八个注册生产工具发布完整且符合要求的 V2 契约。"""
     specs = tool_registry.contract_specs()
     specs_by_name = {spec["name"]: spec for spec in specs}
@@ -80,7 +80,7 @@ def test_builtin_tools_publish_v2_contract_metadata():
     assert pdf["audit_output_mode"] == "summary"
 
 
-def test_tool_registry_dispatch_simple_calculator():
+def test_tool_registry_dispatch_simple_calculator(tool_registry):
     """验证注册中心可以调用计算器工具。"""
     result = tool_registry.dispatch(
         "simple_calculator",
@@ -92,7 +92,10 @@ def test_tool_registry_dispatch_simple_calculator():
     assert result["output"]["result"] == 7
 
 
-def test_tool_registry_dispatch_search_knowledge_base(monkeypatch):
+def test_tool_registry_dispatch_search_knowledge_base(
+    monkeypatch,
+    tool_registry,
+):
     """验证注册中心可以调用知识库检索工具。"""
     import app.rag as rag
 
@@ -136,7 +139,7 @@ def test_tool_registry_dispatch_search_knowledge_base(monkeypatch):
     assert result["output"]["top_scores"] == [0.91]
 
 
-def test_tool_registry_dispatch_unknown_tool():
+def test_tool_registry_dispatch_unknown_tool(tool_registry):
     """验证未知工具返回兼容错误结构。"""
     result = tool_registry.dispatch("unknown_tool", {})
 

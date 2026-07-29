@@ -10,12 +10,11 @@ import pytest
 from ddgs.exceptions import DDGSException, RatelimitException, TimeoutException
 from pydantic import ValidationError
 
-from app.config import Settings
 from app.tools import runtime as tool_runtime
 from app.tools.audit import NullToolAuditSink
 from app.tools.context import ToolInvocationContext
 from app.tools.errors import ToolErrorCode, ToolExecutionError
-from app.tools.registry import ToolRegistry, tool_registry
+from app.tools.registry import ToolRegistry, get_tool_registry
 from app.tools.result import tool_success
 from app.tools.runtime import ToolRuntime
 from app.tools.schemas import WebSearchArgs, WebSearchOutput
@@ -34,12 +33,15 @@ class CollectingAuditSink:
 
 
 @pytest.fixture(autouse=True)
-def isolate_web_search(monkeypatch):
+def isolate_web_search(settings_env):
+    """固定 Web 搜索配置并隔离共享工具运行时。"""
     tool_runtime.reset_tool_runtime()
-    monkeypatch.setattr(Settings, "WEB_SEARCH_REGION", "us-en")
-    monkeypatch.setattr(Settings, "WEB_SEARCH_SAFESEARCH", "moderate")
-    monkeypatch.setattr(Settings, "WEB_SEARCH_TIMEOUT", 8)
-    monkeypatch.setattr(Settings, "WEB_SEARCH_PROXY", None)
+    settings_env(
+        web_search_region="us-en",
+        web_search_safesearch="moderate",
+        web_search_timeout=8,
+        web_search_proxy="",
+    )
     yield
     tool_runtime.reset_tool_runtime()
 
@@ -57,7 +59,8 @@ def _runtime(registry, *, audit_sink=None, sleep_func=lambda _delay: None):
 
 
 def _web_spec():
-    spec = tool_registry.get("web_search")
+    """返回默认注册表中的 Web 搜索工具契约。"""
+    spec = get_tool_registry().get("web_search")
     assert spec is not None
     return spec
 
@@ -108,7 +111,13 @@ def test_web_search_args_reject_invalid_freshness():
     ("freshness", "timelimit"),
     [("any", None), ("day", "d"), ("week", "w"), ("month", "m"), ("year", "y")],
 )
-def test_ddgs_parameters_and_freshness_mapping(monkeypatch, freshness, timelimit):
+def test_ddgs_parameters_and_freshness_mapping(
+    monkeypatch,
+    settings_env,
+    freshness,
+    timelimit,
+):
+    """搜索参数与新鲜度选项正确映射到 DDGS 调用。"""
     calls = []
 
     class FakeDDGS:
@@ -120,10 +129,12 @@ def test_ddgs_parameters_and_freshness_mapping(monkeypatch, freshness, timelimit
             return []
 
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
-    monkeypatch.setattr(Settings, "WEB_SEARCH_REGION", "cn-zh")
-    monkeypatch.setattr(Settings, "WEB_SEARCH_SAFESEARCH", "on")
-    monkeypatch.setattr(Settings, "WEB_SEARCH_TIMEOUT", 7)
-    monkeypatch.setattr(Settings, "WEB_SEARCH_PROXY", "socks5://proxy.invalid:1080")
+    settings_env(
+        web_search_region="cn-zh",
+        web_search_safesearch="on",
+        web_search_timeout=7,
+        web_search_proxy="socks5://proxy.invalid:1080",
+    )
 
     result = web_search_handler(
         _args(query="Python", max_results=3, freshness=freshness),
@@ -302,7 +313,11 @@ def test_runtime_executes_production_web_search_spec_with_permission(monkeypatch
     assert len(calls) == 2
 
 
-def test_registry_dispatch_uses_web_runtime_and_output_model(monkeypatch):
+def test_registry_dispatch_uses_web_runtime_and_output_model(
+    monkeypatch,
+    settings_env,
+):
+    """注册表分发经过 Web Runtime，并返回符合模型的输出。"""
     class FakeDDGS:
         def __init__(self, **kwargs):
             del kwargs
@@ -318,7 +333,7 @@ def test_registry_dispatch_uses_web_runtime_and_output_model(monkeypatch):
             ]
 
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
-    monkeypatch.setattr(Settings, "TOOL_AUDIT_ENABLED", False)
+    settings_env(tool_audit_enabled=False)
     registry = ToolRegistry()
     registry.register(_web_spec())
 
@@ -334,13 +349,17 @@ def test_registry_dispatch_uses_web_runtime_and_output_model(monkeypatch):
     assert result["governance"]["decision"] == "allow"
 
 
-def test_direct_registry_dispatch_denies_permission_before_ddgs(monkeypatch):
+def test_direct_registry_dispatch_denies_permission_before_ddgs(
+    monkeypatch,
+    settings_env,
+):
+    """直接分发在调用 DDGS 前先拒绝缺少权限的请求。"""
     class ForbiddenDDGS:
         def __init__(self, **kwargs):
             raise AssertionError(f"DDGS must not run: {kwargs}")
 
     monkeypatch.setattr(web_search_module, "DDGS", ForbiddenDDGS)
-    monkeypatch.setattr(Settings, "TOOL_AUDIT_ENABLED", False)
+    settings_env(tool_audit_enabled=False)
     registry = ToolRegistry()
     registry.register(_web_spec())
     result = registry.dispatch(

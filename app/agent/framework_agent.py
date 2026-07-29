@@ -17,7 +17,7 @@ from app.agent.framework_tools import RegistryToolsMiddleware
 from app.agent.model import get_agent_chat_model
 from app.agent.state import AgentObservation
 from app.agent.tool_events import build_tool_observation, build_tool_trace
-from app.config import Settings
+from app.config import AppSettings, get_settings
 from app.tools.context import ToolInvocationContext
 
 
@@ -70,20 +70,21 @@ class _DeferredAgentModel:
         return bind(**kwargs) if callable(bind) else model
 
 
-def build_framework_agent():
+def build_framework_agent(settings: AppSettings | None = None):
     """创建使用框架循环、动态工具和内置调用限制的 Agent 子图。"""
+    resolved = settings or get_settings()
     agent = create_agent(
         _DeferredAgentModel(),
         tools=[],
         middleware=[
             RegistryToolsMiddleware(),
-            ProjectToolGovernanceMiddleware(),
+            ProjectToolGovernanceMiddleware(settings=resolved),
             ModelCallLimitMiddleware(
-                run_limit=Settings.AGENT_MAX_ITERATIONS,
+                run_limit=resolved.agent_max_iterations,
                 exit_behavior="end",
             ),
             ToolCallLimitMiddleware(
-                run_limit=Settings.AGENT_MAX_TOOL_CALLS,
+                run_limit=resolved.agent_max_tool_calls,
                 exit_behavior="continue",
             ),
         ],

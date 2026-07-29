@@ -31,14 +31,9 @@ def make_chunk(index: int = 1, **overrides) -> dict:
 
 
 @pytest.fixture(autouse=True)
-def isolate_rag_graph(monkeypatch):
+def isolate_rag_graph(settings_env):
     """关闭真实拆分模型并隔离已编译 Graph。"""
-    rag_graph_builder.get_compiled_rag_graph.cache_clear()
-    monkeypatch.setattr(
-        rag_graph_nodes.Settings,
-        "ENABLE_QUERY_DECOMPOSE",
-        False,
-    )
+    settings_env(enable_query_decompose=False)
     yield
     rag_graph_builder.get_compiled_rag_graph.cache_clear()
 
@@ -130,15 +125,14 @@ def test_single_query_without_candidates_retrieves_once(monkeypatch):
 
 def test_rule_selected_single_query_skips_decompose_and_answer_on_weak_evidence(
     monkeypatch,
+    settings_env,
 ):
     """规则判定单查询时不调用拆分模型，弱证据也不调用回答模型。"""
     calls = {"decompose": 0, "answer": 0}
-    monkeypatch.setattr(rag_graph_nodes.Settings, "ENABLE_QUERY_DECOMPOSE", True)
-    monkeypatch.setattr(rag_graph_nodes.Settings, "DECOMPOSE_MODEL_NAME", "fake")
-    monkeypatch.setattr(
-        rag_graph_nodes.Settings,
-        "DECOMPOSE_API_URL",
-        "http://example.test",
+    settings_env(
+        enable_query_decompose=True,
+        decompose_model_name="fake",
+        decompose_api_url="http://example.test",
     )
     monkeypatch.setattr(
         rag_graph_nodes,
@@ -174,16 +168,14 @@ def test_rule_selected_single_query_skips_decompose_and_answer_on_weak_evidence(
     assert calls == {"decompose": 0, "answer": 0}
 
 
-def test_decompose_model_can_keep_single_query(monkeypatch):
+def test_decompose_model_can_keep_single_query(monkeypatch, settings_env):
     """复杂问题调用拆分模型后仍可判定为无需拆分的单查询。"""
     calls = {"decompose": 0, "answer": 0}
     received = {}
-    monkeypatch.setattr(rag_graph_nodes.Settings, "ENABLE_QUERY_DECOMPOSE", True)
-    monkeypatch.setattr(rag_graph_nodes.Settings, "DECOMPOSE_MODEL_NAME", "fake")
-    monkeypatch.setattr(
-        rag_graph_nodes.Settings,
-        "DECOMPOSE_API_URL",
-        "http://example.test",
+    settings_env(
+        enable_query_decompose=True,
+        decompose_model_name="fake",
+        decompose_api_url="http://example.test",
     )
     monkeypatch.setattr(
         rag_graph_nodes,
@@ -228,13 +220,15 @@ def test_decompose_model_can_keep_single_query(monkeypatch):
     }
 
 
-def test_multi_query_uses_current_index_facade_only(monkeypatch):
+def test_multi_query_uses_current_index_facade_only(monkeypatch, settings_env):
     """多查询使用 decompose_top_k，且不进入单查询 retrieve/rerank。"""
     calls = {"decompose": 0, "facade": 0, "retrieve": 0, "rerank": 0}
     final_chunks = [make_chunk()]
-    monkeypatch.setattr(rag_graph_nodes.Settings, "ENABLE_QUERY_DECOMPOSE", True)
-    monkeypatch.setattr(rag_graph_nodes.Settings, "DECOMPOSE_MODEL_NAME", "fake")
-    monkeypatch.setattr(rag_graph_nodes.Settings, "DECOMPOSE_API_URL", "http://fake")
+    settings_env(
+        enable_query_decompose=True,
+        decompose_model_name="fake",
+        decompose_api_url="http://fake",
+    )
     monkeypatch.setattr(
         rag_graph_nodes,
         "should_decompose_query",

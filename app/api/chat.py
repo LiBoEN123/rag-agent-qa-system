@@ -16,7 +16,7 @@ from app.rag import (
     index_cache_exists,
     rebuild_and_persist_index,
 )
-from app.config import Settings
+from app.config import get_settings, validate_startup_environment
 from app.graph.nodes import route_node
 from app.observability import create_trace_id
 from app.rag.retrieval import safe_float, should_refuse
@@ -114,16 +114,18 @@ def build_chat_response_from_outcome(
 
 def start_on_event():
     """启动时校验配置、初始化 RAG，并按需预编译 Agent Graph。"""
+    settings = get_settings()
+    validate_startup_environment(settings)
     initialize_rag(
         StartupDependencies(
-            settings=Settings,
+            settings=settings,
             needs_rebuild=needs_rebuild,
             index_cache_exists=index_cache_exists,
             load_index_cache=load_index_cache,
             rebuild_and_persist_index=rebuild_and_persist_index,
         )
     )
-    initialize_agent_graph_runtime(Settings)
+    initialize_agent_graph_runtime(settings)
 
 @app.get("/health")
 def health():
@@ -164,7 +166,7 @@ def ask_api(req: ChatRequest, request: Request, response: Response):
 
 _diagnostics_router = create_diagnostics_router(
     DiagnosticsDependencies(
-        settings=Settings,
+        settings_provider=get_settings,
         search_result=SearchResult,
         search_data=SearchData,
         search_response=SearchResponse,

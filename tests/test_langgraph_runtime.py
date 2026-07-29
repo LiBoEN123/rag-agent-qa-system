@@ -6,7 +6,6 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from app.agent import framework_agent
-from app.agent import runtime as agent_runtime
 from app.agent.results import create_agent_result
 from app.contracts.chat import AgentResultStatus
 from app.graph import builder as graph_builder
@@ -51,10 +50,12 @@ class FakeModel:
 
 
 @pytest.fixture(autouse=True)
-def isolate_graph_and_trace_store(monkeypatch):
-    graph_builder.get_compiled_agent_graph.cache_clear()
-    monkeypatch.setattr(agent_runtime.Settings, "ENABLE_AGENT_TRACE_STORE", False)
-    monkeypatch.setattr(agent_runtime.Settings, "LANGGRAPH_CHECKPOINTER", "disabled")
+def isolate_graph_and_trace_store(settings_env):
+    """禁用图检查点与追踪存储，并在用例后清理图缓存。"""
+    settings_env(
+        enable_agent_trace_store=False,
+        langgraph_checkpointer="disabled",
+    )
     yield
     graph_builder.get_compiled_agent_graph.cache_clear()
 
@@ -286,6 +287,7 @@ def test_top_level_graph_error_is_sanitized_but_kept_for_diagnostics(
     monkeypatch,
     caplog,
 ):
+    """顶层图异常对外脱敏，同时在诊断日志中保留原始信息。"""
     bad_cases: list[dict] = []
     sensitive_message = (
         "/home/test-user/project/checkpoints.sqlite: "
@@ -298,7 +300,11 @@ def test_top_level_graph_error_is_sanitized_but_kept_for_diagnostics(
             del graph_input, config, context
             raise sensitive_error
 
-    monkeypatch.setattr(graph_runtime, "get_compiled_agent_graph", lambda: BrokenGraph())
+    monkeypatch.setattr(
+        graph_runtime,
+        "get_compiled_agent_graph",
+        lambda settings=None: BrokenGraph(),
+    )
     monkeypatch.setattr(graph_runtime.logger, "propagate", True)
     with caplog.at_level("ERROR", logger=graph_runtime.logger.name):
         result = run_agent_langgraph(

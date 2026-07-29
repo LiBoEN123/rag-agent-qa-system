@@ -16,7 +16,7 @@ from app.tools.context import (  # noqa: E402
     ToolInvocationContext,
     build_default_tool_context,
 )
-from app.tools.registry import tool_registry  # noqa: E402
+from app.tools.registry import get_tool_registry  # noqa: E402
 
 
 def _context() -> ToolInvocationContext:
@@ -32,6 +32,7 @@ def _context() -> ToolInvocationContext:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """解析参数并通过正式工具链执行一次 Web 搜索冒烟测试。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--query", required=True)
     parser.add_argument("--max-results", type=int, default=3)
@@ -54,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
 
     started = time.perf_counter()
     try:
-        result = tool_registry.dispatch(
+        result = get_tool_registry().dispatch(
             "web_search",
             {
                 "query": args.query,

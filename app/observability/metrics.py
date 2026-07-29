@@ -5,14 +5,12 @@
 
 import json
 from datetime import datetime
-from pathlib import Path
 
 from app.common.logging import get_logger
+from app.config import get_settings
 
 
 logger = get_logger("chat_service")
-METRICS_PATH = Path("logs") / "metrics.jsonl"
-BAD_CASES_PATH = Path("logs") / "bad_cases.jsonl"
 
 REAL_BAD_CASE = {
     "tool_error",
@@ -185,8 +183,9 @@ def attach_query_rewrite_trace(result: dict, rewrite_trace: dict) -> dict:
 
 def write_metrics(record: dict) -> None:
     """将单条请求指标追加写入 JSONL 文件。"""
-    METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with METRICS_PATH.open("a", encoding="utf-8") as file:
+    path = get_settings().metrics_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as file:
         file.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
@@ -201,7 +200,8 @@ def write_bad_cases(record: dict) -> None:
         )
         return
 
-    BAD_CASES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    path = get_settings().bad_cases_path
+    path.parent.mkdir(parents=True, exist_ok=True)
     normalized_record = {
         "created_at": now_iso(),
         "trace_id": record.get("trace_id", ""),
@@ -212,7 +212,7 @@ def write_bad_cases(record: dict) -> None:
         "error_type": record.get("error_type", ""),
         "note": record.get("note", ""),
     }
-    with BAD_CASES_PATH.open("a", encoding="utf-8") as file:
+    with path.open("a", encoding="utf-8") as file:
         file.write(json.dumps(normalized_record, ensure_ascii=False) + "\n")
 
 
@@ -239,10 +239,11 @@ def log_and_write_metrics(record: dict) -> None:
 
 def read_recent_metrics(limit: int = 20) -> list[dict]:
     """读取最近指定数量的有效指标记录。"""
-    if not METRICS_PATH.exists():
+    path = get_settings().metrics_path
+    if not path.exists():
         return []
     records = []
-    for line in METRICS_PATH.read_text(encoding="utf-8").splitlines()[-limit:]:
+    for line in path.read_text(encoding="utf-8").splitlines()[-limit:]:
         try:
             records.append(json.loads(line))
         except json.JSONDecodeError:

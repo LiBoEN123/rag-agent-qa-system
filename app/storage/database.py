@@ -7,7 +7,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from app.config import Settings
+from app.config import get_settings
 
 
 def now_iso() -> str:
@@ -17,7 +17,7 @@ def now_iso() -> str:
 
 def get_db_path() -> Path:
     """返回当前配置的 SQLite 数据库路径。"""
-    return Path(Settings.SQLITE_DB_PATH)
+    return get_settings().sqlite_db_path
 
 
 def get_connection(db_path: Path | None = None) -> sqlite3.Connection:

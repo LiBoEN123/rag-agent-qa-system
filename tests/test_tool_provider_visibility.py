@@ -13,7 +13,7 @@ from app.tools.context import ToolInvocationContext, has_permission
 from app.tools.contracts import ToolRiskLevel, ToolSpec
 from app.tools.providers import LocalToolProvider
 from app.tools.providers.base import is_tool_visible
-from app.tools.registry import ToolRegistry, tool_registry
+from app.tools.registry import ToolRegistry
 from app.tools.result import tool_success
 
 
@@ -200,7 +200,7 @@ def test_same_provider_keeps_request_visibility_isolated():
     ],
 )
 def test_production_web_permissions_are_independent(
-    permissions, has_search, has_fetch
+    permissions, has_search, has_fetch, tool_registry
 ):
     """同一生产 Provider 连续请求保持 Search 与 Fetch 权限隔离。"""
     names = {

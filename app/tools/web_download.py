@@ -10,7 +10,7 @@ import requests
 from requests_hardened import Config, Manager
 from requests_hardened.ip_filter import InvalidIPAddress
 
-from app.config import Settings
+from app.config import AppSettings, get_settings
 from app.tools.errors import ToolErrorCode, ToolExecutionError
 
 
@@ -84,11 +84,14 @@ def normalize_public_web_url(
     )
 
 
-def _build_hardened_manager() -> Manager:
+def _build_hardened_manager(
+    settings: AppSettings | None = None,
+) -> Manager:
     """按默认安全模式或显式受信代理模式构造 HTTP Manager。"""
+    resolved = settings or get_settings()
     delegate_network_policy = (
-        Settings.WEB_TRUSTED_PROXY_MODE
-        and Settings.WEB_FETCH_PROXY is not None
+        resolved.web_trusted_proxy_mode
+        and resolved.resolved_web_fetch_proxy is not None
     )
     return Manager(
         Config(
@@ -96,16 +99,20 @@ def _build_hardened_manager() -> Manager:
             ip_filter_allow_loopback_ips=False,
             never_redirect=False,
             default_timeout=(
-                Settings.WEB_FETCH_CONNECT_TIMEOUT,
-                Settings.WEB_FETCH_READ_TIMEOUT,
+                resolved.web_fetch_connect_timeout,
+                resolved.web_fetch_read_timeout,
             ),
-            user_agent_override=Settings.WEB_FETCH_USER_AGENT,
+            user_agent_override=resolved.web_fetch_user_agent,
         )
     )
 
 
-def _request_kwargs(allowed_content_types: frozenset[str]) -> dict[str, Any]:
+def _request_kwargs(
+    allowed_content_types: frozenset[str],
+    settings: AppSettings | None = None,
+) -> dict[str, Any]:
     """构造不含用户 headers、Cookie、认证或隐式代理的 GET 参数。"""
+    resolved = settings or get_settings()
     ordered_types = [
         content_type
         for content_type in _ACCEPT_TYPE_ORDER
@@ -118,18 +125,19 @@ def _request_kwargs(allowed_content_types: frozenset[str]) -> dict[str, Any]:
         "allow_redirects": True,
         "headers": {
             "Accept": ", ".join(ordered_types),
-            "User-Agent": Settings.WEB_FETCH_USER_AGENT,
+            "User-Agent": resolved.web_fetch_user_agent,
         },
         "stream": True,
         "timeout": (
-            Settings.WEB_FETCH_CONNECT_TIMEOUT,
-            Settings.WEB_FETCH_READ_TIMEOUT,
+            resolved.web_fetch_connect_timeout,
+            resolved.web_fetch_read_timeout,
         ),
     }
-    if Settings.WEB_FETCH_PROXY is not None:
+    proxy = resolved.resolved_web_fetch_proxy
+    if proxy is not None:
         kwargs["proxies"] = {
-            "http": Settings.WEB_FETCH_PROXY,
-            "https": Settings.WEB_FETCH_PROXY,
+            "http": proxy,
+            "https": proxy,
         }
     return kwargs
 
@@ -230,8 +238,10 @@ def download_public_web_resource(
     *,
     allowed_content_types: frozenset[str],
     max_response_bytes: int,
+    settings: AppSettings | None = None,
 ) -> DownloadedWebResource:
     """通过 requests-hardened 下载单个有限响应并保证资源关闭。"""
+    resolved = settings or get_settings()
     if not allowed_content_types:
         raise ValueError("allowed_content_types 不能为空")
     if (
@@ -242,16 +252,16 @@ def download_public_web_resource(
         raise ValueError("max_response_bytes 必须是正整数")
 
     requested_url = normalize_public_web_url(url)
-    manager = _build_hardened_manager()
+    manager = _build_hardened_manager(resolved)
     session = manager.get_session()
     response: requests.Response | None = None
     try:
         session.trust_env = False
-        session.max_redirects = Settings.WEB_FETCH_MAX_REDIRECTS
+        session.max_redirects = resolved.web_fetch_max_redirects
         response = session.request(
             "GET",
             requested_url,
-            **_request_kwargs(allowed_content_types),
+            **_request_kwargs(allowed_content_types, resolved),
         )
         status_code = _check_status(response)
         content_type = _content_type(

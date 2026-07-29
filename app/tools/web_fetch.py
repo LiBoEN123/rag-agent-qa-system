@@ -8,7 +8,7 @@ from typing import Any
 
 from trafilatura import extract
 
-from app.config import Settings
+from app.config import get_settings
 from app.tools.context import ToolInvocationContext
 from app.tools.errors import ToolErrorCode, ToolExecutionError
 from app.tools.result import tool_success
@@ -119,11 +119,13 @@ def _extract_page(
 def web_fetch(args: dict[str, Any], context: ToolInvocationContext) -> dict[str, Any]:
     """安全下载单页正文并返回项目统一成功结果。"""
     del context
+    settings = get_settings()
     max_chars = args["max_chars"]
     page = download_public_web_resource(
         normalize_public_web_url(args.get("url")),
         allowed_content_types=_ALLOWED_CONTENT_TYPES,
-        max_response_bytes=Settings.WEB_FETCH_MAX_RESPONSE_BYTES,
+        max_response_bytes=settings.web_fetch_max_response_bytes,
+        settings=settings,
     )
     content, title, author, published_date, language = _extract_page(page)
     truncated = len(content) > max_chars

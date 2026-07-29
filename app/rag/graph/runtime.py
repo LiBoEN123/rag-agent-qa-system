@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from app.config import Settings
+from app.config import get_settings
 from app.rag.graph.builder import get_compiled_rag_graph
 from app.rag.results import build_default_timings
 
@@ -30,16 +30,21 @@ class RAGGraphError(RuntimeError):
 
 def run_rag_subgraph(
     question: str,
-    top_k: int = Settings.TOP_K,
-    decompose_top_k: int = Settings.DECOMPOSE_TOP_K,
+    top_k: int | None = None,
+    decompose_top_k: int | None = None,
     retrieved_chunks: list[dict[str, Any]] | None = None,
     trace_id: str = "",
 ) -> dict[str, Any]:
     """同步执行 RAG 子图，并返回统一的 RAG 结果字典。"""
+    settings = get_settings()
     graph_input = {
         "question": question,
-        "top_k": top_k,
-        "decompose_top_k": decompose_top_k,
+        "top_k": settings.top_k if top_k is None else top_k,
+        "decompose_top_k": (
+            settings.decompose_top_k
+            if decompose_top_k is None
+            else decompose_top_k
+        ),
         "retrieved_chunks": retrieved_chunks,
         "trace_id": trace_id,
         "timings": build_default_timings(),

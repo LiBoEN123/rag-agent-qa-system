@@ -5,7 +5,7 @@
 
 from typing import Any, Dict, List
 
-from app.config import Settings
+from app.config import get_settings
 from app.rag.debug import (
     get_chunk_full_text as get_chunk_full_text_impl,
     preview_chunks as preview_chunks_impl,
@@ -28,7 +28,7 @@ from app.rag.store import (
     save_index_cache as save_index_cache_impl,
     save_manifest,
 )
-# In-process index state.
+# 进程内索引状态。
 chunks: list[dict] = []
 texts: list[str] = []
 docs_registry: list[dict] = []
@@ -64,10 +64,15 @@ def get_rag_status():
 # =========================
 def rebuild_index(
     data_dir: str,
-    chunk_size: int = Settings.CHUNK_SIZE,
-    chunk_overlap: int = Settings.CHUNK_OVERLAP
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
 ):
     """从 data 目录重新加载文档、切分 chunk，并重建内存索引。"""
+    settings = get_settings()
+    chunk_size = settings.chunk_size if chunk_size is None else chunk_size
+    chunk_overlap = (
+        settings.chunk_overlap if chunk_overlap is None else chunk_overlap
+    )
     global chunks, texts, docs_registry, bm25, model, rerank_model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE, INDEX_SOURCE
 
     chunks = []
@@ -118,11 +123,16 @@ def rebuild_index(
 
 def rebuild_and_persist_index(
     data_dir: str,
-    chunk_size: int = Settings.CHUNK_SIZE,
-    chunk_overlap: int = Settings.CHUNK_OVERLAP
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
 ) -> tuple[bool, str]:
     """重建内存索引并在成功后保存缓存和 manifest。"""
     global INDEX_SOURCE
+    settings = get_settings()
+    chunk_size = settings.chunk_size if chunk_size is None else chunk_size
+    chunk_overlap = (
+        settings.chunk_overlap if chunk_overlap is None else chunk_overlap
+    )
     rebuild_index(
         data_dir=data_dir,
         chunk_size=chunk_size,
@@ -140,14 +150,19 @@ def rebuild_and_persist_index(
 
 
 # =========================
-# cache / manifest
+# 缓存与清单
 # =========================
 def needs_rebuild(
     data_dir: str,
-    chunk_size: int = Settings.CHUNK_SIZE,
-    chunk_overlap: int = Settings.CHUNK_OVERLAP
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
 ):
     """代理底层 manifest 检查，判断当前知识库是否需要重建。"""
+    settings = get_settings()
+    chunk_size = settings.chunk_size if chunk_size is None else chunk_size
+    chunk_overlap = (
+        settings.chunk_overlap if chunk_overlap is None else chunk_overlap
+    )
     return needs_rebuild_impl(
         data_dir=data_dir,
         chunk_size=chunk_size,

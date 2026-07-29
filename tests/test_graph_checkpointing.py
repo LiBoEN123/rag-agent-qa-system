@@ -4,14 +4,13 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import TypedDict
 
 import pytest
+from pydantic import ValidationError
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 
 from app.config import (
-    Settings,
-    normalize_langgraph_checkpointer,
-    validate_langgraph_checkpointer,
+    validate_startup_environment,
 )
 from app.graph import builder as graph_builder
 from app.graph import checkpointing
@@ -22,15 +21,9 @@ class _CheckpointState(TypedDict):
 
 
 @pytest.fixture(autouse=True)
-def isolate_checkpoint_runtime(monkeypatch, tmp_path):
+def isolate_checkpoint_runtime():
     """让每个测试使用独立配置和 Saver 生命周期。"""
     graph_builder.reset_agent_graph_runtime()
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "disabled")
-    monkeypatch.setattr(
-        Settings,
-        "LANGGRAPH_CHECKPOINT_DB_PATH",
-        tmp_path / "langgraph.sqlite3",
-    )
     yield
     graph_builder.reset_agent_graph_runtime()
 
@@ -46,40 +39,48 @@ def _build_checkpoint_graph(saver):
     return builder.compile(checkpointer=saver)
 
 
-def test_checkpointer_mode_defaults_and_normalization():
+def test_checkpointer_mode_defaults_and_normalization(settings_factory):
     """空值默认关闭，合法值会去除空格并转为小写。"""
-    assert normalize_langgraph_checkpointer(None) == "disabled"
-    assert normalize_langgraph_checkpointer("") == "disabled"
-    assert validate_langgraph_checkpointer("  MEMORY ") == "memory"
-    assert validate_langgraph_checkpointer(" SQLite ") == "sqlite"
-    assert validate_langgraph_checkpointer("disabled") == "disabled"
+    assert settings_factory(langgraph_checkpointer="").langgraph_checkpointer == (
+        "disabled"
+    )
+    assert settings_factory(
+        langgraph_checkpointer="  MEMORY "
+    ).langgraph_checkpointer == "memory"
+    assert settings_factory(
+        langgraph_checkpointer=" SQLite "
+    ).langgraph_checkpointer == "sqlite"
 
 
-def test_invalid_checkpointer_mode_has_clear_error():
+def test_invalid_checkpointer_mode_has_clear_error(settings_factory):
     """非法模式不会静默回退。"""
-    with pytest.raises(ValueError, match="LANGGRAPH_CHECKPOINTER 配置无效"):
-        validate_langgraph_checkpointer("redis")
+    with pytest.raises(ValidationError):
+        settings_factory(langgraph_checkpointer="redis")
 
 
-def test_settings_rejects_sqlite_directory_path(monkeypatch, tmp_path):
+def test_settings_rejects_sqlite_directory_path(settings_factory, tmp_path):
     """启用 SQLite 时，目录不能被误当作数据库文件。"""
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "sqlite")
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINT_DB_PATH", tmp_path)
-    monkeypatch.setattr(Settings, "LLM_API_KEY", "test-key")
-    monkeypatch.setattr(Settings, "RAG_FILE_PATH", tmp_path)
+    settings = settings_factory(
+        langgraph_checkpointer="sqlite",
+        langgraph_checkpoint_db_path=tmp_path,
+    )
+    with pytest.raises(ValueError, match="必须指向文件"):
+        validate_startup_environment(settings)
 
-    with pytest.raises(ValueError, match="必须指向 SQLite 文件"):
-        Settings.validate()
 
-
-def test_disabled_returns_none_without_creating_database(monkeypatch, tmp_path):
+def test_disabled_returns_none_without_creating_database(
+    settings_factory,
+    tmp_path,
+):
     """disabled 模式不创建 Saver、连接、目录或数据库文件。"""
     db_path = tmp_path / "missing" / "checkpoint.sqlite3"
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "disabled")
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINT_DB_PATH", db_path)
+    settings = settings_factory(
+        langgraph_checkpointer="disabled",
+        langgraph_checkpoint_db_path=db_path,
+    )
 
-    assert checkpointing.get_checkpointer() is None
-    assert checkpointing.get_checkpointer() is None
+    assert checkpointing.get_checkpointer(settings) is None
+    assert checkpointing.get_checkpointer(settings) is None
     checkpointing.close_checkpointer()
     checkpointing.close_checkpointer()
     assert not db_path.exists()
@@ -87,30 +88,32 @@ def test_disabled_returns_none_without_creating_database(monkeypatch, tmp_path):
 
 
 def test_memory_saver_is_reused_and_reset_creates_new_instance(
-    monkeypatch,
+    settings_factory,
     tmp_path,
 ):
     """Memory Saver 在同一生命周期复用，重置后换成新实例且不建文件。"""
     db_path = tmp_path / "unused.sqlite3"
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "memory")
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINT_DB_PATH", db_path)
+    settings = settings_factory(
+        langgraph_checkpointer="memory",
+        langgraph_checkpoint_db_path=db_path,
+    )
 
-    first = checkpointing.get_checkpointer()
-    second = checkpointing.get_checkpointer()
+    first = checkpointing.get_checkpointer(settings)
+    second = checkpointing.get_checkpointer(settings)
     assert isinstance(first, InMemorySaver)
     assert first is second
     assert not db_path.exists()
 
     graph_builder.reset_agent_graph_runtime()
-    third = checkpointing.get_checkpointer()
+    third = checkpointing.get_checkpointer(settings)
     assert isinstance(third, InMemorySaver)
     assert third is not first
 
 
-def test_memory_saver_round_trip(monkeypatch):
+def test_memory_saver_round_trip(settings_factory):
     """Memory Saver 可以读取一次真实 Graph 执行保存的状态。"""
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "memory")
-    saver = checkpointing.get_checkpointer()
+    settings = settings_factory(langgraph_checkpointer="memory")
+    saver = checkpointing.get_checkpointer(settings)
     graph = _build_checkpoint_graph(saver)
     config = {"configurable": {"thread_id": "memory-thread"}}
 
@@ -123,15 +126,17 @@ def test_memory_saver_round_trip(monkeypatch):
 
 
 def test_sqlite_saver_creates_parent_and_survives_reopen(
-    monkeypatch,
+    settings_factory,
     tmp_path,
 ):
     """SQLite Saver 自动建目录，关闭重开后仍可读取状态。"""
     db_path = tmp_path / "nested" / "checkpoint.sqlite3"
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "sqlite")
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINT_DB_PATH", db_path)
+    settings = settings_factory(
+        langgraph_checkpointer="sqlite",
+        langgraph_checkpoint_db_path=db_path,
+    )
 
-    first = checkpointing.get_checkpointer()
+    first = checkpointing.get_checkpointer(settings)
     assert isinstance(first, SqliteSaver)
     assert db_path.is_file()
     graph = _build_checkpoint_graph(first)
@@ -142,7 +147,7 @@ def test_sqlite_saver_creates_parent_and_survives_reopen(
     assert first.get_tuple(config) is not None
 
     graph_builder.reset_agent_graph_runtime()
-    second = checkpointing.get_checkpointer()
+    second = checkpointing.get_checkpointer(settings)
     assert isinstance(second, SqliteSaver)
     assert second is not first
     saved = second.get_tuple(config)
@@ -150,12 +155,17 @@ def test_sqlite_saver_creates_parent_and_survives_reopen(
     assert saved.checkpoint["channel_values"]["value"] == "sqlite-done"
 
 
-def test_sqlite_saver_handles_parallel_distinct_threads(monkeypatch, tmp_path):
+def test_sqlite_saver_handles_parallel_distinct_threads(
+    settings_factory,
+    tmp_path,
+):
     """共享同步 Saver 可由多个线程写入彼此独立的 Graph thread。"""
     db_path = tmp_path / "parallel.sqlite3"
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "sqlite")
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINT_DB_PATH", db_path)
-    saver = checkpointing.get_checkpointer()
+    settings = settings_factory(
+        langgraph_checkpointer="sqlite",
+        langgraph_checkpoint_db_path=db_path,
+    )
+    saver = checkpointing.get_checkpointer(settings)
     graph = _build_checkpoint_graph(saver)
 
     def invoke(index: int) -> str:
@@ -172,21 +182,19 @@ def test_sqlite_saver_handles_parallel_distinct_threads(monkeypatch, tmp_path):
 
 
 def test_sqlite_initialization_error_is_not_silently_downgraded(
-    monkeypatch,
+    settings_factory,
     tmp_path,
 ):
     """父路径是文件时给出清晰错误，不回退到 Memory Saver。"""
     parent_file = tmp_path / "not-a-directory"
     parent_file.write_text("fixture", encoding="utf-8")
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "sqlite")
-    monkeypatch.setattr(
-        Settings,
-        "LANGGRAPH_CHECKPOINT_DB_PATH",
-        parent_file / "checkpoint.sqlite3",
+    settings = settings_factory(
+        langgraph_checkpointer="sqlite",
+        langgraph_checkpoint_db_path=parent_file / "checkpoint.sqlite3",
     )
 
     with pytest.raises(RuntimeError, match="无法打开 LangGraph Checkpoint"):
-        checkpointing.get_checkpointer()
+        checkpointing.get_checkpointer(settings)
 
 
 def test_checkpoint_thread_id_is_stable_safe_and_request_scoped():

@@ -19,7 +19,7 @@ from app.agent.results import (
     validate_agent_result_payload,
 )
 from app.common.logging import get_logger
-from app.config import Settings
+from app.config import AppSettings, get_settings
 from app.contracts.chat import (
     AgentResultStatus,
     ChatStatusPolicy,
@@ -123,7 +123,7 @@ class ChatServiceOutcome:
 class ChatServiceDependencies:
     """ChatService 的可替换业务边界和副作用依赖。"""
 
-    settings: Any
+    settings_provider: Callable[[], AppSettings]
     get_history: Callable[[str | None], list[dict]]
     rewrite_query_with_history: Callable[..., dict]
     run_agent_langgraph: Callable[..., dict[str, Any]]
@@ -160,7 +160,7 @@ class _ChatContext:
 def get_default_chat_service_dependencies() -> ChatServiceDependencies:
     """构造只引用现有函数、且不执行外部调用的默认依赖。"""
     return ChatServiceDependencies(
-        settings=Settings,
+        settings_provider=get_settings,
         get_history=get_history,
         rewrite_query_with_history=rewrite_query_with_history,
         run_agent_langgraph=run_agent_langgraph,
@@ -189,6 +189,7 @@ class ChatService:
 
     def handle(self, request: ChatServiceRequest) -> ChatServiceOutcome:
         """处理聊天请求，并保证 session 与 metrics 在统一出口收尾。"""
+        settings = self._deps.settings_provider()
         context = self._initialize_context(request)
         try:
             if not context.original_question:
@@ -197,12 +198,12 @@ class ChatService:
             context.final_top_k = (
                 request.top_k
                 if request.top_k is not None
-                else self._deps.settings.TOP_K
+                else settings.top_k
             )
             context.decompose_top_k = (
                 request.decompose_top_k
                 if request.decompose_top_k is not None
-                else self._deps.settings.DECOMPOSE_TOP_K
+                else settings.decompose_top_k
             )
 
             self._rewrite_question(context)

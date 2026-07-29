@@ -6,7 +6,6 @@ from importlib import import_module
 from pydantic import BaseModel
 
 from app.agent import framework_agent
-from app.config import Settings
 from app.graph import builder as graph_builder
 from app.tools.context import build_default_tool_context
 from app.tools.contracts import ToolSpec
@@ -15,17 +14,23 @@ from app.tools.registry import ToolRegistry
 from scripts import inspect_agent_runtime as inspection
 
 
-def _knowledge_only(monkeypatch):
+def _knowledge_only(settings_factory, *permissions):
     """固定文档声明的最小默认权限，隔离本地 .env。"""
-    monkeypatch.setattr(
-        Settings, "TOOL_DEFAULT_PERMISSIONS", ("knowledge_base:read",)
+    return settings_factory(
+        tool_default_permissions=(
+            "knowledge_base:read",
+            *permissions,
+        )
     )
 
 
-def test_runtime_report_preserves_graph_contract(monkeypatch):
+def test_runtime_report_preserves_graph_contract(
+    monkeypatch,
+    settings_factory,
+):
     """报告来自真实编译图，并保留父图与嵌入子图关键边界。"""
-    _knowledge_only(monkeypatch)
-    report = inspection.inspect_runtime()
+    settings = _knowledge_only(settings_factory)
+    report = inspection.inspect_runtime(settings=settings)
     parent_nodes = set(report["parent_graph"]["nodes"])
     parent_edges = {
         (edge["source"], edge["target"], edge["conditional"])
@@ -59,6 +64,12 @@ def test_runtime_report_preserves_graph_contract(monkeypatch):
         "single_status_policy",
         "result_is_checkpoint_safe",
         "api_response_builder_boundary",
+        "pydantic_settings_model",
+        "lazy_settings",
+        "immutable_settings",
+        "no_static_settings_class",
+        "no_manual_env_parsers",
+        "no_import_time_dotenv",
     } <= {item["name"] for item in report["checks"]}
     assert report["agent_result_contract"]["model"] == "AgentRunResult"
     assert report["agent_result_contract"]["extra"] == "forbid"
@@ -74,12 +85,18 @@ def test_runtime_report_preserves_graph_contract(monkeypatch):
     }
 
 
-def test_tool_contracts_use_model_facing_json_schema(monkeypatch):
+def test_tool_contracts_use_model_facing_json_schema(
+    monkeypatch,
+    settings_factory,
+):
     """默认工具输出公开模型 Schema 和治理元数据，不暴露 Runtime 字段。"""
-    _knowledge_only(monkeypatch)
-    report = inspection.inspect_runtime()
+    settings = _knowledge_only(settings_factory)
+    report = inspection.inspect_runtime(settings=settings)
     tools = report["registered_tools"]
-    context = build_default_tool_context(source="agent_runtime_inspection")
+    context = build_default_tool_context(
+        source="agent_runtime_inspection",
+        settings=settings,
+    )
 
     assert {tool["name"] for tool in tools} == {
         "search_knowledge_base",
@@ -130,9 +147,8 @@ def test_tool_contracts_use_model_facing_json_schema(monkeypatch):
     }
 
 
-def test_json_cli_is_parseable_stable_and_safe(capsys, monkeypatch):
+def test_json_cli_is_parseable_stable_and_safe(capsys):
     """JSON 输出可稳定解析，且不包含运行时对象表示。"""
-    _knowledge_only(monkeypatch)
     assert inspection.main(["--format", "json"]) == 0
     first = capsys.readouterr().out
     assert inspection.main(["--format", "json"]) == 0
@@ -158,9 +174,8 @@ def test_mermaid_cli_uses_xray_compiled_graph(capsys):
     assert "ModelCallLimitMiddleware" in output
 
 
-def test_check_cli_passes_without_extra_output(capsys, monkeypatch):
+def test_check_cli_passes_without_extra_output(capsys):
     """当前架构满足检查时返回稳定消息和零退出码。"""
-    _knowledge_only(monkeypatch)
     assert inspection.main(["--check"]) == 0
     captured = capsys.readouterr()
 
@@ -169,22 +184,24 @@ def test_check_cli_passes_without_extra_output(capsys, monkeypatch):
 
 
 def test_inspection_reports_web_search_when_default_permission_is_enabled(
-    monkeypatch,
+    settings_factory,
 ):
-    monkeypatch.setattr(
-        Settings,
-        "TOOL_DEFAULT_PERMISSIONS",
-        ("knowledge_base:read", "web:search"),
+    """默认授予搜索权限时，内省报告包含 Web 搜索工具。"""
+    settings = _knowledge_only(settings_factory, "web:search")
+    report = inspection.inspect_runtime(
+        settings=settings,
     )
-    report = inspection.inspect_runtime()
 
     assert "web_search" in report["default_visible_tools"]
     assert all(item["passed"] for item in report["checks"])
 
 
-def test_inspection_reports_web_fetch_for_explicit_permission(monkeypatch):
-    _knowledge_only(monkeypatch)
-    report = inspection.inspect_runtime()
+def test_inspection_reports_web_fetch_for_explicit_permission(
+    settings_factory,
+):
+    """未显式授予抓取权限时，内省报告隐藏 Web 抓取工具。"""
+    settings = _knowledge_only(settings_factory)
+    report = inspection.inspect_runtime(settings=settings)
 
     assert "web_fetch" not in report["default_visible_tools"]
     assert "web_pdf_fetch" not in report["default_visible_tools"]
@@ -192,22 +209,21 @@ def test_inspection_reports_web_fetch_for_explicit_permission(monkeypatch):
 
 
 def test_inspection_reports_both_fetch_tools_when_permission_is_enabled(
-    monkeypatch,
+    settings_factory,
 ):
-    monkeypatch.setattr(
-        Settings,
-        "TOOL_DEFAULT_PERMISSIONS",
-        ("knowledge_base:read", "web:fetch"),
-    )
-
-    report = inspection.inspect_runtime()
+    """授予抓取权限时，内省报告同时包含网页与 PDF 抓取工具。"""
+    settings = _knowledge_only(settings_factory, "web:fetch")
+    report = inspection.inspect_runtime(settings=settings)
 
     assert "web_fetch" in report["default_visible_tools"]
     assert "web_pdf_fetch" in report["default_visible_tools"]
     assert all(item["passed"] for item in report["checks"])
 
 
-def test_inspection_does_not_initialize_model_checkpointer_or_handler(monkeypatch):
+def test_inspection_does_not_initialize_model_checkpointer_or_handler(
+    monkeypatch,
+    settings_factory,
+):
     """内省只读取契约，不初始化模型、Checkpointer 或工具 handler。"""
 
     class ProbeArgs(BaseModel):
@@ -242,7 +258,10 @@ def test_inspection_does_not_initialize_model_checkpointer_or_handler(monkeypatc
         forbidden,
     )
 
-    report = inspection.inspect_runtime(LocalToolProvider(registry))
+    report = inspection.inspect_runtime(
+        LocalToolProvider(registry),
+        settings=_knowledge_only(settings_factory),
+    )
 
     assert [tool["name"] for tool in report["registered_tools"]] == [
         "inspection_probe"

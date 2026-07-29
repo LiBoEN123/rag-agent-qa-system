@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from app.tools.providers import LocalToolProvider, collect_tool_specs
-from app.tools.registry import ToolRegistry, tool_registry
+from app.tools.registry import ToolRegistry
 
 
 class TextArgs(BaseModel):
@@ -77,7 +77,9 @@ def test_collect_tool_specs_preserves_provider_order_and_rejects_duplicates():
     assert calls == []
 
 
-def test_default_local_provider_exposes_only_permitted_production_tools():
+def test_default_local_provider_exposes_only_permitted_production_tools(
+    tool_registry,
+):
     """默认 Provider 以生产 Registry 为来源并隐藏缺权工具。"""
     provider = LocalToolProvider(tool_registry)
 

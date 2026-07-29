@@ -51,6 +51,34 @@ ChatService 不调用 Router，也不生成或注入 decision。`route_node` 是
 
 `web_pdf_fetch` 同样是普通 ToolMessage 路径，负责已知公开 PDF 的有限页范围。HTML 与 PDF 共用 `app/tools/web_download.py` 中的 requests-hardened 下载入口；PDF 使用已有 pypdf 提取带 `[Page N]` 边界的文本。它不进入本地 RAG、不持久化 PDF，也不生成本地 references。模型误用 `web_fetch` 读取 PDF 时，可根据内容类型错误 ToolMessage 在同一 `create_agent` 循环中改用 `web_pdf_fetch`，不需要 Router 或父图特判。
 
+## 配置快照与生命周期
+
+`app.config.AppSettings` 是唯一完整应用配置模型。它基于官方
+`pydantic-settings`，字段使用 lower snake case、实例被冻结；已有 uppercase
+环境变量名称保持不变。模块导入不实例化配置，生产入口在请求或 lifespan 边界调用
+惰性缓存的 `get_settings()`。来源优先级是显式初始化参数、环境变量、项目根
+`.env`、字段默认值。
+
+配置解析不创建目录、模型、Registry、Runtime、数据库或 Checkpointer。FastAPI
+lifespan 取得一个快照后，先调用 `validate_startup_environment(settings)` 检查
+API key、知识库目录和持久化父目录，再用同一个实例初始化 RAG 与 Graph。测试和
+inspection 使用 `AppSettings(_env_file=None, ...)`，不会读取维护者 `.env`。
+
+以下缓存都可能持有配置或由配置派生的资源：
+
+| 缓存 | 创建时机 | 受控清理入口 |
+| --- | --- | --- |
+| Settings | 首次 `get_settings()` | `clear_settings_cache()` |
+| 角色模型 | 首次对应 Model Factory getter | `clear_model_factory_cache()` |
+| 默认 Tool Registry | 首次 `get_tool_registry()` | `clear_tool_registry_cache()` |
+| Tool Runtime | 首次 dispatch / `get_tool_runtime()` | `reset_tool_runtime()` |
+| Graph / Checkpointer | lifespan 预编译或首次请求 | `reset_agent_graph_runtime()` / `close_agent_graph_runtime()` |
+
+`.env` 不是动态热更新接口。若测试要切换进程级配置，应先关闭 Runtime 和
+Graph/Checkpointer，再依次失效 Model、Registry、Settings 缓存；生产环境优先重启
+进程。不要恢复模块级 `settings = get_settings()`、全局 `tool_registry` 或可变
+Settings 类属性。
+
 ## 单一运行状态
 
 `AgentGraphState` 是父图唯一的完整请求状态。节点不再取出嵌套业务对象后原地修改；initialize、框架事件投影、RAG 映射、compose 和 finalize 都返回明确的 LangGraph 字段 updates。
@@ -156,6 +184,7 @@ graph TD;
 
 | 文件 | 唯一主要职责 |
 | --- | --- |
+| `app/config.py` | 声明冻结 AppSettings、纯校验、computed fallback 和惰性缓存 |
 | `app/graph/builder.py` | 声明父图节点和边 |
 | `app/graph/state.py` | 声明唯一完整 `AgentGraphState` 及 reducer |
 | `app/graph/conditions.py` | 声明父图无副作用分支条件 |

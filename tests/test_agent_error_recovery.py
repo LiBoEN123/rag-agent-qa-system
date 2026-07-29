@@ -89,6 +89,7 @@ def _invoke(
     max_same_calls: int = 2,
     max_same_errors: int = 2,
 ):
+    """按指定错误预算组装并调用受控 Agent 图。"""
     provider = LocalToolProvider(registry)
     monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
     monkeypatch.setattr(
@@ -96,24 +97,16 @@ def _invoke(
         "get_agent_tool_provider",
         lambda: provider,
     )
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_ITERATIONS", 10)
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_TOOL_CALLS", 20)
-    monkeypatch.setattr(
-        graph_nodes.Settings,
-        "AGENT_MAX_TOOL_ERRORS",
-        max_tool_errors,
+    settings = graph_nodes.get_settings().model_copy(
+        update={
+            "agent_max_iterations": 10,
+            "agent_max_tool_calls": 20,
+            "agent_max_tool_errors": max_tool_errors,
+            "agent_max_consecutive_same_tool_calls": max_same_calls,
+            "agent_max_consecutive_same_tool_errors": max_same_errors,
+            "agent_max_total_cost_ms": 120000,
+        }
     )
-    monkeypatch.setattr(
-        graph_nodes.Settings,
-        "AGENT_MAX_CONSECUTIVE_SAME_TOOL_CALLS",
-        max_same_calls,
-    )
-    monkeypatch.setattr(
-        graph_nodes.Settings,
-        "AGENT_MAX_CONSECUTIVE_SAME_TOOL_ERRORS",
-        max_same_errors,
-    )
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_TOTAL_COST_MS", 120000)
     resolved_context = context or ToolInvocationContext(
         trace_id="trace-guardrail",
         session_id="session-guardrail",
@@ -122,7 +115,7 @@ def _invoke(
         source="agent_error_recovery_test",
         idempotency_key="idem-test",
     )
-    return build_agent_graph().compile().invoke(
+    return build_agent_graph(settings).compile().invoke(
         {
             "original_question": "执行测试工具",
             "effective_question": "执行测试工具",

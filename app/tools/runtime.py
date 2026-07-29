@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import random
 import threading
 import time
@@ -23,7 +24,7 @@ from weakref import WeakKeyDictionary
 
 from pydantic import ValidationError
 
-from app.config import Settings, validate_tool_runtime_config
+from app.config import AppSettings, get_settings
 from app.tools.audit import (
     ToolAuditEvent,
     ToolAuditEventType,
@@ -86,14 +87,27 @@ class ToolRuntime:
         random_func: Callable[[float, float], float] = random.uniform,
         policy_engine: ToolPolicyEngine | None = None,
         audit_sink: ToolAuditSink | None = None,
+        settings: AppSettings | None = None,
     ) -> None:
         """创建 Runtime；线程池和默认审计写入器都按实例复用。"""
-        validate_tool_runtime_config(
-            max_workers=max_workers,
-            retry_base_delay_ms=retry_base_delay_ms,
-            retry_max_delay_ms=retry_max_delay_ms,
-            retry_jitter_ratio=retry_jitter_ratio,
-        )
+        if isinstance(max_workers, bool) or max_workers < 1:
+            raise ValueError("max_workers must be an integer of at least 1")
+        if isinstance(retry_base_delay_ms, bool) or retry_base_delay_ms < 0:
+            raise ValueError("retry_base_delay_ms must be a non-negative integer")
+        if (
+            isinstance(retry_max_delay_ms, bool)
+            or retry_max_delay_ms < retry_base_delay_ms
+        ):
+            raise ValueError(
+                "retry_max_delay_ms must be at least retry_base_delay_ms"
+            )
+        if (
+            isinstance(retry_jitter_ratio, bool)
+            or not math.isfinite(float(retry_jitter_ratio))
+            or not 0 <= retry_jitter_ratio <= 1
+        ):
+            raise ValueError("retry_jitter_ratio must be between 0 and 1")
+        self._settings = settings or get_settings()
         self.registry = registry
         self._retry_base_delay = retry_base_delay_ms / 1000.0
         self._retry_max_delay = retry_max_delay_ms / 1000.0
@@ -102,7 +116,9 @@ class ToolRuntime:
         self._random_func = random_func
         self._policy_engine = policy_engine or ToolPolicyEngine()
         self._audit_sink = (
-            audit_sink if audit_sink is not None else get_default_tool_audit_sink()
+            audit_sink
+            if audit_sink is not None
+            else get_default_tool_audit_sink(self._settings)
         )
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers,
@@ -167,7 +183,11 @@ class ToolRuntime:
         invocation_context = context or build_default_tool_context(
             source="tool_runtime"
         )
-        sanitized_input = sanitize_tool_input(spec, compatible_input)
+        sanitized_input = sanitize_tool_input(
+            spec,
+            compatible_input,
+            settings=self._settings,
+        )
 
         try:
             validated_args = (
@@ -197,7 +217,11 @@ class ToolRuntime:
                 context=invocation_context,
                 tool_call_id=tool_call_id,
                 tool_input=validated_args,
-                sanitized_input=sanitize_tool_input(spec, validated_args),
+                sanitized_input=sanitize_tool_input(
+                    spec,
+                    validated_args,
+                    settings=self._settings,
+                ),
                 error=f"tool args cannot be fingerprinted: {exc}",
                 started_at=started_at,
                 attempts=attempts,
@@ -209,7 +233,11 @@ class ToolRuntime:
             args_fingerprint=args_fingerprint,
         )
         governance = self._governance_metadata(decision)
-        sanitized_input = sanitize_tool_input(spec, validated_args)
+        sanitized_input = sanitize_tool_input(
+            spec,
+            validated_args,
+            settings=self._settings,
+        )
         max_attempts = self._max_attempts(spec)
 
         requested_written = self._emit_audit(
@@ -560,6 +588,7 @@ class ToolRuntime:
             output_summary = summarize_tool_output(
                 spec,
                 normalized_result.get("output"),
+                settings=self._settings,
             )
             audit_write_failed = not self._emit_audit(
                 event_type=ToolAuditEventType.SUCCEEDED,
@@ -1011,25 +1040,20 @@ _runtime_entries: WeakKeyDictionary[ToolRegistry, _RuntimeEntry] = (
 )
 
 
-def _settings_runtime_config() -> _RuntimeConfig:
+def _settings_runtime_config(settings: AppSettings) -> _RuntimeConfig:
     """读取并校验当前进程配置，供惰性 Runtime 初始化使用。"""
-    validate_tool_runtime_config(
-        max_workers=Settings.TOOL_RUNTIME_MAX_WORKERS,
-        retry_base_delay_ms=Settings.TOOL_RETRY_BASE_DELAY_MS,
-        retry_max_delay_ms=Settings.TOOL_RETRY_MAX_DELAY_MS,
-        retry_jitter_ratio=Settings.TOOL_RETRY_JITTER_RATIO,
-    )
     return (
-        Settings.TOOL_RUNTIME_MAX_WORKERS,
-        Settings.TOOL_RETRY_BASE_DELAY_MS,
-        Settings.TOOL_RETRY_MAX_DELAY_MS,
-        float(Settings.TOOL_RETRY_JITTER_RATIO),
+        settings.tool_runtime_max_workers,
+        settings.tool_retry_base_delay_ms,
+        settings.tool_retry_max_delay_ms,
+        float(settings.tool_retry_jitter_ratio),
     )
 
 
 def _get_registry_runtime(registry: ToolRegistry) -> ToolRuntime:
     """按注册表和当前配置惰性创建、复用或替换 Runtime。"""
-    config = _settings_runtime_config()
+    settings = get_settings()
+    config = _settings_runtime_config(settings)
     with _runtime_lock:
         entry = _runtime_entries.get(registry)
         if (
@@ -1046,6 +1070,7 @@ def _get_registry_runtime(registry: ToolRegistry) -> ToolRuntime:
             retry_base_delay_ms=config[1],
             retry_max_delay_ms=config[2],
             retry_jitter_ratio=config[3],
+            settings=settings,
         )
         _runtime_entries[registry] = _RuntimeEntry(runtime, config)
         return runtime
@@ -1053,9 +1078,9 @@ def _get_registry_runtime(registry: ToolRegistry) -> ToolRuntime:
 
 def get_tool_runtime() -> ToolRuntime:
     """返回默认工具注册表对应的进程内共享 Runtime。"""
-    from app.tools.registry import tool_registry
+    from app.tools.registry import get_tool_registry
 
-    return _get_registry_runtime(tool_registry)
+    return _get_registry_runtime(get_tool_registry())
 
 
 def execute_registered_tool(

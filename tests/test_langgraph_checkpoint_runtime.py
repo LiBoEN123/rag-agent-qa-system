@@ -1,8 +1,7 @@
 """Checkpointer 编译注入、Runtime 隔离、持久化和生命周期测试。"""
 
-from types import SimpleNamespace
-
 import pytest
+from pydantic import ValidationError
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -10,7 +9,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from app.agent import framework_agent
 from app.agent.results import AgentRunResult, create_agent_result
 from app.api import lifecycle
-from app.config import Settings
+from app.config import get_settings
 from app.contracts.chat import AgentResultStatus
 from app.graph import builder as graph_builder
 from app.graph import checkpointing
@@ -21,17 +20,15 @@ from app.tools.context import ToolInvocationContext
 
 
 @pytest.fixture(autouse=True)
-def isolate_graph_runtime(monkeypatch, tmp_path):
+def isolate_graph_runtime(monkeypatch, settings_env, tmp_path):
     """隔离 compiled Graph、Saver 和本地数据库配置。"""
     graph_builder.reset_agent_graph_runtime()
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "disabled")
-    monkeypatch.setattr(
-        Settings,
-        "LANGGRAPH_CHECKPOINT_DB_PATH",
-        tmp_path / "checkpoint.sqlite3",
+    settings_env(
+        langgraph_checkpointer="disabled",
+        langgraph_checkpoint_db_path=tmp_path / "checkpoint.sqlite3",
+        enable_agent_trace_store=False,
+        tool_audit_enabled=False,
     )
-    monkeypatch.setattr(Settings, "ENABLE_AGENT_TRACE_STORE", False)
-    monkeypatch.setattr(Settings, "TOOL_AUDIT_ENABLED", False)
     tool_runtime.reset_tool_runtime()
     monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: None)
     monkeypatch.setattr(
@@ -85,6 +82,7 @@ def _valid_recording_result() -> dict:
 )
 def test_builder_compile_injects_only_enabled_checkpointer(
     monkeypatch,
+    settings_env,
     mode,
     saver,
 ):
@@ -96,20 +94,28 @@ def test_builder_compile_injects_only_enabled_checkpointer(
             calls.append(kwargs)
             return object()
 
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", mode)
-    monkeypatch.setattr(graph_builder, "get_checkpointer", lambda: saver)
-    monkeypatch.setattr(graph_builder, "build_agent_graph", FakeBuilder)
+    settings = settings_env(langgraph_checkpointer=mode)
+    monkeypatch.setattr(
+        graph_builder,
+        "get_checkpointer",
+        lambda _settings=None: saver,
+    )
+    monkeypatch.setattr(
+        graph_builder,
+        "build_agent_graph",
+        lambda _settings=None: FakeBuilder(),
+    )
     graph_builder.get_compiled_agent_graph.cache_clear()
 
-    first = graph_builder.get_compiled_agent_graph()
-    second = graph_builder.get_compiled_agent_graph()
+    first = graph_builder.get_compiled_agent_graph(settings)
+    second = graph_builder.get_compiled_agent_graph(settings)
     assert first is second
     assert calls == ([{}] if saver is None else [{"checkpointer": saver}])
 
 
-def test_reset_recompiles_graph_and_replaces_memory_saver(monkeypatch):
+def test_reset_recompiles_graph_and_replaces_memory_saver(settings_env):
     """统一 reset 同时失效 Graph 和 Saver，避免持有已关闭资源。"""
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "memory")
+    settings_env(langgraph_checkpointer="memory")
     first_graph = graph_builder.get_compiled_agent_graph()
     first_saver = checkpointing.get_checkpointer()
 
@@ -121,7 +127,10 @@ def test_reset_recompiles_graph_and_replaces_memory_saver(monkeypatch):
     assert first_saver is not second_saver
 
 
-def test_disabled_runtime_invokes_graph_with_context_and_recursion_config(monkeypatch):
+def test_disabled_runtime_invokes_graph_with_context_and_recursion_config(
+    monkeypatch,
+    settings_env,
+):
     """关闭 Saver 时仍传 Context 与框架递归保护，但不传 thread_id。"""
     calls: list[dict] = []
 
@@ -132,21 +141,22 @@ def test_disabled_runtime_invokes_graph_with_context_and_recursion_config(monkey
             )
             return {"result": _valid_recording_result()}
 
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "disabled")
+    settings_env(langgraph_checkpointer="disabled")
     monkeypatch.setattr(
         graph_runtime,
         "get_compiled_agent_graph",
-        lambda: RecordingGraph(),
+        lambda _settings=None: RecordingGraph(),
     )
 
     result = _run("trace-disabled")
     assert result == _valid_recording_result()
     assert len(calls) == 1
+    settings = get_settings()
     assert calls[0]["context"] == ToolInvocationContext(
         trace_id="trace-disabled",
         session_id="session-1",
-        principal_id=Settings.TOOL_DEFAULT_PRINCIPAL_ID,
-        permissions=Settings.TOOL_DEFAULT_PERMISSIONS,
+        principal_id=settings.tool_default_principal_id,
+        permissions=settings.tool_default_permissions,
         source="chat_api",
     )
     assert calls[0]["config"] == {
@@ -159,6 +169,7 @@ def test_disabled_runtime_invokes_graph_with_context_and_recursion_config(monkey
 @pytest.mark.parametrize("mode", ["memory", "sqlite"])
 def test_enabled_runtime_passes_request_scoped_thread_id(
     monkeypatch,
+    settings_env,
     mode,
 ):
     """启用 Saver 时 Runtime 内部生成 thread_id，API 无需新增字段。"""
@@ -171,11 +182,11 @@ def test_enabled_runtime_passes_request_scoped_thread_id(
             )
             return {"result": _valid_recording_result()}
 
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", mode)
+    settings_env(langgraph_checkpointer=mode)
     monkeypatch.setattr(
         graph_runtime,
         "get_compiled_agent_graph",
-        lambda: RecordingGraph(),
+        lambda _settings=None: RecordingGraph(),
     )
 
     result = _run("trace-enabled", "private-session")
@@ -195,9 +206,9 @@ def test_enabled_runtime_passes_request_scoped_thread_id(
     assert "permissions" not in calls[0]["input"]
 
 
-def test_memory_checkpoint_serializes_flat_runtime_state(monkeypatch):
+def test_memory_checkpoint_serializes_flat_runtime_state(settings_env):
     """默认 Serializer 可真实往返平铺状态、观察结果和 trace。"""
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "memory")
+    settings_env(langgraph_checkpointer="memory")
     result = _run("trace-memory")
     thread_id = checkpointing.build_checkpoint_thread_id(
         trace_id="trace-memory",
@@ -226,9 +237,9 @@ def test_memory_checkpoint_serializes_flat_runtime_state(monkeypatch):
     assert "principal_id" not in values
 
 
-def test_memory_checkpoint_keeps_rewrite_fields_request_scoped(monkeypatch):
+def test_memory_checkpoint_keeps_rewrite_fields_request_scoped(settings_env):
     """同一 session 的 checkpoint 保留各自问题语义且不会跨请求污染。"""
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "memory")
+    settings_env(langgraph_checkpointer="memory")
     rewritten = "研究生奖学金申请什么时候开始"
     _run(
         "trace-rewritten",
@@ -270,6 +281,7 @@ def test_memory_checkpoint_keeps_rewrite_fields_request_scoped(monkeypatch):
 
 def test_memory_checkpoint_preserves_agent_and_clarify_flat_channels(
     monkeypatch,
+    settings_env,
 ):
     """memory 模式覆盖普通 Agent 回答和 clarify 的平铺最终状态。"""
 
@@ -282,7 +294,7 @@ def test_memory_checkpoint_preserves_agent_and_clarify_flat_channels(
             del messages
             return AIMessage(content="普通 Agent 回答")
 
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "memory")
+    settings_env(langgraph_checkpointer="memory")
     monkeypatch.setattr(
         graph_nodes,
         "route_agent_action",
@@ -342,7 +354,10 @@ def test_memory_checkpoint_preserves_agent_and_clarify_flat_channels(
     assert "agent_state" not in clarify_values
 
 
-def test_memory_checkpoint_preserves_plain_tool_observation(monkeypatch):
+def test_memory_checkpoint_preserves_plain_tool_observation(
+    monkeypatch,
+    settings_env,
+):
     """memory 模式可序列化完整工具循环中的普通 dict observation。"""
 
     class ToolModel:
@@ -371,7 +386,7 @@ def test_memory_checkpoint_preserves_plain_tool_observation(monkeypatch):
             return AIMessage(content="结果是 5。")
 
     model = ToolModel()
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "memory")
+    settings_env(langgraph_checkpointer="memory")
     monkeypatch.setattr(
         graph_nodes,
         "route_agent_action",
@@ -411,9 +426,11 @@ def test_memory_checkpoint_preserves_plain_tool_observation(monkeypatch):
     assert "agent_state" not in values
 
 
-def test_same_session_requests_use_independent_checkpoint_threads(monkeypatch):
+def test_same_session_requests_use_independent_checkpoint_threads(
+    settings_env,
+):
     """同一 session 的不同请求不会继承上一轮 Graph 临时状态。"""
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "memory")
+    settings_env(langgraph_checkpointer="memory")
     first = _run("trace-a", "shared-session")
     second = _run("trace-b", "shared-session")
     first_id = checkpointing.build_checkpoint_thread_id(
@@ -439,11 +456,16 @@ def test_same_session_requests_use_independent_checkpoint_threads(monkeypatch):
     assert second_saved.checkpoint["channel_values"]["trace_id"] == "trace-b"
 
 
-def test_sqlite_agent_checkpoint_survives_runtime_reset(monkeypatch, tmp_path):
+def test_sqlite_agent_checkpoint_survives_runtime_reset(
+    settings_env,
+    tmp_path,
+):
     """关闭连接并重新初始化后，真实 Agent 最终状态仍存在。"""
     db_path = tmp_path / "agent" / "checkpoint.sqlite3"
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "sqlite")
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINT_DB_PATH", db_path)
+    settings_env(
+        langgraph_checkpointer="sqlite",
+        langgraph_checkpoint_db_path=db_path,
+    )
     result = _run("trace-sqlite")
     thread_id = checkpointing.build_checkpoint_thread_id(
         trace_id="trace-sqlite",
@@ -470,7 +492,10 @@ def test_sqlite_agent_checkpoint_survives_runtime_reset(monkeypatch, tmp_path):
     assert "principal_id" not in values
 
 
-def test_checkpoint_write_failure_returns_compatible_error_once(monkeypatch):
+def test_checkpoint_write_failure_returns_compatible_error_once(
+    monkeypatch,
+    settings_env,
+):
     """Saver/Graph 失败沿用顶层错误结果并只写一次 bad case。"""
     bad_cases: list[dict] = []
 
@@ -478,11 +503,11 @@ def test_checkpoint_write_failure_returns_compatible_error_once(monkeypatch):
         def invoke(self, graph_input, config, *, context):
             raise RuntimeError("checkpoint write failed")
 
-    monkeypatch.setattr(Settings, "LANGGRAPH_CHECKPOINTER", "memory")
+    settings_env(langgraph_checkpointer="memory")
     monkeypatch.setattr(
         graph_runtime,
         "get_compiled_agent_graph",
-        lambda: BrokenGraph(),
+        lambda _settings=None: BrokenGraph(),
     )
     result = graph_runtime.run_agent_langgraph(
         write_bad_cases=bad_cases.append,
@@ -500,11 +525,17 @@ def test_checkpoint_write_failure_returns_compatible_error_once(monkeypatch):
 
 
 @pytest.mark.parametrize("mode", ["disabled", "memory", "sqlite"])
-def test_lifecycle_compiles_every_langgraph_mode(monkeypatch, mode):
+def test_lifecycle_compiles_every_langgraph_mode(
+    monkeypatch,
+    settings_factory,
+    mode,
+):
     """LangGraph 在各 Checkpointer 模式下均预编译一次。"""
     calls: list[str] = []
 
-    def fake_get_compiled_agent_graph():
+    def fake_get_compiled_agent_graph(resolved_settings):
+        """记录生命周期传入的配置和预编译调用。"""
+        assert resolved_settings is settings
         calls.append("compiled")
 
     fake_get_compiled_agent_graph.cache_clear = lambda: None
@@ -513,23 +544,28 @@ def test_lifecycle_compiles_every_langgraph_mode(monkeypatch, mode):
         "get_compiled_agent_graph",
         fake_get_compiled_agent_graph,
     )
-    settings = SimpleNamespace(LANGGRAPH_CHECKPOINTER=mode)
+    settings = settings_factory(langgraph_checkpointer=mode)
 
     lifecycle.initialize_agent_graph_runtime(settings)
     assert calls == ["compiled"]
 
 
-def test_lifecycle_rejects_invalid_checkpointer_configuration():
+def test_lifecycle_rejects_invalid_checkpointer_configuration(
+    settings_factory,
+):
     """启动校验明确拒绝非法 Checkpointer 模式。"""
-    settings = SimpleNamespace(LANGGRAPH_CHECKPOINTER="invalid")
-
-    with pytest.raises(ValueError, match="LANGGRAPH_CHECKPOINTER 配置无效"):
-        lifecycle.validate_agent_graph_configuration(settings)
+    with pytest.raises(ValidationError):
+        settings_factory(langgraph_checkpointer="invalid")
 
 
-def test_lifecycle_propagates_langgraph_compile_failure(monkeypatch):
+def test_lifecycle_propagates_langgraph_compile_failure(
+    monkeypatch,
+    settings_factory,
+):
     """LangGraph 依赖或编译失败会阻止启动，不返回假成功。"""
-    def fail_compile():
+    def fail_compile(resolved_settings):
+        """模拟接收正确配置后发生的图编译失败。"""
+        assert resolved_settings is settings
         raise RuntimeError("graph compile failed")
 
     fail_compile.cache_clear = lambda: None
@@ -538,7 +574,7 @@ def test_lifecycle_propagates_langgraph_compile_failure(monkeypatch):
         "get_compiled_agent_graph",
         fail_compile,
     )
-    settings = SimpleNamespace(LANGGRAPH_CHECKPOINTER="disabled")
+    settings = settings_factory(langgraph_checkpointer="disabled")
 
     with pytest.raises(RuntimeError, match="graph compile failed"):
         lifecycle.validate_agent_graph_configuration(settings)

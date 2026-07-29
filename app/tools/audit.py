@@ -10,7 +10,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
 
-from app.config import Settings, validate_tool_governance_settings
+from app.config import AppSettings, get_settings
 from app.tools.contracts import ToolAuditOutputMode, ToolSpec
 from app.tools.redaction import (
     DEFAULT_SENSITIVE_KEYS,
@@ -120,12 +120,14 @@ class JsonlToolAuditSink:
                 file.write(serialized + "\n")
 
 
-def get_default_tool_audit_sink() -> ToolAuditSink:
+def get_default_tool_audit_sink(
+    settings: AppSettings | None = None,
+) -> ToolAuditSink:
     """根据当前配置惰性创建默认审计写入器。"""
-    validate_tool_governance_settings(Settings)
-    if not Settings.TOOL_AUDIT_ENABLED:
+    resolved = settings or get_settings()
+    if not resolved.tool_audit_enabled:
         return DisabledToolAuditSink()
-    return JsonlToolAuditSink(Settings.TOOL_AUDIT_PATH)
+    return JsonlToolAuditSink(resolved.tool_audit_path)
 
 
 def utc_timestamp() -> str:
@@ -133,17 +135,25 @@ def utc_timestamp() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def audit_redaction_limits() -> dict[str, int]:
+def audit_redaction_limits(
+    settings: AppSettings | None = None,
+) -> dict[str, int]:
     """返回当前审计脱敏和体量限制。"""
+    resolved = settings or get_settings()
     return {
-        "max_depth": Settings.TOOL_AUDIT_MAX_DEPTH,
-        "max_items": Settings.TOOL_AUDIT_MAX_ITEMS,
-        "max_string_chars": Settings.TOOL_AUDIT_MAX_STRING_CHARS,
-        "max_serialized_chars": Settings.TOOL_AUDIT_MAX_SERIALIZED_CHARS,
+        "max_depth": resolved.tool_audit_max_depth,
+        "max_items": resolved.tool_audit_max_items,
+        "max_string_chars": resolved.tool_audit_max_string_chars,
+        "max_serialized_chars": resolved.tool_audit_max_serialized_chars,
     }
 
 
-def sanitize_tool_input(spec: ToolSpec, value: Any) -> Any:
+def sanitize_tool_input(
+    spec: ToolSpec,
+    value: Any,
+    *,
+    settings: AppSettings | None = None,
+) -> Any:
     """按全局和工具契约敏感字段脱敏工具输入。"""
     return redact_sensitive_data(
         value,
@@ -151,7 +161,7 @@ def sanitize_tool_input(spec: ToolSpec, value: Any) -> Any:
             *DEFAULT_SENSITIVE_KEYS,
             *spec.sensitive_arg_fields,
         ),
-        **audit_redaction_limits(),
+        **audit_redaction_limits(settings),
     )
 
 
@@ -166,7 +176,12 @@ def _limited_sequence(value: Any, *, limit: int = 10) -> list[Any]:
     ]
 
 
-def summarize_tool_output(spec: ToolSpec, value: Any) -> Any:
+def summarize_tool_output(
+    spec: ToolSpec,
+    value: Any,
+    *,
+    settings: AppSettings | None = None,
+) -> Any:
     """按契约模式生成不会默认包含大型业务正文的输出摘要。"""
     if spec.audit_output_mode is ToolAuditOutputMode.NONE:
         return {
@@ -181,7 +196,7 @@ def summarize_tool_output(spec: ToolSpec, value: Any) -> Any:
                 *DEFAULT_SENSITIVE_KEYS,
                 *spec.sensitive_output_fields,
             ),
-            **audit_redaction_limits(),
+            **audit_redaction_limits(settings),
         )
 
     if not isinstance(value, dict):
@@ -200,7 +215,7 @@ def summarize_tool_output(spec: ToolSpec, value: Any) -> Any:
         return redact_sensitive_data(
             summary,
             sensitive_keys=spec.sensitive_output_fields,
-            **audit_redaction_limits(),
+            **audit_redaction_limits(settings),
         )
     if spec.name == "compare_documents":
         evidence_a = value.get("doc_a_evidence")
@@ -219,7 +234,7 @@ def summarize_tool_output(spec: ToolSpec, value: Any) -> Any:
         return redact_sensitive_data(
             summary,
             sensitive_keys=spec.sensitive_output_fields,
-            **audit_redaction_limits(),
+            **audit_redaction_limits(settings),
         )
     if spec.name == "list_documents":
         documents = value.get("documents")
@@ -232,7 +247,7 @@ def summarize_tool_output(spec: ToolSpec, value: Any) -> Any:
         return redact_sensitive_data(
             summary,
             sensitive_keys=spec.sensitive_output_fields,
-            **audit_redaction_limits(),
+            **audit_redaction_limits(settings),
         )
     if spec.name == "web_fetch":
         summary = {
@@ -247,7 +262,7 @@ def summarize_tool_output(spec: ToolSpec, value: Any) -> Any:
         return redact_sensitive_data(
             summary,
             sensitive_keys=spec.sensitive_output_fields,
-            **audit_redaction_limits(),
+            **audit_redaction_limits(settings),
         )
     if spec.name == "web_pdf_fetch":
         summary = {
@@ -265,12 +280,14 @@ def summarize_tool_output(spec: ToolSpec, value: Any) -> Any:
         return redact_sensitive_data(
             summary,
             sensitive_keys=spec.sensitive_output_fields,
-            **audit_redaction_limits(),
+            **audit_redaction_limits(settings),
         )
 
     summary: dict[str, Any] = {
         "type": "dict",
-        "fields": list(value.keys())[: Settings.TOOL_AUDIT_MAX_ITEMS],
+        "fields": list(value.keys())[
+            : (settings or get_settings()).tool_audit_max_items
+        ],
     }
     for key in ("count", "conflict_detected", "exists"):
         if key in value and isinstance(value[key], (bool, int, float, str)):
@@ -278,7 +295,7 @@ def summarize_tool_output(spec: ToolSpec, value: Any) -> Any:
     return redact_sensitive_data(
         summary,
         sensitive_keys=spec.sensitive_output_fields,
-        **audit_redaction_limits(),
+        **audit_redaction_limits(settings),
     )
 
 

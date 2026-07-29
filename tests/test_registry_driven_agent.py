@@ -11,7 +11,7 @@ from app.graph.builder import build_agent_graph
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from app.tools.providers import LocalToolProvider
-from app.tools.registry import ToolRegistry, tool_registry
+from app.tools.registry import ToolRegistry, get_tool_registry
 from app.tools.result import tool_success
 
 
@@ -196,7 +196,7 @@ def test_agent_discovers_and_calls_echo_without_core_tool_mapping(monkeypatch):
     assert contexts[0].session_id == "session-echo"
     assert contexts[0].permissions == ("knowledge_base:read",)
     assert contexts[0].source == "registry_driven_test"
-    assert tool_registry.get("echo_text") is None
+    assert get_tool_registry().get("echo_text") is None
 
 
 def test_new_tool_request_reaches_agent_without_router_changes(monkeypatch):

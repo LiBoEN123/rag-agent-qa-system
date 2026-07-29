@@ -12,7 +12,7 @@ from langchain_text_splitters import (
     MarkdownHeaderTextSplitter,
 )
 
-from app.config import Settings
+from app.config import get_settings
 
 
 SUPPORTED_SUFFIXES = {".txt", ".md", ".pdf", ".docx"}
@@ -182,10 +182,15 @@ def clean_documents(raw_docs: list[dict]):
 
 def split_txt_doc(
     doc: dict,
-    chunk_size: int = Settings.CHUNK_SIZE,
-    chunk_overlap: int = Settings.CHUNK_OVERLAP
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
 ):
     """将普通文本类文档切分成带元数据的 chunk。"""
+    settings = get_settings()
+    chunk_size = settings.chunk_size if chunk_size is None else chunk_size
+    chunk_overlap = (
+        settings.chunk_overlap if chunk_overlap is None else chunk_overlap
+    )
     text = doc["text"]
 
     splitter = RecursiveCharacterTextSplitter(
@@ -220,10 +225,15 @@ def split_txt_doc(
 
 def split_md_doc(
     doc: dict,
-    chunk_size: int = Settings.CHUNK_SIZE,
-    chunk_overlap: int = Settings.CHUNK_OVERLAP
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
 ):
     """按 Markdown 标题层级和长度切分文档。"""
+    settings = get_settings()
+    chunk_size = settings.chunk_size if chunk_size is None else chunk_size
+    chunk_overlap = (
+        settings.chunk_overlap if chunk_overlap is None else chunk_overlap
+    )
     text = doc["text"]
 
     md_splitter = MarkdownHeaderTextSplitter(
@@ -272,8 +282,8 @@ def split_md_doc(
 
 def split_doc(
     doc: dict,
-    chunk_size: int = Settings.CHUNK_SIZE,
-    chunk_overlap: int = Settings.CHUNK_OVERLAP
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
 ):
     """按文件类型选择合适的切分逻辑。"""
     if doc["file_type"] in PLAIN_TEXT_FILE_TYPES:
@@ -285,10 +295,15 @@ def split_doc(
 
 def split_chunks(
     cleaned_docs: list[dict],
-    chunk_size: int = Settings.CHUNK_SIZE,
-    chunk_overlap: int = Settings.CHUNK_OVERLAP
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
 ):
     """批量切分文档并分配全局 chunk_id。"""
+    settings = get_settings()
+    chunk_size = settings.chunk_size if chunk_size is None else chunk_size
+    chunk_overlap = (
+        settings.chunk_overlap if chunk_overlap is None else chunk_overlap
+    )
     all_chunks = []
     chunk_count_map = {}
 

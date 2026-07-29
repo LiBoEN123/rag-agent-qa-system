@@ -73,6 +73,7 @@ def build_service(
     append_error=False,
     metrics_error=False,
 ):
+    """构造依赖可控的 ChatService，并返回调用记录容器。"""
     calls = {
         "history": [],
         "rewrite": [],
@@ -81,7 +82,7 @@ def build_service(
         "messages": [],
         "metrics": [],
     }
-    settings = SimpleNamespace(TOP_K=5, DECOMPOSE_TOP_K=10)
+    settings = SimpleNamespace(top_k=5, decompose_top_k=10)
     history = list(history or [])
     rewrite_result = rewrite_result or {
         "original_question": "",
@@ -134,7 +135,7 @@ def build_service(
             raise RuntimeError("metrics unavailable")
 
     dependencies = ChatServiceDependencies(
-        settings=settings,
+        settings_provider=lambda: settings,
         get_history=fake_get_history,
         rewrite_query_with_history=fake_rewrite,
         run_agent_langgraph=lambda **kwargs: run_runtime("langgraph", kwargs),

@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_tools
 from app.graph import builder as graph_builder
-from app.graph import checkpointing, nodes as graph_nodes
+from app.graph import checkpointing
 from app.graph.runtime import run_agent_langgraph
 from app.tools import runtime as tool_runtime
 from app.tools.contracts import ToolSpec
@@ -56,7 +56,9 @@ def _assert_no_dangling_tool_calls(messages) -> None:
 def test_sqlite_serializes_success_correction_repeat_and_budget_stops(
     monkeypatch,
     tmp_path,
+    settings_env,
 ):
+    """SQLite 检查点可序列化成功、纠错、重复与预算终止状态。"""
     registry = ToolRegistry()
     handler_calls: list[int] = []
 
@@ -84,29 +86,15 @@ def test_sqlite_serializes_success_correction_repeat_and_budget_stops(
         "get_agent_tool_provider",
         lambda: LocalToolProvider(registry),
     )
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_ITERATIONS", 10)
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_TOOL_ERRORS", 3)
-    monkeypatch.setattr(
-        graph_nodes.Settings,
-        "AGENT_MAX_CONSECUTIVE_SAME_TOOL_CALLS",
-        2,
-    )
-    monkeypatch.setattr(
-        graph_nodes.Settings,
-        "AGENT_MAX_CONSECUTIVE_SAME_TOOL_ERRORS",
-        2,
-    )
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_TOTAL_COST_MS", 120000)
-    monkeypatch.setattr(graph_nodes.Settings, "TOOL_AUDIT_ENABLED", False)
-    monkeypatch.setattr(
-        checkpointing.Settings,
-        "LANGGRAPH_CHECKPOINTER",
-        "sqlite",
-    )
-    monkeypatch.setattr(
-        checkpointing.Settings,
-        "LANGGRAPH_CHECKPOINT_DB_PATH",
-        tmp_path / "guardrails.sqlite3",
+    settings_env(
+        agent_max_iterations=10,
+        agent_max_tool_errors=3,
+        agent_max_consecutive_same_tool_calls=2,
+        agent_max_consecutive_same_tool_errors=2,
+        agent_max_total_cost_ms=120000,
+        tool_audit_enabled=False,
+        langgraph_checkpointer="sqlite",
+        langgraph_checkpoint_db_path=tmp_path / "guardrails.sqlite3",
     )
     cases = [
         (
@@ -174,12 +162,7 @@ def test_sqlite_serializes_success_correction_repeat_and_budget_stops(
                 "get_agent_chat_model",
                 lambda selected=model: selected,
             )
-            monkeypatch.setattr(
-                graph_nodes.Settings,
-                "AGENT_MAX_TOOL_CALLS",
-                max_tool_calls,
-            )
-            graph_builder.get_compiled_agent_graph.cache_clear()
+            settings_env(agent_max_tool_calls=max_tool_calls)
             result = run_agent_langgraph(
                 write_bad_cases=lambda record: None,
                 original_question=f"checkpoint {label}",

@@ -431,6 +431,25 @@ streamlit run demo/streamlit_app.py
 
 常用配置如下，完整示例见 `.env.example`。
 
+应用配置由唯一的冻结 `AppSettings` 模型管理。生产代码通过惰性缓存入口
+`get_settings()` 获取一个进程级快照；导入 `app.config` 不读取 `.env`，也不检查
+API key、路径或创建任何目录。配置来源优先级为：
+
+```text
+显式 AppSettings(...) 参数 > 环境变量 > 项目根目录 .env > 字段默认值
+```
+
+测试和一次性脚本应显式构造
+`AppSettings(_env_file=None, ...)`，并把实例传给现有依赖边界，以免维护者本地
+`.env`、代理、权限或 Checkpointer 污染结果。配置模型只负责解析和纯校验；真实
+API key、知识库目录及可写持久化路径等外部前提由 FastAPI lifespan 在启动时通过
+`validate_startup_environment()` 检查。
+
+`get_settings()` 的结果不会随环境变量或 `.env` 动态变化。受控刷新必须先调用
+`clear_settings_cache()`，并同步清理持有旧快照的 Model Factory、Tool Registry、
+Tool Runtime、Graph/Checkpointer 缓存；生产服务通常直接重启进程。不要把 `.env`
+当作动态热更新配置。
+
 | 配置项 | 说明 |
 | --- | --- |
 | `RAG_FILE_PATH` | 知识库目录，示例：`./data/kb` |
@@ -688,7 +707,8 @@ Router 不调用独立模型，也不解析具体工具 action。普通问题进
 
 ```text
 启动服务
-  -> Settings.validate()
+  -> get_settings()
+  -> validate_startup_environment(settings)
   -> 检查 manifest 和 ChromaDB 缓存
   -> 文档或配置变化：重建索引并保存缓存
   -> 无变化：从本地缓存加载索引

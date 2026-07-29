@@ -8,7 +8,6 @@ from typing import Any, Dict, List
 import jieba
 import numpy as np
 
-from app.config import Settings
 from app.rag.chroma import ChromaUnavailableError, query_chroma
 from app.common.logging import get_logger
 from app.rag.policy import (
@@ -20,7 +19,6 @@ from app.rag.scoring import safe_float
 
 
 __all__ = [
-    "Settings",
     "build_clarification_question",
     "clamp01",
     "is_ambiguous_question",

@@ -5,12 +5,13 @@
 
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Callable
 
 from fastapi import APIRouter, Query, Response
 
 from app.api.schemas import ChatRequest
 from app.common.logging import get_logger
+from app.config import AppSettings
 
 
 logger = get_logger("chat_service")
@@ -18,7 +19,7 @@ logger = get_logger("chat_service")
 
 @dataclass(frozen=True)
 class DiagnosticsDependencies:
-    settings: Any
+    settings_provider: Callable[[], AppSettings]
     search_result: type
     search_data: type
     search_response: type
@@ -92,7 +93,8 @@ def create_diagnostics_router(
                     ),
                 )
 
-            top_k = req.top_k if req.top_k is not None else deps.settings.TOP_K
+            settings = deps.settings_provider()
+            top_k = req.top_k if req.top_k is not None else settings.top_k
             retrieved = deps.search_relevant_chunks(question, top_k)
             if not retrieved:
                 return deps.search_response(

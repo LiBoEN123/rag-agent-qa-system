@@ -20,15 +20,13 @@ from requests_hardened.ip_filter import InvalidIPAddress
 from requests_hardened.ip_filter_adapter import IPFilterAdapter
 
 from app.config import (
-    Settings,
-    normalize_web_fetch_proxy,
-    validate_web_fetch_config,
+    AppSettings,
 )
 from app.tools import runtime as tool_runtime
 from app.tools.audit import NullToolAuditSink
 from app.tools.context import ToolInvocationContext
 from app.tools.errors import ToolErrorCode, ToolExecutionError
-from app.tools.registry import ToolRegistry, tool_registry
+from app.tools.registry import ToolRegistry, get_tool_registry
 from app.tools.result import tool_success
 from app.tools.runtime import ToolRuntime
 from app.tools.schemas import WebFetchArgs, WebFetchOutput
@@ -110,23 +108,26 @@ class CollectingAuditSink:
 
 
 @pytest.fixture(autouse=True)
-def isolate_web_fetch(monkeypatch):
+def isolate_web_fetch(settings_env):
     """固定安全配置并隔离共享 Runtime 与生产审计。"""
     tool_runtime.reset_tool_runtime()
-    monkeypatch.setattr(Settings, "WEB_FETCH_CONNECT_TIMEOUT", 3.0)
-    monkeypatch.setattr(Settings, "WEB_FETCH_READ_TIMEOUT", 10.0)
-    monkeypatch.setattr(Settings, "WEB_FETCH_MAX_RESPONSE_BYTES", 2_000_000)
-    monkeypatch.setattr(Settings, "WEB_FETCH_MAX_REDIRECTS", 5)
-    monkeypatch.setattr(Settings, "WEB_FETCH_USER_AGENT", "rag-agent-qa-system/1.0")
-    monkeypatch.setattr(Settings, "WEB_FETCH_PROXY", None)
-    monkeypatch.setattr(Settings, "WEB_TRUSTED_PROXY_MODE", False)
-    monkeypatch.setattr(Settings, "TOOL_AUDIT_ENABLED", False)
+    settings_env(
+        web_fetch_connect_timeout=3.0,
+        web_fetch_read_timeout=10.0,
+        web_fetch_max_response_bytes=2_000_000,
+        web_fetch_max_redirects=5,
+        web_fetch_user_agent="rag-agent-qa-system/1.0",
+        web_fetch_proxy="",
+        web_trusted_proxy_mode=False,
+        tool_audit_enabled=False,
+    )
     yield
     tool_runtime.reset_tool_runtime()
 
 
 def _web_fetch_spec():
-    spec = tool_registry.get("web_fetch")
+    """返回默认注册表中的 Web 抓取工具契约。"""
+    spec = get_tool_registry().get("web_fetch")
     assert spec is not None
     return spec
 
@@ -237,49 +238,47 @@ def test_web_fetch_output_validates_url_status_and_content_length():
 
 
 def test_web_fetch_configuration_accepts_safe_values():
-    validate_web_fetch_config(
-        connect_timeout=3,
-        read_timeout=10.0,
-        max_response_bytes=2_000_000,
-        max_redirects=5,
-        user_agent="rag-agent-qa-system/1.0",
-        proxy=None,
+    """Web 抓取配置接受满足安全约束的取值。"""
+    AppSettings(
+        _env_file=None,
+        web_fetch_connect_timeout=3,
+        web_fetch_read_timeout=10.0,
+        web_fetch_max_response_bytes=2_000_000,
+        web_fetch_max_redirects=5,
+        web_fetch_user_agent="rag-agent-qa-system/1.0",
+        web_fetch_proxy=None,
     )
 
 
 @pytest.mark.parametrize(
-    ("overrides", "message"),
+    "overrides",
     [
-        ({"connect_timeout": 0}, "WEB_FETCH_CONNECT_TIMEOUT"),
-        ({"read_timeout": True}, "WEB_FETCH_READ_TIMEOUT"),
-        ({"read_timeout": 27}, "总体超时"),
-        ({"max_response_bytes": 0}, "WEB_FETCH_MAX_RESPONSE_BYTES"),
-        ({"max_response_bytes": True}, "WEB_FETCH_MAX_RESPONSE_BYTES"),
-        ({"max_redirects": -1}, "WEB_FETCH_MAX_REDIRECTS"),
-        ({"max_redirects": False}, "WEB_FETCH_MAX_REDIRECTS"),
-        ({"user_agent": ""}, "WEB_FETCH_USER_AGENT"),
-        ({"user_agent": "agent\nInjected"}, "WEB_FETCH_USER_AGENT"),
-        ({"proxy": 7}, "WEB_FETCH_PROXY"),
+        {"web_fetch_connect_timeout": 0},
+        {"web_fetch_read_timeout": True},
+        {"web_fetch_read_timeout": 27},
+        {"web_fetch_max_response_bytes": 0},
+        {"web_fetch_max_response_bytes": True},
+        {"web_fetch_max_redirects": -1},
+        {"web_fetch_max_redirects": False},
+        {"web_fetch_user_agent": ""},
+        {"web_fetch_user_agent": "agent\nInjected"},
+        {"web_fetch_proxy": 7},
     ],
 )
-def test_web_fetch_configuration_rejects_invalid_values(overrides, message):
-    values = {
-        "connect_timeout": 3,
-        "read_timeout": 10,
-        "max_response_bytes": 2_000_000,
-        "max_redirects": 5,
-        "user_agent": "rag-agent-qa-system/1.0",
-        "proxy": None,
-    }
-    values.update(overrides)
-    with pytest.raises(ValueError, match=message):
-        validate_web_fetch_config(**values)
+def test_web_fetch_configuration_rejects_invalid_values(overrides):
+    """Web 抓取配置拒绝越界、布尔冒充数值和非法文本。"""
+    with pytest.raises(ValidationError):
+        AppSettings(_env_file=None, **overrides)
 
 
 def test_web_fetch_empty_proxy_is_normalized_to_none():
-    assert normalize_web_fetch_proxy("") is None
-    assert normalize_web_fetch_proxy("   ") is None
-    assert normalize_web_fetch_proxy(" http://proxy.example:8080 ") == (
+    """空代理被规范为未配置，非空代理会去除两端空白。"""
+    assert AppSettings(_env_file=None, web_fetch_proxy="").web_fetch_proxy is None
+    assert AppSettings(_env_file=None, web_fetch_proxy="   ").web_fetch_proxy is None
+    assert AppSettings(
+        _env_file=None,
+        web_fetch_proxy=" http://proxy.example:8080 ",
+    ).web_fetch_proxy == (
         "http://proxy.example:8080"
     )
 
@@ -319,9 +318,13 @@ def test_request_uses_hardened_manager_get_only_and_safe_defaults(monkeypatch):
     assert result["output"]["requested_url"] == "https://example.com/article"
 
 
-def test_explicit_server_proxy_is_used_but_never_returned(monkeypatch):
+def test_explicit_server_proxy_is_used_but_never_returned(
+    monkeypatch,
+    settings_env,
+):
+    """显式服务端代理参与请求，但不会出现在工具返回中。"""
     proxy = "http://trusted-proxy.example:8080"
-    monkeypatch.setattr(Settings, "WEB_FETCH_PROXY", proxy)
+    settings_env(web_fetch_proxy=proxy)
     managers = _install_fake_manager(
         monkeypatch,
         [FakeResponse(body=b"plain body", content_type="text/plain")],
@@ -337,10 +340,14 @@ def test_explicit_server_proxy_is_used_but_never_returned(monkeypatch):
 
 def test_trusted_proxy_mode_delegates_ip_policy_and_uses_explicit_proxy(
     monkeypatch,
+    settings_env,
 ):
+    """受信代理模式委托 IP 策略，并仅使用显式代理。"""
     proxy = "http://127.0.0.1:7890"
-    monkeypatch.setattr(Settings, "WEB_TRUSTED_PROXY_MODE", True)
-    monkeypatch.setattr(Settings, "WEB_FETCH_PROXY", proxy)
+    settings_env(
+        web_trusted_proxy_mode=True,
+        web_trusted_proxy_url=proxy,
+    )
     managers = _install_fake_manager(
         monkeypatch,
         [FakeResponse(body=b"plain body", content_type="text/plain")],
@@ -357,23 +364,22 @@ def test_trusted_proxy_mode_delegates_ip_policy_and_uses_explicit_proxy(
     assert proxy not in json.dumps(result)
 
 
-def test_trusted_proxy_mode_without_proxy_fails_closed(monkeypatch):
-    monkeypatch.setattr(Settings, "WEB_TRUSTED_PROXY_MODE", True)
-    monkeypatch.setattr(Settings, "WEB_FETCH_PROXY", None)
-    managers = _install_fake_manager(
-        monkeypatch,
-        [FakeResponse(body=b"plain body", content_type="text/plain")],
-    )
-
-    web_fetch_handler(_args(), ToolInvocationContext())
-
-    assert managers[0].config.ip_filter_enable is True
-    assert "proxies" not in managers[0].session.calls[0][2]
+def test_trusted_proxy_mode_without_proxy_fails_closed(settings_env):
+    """受信代理模式缺少代理地址时以拒绝方式失败。"""
+    with pytest.raises(ValidationError, match="WEB_TRUSTED_PROXY_URL"):
+        settings_env(
+            web_trusted_proxy_mode=True,
+            web_trusted_proxy_url="",
+        )
 
 
-def test_proxy_failure_returns_stable_message_without_proxy(monkeypatch):
+def test_proxy_failure_returns_stable_message_without_proxy(
+    monkeypatch,
+    settings_env,
+):
+    """代理失败返回稳定错误，且不泄露代理地址。"""
     proxy = "http://secret-proxy.example:8080"
-    monkeypatch.setattr(Settings, "WEB_FETCH_PROXY", proxy)
+    settings_env(web_fetch_proxy=proxy)
     _install_fake_manager(
         monkeypatch,
         [requests.exceptions.ProxyError(f"failed through {proxy}")],
@@ -387,8 +393,12 @@ def test_proxy_failure_returns_stable_message_without_proxy(monkeypatch):
     assert "proxy" not in str(raised.value).lower()
 
 
-def test_content_length_limit_stops_before_stream_and_closes(monkeypatch):
-    monkeypatch.setattr(Settings, "WEB_FETCH_MAX_RESPONSE_BYTES", 10)
+def test_content_length_limit_stops_before_stream_and_closes(
+    monkeypatch,
+    settings_env,
+):
+    """响应长度头超限时不读取流，并关闭响应与会话。"""
+    settings_env(web_fetch_max_response_bytes=10)
     response = FakeResponse(content_length="11")
     managers = _install_fake_manager(monkeypatch, [response])
 
@@ -403,9 +413,12 @@ def test_content_length_limit_stops_before_stream_and_closes(monkeypatch):
 
 @pytest.mark.parametrize("content_length", [None, "invalid"])
 def test_streamed_body_limit_applies_without_valid_content_length(
-    monkeypatch, content_length
+    monkeypatch,
+    settings_env,
+    content_length,
 ):
-    monkeypatch.setattr(Settings, "WEB_FETCH_MAX_RESPONSE_BYTES", 10)
+    """缺少有效长度头时仍对流式响应实施字节上限。"""
+    settings_env(web_fetch_max_response_bytes=10)
     response = FakeResponse(
         content_length=content_length,
         chunks=[b"123456", b"78901"],
@@ -844,10 +857,14 @@ def test_runtime_total_timeout_still_bounds_fetch(monkeypatch):
     assert result["runtime"]["timed_out"] is True
 
 
-def test_fetch_audit_never_records_full_url_proxy_or_content(monkeypatch):
+def test_fetch_audit_never_records_full_url_proxy_or_content(
+    monkeypatch,
+    settings_env,
+):
+    """抓取审计不记录完整 URL、代理地址或页面正文。"""
     proxy = "http://audit-secret-proxy.example:8080"
     url = "https://example.com/private/path?secret=1"
-    monkeypatch.setattr(Settings, "WEB_FETCH_PROXY", proxy)
+    settings_env(web_fetch_proxy=proxy)
     _install_fake_manager(
         monkeypatch,
         [

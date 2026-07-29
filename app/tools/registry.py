@@ -3,7 +3,9 @@
 管理工具查询和分发，并注册系统内置工具集合。
 """
 
-from app.config import Settings
+from functools import lru_cache
+
+from app.config import AppSettings, get_settings
 from app.tools.calculator import simple_calculator
 from app.tools.compare_documents import compare_documents_tool
 from app.tools.contracts import (
@@ -122,7 +124,11 @@ def _handle_compare_documents(
     return compare_documents_tool(args, trace_id=context.trace_id)
 
 
-def register_default_tools(registry: ToolRegistry) -> None:
+def register_default_tools(
+    registry: ToolRegistry,
+    *,
+    settings: AppSettings,
+) -> None:
     """注册项目内置工具。"""
     registry.register(
         ToolSpec(
@@ -266,7 +272,7 @@ def register_default_tools(registry: ToolRegistry) -> None:
             output_model=WebPdfFetchOutput,
             risk_level=ToolRiskLevel.READ_ONLY,
             required_permissions=("web:fetch",),
-            timeout=Settings.WEB_PDF_TOOL_TIMEOUT_SECONDS,
+            timeout=settings.web_pdf_tool_timeout_seconds,
             max_retries=1,
             idempotent=True,
             requires_approval=False,
@@ -374,8 +380,18 @@ def register_default_tools(registry: ToolRegistry) -> None:
     )
 
 
-tool_registry = ToolRegistry()
-register_default_tools(tool_registry)
+@lru_cache(maxsize=1)
+def get_tool_registry() -> ToolRegistry:
+    """按当前配置惰性构造并缓存默认工具注册表。"""
+    settings = get_settings()
+    registry = ToolRegistry()
+    register_default_tools(registry, settings=settings)
+    return registry
+
+
+def clear_tool_registry_cache() -> None:
+    """清理默认 Registry 缓存，供受控配置刷新使用。"""
+    get_tool_registry.cache_clear()
 
 
 __all__ = [
@@ -383,6 +399,7 @@ __all__ = [
     "ToolAuditOutputMode",
     "ToolRiskLevel",
     "ToolSpec",
+    "clear_tool_registry_cache",
+    "get_tool_registry",
     "register_default_tools",
-    "tool_registry",
 ]

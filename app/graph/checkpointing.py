@@ -12,11 +12,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.common.logging import get_logger
-from app.config import (
-    Settings,
-    validate_langgraph_checkpoint_db_path,
-    validate_langgraph_checkpointer,
-)
+from app.config import AppSettings, get_settings
 
 
 logger = get_logger("chat_service")
@@ -27,21 +23,21 @@ _sqlite_connection: sqlite3.Connection | None = None
 _instance_key: tuple[str, str] | None = None
 
 
-def get_checkpointer_mode() -> str:
+def get_checkpointer_mode(settings: AppSettings | None = None) -> str:
     """返回当前经过校验的 Checkpointer 配置模式。"""
-    return validate_langgraph_checkpointer(Settings.LANGGRAPH_CHECKPOINTER)
+    return (settings or get_settings()).langgraph_checkpointer
 
 
-def _effective_instance_key() -> tuple[str, str] | None:
+def _effective_instance_key(
+    settings: AppSettings,
+) -> tuple[str, str] | None:
     """生成当前 Saver 配置签名；未启用时返回 ``None``。"""
-    mode = get_checkpointer_mode()
+    mode = get_checkpointer_mode(settings)
     if mode == "disabled":
         return None
     if mode == "memory":
         return (mode, "")
-    path = validate_langgraph_checkpoint_db_path(
-        Settings.LANGGRAPH_CHECKPOINT_DB_PATH
-    )
+    path = settings.langgraph_checkpoint_db_path
     return (mode, str(path))
 
 
@@ -74,11 +70,14 @@ def _create_sqlite_checkpointer(
     return saver, connection
 
 
-def initialize_checkpointer() -> BaseCheckpointSaver | None:
+def initialize_checkpointer(
+    settings: AppSettings | None = None,
+) -> BaseCheckpointSaver | None:
     """按配置惰性创建并复用 Checkpointer；disabled 返回 ``None``。"""
     global _checkpointer, _instance_key, _sqlite_connection
 
-    requested_key = _effective_instance_key()
+    resolved = settings or get_settings()
+    requested_key = _effective_instance_key(resolved)
     if requested_key is None:
         return None
 
@@ -108,9 +107,11 @@ def initialize_checkpointer() -> BaseCheckpointSaver | None:
         return _checkpointer
 
 
-def get_checkpointer() -> BaseCheckpointSaver | None:
+def get_checkpointer(
+    settings: AppSettings | None = None,
+) -> BaseCheckpointSaver | None:
     """返回当前生命周期内复用的 Checkpointer。"""
-    return initialize_checkpointer()
+    return initialize_checkpointer(settings)
 
 
 def close_checkpointer() -> None:

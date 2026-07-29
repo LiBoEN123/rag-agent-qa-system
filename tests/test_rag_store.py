@@ -92,8 +92,14 @@ def test_load_index_cache_uses_chroma_metadata_for_docs_registry(monkeypatch):
     ]
 
 
-def test_load_models_uses_configured_model_cache_dir(monkeypatch, tmp_path):
+def test_load_models_uses_configured_model_cache_dir(
+    monkeypatch,
+    tmp_path,
+    settings_env,
+):
+    """加载嵌入与重排模型时使用配置指定的缓存目录。"""
     cache_dir = tmp_path / "models"
+    settings = settings_env(model_cache_dir_override=cache_dir)
     calls = {}
 
     class FakeSentenceTransformer:
@@ -112,7 +118,6 @@ def test_load_models_uses_configured_model_cache_dir(monkeypatch, tmp_path):
                 "cache_folder": cache_folder,
             }
 
-    monkeypatch.setattr(rag_store.Settings, "MODEL_CACHE_DIR", cache_dir)
     monkeypatch.setattr(rag_store, "SentenceTransformer", FakeSentenceTransformer)
     monkeypatch.setattr(rag_store, "CrossEncoder", FakeCrossEncoder)
 
@@ -121,5 +126,5 @@ def test_load_models_uses_configured_model_cache_dir(monkeypatch, tmp_path):
     assert cache_dir.is_dir()
     assert calls["embedding"]["cache_folder"] == str(cache_dir)
     assert calls["rerank"]["cache_folder"] == str(cache_dir)
-    assert calls["embedding"]["model_name"] == rag_store.Settings.EMBEDDING_MODEL_NAME
-    assert calls["rerank"]["model_name"] == rag_store.Settings.RERANK_MODEL_NAME
+    assert calls["embedding"]["model_name"] == settings.embedding_model_name
+    assert calls["rerank"]["model_name"] == settings.rerank_model_name

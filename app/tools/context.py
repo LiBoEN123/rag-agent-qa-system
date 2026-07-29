@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 
+from app.config import AppSettings, get_settings
 
 _PERMISSION_PATTERN = re.compile(
     r"^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*$"
@@ -117,21 +118,16 @@ def build_default_tool_context(
     trace_id: str = "",
     session_id: str = "",
     source: str = "direct_dispatch",
+    settings: AppSettings | None = None,
 ) -> ToolInvocationContext:
     """构造无认证架构下权限最小化的服务级只读主体。"""
-    from app.config import Settings
-
-    permissions = Settings.TOOL_DEFAULT_PERMISSIONS
-    if isinstance(permissions, str):
-        permissions = tuple(
-            item.strip() for item in permissions.split(",") if item.strip()
-        )
+    resolved = settings or get_settings()
     return ToolInvocationContext(
         trace_id=trace_id,
         session_id=session_id,
-        principal_id=Settings.TOOL_DEFAULT_PRINCIPAL_ID,
+        principal_id=resolved.tool_default_principal_id,
         principal_type=PrincipalType.SERVICE,
-        permissions=tuple(permissions),
+        permissions=resolved.tool_default_permissions,
         source=source,
     )
 

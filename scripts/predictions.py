@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.api.lifecycle import StartupDependencies, initialize_rag  # noqa: E402
-from app.config import Settings  # noqa: E402
+from app.config import get_settings  # noqa: E402
 from app.rag import (  # noqa: E402
     get_rag_status,
     index_cache_exists,
@@ -24,9 +24,10 @@ from app.rag.graph import run_rag_subgraph  # noqa: E402
 
 def initialize_rag_for_predictions() -> None:
     """使用与 API 启动流程相同的索引生命周期初始化 RAG。"""
+    settings = get_settings()
     initialize_rag(
         StartupDependencies(
-            settings=Settings,
+            settings=settings,
             needs_rebuild=needs_rebuild,
             index_cache_exists=index_cache_exists,
             load_index_cache=load_index_cache,

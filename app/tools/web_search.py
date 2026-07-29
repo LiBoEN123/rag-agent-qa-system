@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 from ddgs import DDGS
 from ddgs.exceptions import DDGSException, RatelimitException, TimeoutException
 
-from app.config import Settings
+from app.config import get_settings
 from app.tools.context import ToolInvocationContext
 from app.tools.errors import ToolErrorCode, ToolExecutionError
 from app.tools.result import tool_success
@@ -86,17 +86,18 @@ def _normalize_results(raw_results: object, *, max_results: int) -> list[dict[st
 def web_search(args: dict[str, Any], context: ToolInvocationContext) -> dict[str, Any]:
     """调用 DDGS 文本搜索并返回项目统一成功结果。"""
     del context
+    settings = get_settings()
     query = args["query"]
     max_results = args["max_results"]
     freshness = args["freshness"]
     try:
         raw_results = DDGS(
-            proxy=Settings.WEB_SEARCH_PROXY,
-            timeout=Settings.WEB_SEARCH_TIMEOUT,
+            proxy=settings.resolved_web_search_proxy,
+            timeout=settings.web_search_timeout,
         ).text(
             query,
-            region=Settings.WEB_SEARCH_REGION,
-            safesearch=Settings.WEB_SEARCH_SAFESEARCH,
+            region=settings.web_search_region,
+            safesearch=settings.web_search_safesearch,
             timelimit=_FRESHNESS_TO_TIMELIMIT[freshness],
             max_results=max_results,
             backend="auto",

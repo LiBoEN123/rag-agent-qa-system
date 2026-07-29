@@ -33,6 +33,7 @@ class BudgetModel:
 
 
 def _setup(monkeypatch, *, model, handler, max_tool_calls=10, max_elapsed_ms=120000):
+    """按指定预算组装使用测试模型与工具的 Agent 图。"""
     registry = ToolRegistry()
     registry.register(
         ToolSpec(
@@ -51,25 +52,17 @@ def _setup(monkeypatch, *, model, handler, max_tool_calls=10, max_elapsed_ms=120
         "get_agent_tool_provider",
         lambda: LocalToolProvider(registry),
     )
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_ITERATIONS", 6)
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_TOOL_CALLS", max_tool_calls)
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_TOOL_ERRORS", 3)
-    monkeypatch.setattr(
-        graph_nodes.Settings,
-        "AGENT_MAX_CONSECUTIVE_SAME_TOOL_CALLS",
-        2,
+    settings = graph_nodes.get_settings().model_copy(
+        update={
+            "agent_max_iterations": 6,
+            "agent_max_tool_calls": max_tool_calls,
+            "agent_max_tool_errors": 3,
+            "agent_max_consecutive_same_tool_calls": 2,
+            "agent_max_consecutive_same_tool_errors": 2,
+            "agent_max_total_cost_ms": max_elapsed_ms,
+        }
     )
-    monkeypatch.setattr(
-        graph_nodes.Settings,
-        "AGENT_MAX_CONSECUTIVE_SAME_TOOL_ERRORS",
-        2,
-    )
-    monkeypatch.setattr(
-        graph_nodes.Settings,
-        "AGENT_MAX_TOTAL_COST_MS",
-        max_elapsed_ms,
-    )
-    return build_agent_graph().compile()
+    return build_agent_graph(settings).compile()
 
 
 def _invoke(graph):

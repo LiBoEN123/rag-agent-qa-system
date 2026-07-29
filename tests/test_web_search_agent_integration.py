@@ -12,7 +12,7 @@ from app.graph import nodes as graph_nodes
 from app.graph.builder import build_agent_graph
 from app.tools import runtime as tool_runtime
 from app.tools.context import ToolInvocationContext
-from app.tools.registry import tool_registry
+from app.tools.registry import get_tool_registry
 
 
 web_search_module = import_module("app.tools.web_search")
@@ -299,9 +299,10 @@ def _invoke(model, context):
 
 
 @pytest.fixture(autouse=True)
-def isolate_runtime(monkeypatch):
+def isolate_runtime(settings_env):
+    """禁用生产审计并隔离每个用例使用的工具运行时。"""
     tool_runtime.reset_tool_runtime()
-    monkeypatch.setattr(graph_nodes.Settings, "TOOL_AUDIT_ENABLED", False)
+    settings_env(tool_audit_enabled=False)
     yield
     tool_runtime.reset_tool_runtime()
 
@@ -309,6 +310,7 @@ def isolate_runtime(monkeypatch):
 def test_consecutive_requests_keep_web_visibility_isolated_and_execute_graph(
     monkeypatch,
 ):
+    """连续请求保持工具可见性隔离，并分别完成图执行。"""
     ddgs_calls = []
 
     class FakeDDGS:
@@ -412,7 +414,7 @@ def test_consecutive_requests_keep_web_visibility_isolated_and_execute_graph(
         "list_documents",
         "get_chunk_text",
         "web_search",
-    } <= set(tool_registry.names())
+    } <= set(get_tool_registry().names())
     assert "web_search" not in build_agent_graph().nodes
 
 

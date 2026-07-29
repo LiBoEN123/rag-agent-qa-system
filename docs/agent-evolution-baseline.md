@@ -545,3 +545,50 @@ FastAPI `/chat` 请求/响应字段、OpenAPI PublicStatus、SQLite session/Chec
 Schema、thread ID、RAG 引用、八个 ToolSpec、Provider 权限可见性、ToolRuntime
 治理、metrics 字段、bad case、session 和 `tool_call_chain` 保持兼容。Settings
 迁移、模块 import 边界自动检查、ChatService 进一步拆分和历史文档归档仍留给后续。
+
+## 26. PR14 官方 pydantic-settings 配置模型
+
+本节只记录 PR14 增量，不改写 PR0–PR13 历史。修改前分支为
+`fix/langgraph-runtime-hardening`，HEAD 为
+`3cb789c9388b957c4a0bc2e467eeac7289bfdd7d`，工作区干净。修改前本地基线为
+`721 passed, 1 warning`；Ruff、`python -m compileall app`、Runtime inspection
+check、`python -m pip check` 和 `git diff --check` 均通过。
+
+依赖准入确认 Python 3.12.3、Pydantic 2.12.5 可使用
+`pydantic-settings==2.14.2`；包要求 Python >=3.10、许可证为 MIT。pip dry-run
+只新增 pydantic-settings 并复用已安装的 Pydantic、python-dotenv 和
+typing-inspection，没有升级或降级核心依赖，也没有引入 extras。项目将
+python-dotenv 从顶层 requirements 删除；它仍可作为 pydantic-settings 的传递依赖
+存在，生产代码不再直接导入或调用。
+
+`AppSettings` 成为唯一完整、frozen 的配置模型。原静态 Settings 类、
+`load_dotenv()`、`os.getenv()`、`env_bool/env_int/env_float/env_csv`、分散的手写
+validator、uppercase 兼容属性、模块级 `tool_registry` 和导入期配置派生对象均已
+删除。已有 uppercase 环境变量名称、默认值和合法值语义保持；lower snake case
+字段按 RAG/索引、模型、Agent/Graph、Tool Runtime/治理、Web、Storage 和
+Observability 组织。路径相对项目根规范化，密钥使用 SecretStr，permissions CSV
+通过公开 NoDecode 边界解析，角色模型、模型缓存和受信 Web proxy fallback 由纯
+validator/computed property 表达。
+
+生产入口通过惰性 `get_settings()` 或现有依赖边界取得冻结快照。FastAPI lifespan
+先显式校验外部前提，再以同一实例初始化 RAG 和 Graph；ChatService、Model
+Factory、Tool Registry/Runtime、Web 工具、Checkpointer、RAG、Storage、
+Observability 和脚本均迁移为实例字段。Settings、Model、Registry、Runtime、
+Graph/Checkpointer 维持独立创建与清理入口，不由 config 层反向导入高层模块。
+
+测试使用 `AppSettings(_env_file=None, ...)`、临时持久化路径和统一缓存失效 fixture，
+不再 monkeypatch 静态类属性。本地 `.env` 中的 key、代理、权限、审计路径和
+Checkpointer 不会污染自动测试。新增 subprocess 导入安全测试证明导入 config、
+Registry、Model Factory、Graph Runtime、ChatService、FastAPI chat 模块和
+inspection 不构造 Settings、模型、Runtime、Registry、Chroma/SQLite 或
+Checkpointer，也不要求 LLM key。
+
+完成后全量结果为 `751 passed, 1 warning`；Ruff、compileall、Runtime inspection
+的 text/JSON/Mermaid/check、pip check 和 diff check 通过。唯一警告仍来自 jieba
+对 `pkg_resources` 的弃用提示。自动测试只使用 fake、临时目录和隔离副作用，不
+访问真实模型、搜索、网页/PDF 或代理。
+
+FastAPI `/chat` Schema 和 HTTP 状态、Agent Result、RAG 算法、八个 ToolSpec、
+Provider 权限、Tool Runtime 治理/审计、SQLite Schema、metrics、bad case、
+session 与 `tool_call_chain` 没有有意改变。Import Linter 和正式模块依赖合同、
+ChatService 进一步拆分及历史文档归档继续留给后续阶段。

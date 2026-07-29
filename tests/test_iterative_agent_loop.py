@@ -21,9 +21,9 @@ from app.tools.schemas import SearchKnowledgeBaseArgs
 
 
 @pytest.fixture(autouse=True)
-def isolate_tool_audit(monkeypatch):
+def isolate_tool_audit(settings_env):
     """Agent loop 测试不写生产工具审计文件。"""
-    monkeypatch.setattr(graph_nodes.Settings, "TOOL_AUDIT_ENABLED", False)
+    settings_env(tool_audit_enabled=False)
     tool_runtime.reset_tool_runtime()
     yield
     tool_runtime.reset_tool_runtime()
@@ -59,9 +59,13 @@ def _invoke_graph(
 ):
     """使用确定性模型和独立图执行一次 Agent 请求。"""
     monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_ITERATIONS", max_iterations)
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_TOOL_CALLS", max_tool_calls)
-    return build_agent_graph().compile().invoke(
+    settings = graph_nodes.get_settings().model_copy(
+        update={
+            "agent_max_iterations": max_iterations,
+            "agent_max_tool_calls": max_tool_calls,
+        }
+    )
+    return build_agent_graph(settings).compile().invoke(
         {
             "original_question": "请计算 1+2",
             "effective_question": "请计算 1+2",
@@ -81,17 +85,8 @@ def _invoke_graph(
     )
 
 
-def test_initialize_agent_loop_state_uses_effective_question(monkeypatch):
+def test_initialize_agent_loop_state_uses_effective_question():
     """初始化只把本次有效问题写入 Agent 消息轨迹一次。"""
-    monkeypatch.setattr(
-        "app.graph.nodes.Settings.AGENT_MAX_ITERATIONS",
-        6,
-    )
-    monkeypatch.setattr(
-        "app.graph.nodes.Settings.AGENT_MAX_TOOL_CALLS",
-        10,
-    )
-
     updates = initialize_node(
         {
             "original_question": "它什么时候开始？",
@@ -632,6 +627,7 @@ def test_agent_selected_knowledge_search_keeps_rag_citation_path(monkeypatch):
 def test_sqlite_checkpointer_serializes_full_agent_message_loop(
     monkeypatch,
     tmp_path,
+    settings_env,
 ):
     """SQLite Saver 可往返 Human/AI/Tool/AI 的完整消息轨迹。"""
     model = FakeToolCallingModel(
@@ -652,17 +648,11 @@ def test_sqlite_checkpointer_serializes_full_agent_message_loop(
     )
     db_path = tmp_path / "iterative-checkpoint.sqlite3"
     monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_ITERATIONS", 6)
-    monkeypatch.setattr(graph_nodes.Settings, "AGENT_MAX_TOOL_CALLS", 10)
-    monkeypatch.setattr(
-        checkpointing.Settings,
-        "LANGGRAPH_CHECKPOINTER",
-        "sqlite",
-    )
-    monkeypatch.setattr(
-        checkpointing.Settings,
-        "LANGGRAPH_CHECKPOINT_DB_PATH",
-        db_path,
+    settings_env(
+        agent_max_iterations=6,
+        agent_max_tool_calls=10,
+        langgraph_checkpointer="sqlite",
+        langgraph_checkpoint_db_path=db_path,
     )
     graph_builder.reset_agent_graph_runtime()
     try:

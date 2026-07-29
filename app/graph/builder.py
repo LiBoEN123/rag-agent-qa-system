@@ -6,6 +6,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from app.agent.framework_agent import build_framework_agent
+from app.config import AppSettings, get_settings
 from app.graph.checkpointing import get_checkpointer
 from app.graph.conditions import (
     after_framework_condition,
@@ -24,6 +25,7 @@ from app.tools.context import ToolInvocationContext
 
 
 def build_agent_graph(
+    settings: AppSettings | None = None,
 ) -> StateGraph[
     AgentGraphState,
     ToolInvocationContext,
@@ -31,13 +33,14 @@ def build_agent_graph(
     AgentGraphState,
 ]:
     """创建尚未编译的最小 Agent StateGraph，不触发任何业务调用。"""
+    resolved = settings or get_settings()
     builder = StateGraph(
         AgentGraphState,
         context_schema=ToolInvocationContext,
     )
     builder.add_node("route", route_node)
     builder.add_node("initialize", initialize_node)
-    builder.add_node("framework_agent", build_framework_agent())
+    builder.add_node("framework_agent", build_framework_agent(resolved))
     builder.add_node("adapt_framework", adapt_framework_agent_node)
     builder.add_node("rag_subgraph", rag_subgraph_node)
     builder.add_node("compose", compose_node)
@@ -70,6 +73,7 @@ def build_agent_graph(
 
 @lru_cache(maxsize=1)
 def get_compiled_agent_graph(
+    settings: AppSettings | None = None,
 ) -> CompiledStateGraph[
     AgentGraphState,
     ToolInvocationContext,
@@ -77,8 +81,9 @@ def get_compiled_agent_graph(
     AgentGraphState,
 ]:
     """按配置注入 Checkpointer，并返回进程内复用的已编译 Agent Graph。"""
-    checkpointer = get_checkpointer()
-    builder = build_agent_graph()
+    resolved = settings or get_settings()
+    checkpointer = get_checkpointer(resolved)
+    builder = build_agent_graph(resolved)
     if checkpointer is None:
         return builder.compile()
     return builder.compile(checkpointer=checkpointer)

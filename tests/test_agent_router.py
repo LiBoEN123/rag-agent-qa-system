@@ -7,7 +7,6 @@ from app.agent.router import route_agent_action
 from app.llm import factory as model_factory
 from app.llm.gateway import ModelGateway
 from app.tools.contracts import ToolSpec
-from app.tools.registry import tool_registry
 
 
 def test_empty_question_returns_clarify_without_router_model(monkeypatch):
@@ -84,7 +83,7 @@ def test_normal_questions_enter_agent_without_concrete_tool_choice(question):
     }
 
 
-def test_registered_tool_does_not_require_router_change(monkeypatch):
+def test_registered_tool_does_not_require_router_change(monkeypatch, tool_registry):
     """新增 Registry Tool 后，确定性 Router 仍返回同一通用 Agent 入口。"""
 
     class NewToolArgs(BaseModel):

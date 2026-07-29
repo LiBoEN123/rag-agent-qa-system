@@ -5,7 +5,7 @@ from typing import Any
 from app.agent.state import AgentObservation
 from app.tools.audit import sanitize_tool_input, summarize_tool_output
 from app.tools.redaction import redact_sensitive_data
-from app.tools.registry import tool_registry
+from app.tools.registry import get_tool_registry
 
 
 def summarize_tool_result(tool_name: str, tool_result: dict[str, Any]) -> str:
@@ -85,7 +85,7 @@ def build_tool_trace(
     observation: AgentObservation,
 ) -> dict[str, Any]:
     """构造兼容现有响应结构的工具调用 trace。"""
-    spec = tool_registry.get(tool_name)
+    spec = get_tool_registry().get(tool_name)
     sanitized_args = (
         sanitize_tool_input(spec, tool_args)
         if spec is not None

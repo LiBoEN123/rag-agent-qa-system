@@ -9,7 +9,7 @@ from typing import Any
 from pypdf import PdfReader
 from pypdf.errors import PyPdfError
 
-from app.config import Settings
+from app.config import AppSettings, get_settings
 from app.tools.context import ToolInvocationContext
 from app.tools.errors import ToolErrorCode, ToolExecutionError
 from app.tools.result import tool_success
@@ -104,8 +104,10 @@ def _extract_pages(
     start_page: int,
     max_pages: int,
     max_chars: int,
+    settings: AppSettings | None = None,
 ) -> tuple[int, list[int], str, bool]:
     """提取有限连续页，并在组合带页码正文后执行字符截断。"""
+    resolved = settings or get_settings()
     try:
         if reader.is_encrypted:
             raise _invalid_pdf("Encrypted PDF documents are not supported")
@@ -119,7 +121,7 @@ def _extract_pages(
 
     if total_pages < 1:
         raise _invalid_pdf("PDF document does not contain any pages")
-    if total_pages > Settings.WEB_PDF_MAX_DOCUMENT_PAGES:
+    if total_pages > resolved.web_pdf_max_document_pages:
         raise _invalid_pdf("PDF document exceeded the configured page limit")
     if start_page > total_pages:
         raise ToolExecutionError(
@@ -166,10 +168,12 @@ def web_pdf_fetch(
 ) -> dict[str, Any]:
     """下载公开 PDF，提取指定页范围并返回统一成功结果。"""
     del context
+    settings = get_settings()
     resource = download_public_web_resource(
         normalize_public_web_url(args.get("url")),
         allowed_content_types=_ALLOWED_CONTENT_TYPES,
-        max_response_bytes=Settings.WEB_PDF_MAX_RESPONSE_BYTES,
+        max_response_bytes=settings.web_pdf_max_response_bytes,
+        settings=settings,
     )
     reader = _reader_from_bytes(resource.body)
     total_pages, page_numbers, content, truncated = _extract_pages(
@@ -177,6 +181,7 @@ def web_pdf_fetch(
         start_page=args["start_page"],
         max_pages=args["max_pages"],
         max_chars=args["max_chars"],
+        settings=settings,
     )
     title, author, subject = _read_metadata(reader)
     output = {

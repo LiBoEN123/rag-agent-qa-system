@@ -1,9 +1,10 @@
-"""Inspect the Agent Runtime without invoking models, tools, or persistence."""
+"""在不调用模型、工具或持久化能力的前提下检查 Agent 运行时。"""
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import warnings
 from importlib.metadata import PackageNotFoundError, version
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any, get_origin
 
 from pydantic import BaseModel
+from pydantic_settings import BaseSettings
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +28,7 @@ from app.contracts.chat import (  # noqa: E402
     CHAT_STATUS_POLICIES,
     AgentResultStatus,
 )
+from app.config import AppSettings  # noqa: E402
 from app.graph.builder import build_agent_graph  # noqa: E402
 from app.graph.state import AgentGraphState  # noqa: E402
 from app.tools.context import (  # noqa: E402
@@ -36,10 +39,10 @@ from app.tools.contracts import ToolSpec  # noqa: E402
 from app.tools.providers import (  # noqa: E402
     LocalToolProvider,
     ToolProvider,
-    get_default_tool_provider,
 )
 from app.tools.providers.base import is_tool_visible  # noqa: E402
 from app.tools.registry import ToolRegistry  # noqa: E402
+from app.tools.registry import register_default_tools  # noqa: E402
 
 
 PACKAGES = (
@@ -48,6 +51,7 @@ PACKAGES = (
     "langchain-openai",
     "langgraph",
     "pydantic",
+    "pydantic-settings",
     "pypdf",
     "requests-hardened",
 )
@@ -115,7 +119,7 @@ AGENT_RESULT_FIELDS = {
 
 
 def _line_count(relative_path: str) -> int:
-    """Count logical lines while ignoring trailing empty lines and line endings."""
+    """忽略末尾空行与换行符，统计逻辑行数。"""
     lines = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8").splitlines()
     while lines and not lines[-1].strip():
         lines.pop()
@@ -123,7 +127,7 @@ def _line_count(relative_path: str) -> int:
 
 
 def _graph_data(drawable_graph) -> dict[str, Any]:
-    """Serialize the stable public fields exposed by LangGraph's drawable graph."""
+    """序列化 LangGraph 可绘制图所公开的稳定字段。"""
     nodes = sorted(name for name in drawable_graph.nodes if not name.startswith("__"))
     edges = sorted(
         (
@@ -141,6 +145,7 @@ def _graph_data(drawable_graph) -> dict[str, Any]:
 
 def _tool_data(
     provider: ToolProvider,
+    settings: AppSettings,
 ) -> tuple[
     list[dict[str, Any]],
     list[str],
@@ -148,8 +153,11 @@ def _tool_data(
     dict[str, int],
     list[str],
 ]:
-    """Read registered tool contracts and model-facing schemas without dispatch."""
-    context = build_default_tool_context(source="agent_runtime_inspection")
+    """读取已注册工具契约和模型可见模式，但不执行分发。"""
+    context = build_default_tool_context(
+        source="agent_runtime_inspection",
+        settings=settings,
+    )
     registry = getattr(provider, "registry", None)
     if not isinstance(registry, ToolRegistry):
         return [], [], ["provider does not expose a ToolRegistry"], {}, []
@@ -250,8 +258,13 @@ def _check(name: str, passed: bool, detail: str) -> dict[str, Any]:
     return {"name": name, "passed": passed, "detail": detail}
 
 
-def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
-    """Return a deterministic, JSON-safe snapshot of the current runtime."""
+def inspect_runtime(
+    provider: ToolProvider | None = None,
+    *,
+    settings: AppSettings | None = None,
+) -> dict[str, Any]:
+    """返回当前运行时的确定性、可安全编码为 JSON 的快照。"""
+    resolved_settings = settings or AppSettings(_env_file=None)
     versions: dict[str, str] = {}
     missing_packages: list[str] = []
     for package in PACKAGES:
@@ -261,15 +274,20 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
             versions[package] = ""
             missing_packages.append(package)
 
-    parent = build_agent_graph().compile()
+    parent = build_agent_graph(resolved_settings).compile()
     parent_graph = parent.get_graph()
     parent_xray = parent.get_graph(xray=True)
-    framework_graph = build_framework_agent().get_graph()
+    framework_graph = build_framework_agent(resolved_settings).get_graph()
     parent_data = _graph_data(parent_graph)
     framework_data = _graph_data(framework_graph)
     xray_nodes = sorted(parent_xray.nodes)
     enforce_default_registry = provider is None
-    resolved_provider = provider or get_default_tool_provider()
+    if provider is None:
+        registry = ToolRegistry()
+        register_default_tools(registry, settings=resolved_settings)
+        resolved_provider = LocalToolProvider(registry)
+    else:
+        resolved_provider = provider
     (
         registered_tools,
         default_visible_tools,
@@ -277,7 +295,8 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
         tool_visibility,
         visibility_errors,
     ) = _tool_data(
-        resolved_provider
+        resolved_provider,
+        resolved_settings,
     )
     source_files = {
         path: {"lines": _line_count(path), "limit": limit}
@@ -337,6 +356,30 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
     response_source = (
         PROJECT_ROOT / "app/api/responses.py"
     ).read_text(encoding="utf-8")
+    config_source = (
+        PROJECT_ROOT / "app/config.py"
+    ).read_text(encoding="utf-8")
+    immutable_settings = AppSettings.model_config.get("frozen") is True
+    no_static_settings_class = re.search(
+        r"^class\s+Settings\b",
+        config_source,
+        flags=re.MULTILINE,
+    ) is None
+    legacy_parser_names = tuple(
+        f"env_{suffix}" for suffix in ("bool", "int", "float", "csv")
+    )
+    no_manual_env_parsers = not any(
+        f"def {name}(" in config_source
+        for name in legacy_parser_names
+    )
+    dotenv_loader_name = "_".join(("load", "dotenv"))
+    no_import_time_dotenv = dotenv_loader_name not in config_source
+    lazy_settings = not re.search(
+        r"^(?:settings\s*=\s*get_settings\(\)|def\s+\w+\([^)]*get_settings\(\))",
+        config_source,
+        flags=re.MULTILINE,
+    )
+    pydantic_settings_model = issubclass(AppSettings, BaseSettings)
     single_status_policy = (
         status_policy_complete
         and "get_chat_status_policy" in service_source
@@ -370,7 +413,8 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
     default_has_web_permission = (
         "web:search"
         in build_default_tool_context(
-            source="agent_runtime_inspection"
+            source="agent_runtime_inspection",
+            settings=resolved_settings,
         ).permissions
     )
     web_default_visibility_ok = (
@@ -409,7 +453,8 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
     default_has_fetch_permission = (
         "web:fetch"
         in build_default_tool_context(
-            source="agent_runtime_inspection"
+            source="agent_runtime_inspection",
+            settings=resolved_settings,
         ).permissions
     )
     fetch_default_visibility_ok = (
@@ -456,7 +501,8 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
     registered_tool_count_ok = len(registered_tools) == 8
     if enforce_default_registry:
         default_context = build_default_tool_context(
-            source="agent_runtime_inspection"
+            source="agent_runtime_inspection",
+            settings=resolved_settings,
         )
         authorized_context = ToolInvocationContext(
             principal_id=default_context.principal_id,
@@ -488,6 +534,36 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
         )
     checks = [
         _check("dependency_versions", not missing_packages, ", ".join(missing_packages)),
+        _check(
+            "pydantic_settings_model",
+            pydantic_settings_model,
+            "AppSettings must inherit pydantic-settings BaseSettings",
+        ),
+        _check(
+            "lazy_settings",
+            bool(lazy_settings),
+            "config import must not instantiate AppSettings",
+        ),
+        _check(
+            "immutable_settings",
+            immutable_settings,
+            "AppSettings must be frozen",
+        ),
+        _check(
+            "no_static_settings_class",
+            no_static_settings_class,
+            "legacy static Settings class must be absent",
+        ),
+        _check(
+            "no_manual_env_parsers",
+            no_manual_env_parsers,
+            "manual env parser helpers must be absent",
+        ),
+        _check(
+            "no_import_time_dotenv",
+            no_import_time_dotenv,
+            "dotenv loader must be absent",
+        ),
         _check(
             "single_runtime_state",
             not nested_state_fields and not missing_business_fields,
@@ -630,6 +706,12 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
     ]
     return {
         "versions": versions,
+        "settings_contract": {
+            "model": AppSettings.__name__,
+            "base": BaseSettings.__name__,
+            "frozen": immutable_settings,
+            "env_file_disabled_for_inspection": True,
+        },
         "state_schema": {"fields": sorted(state_fields)},
         "agent_result_contract": {
             "model": AgentRunResult.__name__,
@@ -660,7 +742,7 @@ def inspect_runtime(provider: ToolProvider | None = None) -> dict[str, Any]:
 
 
 def render_text(report: dict[str, Any]) -> str:
-    """Render the compact maintainer-facing summary."""
+    """渲染供维护者查看的精简摘要。"""
     lines = ["Agent Runtime Inspection", "", "Framework versions"]
     lines.extend(f"- {name}: {value}" for name, value in report["versions"].items())
     lines.extend(["", "Parent graph nodes"])
@@ -692,8 +774,14 @@ def render_text(report: dict[str, Any]) -> str:
 
 
 def render_mermaid() -> str:
-    """Delegate full xray Mermaid generation to LangGraph."""
-    return build_agent_graph().compile().get_graph(xray=True).draw_mermaid()
+    """委托 LangGraph 生成完整的透视 Mermaid 图。"""
+    settings = AppSettings(_env_file=None)
+    return (
+        build_agent_graph(settings)
+        .compile()
+        .get_graph(xray=True)
+        .draw_mermaid()
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

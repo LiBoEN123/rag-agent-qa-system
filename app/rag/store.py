@@ -14,7 +14,7 @@ from app.rag.chroma import (
     load_chunks_from_chroma,
     persist_chunks_to_chroma,
 )
-from app.config import Settings
+from app.config import ensure_model_cache_dir, get_settings
 from app.rag.ingest import collect_supported_files
 from app.rag.retrieval import tokenize
 from app.common.logging import get_logger
@@ -23,25 +23,27 @@ from app.common.logging import get_logger
 devcie = 'cuda' if torch.cuda.is_available() else "cpu"
 logger = get_logger('chat_service')
 
-INDEX_STORE_DIR = Settings.INDEX_STORE_DIR
-
-MANIFEST_PATH = INDEX_STORE_DIR / "index_manifest.json"
+def _manifest_path():
+    """返回当前配置对应的索引 manifest 路径。"""
+    return get_settings().index_store_dir / "index_manifest.json"
 
 
 def _model_cache_folder() -> str:
     """返回模型加载使用的本地缓存目录。"""
-    return str(Settings.ensure_model_cache_dir())
+    settings = get_settings()
+    return str(ensure_model_cache_dir(settings))
 
 
 def _load_embedding_model():
     """从本地缓存加载文本向量模型。"""
+    settings = get_settings()
     cache_folder = _model_cache_folder()
     logger.info(
-        f"[models] loading embedding model={Settings.EMBEDDING_MODEL_NAME} "
+        f"[models] loading embedding model={settings.embedding_model_name} "
         f"device={devcie} cache_dir={cache_folder}"
     )
     return SentenceTransformer(
-        Settings.EMBEDDING_MODEL_NAME,
+        settings.embedding_model_name,
         device=devcie,
         cache_folder=cache_folder,
         local_files_only=True
@@ -50,13 +52,14 @@ def _load_embedding_model():
 
 def _load_rerank_model():
     """从本地缓存加载交叉编码器重排模型。"""
+    settings = get_settings()
     cache_folder = _model_cache_folder()
     logger.info(
-        f"[models] loading rerank model={Settings.RERANK_MODEL_NAME} "
+        f"[models] loading rerank model={settings.rerank_model_name} "
         f"device={devcie} cache_dir={cache_folder}"
     )
     return CrossEncoder(
-        Settings.RERANK_MODEL_NAME,
+        settings.rerank_model_name,
         device=devcie,
         cache_folder=cache_folder,
         local_files_only=True
@@ -119,14 +122,19 @@ def build_file_snapshot(data_dir: str):
 
 def build_current_manifest(
     data_dir: str,
-    chunk_size: int = Settings.CHUNK_SIZE,
-    chunk_overlap: int = Settings.CHUNK_OVERLAP
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
 ):
     """生成当前索引构建配置和文件快照的 manifest。"""
+    settings = get_settings()
+    chunk_size = settings.chunk_size if chunk_size is None else chunk_size
+    chunk_overlap = (
+        settings.chunk_overlap if chunk_overlap is None else chunk_overlap
+    )
     return {
         "pipeline_version": 1,
-        "embedding_model": Settings.EMBEDDING_MODEL_NAME,
-        "rerank_model": Settings.RERANK_MODEL_NAME,
+        "embedding_model": settings.embedding_model_name,
+        "rerank_model": settings.rerank_model_name,
         "build_config": {
             "chunk_size": chunk_size,
             "chunk_overlap": chunk_overlap,
@@ -137,19 +145,21 @@ def build_current_manifest(
 
 def load_manifest():
     """从磁盘读取历史索引 manifest。"""
-    if not MANIFEST_PATH.exists():
+    path = _manifest_path()
+    if not path.exists():
         return None
 
     try:
-        return json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
 
 
 def save_manifest(manifest: dict):
     """将当前 manifest 写入磁盘。"""
-    MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
-    MANIFEST_PATH.write_text(
+    path = _manifest_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2),
         encoding="utf-8"
     )
@@ -157,8 +167,8 @@ def save_manifest(manifest: dict):
 
 def needs_rebuild(
     data_dir: str,
-    chunk_size: int = Settings.CHUNK_SIZE,
-    chunk_overlap: int = Settings.CHUNK_OVERLAP
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
 ) -> tuple[bool, str]:
     """对比历史 manifest 与当前状态判断是否需要重建索引。"""
     old_manifest = load_manifest()

@@ -11,7 +11,7 @@ from app.agent.guardrails import (
     stop_reason_for_tool_failure,
 )
 from app.common.logging import get_logger
-from app.config import Settings
+from app.config import AppSettings, get_settings
 from app.storage.traces import save_agent_trace
 
 
@@ -50,8 +50,10 @@ def build_tool_governance_event(
     prior_events: list[dict[str, Any]],
     cost_ms: int,
     known_tool: bool,
+    settings: AppSettings | None = None,
 ) -> dict[str, Any]:
     """根据标准工具结果计算错误分类、预算和最小治理事件。"""
+    resolved_settings = settings or get_settings()
     tool_args = tool_call.get("args") or {}
     ok = result.get("ok") is True
     error_code = str(result.get("error_code") or "")
@@ -87,13 +89,19 @@ def build_tool_governance_event(
         )
         if immediate_stop:
             stop_reason = immediate_stop.value
-        elif error_count >= Settings.AGENT_MAX_TOOL_ERRORS:
+        elif error_count >= resolved_settings.agent_max_tool_errors:
             stop_reason = AgentStopReason.MAX_TOOL_ERRORS.value
-        elif repeated_errors >= Settings.AGENT_MAX_CONSECUTIVE_SAME_TOOL_ERRORS:
+        elif (
+            repeated_errors
+            >= resolved_settings.agent_max_consecutive_same_tool_errors
+        ):
             stop_reason = AgentStopReason.REPEATED_TOOL_ERROR.value
 
     elapsed_ms = sum_governance_event_costs(prior_events) + max(0, cost_ms)
-    if not stop_reason and elapsed_ms >= Settings.AGENT_MAX_TOTAL_COST_MS:
+    if (
+        not stop_reason
+        and elapsed_ms >= resolved_settings.agent_max_total_cost_ms
+    ):
         stop_reason = AgentStopReason.MAX_TOTAL_COST.value
 
     runtime = result.get("runtime") if isinstance(result.get("runtime"), dict) else {}
@@ -279,7 +287,7 @@ def maybe_save_agent_trace(
     total_cost_ms: int = 0,
 ) -> None:
     """按配置保存 Agent trace，持久化失败不影响主流程。"""
-    if not Settings.ENABLE_AGENT_TRACE_STORE:
+    if not get_settings().enable_agent_trace_store:
         return
 
     try:

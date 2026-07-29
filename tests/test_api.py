@@ -13,23 +13,13 @@ from app.storage.session import clear_session, get_history
 
 
 @pytest.fixture(autouse=True)
-def use_temporary_sqlite_database(monkeypatch, tmp_path):
+def use_temporary_sqlite_database(settings_env, tmp_path):
     """让每个 API 测试使用独立的临时 SQLite 数据库。"""
-    monkeypatch.setattr(
-        chat_api.Settings,
-        "SQLITE_DB_PATH",
-        tmp_path / "api.sqlite",
-        raising=False,
-    )
+    settings_env(sqlite_db_path=tmp_path / "api.sqlite")
 
 
 def patch_app(monkeypatch):
     """隔离索引、路由和指标依赖，让 API 测试只关注响应结构。"""
-    monkeypatch.setattr(chat_api.Settings, "validate", lambda : None, raising=False)
-    monkeypatch.setattr(chat_api.Settings, "RAG_FILE_PATH", "data", raising=False)
-    monkeypatch.setattr(chat_api.Settings, "CHUNK_SIZE", 800, raising=False)
-    monkeypatch.setattr(chat_api.Settings, "CHUNK_OVERLAP", 120, raising=False)
-    monkeypatch.setattr(chat_api.Settings, "AUTO_REBUILD_ON_STARTUP", False, raising=False)
     monkeypatch.setattr(chat_api, "needs_rebuild", lambda data_dir: (False, "test"), raising=False)
     monkeypatch.setattr(chat_api, "index_cache_exists", lambda : True, raising=False)
     monkeypatch.setattr(chat_api, "load_index_cache", lambda : (True, "test"), raising=False)

@@ -30,7 +30,7 @@ from app.agent.runtime import (
     count_consecutive_events,
     sum_governance_event_costs,
 )
-from app.config import Settings
+from app.config import AppSettings, get_settings
 
 
 def _now_ms() -> int:
@@ -41,8 +41,9 @@ def _now_ms() -> int:
 class ProjectToolGovernanceMiddleware(AgentMiddleware):
     """保留错误分类、循环检测、耗时预算和批次 fail-closed。"""
 
-    def __init__(self) -> None:
+    def __init__(self, settings: AppSettings | None = None) -> None:
         """初始化并发安全的同批事件协调器。"""
+        self._settings = settings or get_settings()
         self._lock = threading.Lock()
         self._batch_events: dict[tuple[str, tuple[str, ...]], list[dict]] = {}
 
@@ -148,9 +149,16 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
         )
         reason = str(terminal or "")
         elapsed_ms = sum_governance_event_costs(prior)
-        if not reason and elapsed_ms >= Settings.AGENT_MAX_TOTAL_COST_MS:
+        if (
+            not reason
+            and elapsed_ms >= self._settings.agent_max_total_cost_ms
+        ):
             reason = AgentStopReason.MAX_TOTAL_COST.value
-        if not reason and repeated > Settings.AGENT_MAX_CONSECUTIVE_SAME_TOOL_CALLS:
+        if (
+            not reason
+            and repeated
+            > self._settings.agent_max_consecutive_same_tool_calls
+        ):
             reason = AgentStopReason.REPEATED_TOOL_CALL.value
         if reason:
             message, event = governance_block(
@@ -184,6 +192,7 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
             prior_events=prior,
             cost_ms=_now_ms() - started,
             known_tool=request.tool is not None,
+            settings=self._settings,
         )
         return self._finish_tool_call(request, output, message, result, event, key)
 

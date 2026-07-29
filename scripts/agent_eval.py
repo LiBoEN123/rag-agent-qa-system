@@ -22,7 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 from app.observability.metrics import write_bad_cases
-from app.config import Settings
+from app.config import get_settings, validate_startup_environment
 from app.graph.runtime import run_agent_langgraph
 from app.rag import (
     get_rag_status,
@@ -91,10 +91,9 @@ def init_rag_for_eval(force_rebuild: bool = False) -> None:
     3. 如果缓存不可用，再重建索引。
     """
 
-    if hasattr(Settings, "validate"):
-        Settings.validate()
-
-    data_dir = str(Settings.RAG_FILE_PATH)
+    settings = get_settings()
+    validate_startup_environment(settings)
+    data_dir = str(settings.rag_file_path)
 
     if force_rebuild:
         ok, msg = rebuild_and_persist_index(data_dir)
@@ -335,6 +334,7 @@ def check_tool_output_keys(case: dict, result: dict) -> dict:
 
 def evaluate_one_case(case: dict, top_k: int) -> dict:
     """运行单条 Agent 评测用例并返回完整判分结果。"""
+    settings = get_settings()
     case_id = case.get("id", "")
     question = case.get("question", "")
 
@@ -346,7 +346,7 @@ def evaluate_one_case(case: dict, top_k: int) -> dict:
             original_question=question,
             effective_question=question,
             top_k=top_k,
-            decompose_top_k=Settings.DECOMPOSE_TOP_K,
+            decompose_top_k=settings.decompose_top_k,
         )
         elapsed_ms = round((time.time() - started_at) * 1000, 2)
 
@@ -775,7 +775,7 @@ def print_summary(metrics: dict, rows: list[dict]) -> None:
 
 
 # =========================
-# 11. main
+# 11. 主入口
 # =========================
 def main() -> None:
     """解析命令行参数并执行完整 Agent 评测流程。"""
