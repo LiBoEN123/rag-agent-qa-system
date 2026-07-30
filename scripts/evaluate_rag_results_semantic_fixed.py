@@ -235,6 +235,116 @@ def make_cached_judge_evaluators(cache: Dict[str, Dict[str, Any]]) -> Tuple[Any,
     return cached_key_point_evaluator, cached_forbidden_evaluator
 
 
+def run_rag_evaluation(
+    *,
+    eval_file: Path,
+    pred_file: Path,
+    out_dir: Path,
+    k: int = 10,
+    chunks_file: Path | None = None,
+    index_source: str = "auto",
+    chroma_persist_dir: Path | None = None,
+    chroma_collection_name: str | None = None,
+    judge_cache_report: Path | None = None,
+    use_llm_judge: bool | None = None,
+    judge_model: str | None = None,
+    judge_api_url: str | None = None,
+    judge_api_key: str | None = None,
+) -> dict[str, Any]:
+    """运行现有 RAG evaluator 并返回结构化结果，供统一 Runner 复用。"""
+    eval_items = load_eval(eval_file)
+    preds = load_predictions(pred_file)
+    chunk_index = load_chunk_index(
+        chunks_file=chunks_file,
+        index_source=index_source,
+        chroma_persist_dir=chroma_persist_dir,
+        chroma_collection_name=chroma_collection_name,
+    )
+    if index_source != "none" and not chunk_index.chunk_text_map:
+        warn("no chunk index loaded; doc-hit and evidence-based retrieval metrics may fall back or be unavailable")
+
+    judge_config = make_judge_config(
+        use_llm_judge=use_llm_judge,
+        judge_model=judge_model,
+        judge_api_url=judge_api_url,
+        judge_api_key=judge_api_key,
+    )
+
+    if judge_cache_report:
+        judge_cache = load_judge_cache_report(judge_cache_report)
+        missing_qids = sorted(str(q["qid"]) for q in eval_items if str(q["qid"]) not in judge_cache)
+        if missing_qids:
+            preview = ", ".join(missing_qids[:10])
+            more = "..." if len(missing_qids) > 10 else ""
+            raise ValueError(f"judge cache missing {len(missing_qids)} qid(s): {preview}{more}")
+        key_point_evaluator, forbidden_evaluator = make_cached_judge_evaluators(judge_cache)
+        judge_config = LLMJudgeConfig(
+            enabled=True,
+            model=f"cached:{judge_cache_report.name}",
+            api_url="cache://per_question_report",
+            api_key="",
+            timeout=0,
+            max_retries=0,
+            max_tokens=0,
+        )
+        rows, summary, judge_details = _evaluation.evaluate(
+            eval_items,
+            preds,
+            chunk_index,
+            k,
+            judge_config=judge_config,
+            key_point_evaluator=key_point_evaluator,
+            forbidden_evaluator=forbidden_evaluator,
+        )
+    else:
+        rows, summary, judge_details = evaluate(
+            eval_items,
+            preds,
+            chunk_index,
+            k,
+            judge_config=judge_config,
+        )
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    write_csv(out_dir / "per_question_report.csv", rows)
+    write_summary_csv(out_dir / "summary_report.csv", summary)
+    write_jsonl(out_dir / "llm_judge_details.jsonl", judge_details)
+    (out_dir / "summary_report.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    overall = summary["overall"]
+    print("=== RAG Evaluation Summary ===")
+    print(f"Chunk index source: {chunk_index.source} ({len(chunk_index.chunk_text_map)} chunks)")
+    if judge_cache_report:
+        print(f"LLM judge: cached ({judge_cache_report})")
+    else:
+        print(f"LLM judge: {'enabled' if judge_config.enabled else 'disabled'}")
+    if judge_config.enabled:
+        print(f"Judge model: {judge_config.model}")
+    print(f"Questions: {overall['num_questions']}")
+    print(f"Prediction coverage: {overall['prediction_coverage']:.2%}")
+    print(f"Average final score: {overall['avg_final_score']:.2%}")
+    print(f"Average behavior score: {overall['avg_behavior_score']:.2%}")
+    print(f"Average key-point recall: {overall['avg_key_point_recall']:.2%}")
+    print(f"Gold chunk hit@{k}: {overall['gold_chunk_hit_at_k']:.2%}")
+    print(f"Gold chunk recall@{k}: {overall['gold_chunk_recall_at_k']:.2%}")
+    print(f"All gold hit@{k}: {overall['all_gold_hit_at_k']:.2%}")
+    print(f"Doc hit@{k}: {overall['doc_hit_at_k']:.2%}")
+    print(f"Forbidden/hallucination rate: {overall['forbidden_rate']:.2%}")
+    print(f"\nReports written to: {out_dir}")
+    return {
+        "rows": rows,
+        "summary": summary,
+        "judge_details": judge_details,
+        "chunk_index_source": chunk_index.source,
+        "chunk_index_count": len(chunk_index.chunk_text_map),
+        "judge_enabled": judge_config.enabled,
+        "judge_model": judge_config.model if judge_config.enabled else "",
+    }
+
+
 def main() -> None:
     """解析参数、运行语义评测并输出报告文件。"""
     ap = argparse.ArgumentParser()
@@ -286,85 +396,26 @@ def main() -> None:
     ap.add_argument("--judge-api-url", default=None, help="Override JUDGE_API_URL for evaluation judge")
     ap.add_argument("--judge-api-key", default=None, help="Override JUDGE_API_KEY for evaluation judge")
     args = ap.parse_args()
-
-    eval_items = load_eval(args.eval_file)
-    preds = load_predictions(args.pred_file)
-    chunk_index = load_chunk_index(
-        chunks_file=args.chunks_file,
-        index_source=args.index_source,
-        chroma_persist_dir=args.chroma_persist_dir,
-        chroma_collection_name=args.chroma_collection_name,
-    )
-    if args.index_source != "none" and not chunk_index.chunk_text_map:
-        warn("no chunk index loaded; doc-hit and evidence-based retrieval metrics may fall back or be unavailable")
-
     judge_override = None
     if args.use_llm_judge:
         judge_override = True
     if args.no_llm_judge:
         judge_override = False
-    judge_config = make_judge_config(
+    run_rag_evaluation(
+        eval_file=args.eval_file,
+        pred_file=args.pred_file,
+        out_dir=args.out_dir,
+        k=args.k,
+        chunks_file=args.chunks_file,
+        index_source=args.index_source,
+        chroma_persist_dir=args.chroma_persist_dir,
+        chroma_collection_name=args.chroma_collection_name,
+        judge_cache_report=args.judge_cache_report,
         use_llm_judge=judge_override,
         judge_model=args.judge_model,
         judge_api_url=args.judge_api_url,
         judge_api_key=args.judge_api_key,
     )
-
-    if args.judge_cache_report:
-        judge_cache = load_judge_cache_report(args.judge_cache_report)
-        missing_qids = sorted(str(q["qid"]) for q in eval_items if str(q["qid"]) not in judge_cache)
-        if missing_qids:
-            preview = ", ".join(missing_qids[:10])
-            more = "..." if len(missing_qids) > 10 else ""
-            raise ValueError(f"judge cache missing {len(missing_qids)} qid(s): {preview}{more}")
-        key_point_evaluator, forbidden_evaluator = make_cached_judge_evaluators(judge_cache)
-        judge_config = LLMJudgeConfig(
-            enabled=True,
-            model=f"cached:{args.judge_cache_report.name}",
-            api_url="cache://per_question_report",
-            api_key="",
-            timeout=0,
-            max_retries=0,
-            max_tokens=0,
-        )
-        rows, summary, judge_details = _evaluation.evaluate(
-            eval_items,
-            preds,
-            chunk_index,
-            args.k,
-            judge_config=judge_config,
-            key_point_evaluator=key_point_evaluator,
-            forbidden_evaluator=forbidden_evaluator,
-        )
-    else:
-        rows, summary, judge_details = evaluate(eval_items, preds, chunk_index, args.k, judge_config=judge_config)
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-
-    write_csv(args.out_dir / "per_question_report.csv", rows)
-    write_summary_csv(args.out_dir / "summary_report.csv", summary)
-    write_jsonl(args.out_dir / "llm_judge_details.jsonl", judge_details)
-    (args.out_dir / "summary_report.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    overall = summary["overall"]
-    print("=== RAG Evaluation Summary ===")
-    print(f"Chunk index source: {chunk_index.source} ({len(chunk_index.chunk_text_map)} chunks)")
-    if args.judge_cache_report:
-        print(f"LLM judge: cached ({args.judge_cache_report})")
-    else:
-        print(f"LLM judge: {'enabled' if judge_config.enabled else 'disabled'}")
-    if judge_config.enabled:
-        print(f"Judge model: {judge_config.model}")
-    print(f"Questions: {overall['num_questions']}")
-    print(f"Prediction coverage: {overall['prediction_coverage']:.2%}")
-    print(f"Average final score: {overall['avg_final_score']:.2%}")
-    print(f"Average behavior score: {overall['avg_behavior_score']:.2%}")
-    print(f"Average key-point recall: {overall['avg_key_point_recall']:.2%}")
-    print(f"Gold chunk hit@{args.k}: {overall['gold_chunk_hit_at_k']:.2%}")
-    print(f"Gold chunk recall@{args.k}: {overall['gold_chunk_recall_at_k']:.2%}")
-    print(f"All gold hit@{args.k}: {overall['all_gold_hit_at_k']:.2%}")
-    print(f"Doc hit@{args.k}: {overall['doc_hit_at_k']:.2%}")
-    print(f"Forbidden/hallucination rate: {overall['forbidden_rate']:.2%}")
-    print(f"\nReports written to: {args.out_dir}")
 
 
 if __name__ == "__main__":

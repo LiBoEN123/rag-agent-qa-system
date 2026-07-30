@@ -167,6 +167,13 @@ Runtime Inspection 检查父图、Framework Agent、八个 ToolSpec、单一 Sta
 Status Policy、Settings 边界、应用组合根和文档归档；Import Linter 负责完整 import
 graph。自动测试使用 fake 隔离模型、网络、RAG 索引和生产持久化副作用。
 
+产品质量阶段使用
+[Evaluation Baseline v2](../evaluation/baseline-v2.md) 组合现有 Agent 与 RAG
+evaluator。统一 Runner 位于 `scripts/`，通过 `ChatService` 的现有依赖边界注入
+内存 session 和 no-op telemetry；它不属于生产请求链，也没有改变本页描述的 API、
+Graph、Agent Result、工具、RAG、配置或持久化所有权。CI 只执行 v2 数据合同校验，
+不运行真实模型、索引或在线工具。
+
 ## 已知产品边界
 
 - 无 Streaming。

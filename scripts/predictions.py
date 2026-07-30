@@ -22,18 +22,23 @@ from app.rag import (  # noqa: E402
 from app.rag.graph import run_rag_subgraph  # noqa: E402
 
 
-def initialize_rag_for_predictions() -> None:
+def initialize_rag_for_predictions(force_rebuild: bool = False) -> None:
     """使用与 API 启动流程相同的索引生命周期初始化 RAG。"""
     settings = get_settings()
-    initialize_rag(
-        StartupDependencies(
-            settings=settings,
-            needs_rebuild=needs_rebuild,
-            index_cache_exists=index_cache_exists,
-            load_index_cache=load_index_cache,
-            rebuild_and_persist_index=rebuild_and_persist_index,
+    if force_rebuild:
+        ok, message = rebuild_and_persist_index(str(settings.rag_file_path))
+        if not ok:
+            raise RuntimeError(f"RAG 强制重建失败：{message}")
+    else:
+        initialize_rag(
+            StartupDependencies(
+                settings=settings,
+                needs_rebuild=needs_rebuild,
+                index_cache_exists=index_cache_exists,
+                load_index_cache=load_index_cache,
+                rebuild_and_persist_index=rebuild_and_persist_index,
+            )
         )
-    )
     status = get_rag_status()
     if not status.get("ready"):
         raise RuntimeError(f"RAG 未准备好：{status}")
@@ -54,6 +59,15 @@ def load_eval_questions(eval_file):
 
 def run_rag_once(question: str, top_k: int):
     """对单个问题运行 RAG 并返回答案及召回 chunk_id。"""
+    result, retrieved_chunk_ids = run_rag_once_with_result(question, top_k)
+    return result["answer"], retrieved_chunk_ids
+
+
+def run_rag_once_with_result(
+    question: str,
+    top_k: int,
+) -> tuple[dict, list]:
+    """运行单题 RAG，并保留统一 Runner 所需的状态合同。"""
     retrieved_chunks = retrieve(question, top_k)
     result = run_rag_subgraph(
         question=question,
@@ -61,29 +75,29 @@ def run_rag_once(question: str, top_k: int):
         retrieved_chunks=retrieved_chunks,
     )
     final_chunks = result.get("final_chunks")
-    answer = result["answer"]
-
     retrieved_chunk_ids = [
         chunk["metadata"]["chunk_id"]
         for chunk in final_chunks
     ]
 
-    return answer, retrieved_chunk_ids
+    return result, retrieved_chunk_ids
 
 
-def main():
-    """批量生成预测结果并写入 CSV。"""
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--eval-file", required=True)
-    parser.add_argument("--out-file", required=True)
-    args = parser.parse_args()
-
-    initialize_rag_for_predictions()
-    eval_items = load_eval_questions(args.eval_file)
+def run_predictions(
+    *,
+    eval_file: str | Path,
+    out_file: str | Path,
+    top_k: int = 5,
+    force_rebuild: bool = False,
+    fail_on_model_error: bool = False,
+) -> list[dict]:
+    """运行现有 RAG 预测流程并返回写入的行。"""
+    if top_k < 1:
+        raise ValueError("top_k 必须大于 0")
+    initialize_rag_for_predictions(force_rebuild=force_rebuild)
+    eval_items = load_eval_questions(eval_file)
 
     rows = []
-
-    top_k = 5
 
     for item in eval_items:
         qid = item["qid"]
@@ -91,7 +105,19 @@ def main():
 
         print(f"Running {qid}: {question}")
 
-        answer, retrieved_chunk_ids = run_rag_once(question, top_k)
+        result, retrieved_chunk_ids = run_rag_once_with_result(
+            question,
+            top_k,
+        )
+        status = str(result.get("status") or "")
+        if fail_on_model_error and status in {
+            "MODEL_ERROR",
+            "MODEL_BAD_OUTPUT",
+        }:
+            raise RuntimeError(
+                f"RAG prediction failed for qid={qid}: {status}"
+            )
+        answer = result["answer"]
 
         rows.append({
             "qid": qid,
@@ -100,7 +126,7 @@ def main():
             "retrieved_chunk_ids": ",".join(str(x) for x in retrieved_chunk_ids),
         })
 
-    out_path = Path(args.out_file)
+    out_path = Path(out_file)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     with open(out_path, "w", encoding="utf-8-sig", newline="") as f:
@@ -112,6 +138,23 @@ def main():
         writer.writerows(rows)
 
     print(f"predictions saved to: {out_path}")
+    return rows
+
+
+def main():
+    """批量生成预测结果并写入 CSV。"""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--eval-file", required=True)
+    parser.add_argument("--out-file", required=True)
+    parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument("--force-rebuild", action="store_true")
+    args = parser.parse_args()
+    run_predictions(
+        eval_file=args.eval_file,
+        out_file=args.out_file,
+        top_k=args.top_k,
+        force_rebuild=args.force_rebuild,
+    )
 
 
 if __name__ == "__main__":

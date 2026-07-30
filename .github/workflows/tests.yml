@@ -47,6 +47,9 @@ jobs:
       - name: Check Agent Runtime architecture
         run: python scripts/inspect_agent_runtime.py --check
 
+      - name: Validate evaluation datasets
+        run: python scripts/run_evaluation_baseline.py --validate-only
+
       - name: Run tests
         env:
           HF_HUB_OFFLINE: "1"

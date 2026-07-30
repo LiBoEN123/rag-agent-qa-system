@@ -12,7 +12,7 @@ WORKDIR /app
 
 COPY requirements.lock .
 
-RUN pip install --no-cache-dir ----extra-index-url ${TORCH_CUDA_INDEX_URL} torch
+RUN pip install --no-cache-dir --extra-index-url ${TORCH_CUDA_INDEX_URL} torch
 RUN pip install --no-cache-dir -r requirements.lock
 
 COPY . .

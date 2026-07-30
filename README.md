@@ -791,6 +791,35 @@ python scripts/inspect_agent_runtime.py --check
 python -m pytest -q
 ```
 
+Evaluation Baseline v2 首先支持不调用模型、RAG 或网络的数据校验：
+
+```bash
+python scripts/run_evaluation_baseline.py --validate-only
+```
+
+默认真实运行 Core Agent 和本地 RAG；Online 工具与 LLM Judge 必须显式启用：
+
+```bash
+python scripts/run_evaluation_baseline.py \
+  --agent-cases data/eval/agent_eval_cases_v2.json \
+  --rag-eval-file data/eval/rag_eval_questions_v2_semantic_fixed.json \
+  --output-dir outputs/evaluation_baseline_v2/initial-core \
+  --top-k 5
+```
+
+每次运行会生成 commit/数据/索引/模型/Prompt/工具合同 manifest、Agent/RAG
+指标、覆盖矩阵、多原因失败报告和 Markdown 摘要。工作区不干净时默认拒绝正式
+运行；实验运行必须显式使用 `--allow-dirty` 并会被标记。两轮结果可比较：
+
+```bash
+python scripts/compare_evaluation_runs.py \
+  --baseline outputs/evaluation_baseline_v2/run-a \
+  --candidate outputs/evaluation_baseline_v2/run-b
+```
+
+完整说明见 [Evaluation Baseline v2](docs/evaluation/baseline-v2.md)。以下旧 Agent
+和 RAG CLI 继续兼容。
+
 生成 RAG 预测结果：
 
 ```bash

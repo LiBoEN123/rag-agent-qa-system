@@ -24,7 +24,7 @@ docker build \
 
 若基础镜像拉取失败，可先执行以下命令，再重新 build：
 ```bash
-docker pull python:3.11-slim
+docker pull python:3.12-slim
 ```
 
 ## 4.环境变量
