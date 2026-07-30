@@ -1,0 +1,81 @@
+"""手动验证真实供应商 Tool Calling 协议；不会由 Pytest 或 CI 自动运行。"""
+
+from __future__ import annotations
+
+import json
+
+from langchain_core.messages import AIMessage, HumanMessage
+
+from app.agent.framework_tools import build_framework_tools
+from app.agent.model import get_agent_chat_model, get_agent_tool_provider
+from app.tools.context import build_default_tool_context
+from app.tools.redaction import redact_sensitive_data
+
+
+SCENARIOS = (
+    (
+        "simple_calculator",
+        "请计算 12*8，必须调用计算器工具。",
+    ),
+    (
+        "search_knowledge_base",
+        "请从知识库检索奖学金申请条件，必须调用知识库检索工具。",
+    ),
+)
+
+
+def _print_json(label: str, value: object) -> None:
+    print(
+        f"{label}: "
+        + json.dumps(
+            redact_sensitive_data(value),
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+    )
+
+
+def main() -> int:
+    """绑定真实工具 Schema 并验证两类真实模型 tool_calls。"""
+    model = get_agent_chat_model()
+    if model is None:
+        raise RuntimeError("回答模型不可用，请先配置 LLM_API_KEY 和模型地址")
+
+    context = build_default_tool_context(source="manual_tool_calling_smoke")
+    tools = build_framework_tools(get_agent_tool_provider(), context=context)
+    tool_map = {tool.name: tool for tool in tools}
+    print("bound_tool_names:", sorted(tool_map))
+    for required_name in ("search_knowledge_base", "simple_calculator"):
+        tool = tool_map.get(required_name)
+        if tool is None:
+            raise RuntimeError(f"模型工具列表缺少 {required_name}")
+        schema = tool.args_schema.model_json_schema()
+        _print_json(f"{required_name}.args_schema", schema)
+
+    bound_model = model.bind_tools(tools)
+    for expected_tool, prompt in SCENARIOS:
+        response = bound_model.invoke([HumanMessage(content=prompt)])
+        print("response_type:", type(response).__name__)
+        if not isinstance(response, AIMessage):
+            raise RuntimeError("供应商没有返回 AIMessage")
+        _print_json("response.tool_calls", response.tool_calls)
+        _print_json("response.additional_kwargs", response.additional_kwargs)
+        if not response.tool_calls:
+            raise RuntimeError(f"场景 {expected_tool} 没有返回 tool_calls")
+        first_call = response.tool_calls[0]
+        print("tool_name:", first_call.get("name", ""))
+        _print_json("tool_args", first_call.get("args", {}))
+        print("tool_call_id:", first_call.get("id", ""))
+        if first_call.get("name") != expected_tool:
+            raise RuntimeError(
+                f"期望工具 {expected_tool}，实际为 {first_call.get('name')}"
+            )
+        if not first_call.get("id"):
+            raise RuntimeError("供应商 tool_call 缺少 tool_call_id")
+    print("真实模型 Tool Calling 冒烟验证通过。")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

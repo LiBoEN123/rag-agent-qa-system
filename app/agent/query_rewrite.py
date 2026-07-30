@@ -6,7 +6,7 @@
 import json
 import re
 
-from app.config import Settings
+from app.config import AppSettings, get_settings
 from app.common.logging import get_logger
 from app.llm.factory import get_query_rewrite_model
 from app.llm.gateway import ModelGateway
@@ -205,12 +205,12 @@ def _parse_rewrite_json(output: str) -> dict:
     }
 
 
-def _query_rewrite_llm_configured() -> bool:
+def _query_rewrite_llm_configured(settings: AppSettings) -> bool:
     """判断追问改写 LLM 是否具备最小调用配置。"""
     return bool(
-        Settings.QUERY_REWRITE_API_KEY
-        and Settings.QUERY_REWRITE_API_URL
-        and Settings.QUERY_REWRITE_MODEL_NAME
+        settings.query_rewrite_api_key_resolved
+        and settings.query_rewrite_api_url_resolved
+        and settings.query_rewrite_model_name_resolved
     )
 
 
@@ -235,6 +235,7 @@ def rewrite_query_with_history(
     trace_id: str = "",
 ) -> dict:
     """判断问题是否依赖历史并按需改写；明显追问可在 LLM 不可用时降级。"""
+    settings = get_settings()
     original_question = (question or "").strip()
     base_result = {
         "original_question": original_question,
@@ -248,7 +249,7 @@ def rewrite_query_with_history(
         "error": "",
     }
 
-    if not Settings.ENABLE_QUERY_REWRITE:
+    if not settings.enable_query_rewrite:
         return {
             **base_result,
             "reason": "query rewrite disabled",
@@ -267,7 +268,7 @@ def rewrite_query_with_history(
 
     obvious_follow_up = _has_obvious_follow_up_marker(original_question)
 
-    if not _query_rewrite_llm_configured():
+    if not _query_rewrite_llm_configured(settings):
         if obvious_follow_up:
             rewritten_question = _fallback_rewrite(original_question, history)
             fallback_reason = "fallback rewrite without llm"

@@ -9,7 +9,7 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
-from app.config import Settings
+from app.config import AppSettings, get_settings
 from app.common.logging import get_logger
 
 logger = get_logger("chat_service")
@@ -31,28 +31,31 @@ def _import_chromadb():
     return chromadb
 
 
-def _persist_dir() -> Path:
+def _persist_dir(settings: AppSettings | None = None) -> Path:
     """读取 ChromaDB 本地持久化目录配置。"""
-    return Path(getattr(Settings, "CHROMA_PERSIST_DIR"))
+    return (settings or get_settings()).chroma_persist_dir
 
 
-def _collection_name() -> str:
+def _collection_name(settings: AppSettings | None = None) -> str:
     """读取 ChromaDB collection 名称配置，未配置时使用默认名称。"""
-    return str(getattr(Settings, "CHROMA_COLLECTION_NAME", "mini_rag_chunks"))
+    return (settings or get_settings()).chroma_collection_name
 
 
-def get_chroma_client():
+def get_chroma_client(settings: AppSettings | None = None):
     """创建本地持久化 ChromaDB 客户端。"""
     chromadb = _import_chromadb()
-    persist_dir = _persist_dir()
+    persist_dir = _persist_dir(settings)
     persist_dir.mkdir(parents=True, exist_ok=True)
     return chromadb.PersistentClient(path=str(persist_dir))
 
 
-def get_chroma_collection(create: bool = True):
+def get_chroma_collection(
+    create: bool = True,
+    settings: AppSettings | None = None,
+):
     """获取存放 chunk 的 collection，必要时按 cosine 距离创建。"""
-    client = get_chroma_client()
-    name = _collection_name()
+    client = get_chroma_client(settings)
+    name = _collection_name(settings)
 
     if create:
         return client.get_or_create_collection(
@@ -181,9 +184,11 @@ def persist_chunks_to_chroma(
     return saved
 
 
-def load_chunks_from_chroma() -> list[dict[str, Any]]:
+def load_chunks_from_chroma(
+    settings: AppSettings | None = None,
+) -> list[dict[str, Any]]:
     """从 ChromaDB 加载所有 chunk，并恢复为内存中的 chunk 结构。"""
-    collection = get_chroma_collection(create=False)
+    collection = get_chroma_collection(create=False, settings=settings)
     data = collection.get(include=["documents", "metadatas"])
 
     documents = data.get("documents") or []

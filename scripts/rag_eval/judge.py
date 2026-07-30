@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
-from app.config import Settings
+from app.config import get_settings, secret_value
 from app.common.logging import get_logger
 from app.llm.factory import get_judge_model
 from app.llm.gateway import ModelGateway
@@ -44,10 +44,25 @@ def make_judge_config(
     judge_api_key: str | None = None,
 ) -> LLMJudgeConfig:
     """从 CLI 和 Settings 合成 judge 配置；没有 JUDGE_MODEL 时不启用 judge。"""
-    enabled = Settings.USE_LLM_JUDGE if use_llm_judge is None else use_llm_judge
-    model = (judge_model if judge_model is not None else Settings.JUDGE_MODEL).strip()
-    api_url = (judge_api_url if judge_api_url is not None else Settings.JUDGE_API_URL).strip()
-    api_key = judge_api_key if judge_api_key is not None else (Settings.JUDGE_API_KEY or "")
+    settings = get_settings()
+    enabled = (
+        settings.use_llm_judge
+        if use_llm_judge is None
+        else use_llm_judge
+    )
+    model = (
+        judge_model if judge_model is not None else settings.judge_model
+    ).strip()
+    api_url = (
+        judge_api_url
+        if judge_api_url is not None
+        else settings.judge_api_url_resolved
+    ).strip()
+    api_key = (
+        judge_api_key
+        if judge_api_key is not None
+        else secret_value(settings.judge_api_key_resolved) or ""
+    )
 
     if enabled and not model:
         warn("USE_LLM_JUDGE is enabled but JUDGE_MODEL is empty; LLM semantic scores will use conservative no-judge fallback")
@@ -61,9 +76,9 @@ def make_judge_config(
         model=model,
         api_url=api_url,
         api_key=api_key or "",
-        timeout=Settings.JUDGE_TIMEOUT,
-        max_retries=Settings.JUDGE_MAX_RETRIES,
-        max_tokens=Settings.JUDGE_MAX_TOKENS,
+        timeout=settings.judge_timeout_resolved,
+        max_retries=settings.judge_max_retries,
+        max_tokens=settings.judge_max_tokens,
     )
 
 

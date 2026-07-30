@@ -1,17 +1,13 @@
 import pytest
 
-from app.config import Settings
 from app.storage.session import append_message, clear_session, get_history
 
 
 @pytest.fixture(autouse=True)
-def use_temporary_sqlite_database(monkeypatch, tmp_path):
+def use_temporary_sqlite_database(settings_env, tmp_path):
     """让每个 session_store 测试使用独立的临时 SQLite 数据库。"""
-    monkeypatch.setattr(
-        Settings,
-        "SQLITE_DB_PATH",
-        tmp_path / "session_store.sqlite",
-        raising=False,
+    settings_env(
+        sqlite_db_path=tmp_path / "session_store.sqlite",
     )
 
 

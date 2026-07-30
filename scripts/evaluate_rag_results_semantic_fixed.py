@@ -256,12 +256,12 @@ def main() -> None:
         "--chroma-persist-dir",
         type=Path,
         default=None,
-        help="Override Settings.CHROMA_PERSIST_DIR for evaluation.",
+        help="Override CHROMA_PERSIST_DIR for evaluation.",
     )
     ap.add_argument(
         "--chroma-collection-name",
         default=None,
-        help="Override Settings.CHROMA_COLLECTION_NAME for evaluation.",
+        help="Override CHROMA_COLLECTION_NAME for evaluation.",
     )
     ap.add_argument("--out-dir", type=Path, default=Path("eval_report"))
     ap.add_argument("--k", type=int, default=10, help="Use top-k retrieved chunks for retrieval hit metrics")

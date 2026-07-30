@@ -2,7 +2,10 @@
 
 from dataclasses import replace
 
-import app.api.chat as chat_api
+from fastapi import Response
+
+from app.api.chat import create_chat_router
+from app.api.schemas import ChatRequest
 from app.services.chat_service import (
     ChatService,
     get_default_chat_service_dependencies,
@@ -22,21 +25,10 @@ class _Request:
 def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
     calls = {
         "rewrite": 0,
-        "route": 0,
-        "rag_ready": 0,
         "langgraph": 0,
         "session_turn": 0,
         "messages": [],
         "metrics": 0,
-    }
-    decision = {
-        "decision": "use_knowledge_base",
-        "action": "search_knowledge_base",
-        "tool_name": "search_knowledge_base",
-        "tool_args": {"query": "默认问题", "top_k": 5},
-        "reason": "知识库问题",
-        "router_source": "rule_based",
-        "router_llm_used": False,
     }
     reference = {
         "reference_id": "Reference 1",
@@ -63,17 +55,9 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
             "error": "",
         }
 
-    def route(question, top_k, trace_id=""):
-        calls["route"] += 1
-        return decision
-
-    def rag_status():
-        calls["rag_ready"] += 1
-        return {"ready": True, "message": "OK"}
-
     def langgraph(**kwargs):
         calls["langgraph"] += 1
-        assert kwargs["decision"] is decision
+        assert "decision" not in kwargs
         return {
             "status": "OK",
             "answer": "LangGraph 默认回答",
@@ -83,7 +67,7 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
             "need_clarification": False,
             "clarification_question": "",
             "reason": "证据充分",
-            "action": "search_knowledge_base",
+            "action": "agent",
             "tool_result_summary": "知识库检索完成，召回 1 个 chunk",
             "tool_trace": [
                 {
@@ -110,14 +94,13 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
             "decompose_llm_used": False,
             "answer_llm_used": True,
             "llm_call_count": 1,
+            "timings": {},
         }
 
     dependencies = replace(
         get_default_chat_service_dependencies(),
         get_history=lambda session_id: [],
         rewrite_query_with_history=rewrite,
-        route_agent_action=route,
-        get_rag_status=rag_status,
         run_agent_langgraph=langgraph,
         append_message=lambda session_id, role, content: calls[
             "messages"
@@ -134,11 +117,11 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
         original_save_session_turn(context)
 
     monkeypatch.setattr(service, "_save_session_turn", save_session_turn)
-    monkeypatch.setattr(chat_api, "chat_service", service)
-    response = chat_api.Response()
+    response = Response()
+    ask_api = create_chat_router(service).routes[0].endpoint
 
-    result = chat_api.ask_api(
-        chat_api.ChatRequest(
+    result = ask_api(
+        ChatRequest(
             question="默认问题",
             top_k=5,
             session_id="session-default",
@@ -150,8 +133,6 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
     assert response.status_code == 200
     assert calls == {
         "rewrite": 1,
-        "route": 1,
-        "rag_ready": 1,
         "langgraph": 1,
         "session_turn": 1,
         "messages": [

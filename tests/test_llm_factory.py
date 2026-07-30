@@ -25,19 +25,17 @@ def clear_factory_cache(monkeypatch):
     factory.clear_model_factory_cache()
 
 
-def test_answer_model_uses_existing_configuration(monkeypatch):
+def test_answer_model_uses_existing_configuration(settings_env):
     """Answer 模型应完整传递名称、base URL、温度和调用控制参数。"""
-    monkeypatch.setattr(factory.Settings, "LLM_API_KEY", "answer-key")
-    monkeypatch.setattr(
-        factory.Settings,
-        "LLM_API_URL",
-        "https://models.example.test/v1/chat/completions",
+    settings_env(
+        llm_api_key="answer-key",
+        llm_api_url="https://models.example.test/v1/chat/completions",
+        model_name="answer-model",
+        temperature=0.25,
+        llm_max_tokens=987,
+        llm_timeout=42,
+        llm_max_retries=3,
     )
-    monkeypatch.setattr(factory.Settings, "MODEL_NAME", "answer-model")
-    monkeypatch.setattr(factory.Settings, "TEMPERATURE", 0.25)
-    monkeypatch.setattr(factory.Settings, "LLM_MAX_TOKENS", 987)
-    monkeypatch.setattr(factory.Settings, "LLM_TIMEOUT", 42)
-    monkeypatch.setattr(factory.Settings, "LLM_MAX_RETRIES", 3)
 
     model = factory.get_answer_model()
 
@@ -55,7 +53,6 @@ def test_answer_model_uses_existing_configuration(monkeypatch):
 @pytest.mark.parametrize(
     ("getter_name", "key_name", "url_name", "model_name"),
     [
-        ("get_router_model", "ROUTER_API_KEY", "ROUTER_API_URL", "ROUTER_MODEL_NAME"),
         (
             "get_query_rewrite_model",
             "QUERY_REWRITE_API_KEY",
@@ -66,29 +63,35 @@ def test_answer_model_uses_existing_configuration(monkeypatch):
     ],
 )
 def test_role_models_reuse_answer_key_when_independent_key_is_empty(
-    monkeypatch,
+    settings_env,
     getter_name,
     key_name,
     url_name,
     model_name,
 ):
-    """保持 Router、Rewrite、Judge 已有的 Answer Key 复用策略。"""
-    monkeypatch.setattr(factory.Settings, "LLM_API_KEY", "shared-answer-key")
-    monkeypatch.setattr(factory.Settings, key_name, "")
-    monkeypatch.setattr(factory.Settings, url_name, "https://models.example.test/v1")
-    monkeypatch.setattr(factory.Settings, model_name, "role-model")
+    """保持 Rewrite、Judge 已有的 Answer Key 复用策略。"""
+    settings_env(
+        llm_api_key="shared-answer-key",
+        **{
+            key_name.lower(): "",
+            url_name.lower(): "https://models.example.test/v1",
+            model_name.lower(): "role-model",
+        },
+    )
 
     model = getattr(factory, getter_name)()
 
     assert model.kwargs["api_key"] == "shared-answer-key"
 
 
-def test_decompose_model_keeps_independent_key_semantics(monkeypatch):
+def test_decompose_model_keeps_independent_key_semantics(settings_env):
     """Decompose 原先允许无独立 Key，Factory 不改变该配置含义。"""
-    monkeypatch.setattr(factory.Settings, "LLM_API_KEY", "shared-answer-key")
-    monkeypatch.setattr(factory.Settings, "DECOMPOSE_API_KEY", "")
-    monkeypatch.setattr(factory.Settings, "DECOMPOSE_API_URL", "http://localhost:11434/v1")
-    monkeypatch.setattr(factory.Settings, "DECOMPOSE_MODEL_NAME", "qwen-test")
+    settings_env(
+        llm_api_key="shared-answer-key",
+        decompose_api_key="",
+        decompose_api_url="http://localhost:11434/v1",
+        decompose_model_name="qwen-test",
+    )
 
     model = factory.get_decompose_model()
 
@@ -96,18 +99,18 @@ def test_decompose_model_keeps_independent_key_semantics(monkeypatch):
     assert model.kwargs["temperature"] == 0.0
 
 
-def test_compare_model_uses_answer_provider_with_independent_parameters(monkeypatch):
+def test_compare_model_uses_answer_provider_with_independent_parameters(
+    settings_env,
+):
     """文档对比复用 Answer 供应商配置，但保持零温度和独立 token 上限。"""
-    monkeypatch.setattr(factory.Settings, "LLM_API_KEY", "compare-key")
-    monkeypatch.setattr(
-        factory.Settings,
-        "LLM_API_URL",
-        "https://models.example.test/v1/chat/completions",
+    settings_env(
+        llm_api_key="compare-key",
+        llm_api_url="https://models.example.test/v1/chat/completions",
+        model_name="compare-model",
+        llm_max_tokens=4096,
+        llm_timeout=21,
+        llm_max_retries=2,
     )
-    monkeypatch.setattr(factory.Settings, "MODEL_NAME", "compare-model")
-    monkeypatch.setattr(factory.Settings, "LLM_MAX_TOKENS", 4096)
-    monkeypatch.setattr(factory.Settings, "LLM_TIMEOUT", 21)
-    monkeypatch.setattr(factory.Settings, "LLM_MAX_RETRIES", 2)
 
     model = factory.get_compare_model()
 
@@ -146,24 +149,31 @@ def test_judge_model_accepts_cli_configuration_overrides():
 
 
 @pytest.mark.parametrize("missing_field", ["LLM_API_URL", "MODEL_NAME"])
-def test_missing_answer_model_configuration_returns_none(monkeypatch, missing_field):
+def test_missing_answer_model_configuration_returns_none(
+    settings_env,
+    missing_field,
+):
     """模型名或 URL 缺失时返回 None，供 Gateway 生成清晰配置错误。"""
-    monkeypatch.setattr(factory.Settings, "LLM_API_URL", "https://models.example.test/v1")
-    monkeypatch.setattr(factory.Settings, "MODEL_NAME", "answer-model")
-    monkeypatch.setattr(factory.Settings, missing_field, "")
+    values = {
+        "llm_api_url": "https://models.example.test/v1",
+        "model_name": "answer-model",
+        missing_field.lower(): "",
+    }
+    settings_env(**values)
 
     assert factory.get_answer_model() is None
 
 
-def test_factory_cache_can_be_cleared(monkeypatch):
+def test_factory_cache_can_be_cleared(settings_env):
     """重复读取复用实例，显式清缓存后按新配置重新创建。"""
-    monkeypatch.setattr(factory.Settings, "LLM_API_URL", "https://models.example.test/v1")
-    monkeypatch.setattr(factory.Settings, "MODEL_NAME", "model-a")
+    settings_env(
+        llm_api_url="https://models.example.test/v1",
+        model_name="model-a",
+    )
 
     first = factory.get_answer_model()
     second = factory.get_answer_model()
-    monkeypatch.setattr(factory.Settings, "MODEL_NAME", "model-b")
-    factory.clear_model_factory_cache()
+    settings_env(model_name="model-b")
     third = factory.get_answer_model()
 
     assert first is second

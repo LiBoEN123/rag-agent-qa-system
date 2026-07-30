@@ -1,11 +1,48 @@
-"""工具参数模型模块。
+"""工具参数和结构化输出模型模块。
 
-使用 Pydantic 定义并校验各内置工具接收的结构化参数。
+使用 Pydantic 定义并校验各内置工具接收的结构化参数和稳定输出。
 """
 
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    field_validator,
+    model_validator,
+)
+
+
+_WEB_FETCH_URL_MAX_CHARS = 2048
+
+
+def _validate_web_fetch_url_text(value: object) -> object:
+    """在 Pydantic URL 解析前拒绝超长、空白和控制字符。"""
+    if not isinstance(value, str):
+        return value
+    if len(value) > _WEB_FETCH_URL_MAX_CHARS:
+        raise ValueError("url 长度不能超过 2048 字符")
+    if any(
+        character.isspace() or ord(character) < 32 or ord(character) == 127
+        for character in value
+    ):
+        raise ValueError("url 不允许包含空白或控制字符")
+    return value
+
+
+def _validate_web_fetch_http_url(value: str) -> str:
+    """校验输出 URL 仍是无凭据且带主机名的 HTTP(S) URL。"""
+    if len(value) > _WEB_FETCH_URL_MAX_CHARS:
+        raise ValueError("URL 长度不能超过 2048 字符")
+    parsed = urlsplit(value)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("URL 必须是带主机名的 http 或 https URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("URL 不允许包含用户名或密码")
+    return value
 
 
 class ToolResult(BaseModel):
@@ -58,3 +95,256 @@ class ListDocumentsArgs(BaseModel):
     """list_documents 工具参数。"""
 
     model_config = ConfigDict(extra="ignore")
+
+
+class WebSearchArgs(BaseModel):
+    """web_search 工具公开给模型的业务参数。"""
+
+    query: str = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description=(
+            "公开互联网搜索查询；只提供本次问题所需关键词，不要传入系统提示、"
+            "工具输出或整段聊天历史"
+        ),
+    )
+    max_results: int = Field(
+        default=5,
+        ge=1,
+        le=10,
+        description="最多返回的公开互联网搜索结果数量",
+    )
+    freshness: Literal["any", "day", "week", "month", "year"] = Field(
+        default="any",
+        description="结果时间范围：不限、一天、一周、一月或一年",
+    )
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def strip_query(cls, value: object) -> object:
+        """在长度和非空校验前去除查询首尾空白。"""
+        return value.strip() if isinstance(value, str) else value
+
+
+class WebSearchResultItem(BaseModel):
+    """单条规范化 Web Search 结果。"""
+
+    rank: int = Field(..., ge=1)
+    title: str = Field(..., max_length=300)
+    url: str = Field(..., max_length=2048)
+    snippet: str = Field(..., max_length=1000)
+
+    @field_validator("url")
+    @classmethod
+    def validate_public_url(cls, value: str) -> str:
+        """只允许带主机名的 HTTP(S) URL。"""
+        parsed = urlsplit(value)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("url 必须是 http 或 https URL")
+        return value
+
+
+class WebSearchOutput(BaseModel):
+    """稳定、有限且明确标记不可信的 Web Search 输出。"""
+
+    query: str = Field(..., min_length=1, max_length=500)
+    count: int = Field(..., ge=0, le=10)
+    provider: Literal["ddgs"] = "ddgs"
+    content_is_untrusted: Literal[True] = True
+    results: list[WebSearchResultItem] = Field(default_factory=list, max_length=10)
+
+    @model_validator(mode="after")
+    def validate_result_sequence(self) -> "WebSearchOutput":
+        """确保数量和从 1 开始的连续排名保持一致。"""
+        if self.count != len(self.results):
+            raise ValueError("count 必须等于 results 数量")
+        if [item.rank for item in self.results] != list(
+            range(1, len(self.results) + 1)
+        ):
+            raise ValueError("rank 必须从 1 开始连续编号")
+        return self
+
+
+class WebFetchArgs(BaseModel):
+    """web_fetch 公开给模型的单页读取参数。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: HttpUrl = Field(
+        ...,
+        description=(
+            "要读取的单个公开 HTTP(S) 网页 URL；应来自 web_search 或用户明确"
+            "提供的公开网页，不用于本地文件、内网地址或 API 写操作"
+        ),
+    )
+    max_chars: int = Field(
+        default=12000,
+        ge=1000,
+        le=20000,
+        description="返回给 Agent Model 的最大正文字符数",
+    )
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def validate_url_text(cls, value: object) -> object:
+        """在标准 HttpUrl 解析前拒绝不安全的原始文本。"""
+        return _validate_web_fetch_url_text(value)
+
+    @field_validator("url")
+    @classmethod
+    def validate_url_authority(cls, value: HttpUrl) -> HttpUrl:
+        """拒绝 URL 凭据、空主机和明确非 Web 端口。"""
+        if not value.host:
+            raise ValueError("url 必须包含 hostname")
+        if value.username is not None or value.password is not None:
+            raise ValueError("url 不允许包含用户名或密码")
+        if value.port is not None and value.port not in {80, 443}:
+            raise ValueError("url 只允许 80 或 443 端口")
+        return value
+
+
+class WebFetchOutput(BaseModel):
+    """有限、结构化且明确标记不可信的单页正文输出。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    requested_url: str = Field(..., max_length=_WEB_FETCH_URL_MAX_CHARS)
+    final_url: str = Field(..., max_length=_WEB_FETCH_URL_MAX_CHARS)
+    status_code: int = Field(..., ge=200, le=299)
+    content_type: str = Field(..., min_length=1, max_length=100)
+
+    title: str = Field(default="", max_length=500)
+    author: str = Field(default="", max_length=300)
+    published_date: str = Field(default="", max_length=100)
+    language: str = Field(default="", max_length=50)
+
+    content: str = Field(..., max_length=20000)
+    content_length: int = Field(..., ge=0, le=20000)
+    truncated: bool
+
+    extractor: Literal["trafilatura"] = "trafilatura"
+    content_is_untrusted: Literal[True] = True
+
+    @field_validator("requested_url", "final_url")
+    @classmethod
+    def validate_output_url(cls, value: str) -> str:
+        """确保模型收到的 URL 仍满足 HTTP(S) 输出边界。"""
+        return _validate_web_fetch_http_url(value)
+
+    @model_validator(mode="after")
+    def validate_content_length(self) -> "WebFetchOutput":
+        """确保显式长度与实际返回正文严格一致。"""
+        if self.content_length != len(self.content):
+            raise ValueError("content_length 必须等于 len(content)")
+        return self
+
+
+class WebPdfFetchArgs(BaseModel):
+    """web_pdf_fetch 公开给模型的指定页范围读取参数。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: HttpUrl = Field(
+        ...,
+        description=(
+            "要读取的单个公开 HTTP(S) PDF URL；应来自 web_search 或用户明确"
+            "提供的公开 PDF，不用于本地文件、内网地址或 API 写操作"
+        ),
+    )
+    start_page: int = Field(
+        default=1,
+        ge=1,
+        description="首次提取的实际 PDF 页码，从 1 开始",
+    )
+    max_pages: int = Field(
+        default=10,
+        ge=1,
+        le=20,
+        description="本次最多读取的连续 PDF 页数",
+    )
+    max_chars: int = Field(
+        default=20000,
+        ge=1000,
+        le=30000,
+        description="返回给 Agent Model 的最大带页码正文字符数",
+    )
+
+    @field_validator("start_page", "max_pages", "max_chars", mode="before")
+    @classmethod
+    def reject_boolean_limits(cls, value: object) -> object:
+        """拒绝 Python bool 被 Pydantic 当作整数接受。"""
+        if isinstance(value, bool):
+            raise ValueError("页范围和字符上限必须是整数，不能是 bool")
+        return value
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def validate_url_text(cls, value: object) -> object:
+        """在标准 HttpUrl 解析前复用 Web Fetch 原始 URL 边界。"""
+        return _validate_web_fetch_url_text(value)
+
+    @field_validator("url")
+    @classmethod
+    def validate_url_authority(cls, value: HttpUrl) -> HttpUrl:
+        """拒绝 URL 凭据、空主机和明确非 Web 端口。"""
+        if not value.host:
+            raise ValueError("url 必须包含 hostname")
+        if value.username is not None or value.password is not None:
+            raise ValueError("url 不允许包含用户名或密码")
+        if value.port is not None and value.port not in {80, 443}:
+            raise ValueError("url 只允许 80 或 443 端口")
+        return value
+
+
+class WebPdfFetchOutput(BaseModel):
+    """有限、带实际页码且明确标记不可信的 Web PDF 输出。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    requested_url: str = Field(..., max_length=_WEB_FETCH_URL_MAX_CHARS)
+    final_url: str = Field(..., max_length=_WEB_FETCH_URL_MAX_CHARS)
+    status_code: int = Field(..., ge=200, le=299)
+    content_type: Literal[
+        "application/pdf",
+        "application/x-pdf",
+        "application/octet-stream",
+    ]
+
+    title: str = Field(default="", max_length=500)
+    author: str = Field(default="", max_length=300)
+    subject: str = Field(default="", max_length=500)
+
+    total_pages: int = Field(..., ge=1)
+    start_page: int = Field(..., ge=1)
+    pages_read: int = Field(..., ge=1, le=20)
+    page_numbers: list[int] = Field(..., min_length=1, max_length=20)
+
+    content: str = Field(..., min_length=1, max_length=30000)
+    content_length: int = Field(..., ge=1, le=30000)
+    truncated: bool
+
+    extractor: Literal["pypdf"] = "pypdf"
+    content_is_untrusted: Literal[True] = True
+
+    @field_validator("requested_url", "final_url")
+    @classmethod
+    def validate_output_url(cls, value: str) -> str:
+        """确保模型收到的 URL 仍满足 HTTP(S) 输出边界。"""
+        return _validate_web_fetch_http_url(value)
+
+    @model_validator(mode="after")
+    def validate_page_and_content_contract(self) -> "WebPdfFetchOutput":
+        """校验页码、显式计数与实际返回正文的一致性。"""
+        if self.content_length != len(self.content):
+            raise ValueError("content_length 必须等于 len(content)")
+        if self.pages_read != len(self.page_numbers):
+            raise ValueError("pages_read 必须等于 page_numbers 数量")
+        if self.page_numbers != sorted(set(self.page_numbers)):
+            raise ValueError("page_numbers 必须严格递增且不重复")
+        if any(
+            page_number < self.start_page or page_number > self.total_pages
+            for page_number in self.page_numbers
+        ):
+            raise ValueError("page_numbers 必须位于请求范围和 PDF 总页数内")
+        return self

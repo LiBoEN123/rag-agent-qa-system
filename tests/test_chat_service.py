@@ -3,19 +3,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent.runtime import build_internal_error_result
-from app.api.responses import CHAT_RESULT_RESPONSE_MAP
+from app.agent.results import build_internal_error_result
+from app.contracts.chat import get_chat_status_policy
 from app.observability.metrics import (
     attach_query_rewrite_trace,
     build_query_rewrite_trace,
     collect_trace_metrics,
-    normalize_metrics_status,
 )
 from app.services.chat_service import (
     ChatService,
     ChatServiceDependencies,
-    ChatServiceRequest,
 )
+from app.services.chat_models import ChatServiceRequest
 
 
 class IncrementingClock:
@@ -43,6 +42,12 @@ def build_runtime_result(status="OK", answer="测试回答", **overrides):
         "tool_result_summary": "测试摘要",
         "tool_trace": [
             {
+                "step": "decide",
+                "decision_type": "direct_answer",
+                "action": "direct_answer",
+                "route_cost_ms": 7,
+            },
+            {
                 "step": "llm_usage",
                 "router_llm_used": False,
                 "decompose_llm_used": False,
@@ -64,23 +69,20 @@ def build_service(
     *,
     history=None,
     rewrite_result=None,
-    decision=None,
-    rag_status=None,
     runtime_result=None,
     append_error=False,
     metrics_error=False,
 ):
+    """构造依赖可控的 ChatService，并返回调用记录容器。"""
     calls = {
         "history": [],
         "rewrite": [],
-        "route": [],
-        "rag_status": 0,
         "langgraph": [],
         "bad_cases": [],
         "messages": [],
         "metrics": [],
     }
-    settings = SimpleNamespace(TOP_K=5, DECOMPOSE_TOP_K=10)
+    settings = SimpleNamespace(top_k=5, decompose_top_k=10)
     history = list(history or [])
     rewrite_result = rewrite_result or {
         "original_question": "",
@@ -93,16 +95,6 @@ def build_service(
         "rewrite_llm_used": False,
         "error": "",
     }
-    decision = decision or {
-        "decision": "direct_answer",
-        "action": "direct_answer",
-        "tool_name": "",
-        "tool_args": {},
-        "reason": "直接回答",
-        "router_source": "rule_based",
-        "router_llm_used": False,
-    }
-    rag_status = rag_status or {"ready": True, "message": "OK"}
     runtime_result = (
         build_runtime_result()
         if runtime_result is None
@@ -124,16 +116,6 @@ def build_service(
         )
         return result
 
-    def fake_route(question, top_k, trace_id=""):
-        calls["route"].append(
-            {"question": question, "top_k": top_k, "trace_id": trace_id}
-        )
-        return decision
-
-    def fake_rag_status():
-        calls["rag_status"] += 1
-        return dict(rag_status)
-
     def run_runtime(label, kwargs):
         calls[label].append(kwargs)
         if isinstance(runtime_result, Exception):
@@ -153,22 +135,18 @@ def build_service(
             raise RuntimeError("metrics unavailable")
 
     dependencies = ChatServiceDependencies(
-        settings=settings,
+        settings_provider=lambda: settings,
         get_history=fake_get_history,
         rewrite_query_with_history=fake_rewrite,
-        route_agent_action=fake_route,
-        get_rag_status=fake_rag_status,
         run_agent_langgraph=lambda **kwargs: run_runtime("langgraph", kwargs),
         build_query_rewrite_trace=build_query_rewrite_trace,
         attach_query_rewrite_trace=attach_query_rewrite_trace,
         collect_trace_metrics=collect_trace_metrics,
-        normalize_metrics_status=normalize_metrics_status,
         log_and_write_metrics=fake_metrics,
         write_bad_cases=lambda record: calls["bad_cases"].append(dict(record)),
         append_message=fake_append,
         now_iso=lambda: "2026-07-14T10:00:00.000",
         perf_counter=IncrementingClock(),
-        response_map=CHAT_RESULT_RESPONSE_MAP,
     )
     return ChatService(dependencies), calls
 
@@ -210,7 +188,6 @@ def test_empty_question_skips_business_dependencies_and_writes_metrics_once():
     assert outcome.result["need_clarification"] is True
     assert calls["history"] == []
     assert calls["rewrite"] == []
-    assert calls["route"] == []
     assert calls["langgraph"] == []
     assert calls["messages"] == []
     assert len(calls["metrics"]) == 1
@@ -238,14 +215,13 @@ def test_rewrite_routes_and_runs_once_with_original_question_preserved():
 
     assert calls["history"] == ["session-1"]
     assert len(calls["rewrite"]) == 1
-    assert calls["route"][0]["question"] == rewritten_question
     assert "question" not in calls["langgraph"][0]
     assert calls["langgraph"][0]["original_question"] == "原始问题"
     assert (
         calls["langgraph"][0]["effective_question"]
         == rewritten_question
     )
-    assert calls["langgraph"][0]["decision"]["action"] == "direct_answer"
+    assert "decision" not in calls["langgraph"][0]
     assert outcome.question == "原始问题"
     assert outcome.http_status == 200
     assert outcome.code == 0
@@ -260,6 +236,7 @@ def test_rewrite_routes_and_runs_once_with_original_question_preserved():
     ]
     assert len(calls["metrics"]) == 1
     assert calls["metrics"][0]["llm_call_count"] == 1
+    assert calls["metrics"][0]["route_cost_ms"] == 7
 
 
 def test_question_without_rewrite_is_passed_through_without_extra_llm_count():
@@ -267,105 +244,35 @@ def test_question_without_rewrite_is_passed_through_without_extra_llm_count():
 
     service.handle(make_request())
 
-    assert calls["route"][0]["question"] == "原始问题"
     assert "question" not in calls["langgraph"][0]
     assert calls["langgraph"][0]["original_question"] == "原始问题"
     assert calls["langgraph"][0]["effective_question"] == "原始问题"
     assert calls["metrics"][0]["llm_call_count"] == 0
 
 
-@pytest.mark.parametrize(
-    "action",
-    [
-        "search_knowledge_base",
-        "compare_documents",
-        "list_documents",
-        "get_chunk_text",
-    ],
-)
-def test_rag_not_ready_stops_before_runtime_and_preserves_session_behavior(
-    action,
-):
-    decision = {
-        "decision": "use_knowledge_base",
-        "action": action,
-        "tool_name": action,
-        "reason": "知识库问题",
-        "router_source": "rule_based",
-        "router_llm_used": False,
-    }
+def test_agent_tool_task_has_no_router_level_rag_preflight():
     service, calls = build_service(
-        decision=decision,
-        rag_status={"ready": False, "message": "索引不可用"},
+        runtime_result=build_runtime_result(action="agent"),
     )
 
     outcome = service.handle(make_request())
 
-    assert calls["rag_status"] == 1
-    assert calls["langgraph"] == []
-    assert outcome.http_status == 503
-    assert outcome.code == "NO_DOCUMENTS"
-    assert outcome.response_status == "empty_index"
-    assert outcome.result["reason"] == "知识库未准备完成"
-    assert len(calls["bad_cases"]) == 1
-    assert calls["bad_cases"][0]["error_type"] == "index_not_ready"
-    assert calls["messages"][-1] == (
-        "session-1",
-        "assistant",
-        "索引不可用",
-    )
-    assert len(calls["metrics"]) == 1
-
-
-def test_compare_documents_runs_langgraph_when_rag_is_ready():
-    decision = {
-        "decision": "use_tool",
-        "action": "compare_documents",
-        "tool_name": "compare_documents",
-        "tool_args": {
-            "query": "对比主题",
-            "doc_a": "文档甲",
-            "doc_b": "文档乙",
-            "top_k": 4,
-        },
-        "reason": "对比两份文档",
-        "router_source": "rule_based",
-        "router_llm_used": False,
-    }
-    service, calls = build_service(
-        decision=decision,
-        rag_status={"ready": True, "message": "索引可用"},
-        runtime_result=build_runtime_result(action="compare_documents"),
-    )
-
-    outcome = service.handle(make_request())
-
-    assert calls["rag_status"] == 1
     assert len(calls["langgraph"]) == 1
-    assert calls["langgraph"][0]["decision"] is decision
-    assert calls["langgraph"][0]["decision"]["action"] == "compare_documents"
+    assert "decision" not in calls["langgraph"][0]
     assert outcome.http_status == 200
 
 
-@pytest.mark.parametrize("action", ["simple_calculator", "direct_answer", "clarify"])
-def test_non_rag_actions_do_not_check_rag_status(action):
+@pytest.mark.parametrize("action", ["agent", "direct_answer", "clarify"])
+def test_current_route_actions_do_not_emit_retired_rag_ready_metric(action):
     service, calls = build_service(
-        decision={
-            "decision": "use_tool",
-            "action": action,
-            "tool_name": action if action == "simple_calculator" else "",
-            "reason": "测试",
-            "router_source": "rule_based",
-            "router_llm_used": False,
-        },
-        rag_status={"ready": False, "message": "索引不可用"},
+        runtime_result=build_runtime_result(action=action),
     )
 
     outcome = service.handle(make_request())
 
-    assert calls["rag_status"] == 0
     assert len(calls["langgraph"]) == 1
     assert outcome.http_status == 200
+    assert "rag_ready_check" + "_cost_ms" not in calls["metrics"][0]
 
 
 def test_langgraph_runtime_receives_complete_existing_protocol_once():
@@ -382,7 +289,7 @@ def test_langgraph_runtime_receives_complete_existing_protocol_once():
     assert kwargs["decompose_top_k"] == 8
     assert kwargs["trace_id"] == "trace-1"
     assert kwargs["session_id"] == "session-1"
-    assert kwargs["decision"]["action"] == "direct_answer"
+    assert "decision" not in kwargs
     assert kwargs["bad_case"]["question"] == "原始问题"
     assert callable(kwargs["write_bad_cases"])
     assert {
@@ -417,19 +324,77 @@ def test_langgraph_runtime_start_is_logged_once_with_trace_id(monkeypatch):
     ]
 
 
+def test_tool_call_chain_is_logged_once_in_execution_order(monkeypatch):
+    """一次请求把所有实际工具步骤压缩为一条有序终端日志。"""
+    runtime_result = build_runtime_result(
+        tool_trace=[
+            {
+                "step": "tool_call",
+                "tool_name": "web_search",
+                "tool_status": "success",
+                "cost_ms": 12,
+            },
+            {
+                "step": "tool_call",
+                "tool_name": "web_fetch",
+                "tool_status": "success",
+                "cost_ms": 34,
+            },
+        ]
+    )
+    service, _ = build_service(runtime_result=runtime_result)
+    messages = []
+
+    def record_log(message, *args, **kwargs):
+        del kwargs
+        rendered = message % args if args else message
+        messages.append(rendered)
+
+    monkeypatch.setattr("app.services.chat_service.logger.info", record_log)
+    service.handle(make_request())
+
+    chain_logs = [message for message in messages if "tool_call_chain=" in message]
+    assert chain_logs == [
+        "[trace_id=trace-1] [agent] "
+        "tool_call_chain=web_search(success,12ms) -> web_fetch(success,34ms)"
+    ]
+
+
 @pytest.mark.parametrize(
-    ("status", "code", "public_status"),
+    ("status", "http_status", "code", "public_status", "metric_status"),
     [
-        ("NEED_CLARIFICATION", "NEED_CLARIFICATION", "clarify"),
-        ("NO_RELEVANT_INFO", "NO_RELEVANT_INFO", "no_evidence"),
-        ("TOOL_ERROR", "TOOL_ERROR", "error"),
-        ("MODEL_ERROR", "MODEL_ERROR", "error"),
+        ("OK", 200, 0, "ok", "success"),
+        (
+            "NEED_CLARIFICATION",
+            200,
+            "NEED_CLARIFICATION",
+            "clarify",
+            "clarify",
+        ),
+        (
+            "NO_RELEVANT_INFO",
+            200,
+            "NO_RELEVANT_INFO",
+            "no_evidence",
+            "no_relevant_info",
+        ),
+        ("TOOL_ERROR", 200, "TOOL_ERROR", "error", "tool_error"),
+        ("MODEL_ERROR", 200, "MODEL_ERROR", "error", "model_error"),
+        (
+            "INTERNAL_ERROR",
+            500,
+            "INTERNAL_ERROR",
+            "error",
+            "internal_error",
+        ),
     ],
 )
-def test_known_runtime_statuses_reuse_existing_response_mapping(
+def test_known_runtime_statuses_use_single_status_policy(
     status,
+    http_status,
     code,
     public_status,
+    metric_status,
 ):
     result = build_runtime_result(
         status=status,
@@ -440,39 +405,43 @@ def test_known_runtime_statuses_reuse_existing_response_mapping(
 
     outcome = service.handle(make_request())
 
-    assert outcome.http_status == 200
+    assert outcome.http_status == http_status
     assert outcome.code == code
     assert outcome.response_status == public_status
-    assert outcome.response_config is CHAT_RESULT_RESPONSE_MAP[status]
+    assert get_chat_status_policy(status).public_status == public_status
     assert len(calls["messages"]) == 2
     assert len(calls["metrics"]) == 1
+    assert calls["metrics"][0]["status"] == metric_status
+
+
+def test_unknown_runtime_status_fails_closed_across_response_and_metrics():
+    service, calls = build_service(
+        runtime_result=build_runtime_result(status="UNKNOWN"),
+    )
+
+    outcome = service.handle(make_request())
+
+    assert outcome.http_status == 500
+    assert outcome.code == "INTERNAL_ERROR"
+    assert outcome.response_status == "error"
+    assert outcome.result["status"] == "INTERNAL_ERROR"
+    assert calls["metrics"][0]["status"] == "internal_error"
 
 
 def test_langgraph_internal_error_result_maps_to_http_500():
-    decision = {
-        "decision": "direct_answer",
-        "action": "direct_answer",
-        "tool_name": "",
-        "tool_args": {},
-        "reason": "直接回答",
-        "router_source": "rule_based",
-        "router_llm_used": False,
-    }
     result = build_internal_error_result(
         RuntimeError("sensitive runtime failure"),
-        decision,
         runtime_label="LangGraph Agent",
         trace_step="agent_langgraph_error",
     )
     service, calls = build_service(
-        decision=decision,
         runtime_result=result,
     )
 
     outcome = service.handle(make_request())
 
     assert len(calls["langgraph"]) == 1
-    assert calls["langgraph"][0]["decision"] is decision
+    assert "decision" not in calls["langgraph"][0]
     assert outcome.http_status == 500
     assert outcome.code == "INTERNAL_ERROR"
     assert outcome.response_status == "error"

@@ -3,8 +3,8 @@
 from pathlib import Path
 
 from app.api.schemas import ChatRequest
-from app.services import chat_service
 import app.services as services
+import app.services.chat_service as chat_service
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

@@ -8,8 +8,6 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from app.config import Settings
-from app.tools import get_langchain_tool
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from app.tools.errors import ToolErrorCode, ToolExecutionError
@@ -490,11 +488,13 @@ def test_registry_dispatch_uses_runtime_protocol():
     assert result["runtime"]["attempt_count"] == 1
 
 
-def test_langchain_tool_returns_runtime_extensions():
-    """LangChain Tool 继续走 dispatch_tool 并获得 Runtime 扩展字段。"""
-    tool = get_langchain_tool("simple_calculator", trace_id="runtime-trace")
-    assert tool is not None
-    result = tool.invoke({"expression": "1 + 2"})
+def test_registry_dispatch_returns_runtime_extensions(tool_registry):
+    """直接测试通过 Registry 分发并获得 Runtime 扩展字段。"""
+    result = tool_registry.dispatch(
+        "simple_calculator",
+        {"expression": "1 + 2"},
+        context=ToolInvocationContext(trace_id="runtime-trace"),
+    )
 
     assert result["ok"] is True
     assert result["output"]["result"] == 3
@@ -502,14 +502,12 @@ def test_langchain_tool_returns_runtime_extensions():
     assert result["runtime"]["tool_version"] == "1.0.0"
 
 
-def test_shared_runtime_replaces_instance_when_config_changes(monkeypatch):
+def test_shared_runtime_replaces_instance_when_config_changes(
+    settings_env,
+):
     """配置变化时不会静默复用参数已经过期的 Runtime。"""
     first = get_tool_runtime()
-    monkeypatch.setattr(
-        Settings,
-        "TOOL_RUNTIME_MAX_WORKERS",
-        Settings.TOOL_RUNTIME_MAX_WORKERS + 1,
-    )
+    settings_env(tool_runtime_max_workers=9)
 
     second = get_tool_runtime()
 

@@ -5,12 +5,13 @@
 
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Callable
 
 from fastapi import APIRouter, Query, Response
 
 from app.api.schemas import ChatRequest
 from app.common.logging import get_logger
+from app.config import AppSettings
 
 
 logger = get_logger("chat_service")
@@ -18,7 +19,7 @@ logger = get_logger("chat_service")
 
 @dataclass(frozen=True)
 class DiagnosticsDependencies:
-    settings: Any
+    settings_provider: Callable[[], AppSettings]
     search_result: type
     search_data: type
     search_response: type
@@ -29,7 +30,7 @@ class DiagnosticsDependencies:
     rerank: Callable
     should_refuse: Callable
     safe_float: Callable
-    route_agent_action: Callable
+    route_node: Callable
     read_recent_metrics: Callable
 
 
@@ -92,7 +93,8 @@ def create_diagnostics_router(
                     ),
                 )
 
-            top_k = req.top_k if req.top_k is not None else deps.settings.TOP_K
+            settings = deps.settings_provider()
+            top_k = req.top_k if req.top_k is not None else settings.top_k
             retrieved = deps.search_relevant_chunks(question, top_k)
             if not retrieved:
                 return deps.search_response(
@@ -211,8 +213,8 @@ def create_diagnostics_router(
                     "reason": "用户未输入问题",
                 },
             }
-        top_k = req.top_k if req.top_k is not None else deps.settings.TOP_K
-        decision = deps.route_agent_action(question, top_k)
+        route_output = deps.route_node({"effective_question": question})
+        decision = route_output["decision"]
         return {
             "code": 0,
             "message": "success",
@@ -238,11 +240,8 @@ def create_diagnostics_router(
                 "success_count": statuses.get("success", 0),
                 "no_relevant_info_count": statuses.get("no_relevant_info", 0),
                 "tool_error_count": statuses.get("tool_error", 0),
-                "model_bad_output_count": statuses.get("model_bad_output", 0),
                 "model_error_count": statuses.get("model_error", 0),
                 "clarify_count": statuses.get("clarify", 0),
-                "out_of_scope_count": statuses.get("out_of_scope", 0),
-                "empty_index_count": statuses.get("empty_index", 0),
                 "internal_error_count": statuses.get("internal_error", 0),
                 "avg_latency_ms": average("latency_ms"),
                 "avg_llm_call_count": average("llm_call_count"),

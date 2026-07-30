@@ -71,12 +71,12 @@ def search_knowledge_base(args: dict) -> dict:
     """校验检索参数并调用知识库召回流程。"""
     tool_name = "search_knowledge_base"
     try:
-        from app.config import Settings
+        from app.config import get_settings
         from app.rag import search_relevant_chunks
 
         args = args or {}
         query = str(args.get("query") or "").strip()
-        raw_top_k = args.get("top_k", Settings.TOP_K)
+        raw_top_k = args.get("top_k", get_settings().top_k)
         try:
             top_k = int(raw_top_k)
         except (TypeError, ValueError):

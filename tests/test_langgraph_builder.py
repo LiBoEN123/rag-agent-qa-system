@@ -1,148 +1,173 @@
-"""最小 LangGraph Agent 主图构建测试。"""
-
 import pytest
 
-from app.agent.state import AgentPlanStep, AgentState
+from app.agent import framework_agent
 from app.graph import builder as graph_builder
+from app.graph import conditions as graph_conditions
 from app.graph import nodes as graph_nodes
 from app.tools.context import ToolInvocationContext
+from app.tools.runtime import ToolRuntime
 
 
 @pytest.fixture(autouse=True)
 def clear_compiled_graph_cache():
-    """隔离各测试使用的已编译 Graph。"""
     graph_builder.get_compiled_agent_graph.cache_clear()
     yield
     graph_builder.get_compiled_agent_graph.cache_clear()
 
 
-def test_build_and_compile_graph_has_expected_public_nodes(monkeypatch):
-    """Graph 可无业务副作用地创建、编译，并通过公开描述接口暴露节点。"""
+def test_build_and_compile_graph_has_only_framework_execution_nodes(monkeypatch):
+    """构图无业务副作用，父图只暴露单一框架执行路径。"""
     calls: list[str] = []
 
     def fail_if_called(*args, **kwargs):
+        del args, kwargs
         calls.append("business_call")
         raise AssertionError("Graph compilation must not call business functions")
 
     monkeypatch.setattr(graph_nodes, "route_agent_action", fail_if_called)
-    monkeypatch.setattr(graph_nodes, "build_plan_from_decision", fail_if_called)
-    monkeypatch.setattr(graph_nodes, "execute_plan", fail_if_called)
-    monkeypatch.setattr(graph_nodes, "compose_final_answer", fail_if_called)
+    monkeypatch.setattr(
+        graph_nodes,
+        "build_compose_answer_updates",
+        fail_if_called,
+    )
     monkeypatch.setattr(graph_nodes, "maybe_save_agent_trace", fail_if_called)
 
-    uncompiled = graph_builder.build_agent_graph()
-    compiled = uncompiled.compile()
-    node_names = set(compiled.get_graph().nodes)
+    graph = graph_builder.build_agent_graph().compile().get_graph()
+    node_names = {name for name in graph.nodes if not name.startswith("__")}
+    edges = {(edge.source, edge.target) for edge in graph.edges}
 
     assert calls == []
-    assert {
+    assert not hasattr(graph_conditions, "route_condition")
+    assert node_names == {
         "route",
         "initialize",
-        "plan",
-        "execute",
+        "framework_agent",
+        "adapt_framework",
         "rag_subgraph",
         "compose",
         "finalize",
-    } <= node_names
-
-
-@pytest.mark.parametrize("provide_decision", [True, False])
-def test_compiled_graph_invokes_each_stage_once(monkeypatch, provide_decision):
-    """有无外部 decision 时，Graph 都只执行一次必要的业务阶段。"""
-    calls = {
-        "route": 0,
-        "plan": 0,
-        "execute": 0,
-        "compose": 0,
-        "finalize": 0,
     }
-    decision = {
-        "decision": "direct_answer",
-        "action": "direct_answer",
-        "reason": "能力说明",
-        "router_source": "rule_based",
-        "router_llm_used": False,
-    }
+    assert {"plan", "execute"}.isdisjoint(node_names)
+    assert ("__start__", "route") in edges
+    assert ("__start__", "initialize") not in edges
+    assert ("route", "initialize") in edges
+    assert ("framework_agent", "adapt_framework") in edges
+    assert ("rag_subgraph", "finalize") in edges
+    assert ("compose", "finalize") in edges
 
-    def fake_route(question, top_k, trace_id=""):
-        calls["route"] += 1
-        assert question == "你能做什么？"
-        assert top_k == 5
-        assert trace_id == "trace-graph"
-        return decision
 
-    def fake_plan(decision, question, top_k):
-        calls["plan"] += 1
-        assert decision["action"] == "direct_answer"
-        return [
-            AgentPlanStep(
-                step_id=1,
-                action="direct_answer",
-                reason="能力说明",
-            )
-        ]
+@pytest.mark.parametrize(
+    ("question", "injected_decision", "expected_status"),
+    [
+        (
+            "你能做什么？",
+            {"decision": "clarify", "action": "clarify"},
+            "OK",
+        ),
+        (
+            "这个怎么配置",
+            {"decision": "direct_answer", "action": "direct_answer"},
+            "NEED_CLARIFICATION",
+        ),
+    ],
+)
+def test_short_circuits_do_not_initialize_or_call_agent_model(
+    monkeypatch,
+    question,
+    injected_decision,
+    expected_status,
+):
+    """route 覆盖旧注入后，direct_answer 与 clarify 直接进入 compose。"""
 
-    tool_context = ToolInvocationContext(
-        trace_id="trace-graph",
-        principal_id="graph-test",
-        permissions=("knowledge_base:read",),
-    )
+    def fail_model():
+        raise AssertionError("short circuit must not initialize Agent Model")
 
-    def fake_execute(state, *, context):
-        calls["execute"] += 1
-        assert isinstance(state, AgentState)
-        assert state.session_id == "session-graph"
-        assert context is tool_context
-        state.status = "direct_answer"
-        state.reason = "能力说明"
-        return state
-
-    def fake_compose(state):
-        calls["compose"] += 1
-        state.final_answer = "Graph answer"
-        return state
-
-    original_build_result = graph_nodes.build_v2_result
-
-    def counted_build_result(state, current_decision):
-        calls["finalize"] += 1
-        return original_build_result(state, current_decision)
-
-    monkeypatch.setattr(graph_nodes, "route_agent_action", fake_route)
-    monkeypatch.setattr(graph_nodes, "build_plan_from_decision", fake_plan)
-    monkeypatch.setattr(graph_nodes, "execute_plan", fake_execute)
-    monkeypatch.setattr(graph_nodes, "compose_final_answer", fake_compose)
-    monkeypatch.setattr(graph_nodes, "build_v2_result", counted_build_result)
-    monkeypatch.setattr(graph_nodes, "maybe_save_agent_trace", lambda **kwargs: None)
-
-    graph_input = {
-        "original_question": "你能做什么？",
-        "effective_question": "你能做什么？",
-        "top_k": 5,
-        "decompose_top_k": 10,
-        "decision": decision if provide_decision else None,
-        "trace_id": "trace-graph",
-        "session_id": "session-graph",
-    }
+    monkeypatch.setattr(framework_agent, "get_agent_chat_model", fail_model)
     output = graph_builder.build_agent_graph().compile().invoke(
-        graph_input,
-        context=tool_context,
+        {
+            "original_question": question,
+            "effective_question": question,
+            "top_k": 5,
+            "decompose_top_k": 10,
+            "decision": injected_decision,
+            "trace_id": "trace-short",
+        },
+        context=ToolInvocationContext(trace_id="trace-short"),
     )
 
+    assert output["result"]["status"] == expected_status
+    assert output["iteration_count"] == 0
+    assert output["tool_call_count"] == 0
+    assert output["governance_events"] == []
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        "rag_fast_path",
+        "search_knowledge_base",
+        "simple_calculator",
+        "use_tool",
+        "unknown_action",
+    ],
+)
+def test_legacy_route_actions_fail_closed_without_model_or_tool(
+    monkeypatch,
+    action,
+):
+    """旧注入 action 被图内 Router 覆盖，不能触发模型或工具。"""
+    calls = {"model": 0, "tool": 0}
+
+    def fail_model():
+        calls["model"] += 1
+        raise AssertionError("legacy action must not initialize Agent Model")
+
+    def fail_tool(self, tool_name, tool_args=None, *, context=None):
+        del self, tool_name, tool_args, context
+        calls["tool"] += 1
+        raise AssertionError("legacy action must not execute a tool")
+
+    monkeypatch.setattr(framework_agent, "get_agent_chat_model", fail_model)
+    monkeypatch.setattr(ToolRuntime, "execute", fail_tool)
+    output = graph_builder.build_agent_graph().compile().invoke(
+        {
+            "original_question": "你能做什么？",
+            "effective_question": "你能做什么？",
+            "top_k": 5,
+            "decompose_top_k": 10,
+            "decision": {
+                "decision": "use_tool",
+                "action": action,
+                "tool_name": "simple_calculator",
+                "tool_args": {"expression": "1+2"},
+            },
+            "trace_id": "trace-unsupported",
+        },
+        context=ToolInvocationContext(trace_id="trace-unsupported"),
+    )
+
+    assert calls == {"model": 0, "tool": 0}
+    assert output["decision"]["action"] == "direct_answer"
     assert output["result"]["status"] == "OK"
-    assert output["result"]["answer"] == "Graph answer"
-    assert calls == {
-        "route": 0 if provide_decision else 1,
-        "plan": 1,
-        "execute": 1,
-        "compose": 1,
-        "finalize": 1,
-    }
 
 
 def test_get_compiled_agent_graph_reuses_compiled_instance():
-    """同一进程内不会为每次请求重复构建和编译主图。"""
     first = graph_builder.get_compiled_agent_graph()
     second = graph_builder.get_compiled_agent_graph()
 
     assert first is second
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("running", "framework_agent"),
+        ("ok", "compose"),
+        ("clarify", "compose"),
+        (None, "compose"),
+    ],
+)
+def test_after_initialize_condition_reads_flat_status(status, expected):
+    state = {} if status is None else {"status": status}
+
+    assert graph_conditions.after_initialize_condition(state) == expected

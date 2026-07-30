@@ -1,8 +1,8 @@
 import app.rag as rag
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from app.tools import compare_documents as compare_documents_module
-from app.tools import dispatch as tool_dispatch
+import app.tools.compare_documents as compare_documents_module
+import app.tools.dispatch as tool_dispatch
 
 
 compare_documents_tool = compare_documents_module.compare_documents_tool

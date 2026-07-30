@@ -3,7 +3,7 @@
 根据多路检索分数判断是否拒答，并为模糊问题生成针对性的澄清追问。
 """
 
-from app.config import Settings
+from app.config import get_settings
 from app.rag.scoring import safe_float
 
 
@@ -23,7 +23,7 @@ def should_refuse(retrieved_chunks, vector_threshold: float = None):
     threshold = safe_float(
         vector_threshold
         if vector_threshold is not None
-        else Settings.VECTOR_THRESHOLD
+        else get_settings().vector_threshold
     )
     threshold = max(0.0, threshold)
     candidates = [

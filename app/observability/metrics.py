@@ -5,14 +5,12 @@
 
 import json
 from datetime import datetime
-from pathlib import Path
 
 from app.common.logging import get_logger
+from app.config import get_settings
 
 
 logger = get_logger("chat_service")
-METRICS_PATH = Path("logs") / "metrics.jsonl"
-BAD_CASES_PATH = Path("logs") / "bad_cases.jsonl"
 
 REAL_BAD_CASE = {
     "tool_error",
@@ -58,20 +56,6 @@ def should_write_bad_case(record: dict) -> bool:
         error_type,
     )
     return False
-
-
-def normalize_metrics_status(result_status: str) -> str:
-    """把内部业务状态映射为指标统计使用的状态名称。"""
-    return {
-        "OK": "success",
-        "NO_RELEVANT_INFO": "no_relevant_info",
-        "TOOL_ERROR": "tool_error",
-        "MODEL_BAD_OUTPUT": "model_bad_output",
-        "NEED_CLARIFICATION": "clarify",
-        "OUT_OF_SCOPE": "out_of_scope",
-        "MODEL_ERROR": "model_error",
-        "INTERNAL_ERROR": "internal_error",
-    }.get(result_status, "internal_error")
 
 
 def extract_llm_usage(
@@ -120,12 +104,25 @@ def collect_trace_metrics(result: dict) -> dict:
     tool_called = False
     tool_success = False
     tool_name = ""
-    real_tools = {"simple_calculator", "list_documents", "get_chunk_text"}
+    route_cost_ms = 0
+    real_tools = {
+        "simple_calculator",
+        "list_documents",
+        "get_chunk_text",
+        "web_search",
+        "web_fetch",
+        "web_pdf_fetch",
+    }
     rag_timings = result.get("timings")
     if not isinstance(rag_timings, dict):
         rag_timings = {}
 
     for step in tool_trace:
+        if step.get("step") == "decide":
+            route_cost_ms = max(
+                0,
+                int(step.get("route_cost_ms", 0) or 0),
+            )
         current_tool_name = step.get("tool_name", "")
         if current_tool_name == "search_knowledge_base":
             retrieved_count = step.get("final_chunk_count", retrieved_count)
@@ -146,6 +143,7 @@ def collect_trace_metrics(result: dict) -> dict:
         "tool_called": tool_called,
         "tool_success": tool_success,
         "tool_name": tool_name,
+        "route_cost_ms": route_cost_ms,
         **extract_llm_usage(
             tool_trace,
             router_llm_used=bool(result.get("router_llm_used", False)),
@@ -180,20 +178,14 @@ def attach_query_rewrite_trace(result: dict, rewrite_trace: dict) -> dict:
     if not any(step.get("step") == "query_rewrite" for step in tool_trace):
         tool_trace.insert(0, rewrite_trace)
     result["tool_trace"] = tool_trace
-    result["query_rewrite_used"] = bool(rewrite_trace.get("rewritten", False))
-    result["query_rewrite_llm_used"] = bool(
-        rewrite_trace.get("rewrite_llm_used", False)
-    )
-    result["effective_question_len"] = len(
-        rewrite_trace.get("rewritten_question", "") or ""
-    )
     return result
 
 
 def write_metrics(record: dict) -> None:
     """将单条请求指标追加写入 JSONL 文件。"""
-    METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with METRICS_PATH.open("a", encoding="utf-8") as file:
+    path = get_settings().metrics_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as file:
         file.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
@@ -208,7 +200,8 @@ def write_bad_cases(record: dict) -> None:
         )
         return
 
-    BAD_CASES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    path = get_settings().bad_cases_path
+    path.parent.mkdir(parents=True, exist_ok=True)
     normalized_record = {
         "created_at": now_iso(),
         "trace_id": record.get("trace_id", ""),
@@ -219,7 +212,7 @@ def write_bad_cases(record: dict) -> None:
         "error_type": record.get("error_type", ""),
         "note": record.get("note", ""),
     }
-    with BAD_CASES_PATH.open("a", encoding="utf-8") as file:
+    with path.open("a", encoding="utf-8") as file:
         file.write(json.dumps(normalized_record, ensure_ascii=False) + "\n")
 
 
@@ -246,10 +239,11 @@ def log_and_write_metrics(record: dict) -> None:
 
 def read_recent_metrics(limit: int = 20) -> list[dict]:
     """读取最近指定数量的有效指标记录。"""
-    if not METRICS_PATH.exists():
+    path = get_settings().metrics_path
+    if not path.exists():
         return []
     records = []
-    for line in METRICS_PATH.read_text(encoding="utf-8").splitlines()[-limit:]:
+    for line in path.read_text(encoding="utf-8").splitlines()[-limit:]:
         try:
             records.append(json.loads(line))
         except json.JSONDecodeError:

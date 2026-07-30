@@ -112,20 +112,23 @@ def load_chunks_file_index(chunks_file: Path | None) -> ChunkIndex:
 def load_chroma_index(chroma_persist_dir: Path | None, chroma_collection_name: str | None) -> ChunkIndex:
     """从当前 ChromaDB collection 读取 chunk 文本和 metadata。"""
     try:
-        from app.config import Settings
+        from app.config import get_settings
 
+        settings = get_settings()
+        updates = {}
         if chroma_persist_dir is not None:
-            Settings.CHROMA_PERSIST_DIR = (
+            updates["chroma_persist_dir"] = (
                 chroma_persist_dir
                 if chroma_persist_dir.is_absolute()
                 else PROJECT_ROOT / chroma_persist_dir
             )
         if chroma_collection_name:
-            Settings.CHROMA_COLLECTION_NAME = chroma_collection_name
+            updates["chroma_collection_name"] = chroma_collection_name
+        settings = settings.model_copy(update=updates)
 
         from app.rag.chroma import load_chunks_from_chroma
 
-        chunks = load_chunks_from_chroma()
+        chunks = load_chunks_from_chroma(settings)
         return chunks_to_index(chunks, source="chroma")
     except Exception as exc:
         warn(f"failed to load chunks from ChromaDB: {exc}")
@@ -298,15 +301,15 @@ def score_retrieval(
         "retrieved_chunk_ids": retrieved,
         "retrieved_chunk_ids_at_k": retrieved_at_k,
         "retrieved_doc_ids": retrieved_docs,
-        # Legacy loose metric: any retrieved chunk contains a gold evidence snippet.
+        # 旧版宽松指标：任一召回分块包含标准证据片段即视为命中。
         "chunk_hit_at_k": evidence_hit,
 
-        # Legacy loose metric: fraction of gold evidence snippets covered by retrieved chunks.
+        # 旧版宽松指标：召回分块所覆盖的标准证据片段比例。
         "chunk_recall_at_k": evidence_recall,
         "evidence_recall_at_k": evidence_recall,
         "all_evidence_hit_at_k": all_evidence_hit,
 
-        # Strict chunk-id metrics against gold chunks resolved in the current index.
+        # 严格分块标识指标：与当前索引中解析出的标准分块比较。
         "gold_chunk_hit_at_k": gold_chunk_hit,
         "gold_chunk_recall_at_k": gold_chunk_recall,
         "all_gold_hit_at_k": all_gold_hit,

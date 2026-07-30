@@ -1,0 +1,187 @@
+"""聊天 telemetry 的纯数据合并与安全持久化测试。"""
+
+from copy import deepcopy
+
+from app.contracts.chat import get_chat_status_policy
+from app.services.chat_models import ChatRequestContext, ChatServiceRequest
+from app.services.chat_telemetry import (
+    apply_result_metrics,
+    build_initial_bad_case,
+    build_initial_chat_metrics,
+    finalize_chat_telemetry,
+    format_tool_call_chain,
+    safe_write_bad_case,
+)
+
+
+def make_context() -> ChatRequestContext:
+    request = ChatServiceRequest(
+        question="测试问题",
+        top_k=None,
+        decompose_top_k=None,
+        session_id="session-1",
+        trace_id="trace-1",
+        request_enter_time="2026-07-29T10:00:00.000",
+        request_enter_perf=9.5,
+    )
+    return ChatRequestContext(
+        request=request,
+        process_start_perf=10.0,
+        process_start_time="2026-07-29T10:00:00.500",
+        request_enter_perf=9.5,
+        original_question="测试问题",
+        session_id="session-1",
+        effective_question="测试问题",
+        metrics={},
+        bad_case={},
+    )
+
+
+def test_initial_metrics_and_bad_case_keep_current_contract():
+    context = make_context()
+
+    metrics = build_initial_chat_metrics(
+        context,
+        request_enter_time=context.request.request_enter_time,
+        queue_wait_ms=500,
+    )
+    bad_case = build_initial_bad_case(
+        context,
+        created_at="2026-07-29T10:00:00.500",
+    )
+
+    assert metrics["trace_id"] == "trace-1"
+    assert metrics["queue_wait_ms"] == 500
+    assert metrics["status"] == "internal_error"
+    assert metrics["router_llm_used"] is False
+    assert metrics["effective_question_len"] == 4
+    assert "rag_ready_check" + "_cost_ms" not in metrics
+    assert bad_case == {
+        "created_at": "2026-07-29T10:00:00.500",
+        "trace_id": "trace-1",
+        "question": "测试问题",
+        "answer": "",
+        "references": [],
+        "route": "",
+        "error_type": "",
+        "note": "",
+    }
+
+
+def test_format_tool_call_chain_handles_none_and_preserves_order():
+    assert format_tool_call_chain([]) == "none"
+    assert format_tool_call_chain(
+        [
+            {"step": "decide", "action": "agent"},
+            {
+                "step": "tool_call",
+                "tool_name": " web_search ",
+                "tool_status": "success",
+                "cost_ms": 12,
+            },
+            {
+                "step": "tool_call",
+                "tool_name": "web_fetch",
+                "tool_status": " error ",
+                "cost_ms": -5,
+            },
+        ]
+    ) == "web_search(success,12ms) -> web_fetch(error,0ms)"
+
+
+def test_apply_result_metrics_merges_timings_without_mutating_result():
+    context = make_context()
+    context.metrics = build_initial_chat_metrics(
+        context,
+        request_enter_time=context.request.request_enter_time,
+        queue_wait_ms=500,
+    )
+    result = {
+        "status": "OK",
+        "references": [{"reference_id": "Reference 1"}],
+        "action": "agent",
+        "reason": "证据充分",
+    }
+    original = deepcopy(result)
+    trace_metrics = {
+        "retrieved_count": 4,
+        "tool_called": True,
+        "tool_success": True,
+        "tool_name": "web_fetch",
+        "router_llm_used": False,
+        "decompose_llm_used": True,
+        "answer_llm_used": True,
+        "llm_call_count": 2,
+        "route_cost_ms": 7,
+        "timings": {
+            "retrieve_cost_ms": 11,
+            "decompose_cost_ms": 12,
+            "rerank_cost_ms": 13,
+            "rag_answer_cost_ms": 14,
+        },
+    }
+
+    apply_result_metrics(
+        context.metrics,
+        result,
+        trace_metrics,
+        get_chat_status_policy("OK"),
+    )
+
+    assert result == original
+    assert context.metrics["status"] == "success"
+    assert context.metrics["reference_count"] == 1
+    assert context.metrics["route_cost_ms"] == 7
+    assert context.metrics["retrieve_cost_ms"] == 11
+    assert context.metrics["decompose_cost_ms"] == 12
+    assert context.metrics["rerank_cost_ms"] == 13
+    assert context.metrics["rag_answer_cost_ms"] == 14
+    assert context.metrics["llm_call_count"] == 2
+
+
+def test_finalize_calculates_latency_total_cost_and_writes_once():
+    context = make_context()
+    context.metrics = build_initial_chat_metrics(
+        context,
+        request_enter_time=context.request.request_enter_time,
+        queue_wait_ms=500,
+    )
+    writes = []
+
+    finalize_chat_telemetry(
+        context,
+        now_iso=lambda: "2026-07-29T10:00:00.625",
+        perf_counter=lambda: 10.125,
+        log_and_write_metrics=lambda record: writes.append(dict(record)),
+    )
+
+    assert context.metrics["latency_ms"] == 125
+    assert context.metrics["total_cost_ms"] == 625
+    assert context.metrics["end_time"] == "2026-07-29T10:00:00.625"
+    assert writes == [context.metrics]
+
+
+def test_metrics_and_bad_case_write_failures_do_not_escape():
+    context = make_context()
+    context.metrics = build_initial_chat_metrics(
+        context,
+        request_enter_time=context.request.request_enter_time,
+        queue_wait_ms=500,
+    )
+
+    def fail(_record):
+        raise RuntimeError("storage unavailable")
+
+    safe_write_bad_case(
+        {"trace_id": "trace-1"},
+        trace_id="trace-1",
+        write_bad_cases=fail,
+    )
+    finalize_chat_telemetry(
+        context,
+        now_iso=lambda: "2026-07-29T10:00:00.625",
+        perf_counter=lambda: 10.125,
+        log_and_write_metrics=fail,
+    )
+
+    assert context.metrics["latency_ms"] == 125

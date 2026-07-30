@@ -3,12 +3,17 @@
 from collections.abc import Callable
 from typing import Any
 
+from app.agent.results import (
+    build_internal_error_result,
+    validate_agent_result_payload,
+)
 from app.agent.runtime import (
     _write_internal_bad_case,
-    build_internal_error_result,
     maybe_save_agent_trace,
+    validate_runtime_counts,
 )
 from app.common.logging import get_logger
+from app.config import get_settings
 from app.graph.builder import get_compiled_agent_graph
 from app.graph.checkpointing import (
     build_checkpoint_thread_id,
@@ -27,7 +32,6 @@ def run_agent_langgraph(
     write_bad_cases: Callable[[dict[str, Any]], None] | None,
     top_k: int,
     decompose_top_k: int,
-    decision: dict[str, Any] | None = None,
     trace_id: str = "",
     session_id: str | None = None,
     bad_case: dict[str, Any] | None = None,
@@ -37,26 +41,30 @@ def run_agent_langgraph(
     tool_context: ToolInvocationContext | None = None,
 ) -> dict[str, Any]:
     """同步执行 LangGraph 主图，并返回 API 主流程使用的结果字典。"""
+    settings = get_settings()
     resolved_original_question = (original_question or "").strip()
     resolved_effective_question = (effective_question or "").strip()
-    decision_for_error = decision if isinstance(decision, dict) else {}
-    graph_input: dict[str, Any] = {
-        "original_question": resolved_original_question,
-        "effective_question": resolved_effective_question,
-        "top_k": top_k,
-        "decompose_top_k": decompose_top_k,
-        "decision": decision,
-        "trace_id": trace_id,
-        "session_id": session_id,
-    }
     resolved_tool_context = tool_context or build_default_tool_context(
         trace_id=trace_id,
         session_id=session_id or "",
         source="chat_api",
+        settings=settings,
     )
 
     try:
-        mode = get_checkpointer_mode()
+        resolved_top_k, resolved_decompose_top_k = validate_runtime_counts(
+            top_k=top_k,
+            decompose_top_k=decompose_top_k,
+        )
+        graph_input: dict[str, Any] = {
+            "original_question": resolved_original_question,
+            "effective_question": resolved_effective_question,
+            "top_k": resolved_top_k,
+            "decompose_top_k": resolved_decompose_top_k,
+            "trace_id": trace_id,
+            "session_id": session_id,
+        }
+        mode = get_checkpointer_mode(settings)
         checkpointer_enabled = mode != "disabled"
         checkpoint_thread_id = (
             build_checkpoint_thread_id(
@@ -74,25 +82,33 @@ def run_agent_langgraph(
             mode if checkpointer_enabled else "disabled",
             checkpoint_thread_id or "-",
         )
-        graph = get_compiled_agent_graph()
+        graph = get_compiled_agent_graph(settings)
+        graph_config: dict[str, Any] = {
+            "recursion_limit": max(
+                25,
+                settings.agent_max_iterations * 8 + 20,
+            ),
+            "max_concurrency": 1,
+        }
         if checkpointer_enabled:
+            graph_config["configurable"] = {
+                "thread_id": checkpoint_thread_id,
+            }
             output = graph.invoke(
                 graph_input,
-                config={
-                    "configurable": {
-                        "thread_id": checkpoint_thread_id,
-                    }
-                },
+                config=graph_config,
                 context=resolved_tool_context,
             )
         else:
             output = graph.invoke(
                 graph_input,
+                config=graph_config,
                 context=resolved_tool_context,
             )
         result = output.get("result") if isinstance(output, dict) else None
         if not isinstance(result, dict):
             raise RuntimeError("LangGraph did not produce a valid result")
+        result = validate_agent_result_payload(result)
 
         logger.info(
             "[trace_id=%s] [agent] langgraph_graph_end status=%s",
@@ -116,7 +132,6 @@ def run_agent_langgraph(
         )
         result = build_internal_error_result(
             exc,
-            decision_for_error,
             runtime_label="LangGraph Agent",
             trace_step="agent_langgraph_error",
         )

@@ -8,7 +8,7 @@ import time
 from typing import Any
 
 from app.common.logging import get_logger
-from app.config import Settings
+from app.config import get_settings
 from app.llm.errors import ModelCallError
 from app.prompts import NO_ANSWER_FALLBACK
 from app.rag.citations import verify_answer_citations
@@ -80,13 +80,14 @@ def validate_question_node(state: RAGGraphState) -> dict[str, Any]:
 
 def decompose_node(state: RAGGraphState) -> dict[str, Any]:
     """按旧判断顺序执行可选 Query Decompose，并保留失败回退。"""
+    settings = get_settings()
     question = state.get("question", "")
     trace_id = state.get("trace_id", "")
     timings = _timings(state)
     decompose_cost_ms = 0
     decompose_llm_used = False
 
-    if not Settings.ENABLE_QUERY_DECOMPOSE:
+    if not settings.enable_query_decompose:
         decompose_result = default_decompose_result("query decomposition disabled")
         timings["decompose_skipped_reason"] = "disabled"
         logger.info(
@@ -107,7 +108,7 @@ def decompose_node(state: RAGGraphState) -> dict[str, Any]:
                 trace_id,
                 decompose_rule_reason,
             )
-        elif not Settings.DECOMPOSE_MODEL_NAME or not Settings.DECOMPOSE_API_URL:
+        elif not settings.decompose_model_name or not settings.decompose_api_url:
             decompose_result = default_decompose_result(
                 "query decomposition not configured"
             )
@@ -159,11 +160,12 @@ def decompose_node(state: RAGGraphState) -> dict[str, Any]:
 
 def retrieve_and_rerank_node(state: RAGGraphState) -> dict[str, Any]:
     """选择单查询重排或现有多查询检索门面，避免重复基础召回。"""
+    settings = get_settings()
     question = state.get("question", "")
     trace_id = state.get("trace_id", "")
-    top_k = int(state.get("top_k", Settings.TOP_K))
+    top_k = int(state.get("top_k", settings.top_k))
     decompose_top_k = int(
-        state.get("decompose_top_k", Settings.DECOMPOSE_TOP_K)
+        state.get("decompose_top_k", settings.decompose_top_k)
     )
     decompose_result = state.get("decompose_result") or default_decompose_result()
     timings = _timings(state)
@@ -259,10 +261,11 @@ def evidence_gate_node(state: RAGGraphState) -> dict[str, Any]:
 
 def build_context_node(state: RAGGraphState) -> dict[str, Any]:
     """使用现有格式构造回答上下文，并仅记录长度和耗时。"""
+    settings = get_settings()
     start = time.perf_counter()
     context = build_context(
         state.get("final_chunks") or [],
-        Settings.MAX_CONTEXT_CHARS,
+        settings.max_context_chars,
     )
     cost_ms = int((time.perf_counter() - start) * 1000)
     timings = _timings(state)

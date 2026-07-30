@@ -7,7 +7,7 @@ from functools import lru_cache
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from app.config import Settings
+from app.config import get_settings, secret_value
 from app.llm.errors import ModelCallError
 
 try:
@@ -98,44 +98,31 @@ def _create_model(
 @lru_cache(maxsize=1)
 def get_answer_model() -> Any | None:
     """返回 RAG 最终回答模型。"""
+    settings = get_settings()
     return _create_model(
         role="answer",
-        api_key=Settings.LLM_API_KEY,
-        api_url=Settings.LLM_API_URL,
-        model_name=Settings.MODEL_NAME,
-        temperature=Settings.TEMPERATURE,
-        max_tokens=Settings.LLM_MAX_TOKENS,
-        timeout=Settings.LLM_TIMEOUT,
-        max_retries=Settings.LLM_MAX_RETRIES,
-    )
-
-
-@lru_cache(maxsize=1)
-def get_router_model() -> Any | None:
-    """返回 Agent Router 模型。"""
-    return _create_model(
-        role="router",
-        api_key=Settings.ROUTER_API_KEY or Settings.LLM_API_KEY,
-        api_url=Settings.ROUTER_API_URL,
-        model_name=Settings.ROUTER_MODEL_NAME,
-        temperature=Settings.ROUTER_TEMPERATURE,
-        max_tokens=Settings.ROUTER_MAX_TOKENS,
-        timeout=Settings.ROUTER_TIMEOUT,
-        max_retries=Settings.ROUTER_MAX_RETRIES,
+        api_key=secret_value(settings.llm_api_key),
+        api_url=settings.llm_api_url,
+        model_name=settings.model_name,
+        temperature=settings.temperature,
+        max_tokens=settings.llm_max_tokens,
+        timeout=settings.llm_timeout,
+        max_retries=settings.llm_max_retries,
     )
 
 
 @lru_cache(maxsize=1)
 def get_query_rewrite_model() -> Any | None:
     """返回多轮 Query Rewrite 模型。"""
+    settings = get_settings()
     return _create_model(
         role="query_rewrite",
-        api_key=Settings.QUERY_REWRITE_API_KEY or Settings.LLM_API_KEY,
-        api_url=Settings.QUERY_REWRITE_API_URL,
-        model_name=Settings.QUERY_REWRITE_MODEL_NAME,
-        temperature=Settings.QUERY_REWRITE_TEMPERATURE,
-        max_tokens=Settings.QUERY_REWRITE_MAX_TOKENS,
-        timeout=Settings.QUERY_REWRITE_TIMEOUT,
+        api_key=secret_value(settings.query_rewrite_api_key_resolved),
+        api_url=settings.query_rewrite_api_url_resolved,
+        model_name=settings.query_rewrite_model_name_resolved,
+        temperature=settings.query_rewrite_temperature,
+        max_tokens=settings.query_rewrite_max_tokens,
+        timeout=settings.query_rewrite_timeout,
         max_retries=0,
     )
 
@@ -143,14 +130,15 @@ def get_query_rewrite_model() -> Any | None:
 @lru_cache(maxsize=1)
 def get_decompose_model() -> Any | None:
     """返回 Query Decompose 模型，并保留其现有独立 Key 语义。"""
+    settings = get_settings()
     return _create_model(
         role="decompose",
-        api_key=Settings.DECOMPOSE_API_KEY,
-        api_url=Settings.DECOMPOSE_API_URL,
-        model_name=Settings.DECOMPOSE_MODEL_NAME,
+        api_key=secret_value(settings.decompose_api_key),
+        api_url=settings.decompose_api_url,
+        model_name=settings.decompose_model_name,
         temperature=0.0,
-        max_tokens=Settings.DECOMPOSE_MAX_TOKENS,
-        timeout=Settings.DECOMPOSE_TIMEOUT,
+        max_tokens=settings.decompose_max_tokens,
+        timeout=settings.decompose_timeout,
         max_retries=0,
     )
 
@@ -158,15 +146,16 @@ def get_decompose_model() -> Any | None:
 @lru_cache(maxsize=1)
 def get_compare_model() -> Any | None:
     """返回文档对比模型，并保留其独立推理参数。"""
+    settings = get_settings()
     return _create_model(
         role="compare",
-        api_key=Settings.LLM_API_KEY,
-        api_url=Settings.LLM_API_URL,
-        model_name=Settings.MODEL_NAME,
+        api_key=secret_value(settings.llm_api_key),
+        api_url=settings.llm_api_url,
+        model_name=settings.model_name,
         temperature=0.0,
-        max_tokens=min(Settings.LLM_MAX_TOKENS, 1024),
-        timeout=Settings.LLM_TIMEOUT,
-        max_retries=Settings.LLM_MAX_RETRIES,
+        max_tokens=min(settings.llm_max_tokens, 1024),
+        timeout=settings.llm_timeout,
+        max_retries=settings.llm_max_retries,
     )
 
 
@@ -182,20 +171,25 @@ def get_judge_model(
     max_retries: int | None = None,
 ) -> Any | None:
     """返回离线评测 Judge 模型，并允许保留 CLI 配置覆盖。"""
+    settings = get_settings()
     return _create_model(
         role="judge",
         api_key=(
-            Settings.JUDGE_API_KEY or Settings.LLM_API_KEY
+            secret_value(settings.judge_api_key_resolved)
             if api_key is None
             else api_key
         ),
-        api_url=Settings.JUDGE_API_URL if api_url is None else api_url,
-        model_name=Settings.JUDGE_MODEL if model_name is None else model_name,
+        api_url=settings.judge_api_url_resolved if api_url is None else api_url,
+        model_name=settings.judge_model if model_name is None else model_name,
         temperature=0.0 if temperature is None else temperature,
-        max_tokens=Settings.JUDGE_MAX_TOKENS if max_tokens is None else max_tokens,
-        timeout=Settings.JUDGE_TIMEOUT if timeout is None else timeout,
+        max_tokens=(
+            settings.judge_max_tokens if max_tokens is None else max_tokens
+        ),
+        timeout=(
+            settings.judge_timeout_resolved if timeout is None else timeout
+        ),
         max_retries=(
-            Settings.JUDGE_MAX_RETRIES if max_retries is None else max_retries
+            settings.judge_max_retries if max_retries is None else max_retries
         ),
     )
 
@@ -203,7 +197,6 @@ def get_judge_model(
 def clear_model_factory_cache() -> None:
     """清理全部角色的模型缓存，供测试或配置刷新使用。"""
     get_answer_model.cache_clear()
-    get_router_model.cache_clear()
     get_query_rewrite_model.cache_clear()
     get_decompose_model.cache_clear()
     get_compare_model.cache_clear()

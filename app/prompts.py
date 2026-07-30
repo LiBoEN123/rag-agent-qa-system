@@ -1,3 +1,4 @@
+
 """
 集中管理 RAG 项目中的 Prompt。
 
@@ -98,59 +99,6 @@ DECOMPOSE_PROMPT = """
 {"need_decompose":true,"reason":"简短原因","sub_queries":[{"id":1,"sub_question":"子问题","search_query":"检索查询关键词","must_answer":true}]}
 """
 
-ROUTER_SYSTEM_PROMPT = """
-你是一个 RAG Agent 的路由决策器。你只负责选择下一步动作，不负责回答知识库问题。
-
-可选 action：
-1. search_knowledge_base：用户询问知识库、文档内容、技术概念、流程说明、项目资料等。
-2. simple_calculator：用户明确要求进行简单四则运算。
-3. list_documents：用户询问知识库有哪些文档、文档数量、文档列表。
-4. get_chunk_text：用户明确要求查看某个 chunk_id 的原文。
-5. clarify：问题为空、指代不明、缺少必要对象或无法判断用户想问什么。
-6. direct_answer：用户询问系统能力，例如你是谁、你能做什么。
-
-决策规则：
-- 只能选择上述 action，不要编造工具名。
-- 如果需要调用工具，tool_name 必须等于 action。
-- search_knowledge_base 是标准工具，tool_name 必须等于 "search_knowledge_base"。
-- 不要回答用户问题，只返回路由 JSON。
-- 不确定时优先选择 search_knowledge_base。
-- 不要编造 chunk_id；只有用户明确给出 chunk_id 或类似“第 3 个 chunk”时，才选择 get_chunk_text。
-- simple_calculator 只用于明确数学计算；如果用户问知识库中的数字含义，选择 search_knowledge_base。
-- 选择 search_knowledge_base 时，tool_args.query 使用用户原问题，tool_args.top_k 使用接口传入 top_k。
-
-decision 与 action 的对应关系：
-- search_knowledge_base -> use_knowledge_base
-- simple_calculator/list_documents/get_chunk_text -> use_tool
-- clarify -> clarify
-- direct_answer -> direct_answer
-
-只输出合法 JSON，不要输出 Markdown，不要输出代码块，不要输出额外解释。
-输出格式：
-{
-  "decision": "use_knowledge_base | use_tool | clarify | direct_answer",
-  "action": "search_knowledge_base | simple_calculator | list_documents | get_chunk_text | clarify | direct_answer",
-  "tool_name": "需要工具时填写 action；clarify/direct_answer 时为空字符串",
-  "tool_args": {},
-  "reason": "简短说明为什么这样路由",
-  "clarification_question": "需要澄清时填写，否则为空字符串",
-  "confidence": 0.0
-}
-"""
-
-ROUTER_USER_PROMPT = """用户问题：
-{question}
-
-接口传入 top_k：{top_k}
-
-可选 action：
-{available_actions}
-
-可用工具及参数：
-{tool_specs}
-
-请只输出一个合法 JSON。
-"""
 # 用户提示模板：把“用户问题”和“检索到的上下文”按统一结构传给模型
 USER_PROMPT = """用户问题：
 {question}

@@ -7,7 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.config import Settings
+from app.config import ensure_model_cache_dir, get_settings
 
 
 def cache_model(model_name: str, cache_dir: Path) -> None:
@@ -26,11 +26,13 @@ def cache_model(model_name: str, cache_dir: Path) -> None:
 
 
 def main() -> None:
-    cache_dir = Settings.ensure_model_cache_dir()
+    """读取应用配置并依次缓存嵌入与重排模型。"""
+    settings = get_settings()
+    cache_dir = ensure_model_cache_dir(settings)
     print(f"[model-cache] cache_dir={cache_dir}", flush=True)
     for role, model_name in (
-        ("embedding", Settings.EMBEDDING_MODEL_NAME),
-        ("rerank", Settings.RERANK_MODEL_NAME),
+        ("embedding", settings.embedding_model_name),
+        ("rerank", settings.rerank_model_name),
     ):
         try:
             cache_model(model_name, cache_dir)

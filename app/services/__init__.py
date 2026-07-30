@@ -1,20 +1,3 @@
-"""应用服务层公共入口。"""
+"""应用服务包；调用方应从具体职责模块显式导入。"""
 
-from app.services.chat_service import (
-    ChatService,
-    ChatServiceDependencies,
-    ChatServiceOutcome,
-    ChatServiceRequest,
-    create_default_chat_service,
-    get_default_chat_service_dependencies,
-)
-
-
-__all__ = [
-    "ChatService",
-    "ChatServiceDependencies",
-    "ChatServiceOutcome",
-    "ChatServiceRequest",
-    "create_default_chat_service",
-    "get_default_chat_service_dependencies",
-]
+__all__: list[str] = []

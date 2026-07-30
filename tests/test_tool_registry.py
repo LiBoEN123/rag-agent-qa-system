@@ -1,12 +1,12 @@
 import json
 
-from app.tools.registry import ToolRegistry, ToolSpec, tool_registry
+from app.tools.registry import ToolRegistry, ToolSpec
 from app.tools.context import ToolInvocationContext
 from app.tools.schemas import SearchKnowledgeBaseArgs
-from app.tools import dispatch_tool
+from app.tools.dispatch import dispatch_tool
 
 
-def test_tool_registry_names_include_builtin_tools():
+def test_tool_registry_names_include_builtin_tools(tool_registry):
     """验证内置工具已注册到统一注册中心。"""
     names = tool_registry.names()
 
@@ -15,44 +15,13 @@ def test_tool_registry_names_include_builtin_tools():
     assert "list_documents" in names
     assert "get_chunk_text" in names
     assert "compare_documents" in names
+    assert "web_search" in names
+    assert "web_fetch" in names
+    assert "web_pdf_fetch" in names
 
 
-def test_router_specs_include_search_knowledge_base():
-    """验证 Router 工具描述包含知识库检索工具。"""
-    specs = tool_registry.router_specs()
-    names = {item["name"] for item in specs}
-
-    assert "search_knowledge_base" in names
-
-
-def test_tool_registry_router_specs_shape():
-    """验证 Router 可读取注册工具描述。"""
-    specs = tool_registry.router_specs()
-
-    assert isinstance(specs, list)
-    assert specs
-
-    for spec in specs:
-        assert set(spec) == {
-            "name",
-            "version",
-            "description",
-            "args_schema",
-            "risk_level",
-            "requires_approval",
-        }
-        assert "handler" not in spec
-        assert "args_model" not in spec
-        assert "output_model" not in spec
-        assert "required_permissions" not in spec
-        assert "timeout" not in spec
-        assert "max_retries" not in spec
-
-    json.dumps(specs)
-
-
-def test_builtin_tools_publish_v2_contract_metadata():
-    """验证五个内置工具发布完整且符合要求的 V2 契约。"""
+def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
+    """验证八个注册生产工具发布完整且符合要求的 V2 契约。"""
     specs = tool_registry.contract_specs()
     specs_by_name = {spec["name"]: spec for spec in specs}
     expected_permissions = {
@@ -61,6 +30,9 @@ def test_builtin_tools_publish_v2_contract_metadata():
         "simple_calculator": [],
         "list_documents": ["knowledge_base:read"],
         "get_chunk_text": ["knowledge_base:read"],
+        "web_search": ["web:search"],
+        "web_fetch": ["web:fetch"],
+        "web_pdf_fetch": ["web:fetch"],
     }
     expected_timeouts = {
         "search_knowledge_base": 10.0,
@@ -68,6 +40,9 @@ def test_builtin_tools_publish_v2_contract_metadata():
         "simple_calculator": 3.0,
         "list_documents": 5.0,
         "get_chunk_text": 5.0,
+        "web_search": 10.0,
+        "web_fetch": 30.0,
+        "web_pdf_fetch": 45.0,
     }
 
     assert len(specs) == len(tool_registry.names())
@@ -80,14 +55,32 @@ def test_builtin_tools_publish_v2_contract_metadata():
         assert spec["risk_level"] == "read_only"
         assert spec["required_permissions"] == expected_permissions[name]
         assert spec["timeout"] == expected_timeouts[name]
-        assert spec["max_retries"] == 0
+        assert spec["max_retries"] == (
+            1 if name in {"web_search", "web_fetch", "web_pdf_fetch"} else 0
+        )
         assert spec["idempotent"] is True
         assert spec["requires_approval"] is False
-        assert spec["output_model"] is None
+        assert spec["output_model"] == (
+            {
+                "web_search": "WebSearchOutput",
+                "web_fetch": "WebFetchOutput",
+                "web_pdf_fetch": "WebPdfFetchOutput",
+            }.get(name)
+        )
         assert "handler" not in spec
 
+    web = specs_by_name["web_search"]
+    assert web["sensitive_arg_fields"] == ["query"]
+    assert web["audit_output_mode"] == "summary"
+    fetch = specs_by_name["web_fetch"]
+    assert fetch["sensitive_arg_fields"] == ["url"]
+    assert fetch["audit_output_mode"] == "summary"
+    pdf = specs_by_name["web_pdf_fetch"]
+    assert pdf["sensitive_arg_fields"] == ["url"]
+    assert pdf["audit_output_mode"] == "summary"
 
-def test_tool_registry_dispatch_simple_calculator():
+
+def test_tool_registry_dispatch_simple_calculator(tool_registry):
     """验证注册中心可以调用计算器工具。"""
     result = tool_registry.dispatch(
         "simple_calculator",
@@ -99,7 +92,10 @@ def test_tool_registry_dispatch_simple_calculator():
     assert result["output"]["result"] == 7
 
 
-def test_tool_registry_dispatch_search_knowledge_base(monkeypatch):
+def test_tool_registry_dispatch_search_knowledge_base(
+    monkeypatch,
+    tool_registry,
+):
     """验证注册中心可以调用知识库检索工具。"""
     import app.rag as rag
 
@@ -143,7 +139,7 @@ def test_tool_registry_dispatch_search_knowledge_base(monkeypatch):
     assert result["output"]["top_scores"] == [0.91]
 
 
-def test_tool_registry_dispatch_unknown_tool():
+def test_tool_registry_dispatch_unknown_tool(tool_registry):
     """验证未知工具返回兼容错误结构。"""
     result = tool_registry.dispatch("unknown_tool", {})
 
@@ -244,9 +240,3 @@ def test_dispatch_tool_keeps_compatible_entrypoint():
     assert result["ok"] is True
     assert result["status"] == "success"
     assert result["output"]["result"] == 5
-
-
-def test_router_specs_include_compare_documents():
-    """验证 Router 工具描述中包含 compare_documents。"""
-    names = {item["name"] for item in tool_registry.router_specs()}
-    assert "compare_documents" in names

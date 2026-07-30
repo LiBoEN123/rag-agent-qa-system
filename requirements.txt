@@ -1,15 +1,19 @@
 fastapi
 uvicorn[standard]
 pydantic
-python-dotenv
+pydantic-settings
 requests
+requests-hardened==1.3.0
 httpx
+ddgs
+trafilatura==2.1.0
 numpy
 jieba
 rank-bm25
 sentence-transformers
 chromadb
 charset-normalizer
+langchain==1.3.14
 langchain-text-splitters
 langchain-core
 langchain-openai
@@ -21,3 +25,4 @@ huggingface-hub
 streamlit
 pytest
 ruff
+import-linter==2.13

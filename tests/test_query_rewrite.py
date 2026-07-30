@@ -102,12 +102,14 @@ def test_obvious_short_follow_ups_enter_llm_check():
         assert reason == "obvious follow-up marker"
 
 
-def test_rewrite_obvious_follow_up_from_llm(monkeypatch):
+def test_rewrite_obvious_follow_up_from_llm(monkeypatch, settings_env):
     """验证 LLM 可把“没有遗漏的吗”改成可独立检索的问题。"""
-    monkeypatch.setattr(query_rewrite.Settings, "ENABLE_QUERY_REWRITE", True, raising=False)
-    monkeypatch.setattr(query_rewrite.Settings, "QUERY_REWRITE_API_KEY", "test-key", raising=False)
-    monkeypatch.setattr(query_rewrite.Settings, "QUERY_REWRITE_API_URL", "http://test.invalid", raising=False)
-    monkeypatch.setattr(query_rewrite.Settings, "QUERY_REWRITE_MODEL_NAME", "test-model", raising=False)
+    settings_env(
+        enable_query_rewrite=True,
+        query_rewrite_api_key="test-key",
+        query_rewrite_api_url="http://test.invalid",
+        query_rewrite_model_name="test-model",
+    )
     monkeypatch.setattr(
         query_rewrite,
         "call_query_rewrite_llm",
@@ -129,13 +131,18 @@ def test_rewrite_obvious_follow_up_from_llm(monkeypatch):
     assert "最长学习年限是否有遗漏" in result["rewritten_question"]
 
 
-def test_standalone_new_question_is_not_forced_to_use_history(monkeypatch):
+def test_standalone_new_question_is_not_forced_to_use_history(
+    monkeypatch,
+    settings_env,
+):
     """验证 LLM 判定独立问题后保留原问题，不拼接上一轮历史。"""
     question = "Docker容器怎么运行到别人电脑上"
-    monkeypatch.setattr(query_rewrite.Settings, "ENABLE_QUERY_REWRITE", True, raising=False)
-    monkeypatch.setattr(query_rewrite.Settings, "QUERY_REWRITE_API_KEY", "test-key", raising=False)
-    monkeypatch.setattr(query_rewrite.Settings, "QUERY_REWRITE_API_URL", "http://test.invalid", raising=False)
-    monkeypatch.setattr(query_rewrite.Settings, "QUERY_REWRITE_MODEL_NAME", "test-model", raising=False)
+    settings_env(
+        enable_query_rewrite=True,
+        query_rewrite_api_key="test-key",
+        query_rewrite_api_url="http://test.invalid",
+        query_rewrite_model_name="test-model",
+    )
     monkeypatch.setattr(
         query_rewrite,
         "call_query_rewrite_llm",
@@ -156,9 +163,9 @@ def test_standalone_new_question_is_not_forced_to_use_history(monkeypatch):
     assert result["rewrite_llm_used"] is True
 
 
-def test_no_history_and_simple_math_skip_rewrite(monkeypatch):
+def test_no_history_and_simple_math_skip_rewrite(settings_env):
     """验证无历史和简单数学仍由硬规则直接跳过。"""
-    monkeypatch.setattr(query_rewrite.Settings, "ENABLE_QUERY_REWRITE", True, raising=False)
+    settings_env(enable_query_rewrite=True)
 
     no_history_result = query_rewrite.rewrite_query_with_history(
         "没有遗漏的吗",
@@ -174,10 +181,15 @@ def test_no_history_and_simple_math_skip_rewrite(monkeypatch):
     assert math_result["reason"] == "simple math question"
 
 
-def test_ambiguous_short_question_without_llm_is_not_force_concatenated(monkeypatch):
+def test_ambiguous_short_question_without_llm_is_not_force_concatenated(
+    settings_env,
+):
     """验证仅模糊但无明显追问词时，LLM 未配置不会硬拼历史。"""
-    monkeypatch.setattr(query_rewrite.Settings, "ENABLE_QUERY_REWRITE", True, raising=False)
-    monkeypatch.setattr(query_rewrite.Settings, "QUERY_REWRITE_API_KEY", "", raising=False)
+    settings_env(
+        enable_query_rewrite=True,
+        query_rewrite_api_key="",
+        llm_api_key="",
+    )
 
     result = query_rewrite.rewrite_query_with_history("怎么申请？", HISTORY)
 
@@ -198,12 +210,14 @@ def test_parse_rewrite_json_requires_need_rewrite():
 
 
 
-def test_rewrite_query_fallback_when_llm_fails(monkeypatch):
+def test_rewrite_query_fallback_when_llm_fails(monkeypatch, settings_env):
     """验证改写 LLM 失败时会 fallback 且不抛错。"""
-    monkeypatch.setattr(query_rewrite.Settings, "ENABLE_QUERY_REWRITE", True, raising=False)
-    monkeypatch.setattr(query_rewrite.Settings, "QUERY_REWRITE_API_KEY", "test-key", raising=False)
-    monkeypatch.setattr(query_rewrite.Settings, "QUERY_REWRITE_API_URL", "http://test.invalid", raising=False)
-    monkeypatch.setattr(query_rewrite.Settings, "QUERY_REWRITE_MODEL_NAME", "test-model", raising=False)
+    settings_env(
+        enable_query_rewrite=True,
+        query_rewrite_api_key="test-key",
+        query_rewrite_api_url="http://test.invalid",
+        query_rewrite_model_name="test-model",
+    )
 
     def fail_llm(prompt, trace_id=""):
         raise RuntimeError("llm unavailable")

@@ -6,7 +6,7 @@
 import json
 from typing import List
 
-from app.config import Settings
+from app.config import get_settings
 from app.llm.factory import get_answer_model
 from app.llm.gateway import ModelGateway
 from app.prompts import SYSTEM_PROMPT_B, USER_PROMPT, NO_ANSWER_FALLBACK
@@ -19,7 +19,7 @@ from app.rag.retrieval import clamp01, make_snippet, safe_float
 def build_context(retrieved_chunks, max_chars: int | None=None):
     """把检索结果整理成 LLM 提示词中的 evidence context。"""
     if max_chars is None:
-        max_chars = Settings.MAX_CONTEXT_CHARS
+        max_chars = get_settings().max_context_chars
 
     parts = []
     total = 0
