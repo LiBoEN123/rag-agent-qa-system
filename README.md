@@ -156,7 +156,12 @@ flowchart TD
 12. 引用绑定：解析模型返回的 references，并绑定到真实文件、chunk、snippet、score。
 13. 置信度与拒答：结合召回分数、引用数量和证据阈值估算置信度；证据不足、检索为空或引用支撑不足时返回拒答状态。
 
-## 评测结果
+## 历史 RAG 单项评测结果
+
+下表是 Evaluation Baseline v2 引入前记录的 65 题 RAG 单项结果，仅用于历史对照；
+它不包含 Agent Core、Online tools、多轮会话或统一 manifest，也不代表当前代码与
+当前模型配置下的最新成绩。当前统一评测入口、复现约束和结果比较方式见
+[Evaluation Baseline v2](docs/evaluation/baseline-v2.md)。
 
 | Metric              |  Score |
 | ------------------- | -----: |
@@ -169,7 +174,9 @@ flowchart TD
 | Behavior Score      | 0.9846 |
 | Forbidden Hit       |      0 |
 
-评测集覆盖 `single_doc`、`cross_doc`、`partial_answer`、`not_in_doc`、`trap` 五类问题。系统在普通单文档问答、跨文档问答和无答案拒答场景中表现稳定；当前主要优化方向是 `partial_answer` 场景和新旧政策冲突类 `trap` 问题。
+该历史评测集覆盖 `single_doc`、`cross_doc`、`partial_answer`、`not_in_doc`、
+`trap` 五类问题；当时的主要优化方向是 `partial_answer` 场景和新旧政策冲突类
+`trap` 问题。
 
 ## 工程化设计
 
@@ -359,7 +366,7 @@ Fake Model 自动测试验证 Graph 编排、错误分类、治理链、预算�
 python scripts/smoke_test_agent_tool_calling.py
 ```
 
-脚本会显示实际绑定的工具名、`search_knowledge_base` 与 `simple_calculator` 参数 Schema，以及两种强制工具场景返回的 AIMessage 类型、`tool_calls`、工具名、参数、`tool_call_id` 和 `additional_kwargs`。脚本不打印 API Key，不属于默认 Pytest/CI；本次 PR3 自动回归不会运行它。
+脚本会显示实际绑定的工具名、`search_knowledge_base` 与 `simple_calculator` 参数 Schema，以及两种强制工具场景返回的 AIMessage 类型、`tool_calls`、工具名、参数、`tool_call_id` 和 `additional_kwargs`。脚本不打印 API Key，不属于默认 Pytest/CI；自动回归不会运行它。
 
 ## Agent Runtime 检查
 
@@ -380,6 +387,7 @@ lint-imports
 - [当前系统架构](docs/architecture/current-system.md)
 - [Agent Runtime 维护指南](docs/agent-runtime-maintenance.md)
 - [模块依赖边界](docs/architecture/module-boundaries.md)
+- [Evaluation Baseline v2](docs/evaluation/baseline-v2.md)
 - [2026 年 Agent 演进归档](docs/history/agent-evolution-2026.md)
 - [ADR 0001：开源 Agent 技术栈](docs/adr/0001-open-source-agent-stack.md)
 - [ADR 0002：迭代式 Agent Loop](docs/adr/0002-iterative-agent-loop.md)
@@ -861,7 +869,10 @@ python scripts/concurrent_perf_test.py
 python scripts/test_local_llm.py
 ```
 
-Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测会使用真实本地索引，并可能调用已配置的 Router、拆分和回答模型；没有可用模型/API Key 时应只运行 mock 回归测试，不应把失败或空结果当作正式评测数据。
+旧 Agent CLI 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测会使用真实
+本地索引，并可能调用已配置的 Agent、拆分和回答模型；确定性 Router 本身不调用
+模型。没有可用模型/API Key 时应只运行 mock 回归测试，不应把失败或空结果当作
+正式评测数据。
 
 ## 适合面试讲解的设计取舍
 
@@ -955,10 +966,12 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   └── config.py                # 环境变量配置
 ├── data/
 │   ├── kb/                      # 默认知识库文档目录
-│   ├── eval/                    # 评测数据
+│   ├── eval/                    # v1/v2 Agent 与 RAG 评测数据、示例阈值
 │   ├── chroma/                  # ChromaDB 持久化目录
 │   └── manifest/                # 索引构建 manifest
 ├── scripts/
+│   ├── run_evaluation_baseline.py # Evaluation Baseline v2 统一入口
+│   ├── compare_evaluation_runs.py # 两轮 v2 结果比较
 │   ├── predictions.py           # 批量生成 RAG 预测结果
 │   ├── evaluate_rag_results_semantic_fixed.py
 │   ├── rag_eval/                # 评测指标、Judge、检索打分和报告生成
@@ -977,12 +990,14 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   ├── architecture/
 │   │   ├── current-system.md    # 当前实现的主要架构入口
 │   │   └── module-boundaries.md # 可执行模块依赖方向
+│   ├── evaluation/
+│   │   └── baseline-v2.md       # v2 数据、运行、输出与比较合同
 │   └── history/
 │       └── agent-evolution-2026.md # PR0～PR16 历史演进归档
 ├── tests/                       # 单元测试和接口测试
 ├── logs/                        # metrics、bad_cases、tool_calls
 ├── outputs/                     # 评测和日志汇总输出
-├── .github/workflows/tests.yml  # 编译、Ruff、Import Linter、inspection 和 pytest CI
+├── .github/workflows/tests.yml  # 静态检查、评测数据校验和 pytest CI
 ├── .importlinter                # 可执行模块依赖合同
 ├── .env.example
 ├── Dockerfile
@@ -1033,7 +1048,8 @@ docker run --rm -p 8000:8000 --env-file .env \
 - 优化 `partial_answer` 场景的 prompt，让模型在只能回答部分问题时更清晰地说明已回答和未覆盖部分。
 - 强化新旧政策冲突判断，提升 `trap` 类问题中对时间、版本和政策优先级的识别能力。
 - 继续优化 Query Rewrite 对跨轮限定、复杂指代和历史冲突的处理能力。
-- 继续扩展现有 CI，在编译、Ruff 和 pytest 之外增加 Docker 构建检查与关键评测脚本。
+- 在现有编译、Ruff、Import Linter、Runtime inspection、评测数据校验和 pytest
+  基础上增加 Docker 构建检查；真实基线经过人工审查后再决定是否加入回退阈值门禁。
 - 为 Streamlit Demo 增加更多调试视图，例如 Query Rewrite、Router 决策和检索命中对比。
 
 ## 已知限制
