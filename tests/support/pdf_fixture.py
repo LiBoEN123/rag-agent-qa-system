@@ -1,13 +1,6 @@
-"""Generate the tiny deterministic text PDF used by Web PDF tests."""
+"""Build deterministic text PDFs used by Web PDF tests."""
 
 from __future__ import annotations
-
-import argparse
-from pathlib import Path
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT = PROJECT_ROOT / "tests" / "fixtures" / "web_pdf_text.pdf"
 
 
 def _stream(data: bytes) -> bytes:
@@ -110,14 +103,4 @@ def build_fixture_pdf() -> bytes:
     )
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    args = parser.parse_args()
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_bytes(build_fixture_pdf())
-    print(f"Wrote {args.output} ({args.output.stat().st_size} bytes)")
-
-
-if __name__ == "__main__":
-    main()
+__all__ = ["build_fixture_pdf", "build_text_pdf"]

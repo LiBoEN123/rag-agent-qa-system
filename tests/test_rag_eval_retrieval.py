@@ -5,9 +5,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.rag_eval.retrieval import score_retrieval
-from scripts.rag_eval.evaluation import evaluate
-from scripts.rag_eval.common import ChunkIndex
+from scripts.evaluation.rag.common import ChunkIndex
+from scripts.evaluation.rag.evaluation import evaluate
+from scripts.evaluation.rag.retrieval import score_retrieval
 
 
 def test_evidence_hits_do_not_pollute_matched_gold_chunk_ids():

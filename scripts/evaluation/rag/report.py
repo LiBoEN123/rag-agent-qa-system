@@ -1,10 +1,18 @@
+"""RAG 评测专用的 CSV 与 JSONL 写入工具。
+
+用途：把已计算好的逐题结果、汇总指标和 judge 明细落盘，方便复核与归档。
+输入：目标路径，以及字段已经固定的结果字典列表或汇总字典。
+输出：UTF-8/UTF-8-BOM 编码的 CSV 和 UTF-8 JSONL 文件。
+边界：只负责序列化，不加载输入集、不判分，也不调用模型或网络。
+"""
+
 from __future__ import annotations
 
 import csv
 from pathlib import Path
 from typing import Any, Dict, List
 
-from scripts.rag_eval.common import json_dumps
+from scripts.evaluation.rag.common import json_dumps
 
 
 def write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:

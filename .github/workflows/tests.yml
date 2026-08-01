@@ -36,7 +36,7 @@ jobs:
           python -m pip install -r requirements.lock
 
       - name: Compile Python sources
-        run: python -m compileall -q app scripts
+        run: python -m compileall -q app scripts tests
 
       - name: Run Ruff
         run: ruff check app tests scripts

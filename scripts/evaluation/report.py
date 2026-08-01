@@ -1,4 +1,10 @@
-"""Evaluation Baseline v2 的统一文件与 Markdown 报告输出。"""
+"""Evaluation Baseline v2 的统一文件与 Markdown 报告输出。
+
+用途：把执行器已经计算完成的结果稳定序列化，供机器比较和人工复核。
+输入：逐题 Agent/RAG 记录、汇总指标、运行清单与失败分类。
+输出：UTF-8 JSON/JSONL、带 BOM 的 CSV 和统一 Markdown 报告。
+边界：本模块不重新判分、不调用模型或网络；字段名和数值按上游结果原样保留。
+"""
 
 from __future__ import annotations
 
@@ -271,7 +277,7 @@ def build_markdown_report(
             if name in overall:
                 lines.append(f"- {name}: {_format_rate(overall[name])}")
         lines.append(
-            "- 口径来源：`scripts/rag_eval/evaluation.py`；"
+            "- 口径来源：`scripts/evaluation/rag/evaluation.py`；"
             "答案关键点与 forbidden 语义判断仅在 Judge 启用时有效。"
         )
         if summary.get("skipped", {}).get("llm_judge"):

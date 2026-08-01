@@ -156,7 +156,7 @@ Checkpointer 协议。
 ```bash
 ruff check .
 lint-imports
-python -m compileall app scripts
+python -m compileall app scripts tests
 python scripts/inspect_agent_runtime.py --check
 pytest -q
 python -m pip check
@@ -169,10 +169,12 @@ graph。自动测试使用 fake 隔离模型、网络、RAG 索引和生产持�
 
 产品质量阶段使用
 [Evaluation Baseline v2](../evaluation/baseline-v2.md) 组合现有 Agent 与 RAG
-evaluator。统一 Runner 位于 `scripts/`，通过 `ChatService` 的现有依赖边界注入
-内存 session 和 no-op telemetry；它不属于生产请求链，也没有改变本页描述的 API、
-Graph、Agent Result、工具、RAG、配置或持久化所有权。CI 只执行 v2 数据合同校验，
-不运行真实模型、索引或在线工具。
+evaluator。正式 CLI 位于 `scripts/` 根目录，可导入实现集中在
+`scripts/evaluation/`；Runner 通过 `ChatService` 的现有依赖边界注入内存 session
+和 no-op telemetry。它不属于生产请求链，也没有改变本页描述的 API、Graph、
+Agent Result、工具、RAG、配置或持久化所有权。HTTP 性能测试、真实 Online Tool
+冒烟、模型 Tool Calling 协议、架构检查和日志汇总各有独立入口。CI 只执行 v2 数据
+合同校验，不运行真实模型、索引、FastAPI 服务或在线工具。
 
 ## 已知产品边界
 

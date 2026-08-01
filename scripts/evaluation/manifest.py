@@ -1,4 +1,10 @@
-"""Evaluation Baseline v2 的安全、可复现运行清单。"""
+"""Evaluation Baseline v2 的安全、可复现运行清单。
+
+用途：记录代码、数据、工具合同、模型配置和 Git 状态，确保结果可追溯、可比较。
+输入：评测 Settings、输入文件、运行参数，以及本地仓库和运行环境的只读元数据。
+输出：不含密钥的 ``manifest.json`` 数据及相关 SHA-256 指纹。
+边界：只读取 Git/文件/环境信息；敏感字段会被拒绝或脱敏，不修改仓库和运行配置。
+"""
 
 from __future__ import annotations
 
@@ -15,7 +21,9 @@ from typing import Any
 from pydantic import SecretStr
 
 from app.config import AppSettings
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SENSITIVE_KEY_FRAGMENTS = (
     "api_key",
     "authorization",

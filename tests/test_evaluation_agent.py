@@ -1,11 +1,11 @@
 """Agent v2 判分、失败原因和指标测试。"""
 
-from scripts.evaluation_agent import (
+from scripts.evaluation.agent import (
     calculate_agent_metrics,
     combine_case_turns,
     score_agent_turn,
 )
-from scripts.evaluation_contracts import ExpectedOutcome
+from scripts.evaluation.contracts import ExpectedOutcome
 
 
 def _result(

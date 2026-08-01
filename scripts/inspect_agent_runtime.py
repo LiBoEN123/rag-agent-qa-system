@@ -1,4 +1,10 @@
-"""在不调用模型、工具或持久化能力的前提下检查 Agent 运行时。"""
+"""Agent 运行时与架构合同的离线检查程序。
+
+用途：检查 LangGraph 结构、工具可见性、数据合同、依赖版本、模块边界和文件规模预算。
+输入：当前源码、Settings 默认合同、工具注册信息和 ``.importlinter`` 配置。
+输出：文本、JSON 或 Mermaid 视图；``--check`` 通过退出码表达架构门禁结果。
+边界：不会调用模型、执行工具、访问网络或写持久化数据；Mermaid 仅构建而不运行图。
+"""
 
 from __future__ import annotations
 
@@ -275,6 +281,7 @@ def _tool_data(
 
 
 def _check(name: str, passed: bool, detail: str) -> dict[str, Any]:
+    """把一项架构断言规范化为统一检查结果。"""
     return {"name": name, "passed": passed, "detail": detail}
 
 
@@ -956,6 +963,7 @@ def render_mermaid() -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """解析输出模式，执行离线检查并返回稳定退出码。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--format", choices=("text", "json", "mermaid"), default="text")
     parser.add_argument("--check", action="store_true", help="run architecture checks")

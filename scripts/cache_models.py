@@ -1,3 +1,11 @@
+"""项目嵌入与重排模型的本地缓存准备程序。
+
+用途：按应用配置预下载 Hugging Face 模型，避免服务首次启动时临时拉取大文件。
+输入：Settings 中的模型名称和模型缓存目录，以及可用的 Hugging Face 网络访问。
+输出：缓存目录中的模型快照和逐模型进度日志。
+边界：会访问外部网络并写模型缓存；本地模型路径会跳过，不构建或修改 Chroma 索引。
+"""
+
 import sys
 from pathlib import Path
 
@@ -11,12 +19,14 @@ from app.config import ensure_model_cache_dir, get_settings
 
 
 def cache_model(model_name: str, cache_dir: Path) -> None:
+    """缓存一个远端模型；模型名指向本地路径时不重复下载。"""
     model_path = Path(model_name).expanduser()
     if model_path.exists():
         print(f"[model-cache] skip local path: {model_path}", flush=True)
         return
 
     print(f"[model-cache] downloading {model_name} -> {cache_dir}", flush=True)
+    # 下载副作用被限制在 Settings 明确解析出的模型缓存目录中。
     cached_path = snapshot_download(
         repo_id=model_name,
         cache_dir=str(cache_dir),

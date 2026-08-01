@@ -16,8 +16,9 @@ from app.observability.metrics import (
 )
 from app.services.chat_service import ChatServiceDependencies
 from app.tools.registry import ToolRegistry
-from scripts import run_evaluation_baseline as runner
-from scripts.evaluation_contracts import AgentEvaluationDataset
+from scripts.evaluation import agent as agent_evaluation
+from scripts.evaluation import runner
+from scripts.evaluation.contracts import AgentEvaluationDataset
 
 
 FIXTURE = (
@@ -84,7 +85,7 @@ def test_capture_tool_output_keys_never_keeps_values(monkeypatch):
 
     monkeypatch.setattr(ToolRegistry, "dispatch", fake_dispatch)
 
-    with runner.capture_tool_output_keys() as records:
+    with agent_evaluation.capture_tool_output_keys() as records:
         ToolRegistry().dispatch("simple_calculator", {"expression": "1+2"})
 
     assert records == [
@@ -199,13 +200,13 @@ def test_in_memory_multi_turn_uses_chat_service_history_and_isolation(
         }
     )
 
-    first = runner._execute_agent_case(
+    first = agent_evaluation.execute_agent_case(
         dataset.cases[0],
         settings=settings,
         top_k=5,
         decompose_top_k=10,
     )
-    second = runner._execute_agent_case(
+    second = agent_evaluation.execute_agent_case(
         dataset.cases[0],
         settings=settings,
         top_k=5,
@@ -387,7 +388,7 @@ def test_unified_rag_predictions_fail_fast_on_model_error(
     tmp_path,
     monkeypatch,
 ):
-    from scripts import predictions
+    from scripts.evaluation import rag_predictions
 
     eval_file = tmp_path / "rag.json"
     eval_file.write_text(
@@ -396,12 +397,12 @@ def test_unified_rag_predictions_fail_fast_on_model_error(
     )
     output = tmp_path / "predictions.csv"
     monkeypatch.setattr(
-        predictions,
+        rag_predictions,
         "initialize_rag_for_predictions",
         lambda force_rebuild=False: None,
     )
     monkeypatch.setattr(
-        predictions,
+        rag_predictions,
         "run_rag_once_with_result",
         lambda question, top_k: (
             {
@@ -413,7 +414,7 @@ def test_unified_rag_predictions_fail_fast_on_model_error(
     )
 
     with pytest.raises(RuntimeError, match="qid=q1"):
-        predictions.run_predictions(
+        rag_predictions.run_predictions(
             eval_file=eval_file,
             out_file=output,
             fail_on_model_error=True,

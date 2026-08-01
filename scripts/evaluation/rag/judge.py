@@ -1,3 +1,11 @@
+"""RAG 语义评测的可选 LLM judge 适配与结果规范化。
+
+用途：构造严格提示词、经统一模型网关调用 judge，并把自由输出收敛为稳定结构。
+输入：问题、标准答案、关键点/禁用点、模型答案、证据和 judge 配置。
+输出：规范化的关键点覆盖或禁用信息判断，以及可审计的原始响应摘要。
+边界：judge 关闭或不可用时采用保守结果；最终分数仍由 ``rag.evaluation`` 计算。
+"""
+
 from __future__ import annotations
 
 import json
@@ -10,7 +18,7 @@ from app.common.logging import get_logger
 from app.llm.factory import get_judge_model
 from app.llm.gateway import ModelGateway
 from app.prompts import FORBIDDEN_JUDGE_SYSTEM_PROMPT, KEY_POINT_JUDGE_SYSTEM_PROMPT
-from scripts.rag_eval.common import json_dumps, point_texts, warn
+from scripts.evaluation.rag.common import json_dumps, point_texts, warn
 
 
 logger = get_logger("rag_evaluator")

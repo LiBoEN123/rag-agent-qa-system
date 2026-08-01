@@ -97,6 +97,12 @@ Import Linter 2.13 的 `allow_indirect_imports = True`，只禁止 source packag
 Linter 的图，不是规避手段；也不得用 `importlib`、Service Locator 或动态 Registry
 隐藏依赖。
 
+`scripts/` 不属于生产 `app` import graph。其根目录只保留可直接执行的正式 CLI；
+Evaluation Baseline 的可导入 Runner、Agent/RAG evaluator、contracts、manifest 和
+report 位于 `scripts.evaluation`，测试 PDF 构造 helper 位于 `tests.support`。新增
+维护脚本时不能把可复用实现重新平铺到 `scripts/` 根目录，也不能让生产 `app`
+反向导入脚本包。
+
 ## 执行方式
 
 ```bash

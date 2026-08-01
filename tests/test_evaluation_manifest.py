@@ -7,7 +7,7 @@ import pytest
 from pydantic import SecretStr
 
 from app.config import AppSettings
-from scripts import evaluation_manifest
+from scripts.evaluation import manifest as evaluation_manifest
 
 
 def _settings(tmp_path: Path) -> AppSettings:

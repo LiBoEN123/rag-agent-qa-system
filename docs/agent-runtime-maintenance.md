@@ -1,6 +1,6 @@
 # Agent Runtime 维护指南
 
-本文面向需要定位或维护 Agent Runtime、但不需要逐行阅读全部实现的开发者。当前唯一主实现是 LangGraph 父图嵌入 LangChain `create_agent` 子图；脚本输出是图结构和工具 Schema 的维护入口。
+本文面向需要定位或维护 Agent Runtime、但不需要逐行阅读全部实现的开发者。当前唯一主实现是 LangGraph 父图嵌入 LangChain `create_agent` 子图；`inspect_agent_runtime.py` 是图结构和工具 Schema 的维护入口，Evaluation Baseline 的可导入实现统一位于 `scripts/evaluation/`。
 
 ## 十分钟阅读路径
 
@@ -342,3 +342,8 @@ lint-imports --verbose
 脚本只使用普通 `build_agent_graph().compile()`，不会调用带 Checkpointer 的缓存入口；也不会初始化模型、DDGS、requests-hardened Manager、Trafilatura、PdfReader、执行 handler、访问网络或读取/重建 RAG 索引。报告验证 `AgentGraphState` 没有嵌套状态且包含全部业务字段，`AgentRunResult` 字段完整并拒绝 extra，所有 Result status 恰好有一项 policy，Graph result 仍是普通字典，API response adapter 没有 Runtime/Graph 反向依赖，并检查 application factory、独立 Chat Router、ChatService/telemetry 分工、当前架构文档和历史归档。报告还分别列出 Registry 的八个 `registered_tools` 和默认 Context 的 `default_visible_tools`，验证默认可见集合、权限及 Web 工具契约。它只读取 `.importlinter` 的公开配置结构，报告 `import_linter_configured`、四项关键合同和 `zero_import_ignores`；不分析或复制 import graph。版本来自 `importlib.metadata`，图来自 `get_graph()`/`get_graph(xray=True)`，Mermaid 来自 `draw_mermaid()`，工具参数来自模型可见的 Pydantic JSON Schema。实际模块方向必须由官方 `lint-imports` 全量检查。
 
 升级 LangChain、LangGraph、Pydantic 或调整 package 时，先运行 `lint-imports`、契约测试和 `--check`。重点确认父图节点未改变、xray 仍能展开 `framework_agent`、model/tools 和调用限制节点仍存在、`ToolRuntime` 注入字段未暴露给模型，并重新生成本页 Mermaid。
+
+真实 Online Tool 连通性统一使用 `python scripts/smoke_test_online_tools.py`
+的 `search`、`fetch`、`pdf` 子命令，三者都通过
+`ToolRegistry.dispatch → ToolRuntime.execute`。模型供应商 Tool Calling 协议仍由
+`smoke_test_agent_tool_calling.py` 单独检查；两类冒烟不得合并，也不进入 Pytest。

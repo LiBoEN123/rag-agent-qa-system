@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.compare_evaluation_runs import (
+from scripts.evaluation.comparison import (
     compare_runs,
     evaluate_regressions,
     load_thresholds,

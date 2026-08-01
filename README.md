@@ -257,7 +257,7 @@ TOOL_DEFAULT_PERMISSIONS=knowledge_base:read,web:search
 真实网络验证只通过维护者手动运行，不进入 Pytest/CI：
 
 ```bash
-python scripts/smoke_test_web_search.py \
+python scripts/smoke_test_online_tools.py search \
   --query "LangGraph latest release" \
   --max-results 3
 ```
@@ -283,7 +283,7 @@ TOOL_DEFAULT_PERMISSIONS=knowledge_base:read,web:search,web:fetch
 真实网络验证仅由维护者手动执行，不进入 Pytest/CI：
 
 ```bash
-python scripts/smoke_test_web_fetch.py \
+python scripts/smoke_test_online_tools.py fetch \
   --url "https://example.com/" \
   --max-chars 4000
 ```
@@ -303,7 +303,7 @@ PDF 文本和元数据固定标记 `content_is_untrusted=true`，只能作为回
 真实网络验证仅由维护者手动执行，不进入 Pytest/CI：
 
 ```bash
-python scripts/smoke_test_web_pdf_fetch.py \
+python scripts/smoke_test_online_tools.py pdf \
   --url "https://example.com/document.pdf" \
   --start-page 1 \
   --max-pages 3 \
@@ -337,7 +337,7 @@ START → route → initialize
 
 ### LangGraph RAG 子图
 
-知识库问答由独立子图依次执行问题歧义判断、Query Decompose、检索与重排、Evidence Gate、Context Build、回答生成、JSON 解析、引用绑定与验证。子图复用现有检索、Rerank、ChromaDB、模型网关、引用和置信度算法，API Schema 没有变化。`search_knowledge_base` 成功时工具返回 `Command.PARENT` 更新 ToolMessage 与 `pending_rag_result`；父图薄适配节点据此进入 RAG 子图，避免 Agent Model 直接基于原始 chunks 生成无引用答案。`scripts/agent_eval.py` 也固定使用 LangGraph Runtime；Streaming 和 Interrupt 仍未实现。
+知识库问答由独立子图依次执行问题歧义判断、Query Decompose、检索与重排、Evidence Gate、Context Build、回答生成、JSON 解析、引用绑定与验证。子图复用现有检索、Rerank、ChromaDB、模型网关、引用和置信度算法，API Schema 没有变化。`search_knowledge_base` 成功时工具返回 `Command.PARENT` 更新 ToolMessage 与 `pending_rag_result`；父图薄适配节点据此进入 RAG 子图，避免 Agent Model 直接基于原始 chunks 生成无引用答案。Evaluation Baseline v2 也固定使用同一 LangGraph Runtime；Streaming 和 Interrupt 仍未实现。
 
 ### LangGraph Checkpointer
 
@@ -792,7 +792,7 @@ python scripts/summarize_logs.py
 执行与 CI 一致的静态检查和测试：
 
 ```bash
-python -m compileall -q app scripts
+python -m compileall -q app scripts tests
 ruff check app tests scripts
 lint-imports
 python scripts/inspect_agent_runtime.py --check
@@ -825,54 +825,41 @@ python scripts/compare_evaluation_runs.py \
   --candidate outputs/evaluation_baseline_v2/run-b
 ```
 
-完整说明见 [Evaluation Baseline v2](docs/evaluation/baseline-v2.md)。以下旧 Agent
-和 RAG CLI 继续兼容。
-
-生成 RAG 预测结果：
-
-```bash
-python scripts/predictions.py \
-  --eval-file data/eval/rag_eval_questions_nmgut_graduate_v1.json \
-  --out-file outputs/predictions.csv
-```
-
-评测预测结果：
+完整说明见 [Evaluation Baseline v2](docs/evaluation/baseline-v2.md)。RAG prediction、
+Judge、检索打分和报告实现都属于 `scripts/evaluation/` 内部包，不提供独立兼容
+CLI。需要语义级关键点评分时，由统一 Runner 显式启用 LLM Judge：
 
 ```bash
-python scripts/evaluate_rag_results_semantic_fixed.py \
-  --eval-file data/eval/rag_eval_questions_v2_semantic_fixed.json \
-  --pred-file outputs/predictions.csv \
-  --out-dir outputs/rag_baseline1 \
-  --k 10
-```
-
-评测脚本默认会优先从 ChromaDB 加载 chunk 文本和 metadata，用于计算文档命中、gold chunk 命中和证据匹配。需要语义级关键点评分时，可以通过参数或环境变量启用 LLM Judge：
-
-```bash
-python scripts/evaluate_rag_results_semantic_fixed.py \
-  --eval-file data/eval/rag_eval_questions_v2_semantic_fixed.json \
-  --pred-file outputs/predictions.csv \
-  --out-dir outputs/rag_llm_judge \
-  --k 10 \
+python scripts/run_evaluation_baseline.py \
+  --output-dir outputs/evaluation_baseline_v2/rag-llm-judge \
+  --rag-only \
   --use-llm-judge \
   --judge-model deepseek-chat
 ```
 
-评测输出包括 `per_question_report.csv`、`summary_report.csv`、`summary_report.json` 和 `llm_judge_details.jsonl`。如果已经有上一轮 `per_question_report.csv`，可以用 `--judge-cache-report` 复用 Judge 结果，避免重复调用评测模型。
+RAG 输出仍包括 `predictions.csv`、`per_question_report.csv`、
+`summary_report.csv`、`summary_report.json` 和 `llm_judge_details.jsonl`，指标公式、
+Judge Prompt 和报告字段不变。
 
-Agent 路由评测、压测和本地模型接口检查：
+HTTP 性能测试是独立入口；`concurrency=1` 即串行基线，问题只从 cases 文件读取：
 
 ```bash
-python scripts/agent_eval.py --output-dir outputs/agent_eval/langgraph
-python scripts/perf_test.py
-python scripts/concurrent_perf_test.py
-python scripts/test_local_llm.py
+python scripts/benchmark_chat_api.py \
+  --base-url http://127.0.0.1:8000 \
+  --cases data/eval/performance_cases.json \
+  --concurrency 1,2,3,5 \
+  --repeats 5 \
+  --warmup 1 \
+  --timeout 120 \
+  --output-dir outputs/performance/run-001
 ```
 
-旧 Agent CLI 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测会使用真实
-本地索引，并可能调用已配置的 Agent、拆分和回答模型；确定性 Router 本身不调用
-模型。没有可用模型/API Key 时应只运行 mock 回归测试，不应把失败或空结果当作
-正式评测数据。
+它只生成 `requests.jsonl`、`summary.json` 和 `summary.md`。真实外部工具连通性使用
+`smoke_test_online_tools.py` 的 `search`、`fetch`、`pdf` 子命令；模型供应商 Tool
+Calling 协议单独使用 `smoke_test_agent_tool_calling.py`。两者用途不同，且都不进入
+Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行日志由
+`summarize_logs.py` 汇总。没有可用模型、网络或 API Key 时只运行离线验证与 mock
+回归测试，不把环境失败或空结果当作正式质量数据。
 
 ## 适合面试讲解的设计取舍
 
@@ -972,18 +959,13 @@ python scripts/test_local_llm.py
 ├── scripts/
 │   ├── run_evaluation_baseline.py # Evaluation Baseline v2 统一入口
 │   ├── compare_evaluation_runs.py # 两轮 v2 结果比较
-│   ├── predictions.py           # 批量生成 RAG 预测结果
-│   ├── evaluate_rag_results_semantic_fixed.py
-│   ├── rag_eval/                # 评测指标、Judge、检索打分和报告生成
-│   ├── agent_eval.py            # Agent 路由评测
+│   ├── benchmark_chat_api.py    # /chat 串行与并发性能测试
+│   ├── smoke_test_online_tools.py # Online Tool 真实连通性子命令
+│   ├── smoke_test_agent_tool_calling.py # 模型 Tool Calling 协议
+│   ├── inspect_agent_runtime.py # CI 架构合同检查
 │   ├── summarize_logs.py        # metrics/bad_cases 日志汇总
 │   ├── cache_models.py          # 预下载 embedding/rerank 模型
-│   ├── perf_test.py             # 简单串行压测
-│   ├── concurrent_perf_test.py  # 简单并发压测
-│   ├── smoke_test_web_search.py # 手动真实 DDGS Registry/Runtime 冒烟
-│   ├── smoke_test_web_fetch.py  # 手动安全 Web Fetch Registry/Runtime 冒烟
-│   ├── smoke_test_web_pdf_fetch.py # 手动安全 Web PDF Registry/Runtime 冒烟
-│   └── test_local_llm.py        # 本地模型接口测试
+│   └── evaluation/              # Runner、Agent/RAG evaluator、Judge 与报告内部包
 ├── demo/
 │   └── streamlit_app.py         # Streamlit Demo 页面
 ├── docs/

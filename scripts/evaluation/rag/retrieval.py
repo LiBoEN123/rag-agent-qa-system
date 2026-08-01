@@ -1,3 +1,11 @@
+"""RAG 评测的索引加载、证据对齐与检索指标计算。
+
+用途：把当前 ChromaDB 或兼容 chunks 文件映射成统一索引，并核对 top-k 召回证据。
+输入：索引位置、标准文档/chunk/evidence、预测召回标识和 top-k。
+输出：``ChunkIndex``、证据对应的当前 chunk_id，以及宽松/严格检索指标。
+边界：只读取现有索引并计算评测指标，不修改生产检索算法、向量库或评测标准答案。
+"""
+
 from __future__ import annotations
 
 import json
@@ -5,7 +13,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
-from scripts.rag_eval.common import (
+from scripts.evaluation.rag.common import (
     PROJECT_ROOT,
     ChunkIndex,
     is_subsequence,
@@ -194,6 +202,7 @@ def find_gold_chunks_for_evidence(
     gold_docs = [str(x) for x in question.get("gold_doc_ids", [])]
 
     def scan(restrict_doc: bool) -> List[int]:
+        """扫描匹配证据的 chunk，可选择先限制在标准文档范围内。"""
         matches = []
         for chunk_id, text in chunk_text_map.items():
             if restrict_doc and gold_docs and not doc_id_matches(chunk_doc_map.get(chunk_id, ""), gold_docs):

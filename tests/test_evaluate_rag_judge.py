@@ -1,14 +1,8 @@
 import json
-import sys
-from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from scripts import evaluate_rag_results_semantic_fixed as evaluator
+from scripts.evaluation import rag_evaluator as evaluator
 
 
 def judge_config() -> evaluator.LLMJudgeConfig:

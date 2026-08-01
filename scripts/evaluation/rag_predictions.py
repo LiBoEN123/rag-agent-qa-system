@@ -1,17 +1,18 @@
-# # 启动命令：python scripts/predictions.py --eval-file data/eval/rag_eval_questions_nmgut_graduate_v1.json --out-file outputs/predictions.csv
+"""Evaluation Baseline v2 的 RAG 预测生成实现。
 
-import argparse
+用途：用当前生产 RAG 生命周期逐题检索和生成答案，为语义评测准备预测文件。
+输入：RAG 评测题、top-k、输出路径，以及是否强制重建索引等运行选项。
+输出：包含答案、召回 chunk_id 和运行状态的预测 CSV 与内存记录。
+边界：真实运行可能加载或重建本地索引并调用模型；离线 ``--validate-only`` 不会进入这里。
+"""
+
 import csv
 import json
 from pathlib import Path
-import sys
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
-
-from app.api.lifecycle import StartupDependencies, initialize_rag  # noqa: E402
-from app.config import get_settings  # noqa: E402
-from app.rag import (  # noqa: E402
+from app.api.lifecycle import StartupDependencies, initialize_rag
+from app.config import get_settings
+from app.rag import (
     get_rag_status,
     index_cache_exists,
     load_index_cache,
@@ -19,7 +20,7 @@ from app.rag import (  # noqa: E402
     rebuild_and_persist_index,
     retrieve,
 )
-from app.rag.graph import run_rag_subgraph  # noqa: E402
+from app.rag.graph import run_rag_subgraph
 
 
 def initialize_rag_for_predictions(force_rebuild: bool = False) -> None:
@@ -141,21 +142,10 @@ def run_predictions(
     return rows
 
 
-def main():
-    """批量生成预测结果并写入 CSV。"""
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--eval-file", required=True)
-    parser.add_argument("--out-file", required=True)
-    parser.add_argument("--top-k", type=int, default=5)
-    parser.add_argument("--force-rebuild", action="store_true")
-    args = parser.parse_args()
-    run_predictions(
-        eval_file=args.eval_file,
-        out_file=args.out_file,
-        top_k=args.top_k,
-        force_rebuild=args.force_rebuild,
-    )
-
-
-if __name__ == "__main__":
-    main()
+__all__ = [
+    "initialize_rag_for_predictions",
+    "load_eval_questions",
+    "run_predictions",
+    "run_rag_once",
+    "run_rag_once_with_result",
+]

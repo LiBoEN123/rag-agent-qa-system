@@ -1,83 +1,38 @@
-# 启动命令：python scripts/evaluate_rag_results_semantic_fixed.py --eval-file data/eval/rag_eval_questions_v2_semantic_fixed.json --pred-file outputs/predictions.csv --out-dir outputs/rag_baseline1 --k 10
+"""Evaluation Baseline v2 的 RAG 语义评测编排层。
+
+用途：装配预测、当前 chunk 索引、确定性检索指标、可选 LLM judge 和报告写入。
+输入：RAG 评测集、预测文件、top-k、索引位置、judge 配置与可选只读缓存。
+输出：逐题指标、分组汇总、judge 明细，以及 CSV/JSONL 评测产物。
+边界：判分公式分别由 ``rag.evaluation`` 与 ``rag.retrieval`` 维护；本模块只负责编排兼容接口。
+"""
 
 from __future__ import annotations
 
-import argparse
 import csv
 import json
-import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from scripts.rag_eval import evaluation as _evaluation
-from scripts.rag_eval import judge as _judge
-from scripts.rag_eval.common import (
-    ANSWER_FIELDS,
-    CANONICAL_REPLACEMENTS,
-    CHUNK_FIELDS,
-    DOC_FIELDS,
-    REFUSAL_PATTERNS,
+from scripts.evaluation.rag import evaluation as _evaluation
+from scripts.evaluation.rag import judge as _judge
+from scripts.evaluation.rag.common import (
     ChunkIndex,
-    get_answer,
-    has_any,
-    is_refusal,
-    is_subsequence,
-    json_dumps,
     load_eval,
     load_predictions,
-    mean,
-    normalize_text,
-    parse_chunk_ids,
-    parse_doc_ids,
-    parse_listish,
-    point_text,
     point_texts,
     warn,
 )
-from scripts.rag_eval.evaluation import behavior_score, final_score, summarize
-from scripts.rag_eval.judge import (
-    ALLOWED_KEY_POINT_STATUSES,
+from scripts.evaluation.rag.judge import (
     FORBIDDEN_JUDGE_SYSTEM_PROMPT,
     KEY_POINT_JUDGE_SYSTEM_PROMPT,
     LLMJudgeConfig,
     LLMJudgeError,
-    build_forbidden_judge_prompt,
-    build_key_point_judge_prompt,
-    compact_error_preview,
-    compute_key_point_score,
     make_judge_config,
     normalize_forbidden_judge_result,
     normalize_key_point_judge_result,
-    normalize_status,
-    parse_bool,
-    parse_llm_json_response,
-    strip_json_code_fence,
-    extract_first_json_object,
-    unavailable_forbidden_result,
-    unavailable_key_point_result,
 )
-from scripts.rag_eval.report import write_csv, write_jsonl, write_summary_csv
-from scripts.rag_eval.retrieval import (
-    chunks_to_index,
-    coerce_int,
-    collect_retrieved_evidence,
-    doc_id_matches,
-    doc_label_from_metadata,
-    evidence_matches_text,
-    evidence_texts,
-    find_gold_chunks_for_evidence,
-    load_chroma_index,
-    load_chunk_index,
-    load_chunks_file_index,
-    normalize_doc_id,
-    resolve_gold_chunk_ids,
-    score_retrieval,
-)
+from scripts.evaluation.rag.report import write_csv, write_jsonl, write_summary_csv
+from scripts.evaluation.rag.retrieval import load_chunk_index
 
 
 def call_judge_llm(
@@ -86,6 +41,7 @@ def call_judge_llm(
     judge_config: LLMJudgeConfig,
     trace_id: str = "",
 ) -> str:
+    """转交到底层 judge 网关，保留便于测试替换的兼容调用点。"""
     return _judge.call_judge_llm(system_prompt, user_prompt, judge_config, trace_id=trace_id)
 
 
@@ -95,6 +51,7 @@ def call_judge_json(
     judge_config: LLMJudgeConfig,
     trace_id: str = "",
 ) -> Tuple[Dict[str, Any], str]:
+    """调用并解析 judge JSON，同时允许测试替换本模块的 LLM 调用函数。"""
     return _judge.call_judge_json(
         system_prompt,
         user_prompt,
@@ -115,6 +72,7 @@ def evaluate_key_points_with_llm(
     expected_behavior: str = "",
     qid: str = "",
 ) -> Dict[str, Any]:
+    """按标准关键点执行语义覆盖判断，并返回规范化结果。"""
     return _judge.evaluate_key_points_with_llm(
         question=question,
         gold_answer=gold_answer,
@@ -138,6 +96,7 @@ def evaluate_forbidden_with_llm(
     gold_answer: str = "",
     qid: str = "",
 ) -> Dict[str, Any]:
+    """按禁用信息点执行语义命中判断，并返回规范化结果。"""
     return _judge.evaluate_forbidden_with_llm(
         question=question,
         model_answer=model_answer,
@@ -157,6 +116,7 @@ def evaluate(
     k: int,
     judge_config: LLMJudgeConfig | None = None,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]]]:
+    """转交逐题评分实现，并注入本模块可替换的 judge 适配函数。"""
     return _evaluation.evaluate(
         eval_items,
         preds,
@@ -207,6 +167,7 @@ def make_cached_judge_evaluators(cache: Dict[str, Dict[str, Any]]) -> Tuple[Any,
         expected_behavior: str = "",
         qid: str = "",
     ) -> Dict[str, Any]:
+        """只从缓存恢复当前 qid 的关键点判断。"""
         if qid not in cache:
             raise LLMJudgeError(f"qid={qid} missing from judge cache")
         row = cache[qid]
@@ -224,6 +185,7 @@ def make_cached_judge_evaluators(cache: Dict[str, Dict[str, Any]]) -> Tuple[Any,
         gold_answer: str = "",
         qid: str = "",
     ) -> Dict[str, Any]:
+        """只从缓存恢复当前 qid 的禁用信息判断。"""
         if qid not in cache:
             raise LLMJudgeError(f"qid={qid} missing from judge cache")
         row = cache[qid]
@@ -345,78 +307,18 @@ def run_rag_evaluation(
     }
 
 
-def main() -> None:
-    """解析参数、运行语义评测并输出报告文件。"""
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--eval-file", required=True, type=Path)
-    ap.add_argument("--pred-file", required=True, type=Path)
-    ap.add_argument(
-        "--chunks-file",
-        type=Path,
-        default=None,
-        help="Legacy chunks.json fallback. Auto mode prefers ChromaDB because manifest no longer stores chunks.",
-    )
-    ap.add_argument(
-        "--index-source",
-        choices=["auto", "chroma", "chunks-file", "none"],
-        default="auto",
-        help="Where to load current chunk text/metadata for retrieval scoring. Default: auto (ChromaDB first).",
-    )
-    ap.add_argument(
-        "--chroma-persist-dir",
-        type=Path,
-        default=None,
-        help="Override CHROMA_PERSIST_DIR for evaluation.",
-    )
-    ap.add_argument(
-        "--chroma-collection-name",
-        default=None,
-        help="Override CHROMA_COLLECTION_NAME for evaluation.",
-    )
-    ap.add_argument("--out-dir", type=Path, default=Path("eval_report"))
-    ap.add_argument("--k", type=int, default=10, help="Use top-k retrieved chunks for retrieval hit metrics")
-    ap.add_argument(
-        "--judge-cache-report",
-        type=Path,
-        default=None,
-        help="Reuse judge results from a previous per_question_report.csv. This never calls the LLM judge.",
-    )
-    judge_group = ap.add_mutually_exclusive_group()
-    judge_group.add_argument(
-        "--use-llm-judge",
-        action="store_true",
-        help="Enable LLM semantic judge for key points and forbidden hits. Also configurable via USE_LLM_JUDGE=true.",
-    )
-    judge_group.add_argument(
-        "--no-llm-judge",
-        action="store_true",
-        help="Disable LLM judge even when USE_LLM_JUDGE=true.",
-    )
-    ap.add_argument("--judge-model", default=None, help="Override JUDGE_MODEL for evaluation judge")
-    ap.add_argument("--judge-api-url", default=None, help="Override JUDGE_API_URL for evaluation judge")
-    ap.add_argument("--judge-api-key", default=None, help="Override JUDGE_API_KEY for evaluation judge")
-    args = ap.parse_args()
-    judge_override = None
-    if args.use_llm_judge:
-        judge_override = True
-    if args.no_llm_judge:
-        judge_override = False
-    run_rag_evaluation(
-        eval_file=args.eval_file,
-        pred_file=args.pred_file,
-        out_dir=args.out_dir,
-        k=args.k,
-        chunks_file=args.chunks_file,
-        index_source=args.index_source,
-        chroma_persist_dir=args.chroma_persist_dir,
-        chroma_collection_name=args.chroma_collection_name,
-        judge_cache_report=args.judge_cache_report,
-        use_llm_judge=judge_override,
-        judge_model=args.judge_model,
-        judge_api_url=args.judge_api_url,
-        judge_api_key=args.judge_api_key,
-    )
-
-
-if __name__ == "__main__":
-    main()
+__all__ = [
+    "ChunkIndex",
+    "FORBIDDEN_JUDGE_SYSTEM_PROMPT",
+    "KEY_POINT_JUDGE_SYSTEM_PROMPT",
+    "LLMJudgeConfig",
+    "LLMJudgeError",
+    "call_judge_json",
+    "call_judge_llm",
+    "evaluate",
+    "evaluate_forbidden_with_llm",
+    "evaluate_key_points_with_llm",
+    "load_judge_cache_report",
+    "make_cached_judge_evaluators",
+    "run_rag_evaluation",
+]

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from scripts.evaluation_contracts import (
+from scripts.evaluation.contracts import (
     AgentEvaluationDataset,
     build_coverage_report,
     load_agent_evaluation_dataset,

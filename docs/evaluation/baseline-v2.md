@@ -4,6 +4,11 @@ Evaluation Baseline v2 是产品质量测量入口，不改变 Agent、RAG、工
 行为。它把现有 Agent evaluator、RAG predictions 和语义 evaluator 组合成一次可
 版本化、可重复、可比较、可诊断的运行。
 
+正式入口只有 `scripts/run_evaluation_baseline.py` 和
+`scripts/compare_evaluation_runs.py`；所有可导入实现位于
+`scripts/evaluation/`。Agent 执行与判分、RAG predictions、语义 evaluator、
+Judge、manifest 和报告不再同时承担独立 CLI 职责，也没有旧入口 wrapper。
+
 ## 三个评测层
 
 | 层 | 默认 | 外部依赖 | 统计口径 |
@@ -141,7 +146,7 @@ Agent 指标按执行 case 计算；跳过的 Online case 不进入分子或分�
 Agent 结果按 suite、category、expected status、expected first tool 和 tags 分组。
 Core 与 Online 在 `groups.suite` 中独立。
 
-RAG 指标直接复用 `scripts/rag_eval/evaluation.py`，包括 prediction coverage、
+RAG 指标直接复用 `scripts/evaluation/rag/evaluation.py`，包括 prediction coverage、
 gold chunk hit/recall、all-gold hit、doc hit、behavior、key-point、forbidden 和
 最终分。公式未被统一 Runner 修改；key-point/forbidden 语义指标是否有效取决于
 LLM Judge 是否启用。
@@ -215,3 +220,16 @@ python scripts/compare_evaluation_runs.py \
 
 CI 只运行数据校验，不运行真实模型、索引或网络。真实 baseline 属于受控、本地的
 产品质量流程。
+
+## 与其他维护入口的边界
+
+- `run_evaluation_baseline.py`：离线产品质量评测；
+- `compare_evaluation_runs.py`：两次正式结果对比；
+- `benchmark_chat_api.py`：正在运行的 `/chat` HTTP 性能测试；
+- `smoke_test_online_tools.py`：真实搜索、网页和 PDF 连通性；
+- `smoke_test_agent_tool_calling.py`：模型供应商 Tool Calling 协议；
+- `inspect_agent_runtime.py`：CI 架构合同；
+- `summarize_logs.py`：现有 metrics/bad-cases 运行日志汇总。
+
+这些入口有不同副作用和统计口径，不统称为质量评测，也不会在自动测试中访问真实
+模型、Web、Online Tool 或正在运行的 FastAPI 服务。

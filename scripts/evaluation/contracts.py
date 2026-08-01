@@ -1,4 +1,10 @@
-"""Evaluation Baseline v2 的版本化数据合同与覆盖率校验。"""
+"""Evaluation Baseline v2 的版本化数据合同与覆盖率校验。
+
+用途：用严格 Pydantic 模型约束 Agent/RAG 输入，并检查类别、工具和 case 覆盖率。
+输入：版本化评测 JSON、当前注册工具名，以及覆盖率要求。
+输出：不可变的评测对象和可序列化的覆盖率报告；无效输入直接给出明确错误。
+边界：这里只验证合同，不执行 Agent、模型、RAG、网络请求或输出写入。
+"""
 
 from __future__ import annotations
 

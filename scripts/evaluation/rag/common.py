@@ -1,3 +1,11 @@
+"""RAG 评测使用的通用解析、归一化与数据加载工具。
+
+用途：统一答案字段、召回标识、拒答表达、关键点文本和多种历史文件格式。
+输入：评测 JSON、预测 CSV/JSON/JSONL，以及可能含旧字段形态的单条记录。
+输出：规范化文本、题目/预测索引和轻量 ``ChunkIndex`` 数据视图。
+边界：本模块不计算最终分数、不调用模型或网络，也不改变原始评测文件。
+"""
+
 from __future__ import annotations
 
 import csv
@@ -9,7 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 ANSWER_FIELDS = ["answer", "generated_answer", "actual_answer", "response", "model_answer"]
@@ -68,7 +76,7 @@ def normalize_text(s: Any) -> str:
     for old, new in CANONICAL_REPLACEMENTS:
         s = s.replace(old.lower(), new.lower())
     s = re.sub(r"\s+", "", s)
-    # remove common punctuation while keeping code-ish chars useful for Vue terms
+    # 去掉常见标点，同时保留 Vue 等技术词中有区分度的代码式字符。
     s = re.sub(r"[，。！？、；：,.!?;:（）()【】\[\]{}<>《》“”\"'`·\-_—|/\\]", "", s)
     return s
 
@@ -124,7 +132,7 @@ def parse_listish(value: Any) -> List[Any]:
         out = []
         for x in value:
             if isinstance(x, dict):
-                # common retrieval result shapes
+                # 兼容常见的检索结果字典形态。
                 for key in ("chunk_id",):
                     if key in x:
                         out.append(x[key])
@@ -151,7 +159,7 @@ def parse_listish(value: Any) -> List[Any]:
     s = str(value).strip()
     if not s:
         return []
-    # try JSON first
+    # 优先按 JSON 数组解析字符串。
     try:
         parsed = json.loads(s)
         if isinstance(parsed, list):
@@ -160,7 +168,7 @@ def parse_listish(value: Any) -> List[Any]:
             return parse_listish([parsed])
     except Exception:
         pass
-    # extract ids from common separators
+    # JSON 解析失败后，再按常见分隔符提取标识。
     parts = re.split(r"[,\|;，；\s]+", s)
     return [p for p in parts if p != ""]
 
@@ -233,7 +241,7 @@ def load_predictions(path: Path) -> Dict[str, Dict[str, Any]]:
         if isinstance(obj, dict) and "items" in obj:
             rows = obj["items"]
         elif isinstance(obj, dict):
-            # allow {"q001": {...}}
+            # 兼容 {"q001": {...}} 这种以 qid 为键的对象。
             rows = []
             for qid, val in obj.items():
                 if isinstance(val, dict):

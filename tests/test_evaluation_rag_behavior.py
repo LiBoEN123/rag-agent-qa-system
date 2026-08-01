@@ -1,6 +1,6 @@
 """无 Judge 时 RAG 行为标签的高精度拒答回归测试。"""
 
-from scripts.rag_eval.evaluation import behavior_score
+from scripts.evaluation.rag.evaluation import behavior_score
 
 
 def test_answer_with_local_limitation_is_not_a_full_refusal():

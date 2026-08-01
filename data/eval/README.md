@@ -5,7 +5,7 @@
 
 | 文件 | 版本与用途 |
 | --- | --- |
-| `agent_eval_cases_nmgut_v1.json` | 旧 Agent CLI 的 v1 cases，保留兼容 |
+| `agent_eval_cases_nmgut_v1.json` | 历史 v1 cases，仅保留数据，不提供旧 CLI |
 | `agent_eval_cases_v2.json` | Evaluation Baseline v2 Agent cases |
 | `rag_eval_questions_nmgut_graduate_v1.json` | 旧 RAG 数据 |
 | `rag_eval_questions_v2_semantic_fixed.json` | 当前 RAG gold 数据 |

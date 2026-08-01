@@ -1,3 +1,11 @@
+"""RAG 评测的逐题判分公式与分组汇总。
+
+用途：组合行为正确性、关键点覆盖、禁用信息和检索命中，得到可解释的最终分数。
+输入：标准题目、按 qid 索引的预测、当前 chunk 索引、top-k 与可选 judge evaluator。
+输出：逐题结果、整体/分组汇总，以及供人工审计的 judge 明细。
+边界：此处维护评测公式，不负责生成预测、加载模型或写文件；公式改动会改变基线含义。
+"""
+
 from __future__ import annotations
 
 import json
@@ -5,7 +13,7 @@ from collections import defaultdict
 from typing import Any, Dict, List, Tuple
 
 from app.common.logging import get_logger
-from scripts.rag_eval.common import (
+from scripts.evaluation.rag.common import (
     ChunkIndex,
     get_answer,
     is_refusal,
@@ -13,14 +21,17 @@ from scripts.rag_eval.common import (
     json_dumps,
     mean,
 )
-from scripts.rag_eval.judge import (
+from scripts.evaluation.rag.judge import (
     LLMJudgeConfig,
     evaluate_forbidden_with_llm,
     evaluate_key_points_with_llm,
     unavailable_forbidden_result,
     unavailable_key_point_result,
 )
-from scripts.rag_eval.retrieval import collect_retrieved_evidence, score_retrieval
+from scripts.evaluation.rag.retrieval import (
+    collect_retrieved_evidence,
+    score_retrieval,
+)
 
 
 logger = get_logger("rag_evaluator")
@@ -41,7 +52,7 @@ def behavior_score(answer: str, expected: str, key_recall: float, forbidden_hit:
         return 0.0, "should_abstain_but_answered"
 
     if expected == "partial_answer":
-        # A good partial answer should answer the known part and explicitly refuse/limit the unknown part.
+        # 合格的部分回答既要覆盖已知内容，也要明确限制或拒答未知内容。
         if contains_limitation and key_recall >= 0.45 and not forbidden_hit:
             return 1.0, "correct_partial"
         if contains_limitation and key_recall >= 0.25:
@@ -52,7 +63,7 @@ def behavior_score(answer: str, expected: str, key_recall: float, forbidden_hit:
             return 0.35, "refused_too_much"
         return 0.0, "poor_partial"
 
-    # expected == answer
+    # 以下分支处理 expected == answer。
     # 注意：trap 题里“文档没有说明 X / 不能确认 X”经常是正确答案的一部分，
     # 不能把所有 refusal pattern 都视为拒答。关键点覆盖足够高时，视为“有依据的限制性回答”。
     if contains_limitation and key_recall >= 0.70 and not forbidden_hit:

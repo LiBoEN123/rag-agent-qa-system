@@ -1,9 +1,14 @@
-from scripts import agent_eval
-from scripts.agent_eval import calc_metrics, check_tool_output_keys, evaluate_one_case
+"""Agent evaluation internal helper contracts."""
+
+from scripts.evaluation.agent import (
+    check_keywords,
+    check_tool_output_keys,
+    extract_actual_fields,
+    extract_reference_sources,
+)
 
 
 def test_check_tool_output_keys_reads_tool_result_output():
-    """验证工具输出字段检查可以读取 result.tool_result.output。"""
     case = {
         "expected_tool_output_keys": [
             "doc_a_evidence",
@@ -28,12 +33,11 @@ def test_check_tool_output_keys_reads_tool_result_output():
 
 
 def test_check_tool_output_keys_reports_missing_from_trace_output():
-    """验证工具输出字段检查能报告 trace 输出里的缺失字段。"""
     case = {"expected_tool_output_keys": ["comparison", "conflict_detected"]}
     result = {
         "tool_trace": [
             {
-                "step": "call_tool",
+                "step": "tool_call",
                 "tool_name": "compare_documents",
                 "tool_output": {"comparison": "compared"},
             }
@@ -46,107 +50,41 @@ def test_check_tool_output_keys_reports_missing_from_trace_output():
     assert check["tool_output_keys_missing"] == ["conflict_detected"]
 
 
-def test_refuse_metrics_use_final_status_not_refuse_action():
-    """验证拒答指标基于最终状态统计，而不依赖 Router action。"""
-    metrics = calc_metrics([
+def test_agent_helpers_extract_real_tool_trace_keywords_and_sources():
+    result = {
+        "status": "OK",
+        "action": "agent",
+        "answer": "最长学习年限存在差异",
+        "references": [{"source_file": "rules.md"}],
+        "tool_trace": [
+            {
+                "step": "decide",
+                "decision_type": "use_agent",
+                "action": "agent",
+            },
+            {
+                "step": "tool_call",
+                "tool_name": "compare_documents",
+                "tool_status": "success",
+            },
+        ],
+    }
+
+    actual = extract_actual_fields(result)
+    keyword = check_keywords(
         {
-            "passed": True,
-            "category": "refuse",
-            "expected_decision": "",
-            "actual_decision": "use_knowledge_base",
-            "actual_action": "search_knowledge_base",
-            "expected_tool": "",
-            "actual_tool": "",
-            "actual_status": "NO_RELEVANT_INFO",
-            "keyword_pass": True,
-            "source_pass": True,
-        }
-    ])
-
-    assert metrics["refuse_success_count"] == 1
-    assert metrics["refuse_success_rate"] == 1.0
-
-
-def test_evaluate_one_case_checks_tool_output_keys(monkeypatch):
-    """验证单条 Agent Eval 会把工具输出字段检查纳入通过判定。"""
-    def fake_run_agent_langgraph(**kwargs):
-        """模拟 compare_documents 的 LangGraph 返回结果。"""
-        return {
-            "status": "OK",
-            "action": "compare_documents",
-            "answer": "两个文档关于最长学习年限存在差异。",
-            "reason": "Agent 选择工具：compare_documents",
-            "tool_result_summary": "compare_documents 执行成功",
-            "references": [],
-            "tool_trace": [
-                {
-                    "step": "decide",
-                    "decision_type": "use_tool",
-                    "action": "compare_documents",
-                    "tool_name": "",
-                },
-                {
-                    "step": "tool_call",
-                    "tool_name": "compare_documents",
-                    "tool_output": {
-                        "doc_a_evidence": [],
-                        "doc_b_evidence": [],
-                        "comparison": "存在差异",
-                        "conflict_detected": True,
-                    },
-                },
-            ],
-        }
-
-    monkeypatch.setattr(agent_eval, "run_agent_langgraph", fake_run_agent_langgraph)
-
-    row = evaluate_one_case(
-        {
-            "id": "compare_documents_test",
-            "category": "compare_documents",
-            "question": "请对比两个文档的最长学习年限差异",
-            "expected_decision": "use_tool",
-            "expected_action": "compare_documents",
-            "expected_tool": "compare_documents",
-            "expected_status": "OK",
-            "expected_keywords": ["最长学习年限", "差异"],
-            "expected_tool_output_keys": [
-                "doc_a_evidence",
-                "doc_b_evidence",
-                "comparison",
-                "conflict_detected",
-            ],
+            "expected_keywords": ["学习年限", "差异"],
+            "min_keyword_hits": 2,
         },
-        top_k=3,
+        result,
     )
 
-    assert row["passed"] is True
-    assert row["error_type"] == "ok"
-    assert row["tool_output_keys_pass"] is True
-    assert row["actual_tool"] == "compare_documents"
-    assert row["actual_tools"] == ["compare_documents"]
-
-
-def test_agent_eval_calls_langgraph_runtime_once(monkeypatch):
-    """离线评测固定调用 LangGraph Runtime。"""
-    calls = []
-
-    def langgraph(**kwargs):
-        calls.append(kwargs)
-        return {
-            "status": "OK",
-            "action": "direct_answer",
-            "answer": "ok",
-            "reason": "ok",
-            "tool_result_summary": "",
-            "references": [],
-            "tool_trace": [],
-        }
-
-    monkeypatch.setattr(agent_eval, "run_agent_langgraph", langgraph)
-    evaluate_one_case({"id": "one", "question": "测试"}, top_k=3)
-
-    assert len(calls) == 1
-    assert calls[0]["original_question"] == "测试"
-    assert calls[0]["effective_question"] == "测试"
-    assert "decision" not in calls[0]
+    assert actual == {
+        "actual_decision": "use_agent",
+        "actual_action": "agent",
+        "actual_tool": "compare_documents",
+        "actual_tools": ["compare_documents"],
+        "actual_status": "OK",
+    }
+    assert keyword["keyword_pass"] is True
+    assert extract_reference_sources(result) == ["rules.md"]
