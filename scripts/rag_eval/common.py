@@ -30,6 +30,13 @@ REFUSAL_PATTERNS = [
     "未提到", "未提及", "没有提到", "没有提及", "不在文档中",
 ]
 
+STANDALONE_REFUSAL_PATTERNS = [
+    "无法确认", "不能确认", "无法确定", "无法回答", "不能回答", "不知道",
+    "无法根据提供的文档确定", "无法根据当前文档确定", "无法根据提供的资料确定",
+    "根据提供的文档无法", "根据当前文档无法", "根据现有文档无法", "从给定文档无法",
+    "没有相关信息", "无相关信息",
+]
+
 CANONICAL_REPLACEMENTS = [
     ("无需", "不需要"),
     ("不用", "不需要"),
@@ -92,6 +99,21 @@ def has_any(text: str, aliases: Iterable[str]) -> bool:
 def is_refusal(answer: str) -> bool:
     """判断答案是否属于拒答或无法回答。"""
     return has_any(answer, REFUSAL_PATTERNS)
+
+
+def is_standalone_refusal(answer: str) -> bool:
+    """高精度识别整段拒答，避免把长答案中的局部限制误判为拒答。"""
+    normalized = normalize_text(answer)
+    if not normalized:
+        return False
+    for pattern in STANDALONE_REFUSAL_PATTERNS:
+        normalized_pattern = normalize_text(pattern)
+        if (
+            normalized_pattern in normalized
+            and len(normalized) <= max(48, len(normalized_pattern) * 3)
+        ):
+            return True
+    return False
 
 
 def parse_listish(value: Any) -> List[Any]:

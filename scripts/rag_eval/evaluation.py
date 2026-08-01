@@ -5,7 +5,14 @@ from collections import defaultdict
 from typing import Any, Dict, List, Tuple
 
 from app.common.logging import get_logger
-from scripts.rag_eval.common import ChunkIndex, get_answer, is_refusal, json_dumps, mean
+from scripts.rag_eval.common import (
+    ChunkIndex,
+    get_answer,
+    is_refusal,
+    is_standalone_refusal,
+    json_dumps,
+    mean,
+)
 from scripts.rag_eval.judge import (
     LLMJudgeConfig,
     evaluate_forbidden_with_llm,
@@ -21,7 +28,8 @@ logger = get_logger("rag_evaluator")
 
 def behavior_score(answer: str, expected: str, key_recall: float, forbidden_hit: bool) -> Tuple[float, str]:
     """按期望行为、关键点覆盖和禁用信息给答案行为打分。"""
-    refused = is_refusal(answer)
+    contains_limitation = is_refusal(answer)
+    refused = is_standalone_refusal(answer)
     if not answer.strip():
         return 0.0, "empty_answer"
 
@@ -34,24 +42,24 @@ def behavior_score(answer: str, expected: str, key_recall: float, forbidden_hit:
 
     if expected == "partial_answer":
         # A good partial answer should answer the known part and explicitly refuse/limit the unknown part.
-        if refused and key_recall >= 0.45 and not forbidden_hit:
+        if contains_limitation and key_recall >= 0.45 and not forbidden_hit:
             return 1.0, "correct_partial"
-        if refused and key_recall >= 0.25:
+        if contains_limitation and key_recall >= 0.25:
             return 0.7, "partial_but_incomplete"
-        if not refused and key_recall >= 0.60:
+        if not contains_limitation and key_recall >= 0.60:
             return 0.45, "answered_known_part_but_no_refusal"
-        if refused:
+        if contains_limitation:
             return 0.35, "refused_too_much"
         return 0.0, "poor_partial"
 
     # expected == answer
     # 注意：trap 题里“文档没有说明 X / 不能确认 X”经常是正确答案的一部分，
     # 不能把所有 refusal pattern 都视为拒答。关键点覆盖足够高时，视为“有依据的限制性回答”。
+    if contains_limitation and key_recall >= 0.70 and not forbidden_hit:
+        return 1.0, "answered_with_supported_limitation"
+    if contains_limitation and key_recall >= 0.45 and not forbidden_hit:
+        return 0.6, "partly_answered_with_limitation"
     if refused:
-        if key_recall >= 0.70 and not forbidden_hit:
-            return 1.0, "answered_with_supported_limitation"
-        if key_recall >= 0.45 and not forbidden_hit:
-            return 0.6, "partly_answered_with_limitation"
         return 0.0, "should_answer_but_refused"
     if forbidden_hit:
         return 0.5, "answered_with_forbidden_detail"

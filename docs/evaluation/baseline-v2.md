@@ -79,6 +79,10 @@ no-op metrics/bad-case writer。每个 case 使用独立 session，结束后清�
 写入，并把所有备用路径限定在本次 output 目录下。因此评测不会写生产 SQLite、
 metrics、bad case、trace 或工具审计文件。
 
+生产 tool trace 只保留按 ToolSpec 脱敏后的输出摘要。为校验 `tool_output_keys`，
+Runner 仅在当前评测调用的内存中捕获真实工具输出的字段名；字段值不会进入评测
+记录、报告或 manifest，调用结束后立即丢弃。
+
 Core case 的工具权限只有本地知识库读取；只有 Online case 才开放 `web:search`
 和 `web:fetch`。这使 Core 运行不会意外访问真实 Web Search、Web Fetch 或 Web
 PDF Fetch。
@@ -141,6 +145,10 @@ RAG 指标直接复用 `scripts/rag_eval/evaluation.py`，包括 prediction cove
 gold chunk hit/recall、all-gold hit、doc hit、behavior、key-point、forbidden 和
 最终分。公式未被统一 Runner 修改；key-point/forbidden 语义指标是否有效取决于
 LLM Judge 是否启用。
+
+Judge 关闭时，拒答行为只用高精度规则识别整段独立拒答；长答案中出现“未说明”
+或“未提供”等局部证据限制，不会被直接当作整段拒答。语义关键点覆盖和 forbidden
+判断仍明确标记为未评判，不能把对应的 `0` 当作模型语义质量结论。
 
 每个失败 case 可以有多个 `failure_reasons`，例如：
 

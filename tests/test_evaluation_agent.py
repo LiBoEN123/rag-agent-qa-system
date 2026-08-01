@@ -101,6 +101,27 @@ def test_score_agent_turn_all_checks_pass():
     assert row["llm_call_count"] == 3
 
 
+def test_score_agent_turn_uses_captured_keys_without_persisting_values():
+    result = _result()
+    result["tool_trace"][-1].pop("tool_output")
+
+    row = _score(
+        result=result,
+        tool_output_records=[
+            {
+                "tool_name": "simple_calculator",
+                "status": "success",
+                "ok": True,
+                "output_keys": ["expression", "result"],
+            }
+        ],
+    )
+
+    assert row["passed"] is True
+    assert row["tool_output_schema_pass"] is True
+    assert "tool_output_records" not in row
+
+
 def test_score_agent_turn_collects_multiple_failure_reasons():
     expected = _expected(
         status="NO_RELEVANT_INFO",

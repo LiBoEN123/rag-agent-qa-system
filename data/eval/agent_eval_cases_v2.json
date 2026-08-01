@@ -178,7 +178,10 @@
         "tools_contains": ["search_knowledge_base"],
         "keywords": ["三日以内", "班主任", "三至七日", "学工办", "八至十五日", "学生工作副院长", "学院院长"],
         "min_keyword_hits": 5,
-        "sources": ["内蒙古工业大学学籍管理办法（2018年修订）.md"],
+        "sources": [
+          "内蒙古工业大学学籍管理办法（2018年修订）.md",
+          "内蒙古工业大学学生手册.md"
+        ],
         "source_match": "any"
       },
       "tags": ["rag", "citation", "migrated_v1"]
@@ -492,7 +495,7 @@
       "version": 2,
       "suite": "core",
       "category": "multi_tool",
-      "question": "请先列出当前知识库文档，再读取 chunk_2 的原文，并告诉我该片段提到的线上办理入口。",
+      "question": "请先列出当前知识库文档，再读取 chunk_id=2 的原文，并告诉我该片段提到的线上办理入口。",
       "expected": {
         "decision": "use_agent",
         "action": "agent",
@@ -504,14 +507,14 @@
         "min_keyword_hits": 2
       },
       "tags": ["multi_tool", "tool_sequence"],
-      "notes": "工具顺序由用户显式指定；chunk_2 内容已由 v1 T003 验证。"
+      "notes": "工具顺序由用户显式指定；整数 chunk_id=2 的内容已由 v1 T003 验证。"
     },
     {
       "id": "agent-tool-recovery-001",
       "version": 2,
       "suite": "core",
       "category": "tool_recovery",
-      "question": "先尝试读取 chunk_999999；如果不存在，请纠正参数改为读取 chunk_2，并告诉我其中的线上入口。",
+      "question": "先尝试读取 chunk_id=999999；如果不存在，请纠正参数改为读取 chunk_id=2，并告诉我其中的线上入口。",
       "expected": {
         "decision": "use_agent",
         "action": "agent",

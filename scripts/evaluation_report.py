@@ -274,6 +274,10 @@ def build_markdown_report(
             "- 口径来源：`scripts/rag_eval/evaluation.py`；"
             "答案关键点与 forbidden 语义判断仅在 Judge 启用时有效。"
         )
+        if summary.get("skipped", {}).get("llm_judge"):
+            lines.append(
+                "- LLM Judge skipped: `--use-llm-judge` 未启用"
+            )
     else:
         lines.append(f"- skipped: {rag.get('reason', '') if rag else 'not run'}")
     lines.extend(

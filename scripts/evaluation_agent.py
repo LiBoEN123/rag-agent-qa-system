@@ -153,6 +153,38 @@ def _tool_calls(result: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _check_tool_output_schema(
+    expected: ExpectedOutcome,
+    result: dict[str, Any],
+    tool_output_records: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """优先检查评测边界捕获的真实字段名，兼容旧完整输出。"""
+    legacy = check_tool_output_keys(_expected_as_legacy(expected), result)
+    if not expected.tool_output_keys or tool_output_records is None:
+        return legacy
+
+    expected_tools = expected.expected_tools()
+    actual_keys = {
+        str(key)
+        for record in tool_output_records
+        if isinstance(record, dict)
+        and record.get("ok") is True
+        and (
+            not expected_tools
+            or str(record.get("tool_name") or "") in expected_tools
+        )
+        for key in (record.get("output_keys") or [])
+    }
+    missing = [
+        key for key in expected.tool_output_keys if key not in actual_keys
+    ]
+    return {
+        "tool_output_keys_pass": not missing,
+        "tool_output_keys_expected": expected.tool_output_keys,
+        "tool_output_keys_missing": missing,
+    }
+
+
 def score_agent_turn(
     *,
     case_id: str,
@@ -166,6 +198,7 @@ def score_agent_turn(
     metrics: dict[str, Any] | None = None,
     latency_ms: float = 0.0,
     runtime_error: str = "",
+    tool_output_records: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """复用旧纯函数并补齐 v2 的多原因判分。"""
     metrics = dict(metrics or {})
@@ -176,7 +209,11 @@ def score_agent_turn(
     keyword = check_keywords(legacy_case, result)
     source = _check_sources(expected, result)
     forbidden = _check_forbidden(expected, result)
-    tool_output = check_tool_output_keys(legacy_case, result)
+    tool_output = _check_tool_output_schema(
+        expected,
+        result,
+        tool_output_records,
+    )
     rewrite = _check_rewrite(expected, result)
 
     checks = {

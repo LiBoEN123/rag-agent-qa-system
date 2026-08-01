@@ -152,6 +152,53 @@ def build_evaluation_settings(
     )
 
 
+@contextmanager
+def capture_tool_output_keys() -> Iterator[list[dict[str, Any]]]:
+    """仅为评测捕获真实工具输出的字段名，不保留字段值。"""
+    from app.tools.registry import ToolRegistry
+
+    records: list[dict[str, Any]] = []
+    original_dispatch = ToolRegistry.dispatch
+
+    def dispatch_with_schema_capture(
+        registry: ToolRegistry,
+        name: str,
+        args: dict | None = None,
+        *,
+        context: Any = None,
+    ) -> dict:
+        result = original_dispatch(
+            registry,
+            name,
+            args,
+            context=context,
+        )
+        output = result.get("output") if isinstance(result, dict) else None
+        records.append(
+            {
+                "tool_name": name,
+                "status": result.get("status", "")
+                if isinstance(result, dict)
+                else "",
+                "ok": result.get("ok") is True
+                if isinstance(result, dict)
+                else False,
+                "output_keys": sorted(
+                    str(key) for key in output
+                )
+                if isinstance(output, dict)
+                else [],
+            }
+        )
+        return result
+
+    ToolRegistry.dispatch = dispatch_with_schema_capture
+    try:
+        yield records
+    finally:
+        ToolRegistry.dispatch = original_dispatch
+
+
 def validate_dataset(
     path: Path,
     settings: AppSettings | None = None,
@@ -245,15 +292,16 @@ def _execute_agent_case(
     ):
         trace_id = f"evaluation-{case.id}-turn-{turn_index}"
         started = time.perf_counter()
-        outcome = service.handle(
-            ChatServiceRequest(
-                question=question,
-                top_k=top_k,
-                decompose_top_k=decompose_top_k,
-                session_id=session_id,
-                trace_id=trace_id,
+        with capture_tool_output_keys() as tool_output_records:
+            outcome = service.handle(
+                ChatServiceRequest(
+                    question=question,
+                    top_k=top_k,
+                    decompose_top_k=decompose_top_k,
+                    session_id=session_id,
+                    trace_id=trace_id,
+                )
             )
-        )
         elapsed_ms = (time.perf_counter() - started) * 1000
         result = dict(outcome.result)
         latest_metrics = (
@@ -275,6 +323,7 @@ def _execute_agent_case(
                 metrics=latest_metrics,
                 latency_ms=elapsed_ms,
                 runtime_error=runtime_error,
+                tool_output_records=tool_output_records,
             )
         )
     session.clear()

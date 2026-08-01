@@ -15,6 +15,7 @@ from app.observability.metrics import (
     collect_trace_metrics,
 )
 from app.services.chat_service import ChatServiceDependencies
+from app.tools.registry import ToolRegistry
 from scripts import run_evaluation_baseline as runner
 from scripts.evaluation_contracts import AgentEvaluationDataset
 
@@ -69,6 +70,32 @@ def test_validate_only_never_runs_agent_rag_or_creates_output(
     assert code == 0
     assert not output.exists()
     assert "validation passed" in capsys.readouterr().out
+
+
+def test_capture_tool_output_keys_never_keeps_values(monkeypatch):
+    def fake_dispatch(registry, name, args=None, *, context=None):
+        del registry, args, context
+        return {
+            "status": "success",
+            "ok": True,
+            "tool_name": name,
+            "output": {"result": 7, "private_value": "must-not-persist"},
+        }
+
+    monkeypatch.setattr(ToolRegistry, "dispatch", fake_dispatch)
+
+    with runner.capture_tool_output_keys() as records:
+        ToolRegistry().dispatch("simple_calculator", {"expression": "1+2"})
+
+    assert records == [
+        {
+            "tool_name": "simple_calculator",
+            "status": "success",
+            "ok": True,
+            "output_keys": ["private_value", "result"],
+        }
+    ]
+    assert "must-not-persist" not in repr(records)
 
 
 def test_in_memory_multi_turn_uses_chat_service_history_and_isolation(
@@ -323,6 +350,8 @@ def test_runner_writes_expected_output_structure(
         for path in output.rglob("*")
         if path.is_file()
     }
+    report = (output / "baseline_report.md").read_text(encoding="utf-8")
+    assert "LLM Judge skipped" in report
 
 
 def test_dirty_worktree_requires_explicit_allow_dirty(
