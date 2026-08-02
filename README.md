@@ -812,11 +812,14 @@ python scripts/run_evaluation_baseline.py \
   --agent-cases data/eval/agent_eval_cases_v2.json \
   --rag-eval-file data/eval/rag_eval_questions_v2_semantic_fixed.json \
   --output-dir outputs/evaluation_baseline_v2/initial-core \
-  --top-k 5
+  --top-k 5 \
+  --decompose-top-k 5
 ```
 
-每次运行会生成 commit/数据/索引/模型/Prompt/工具合同 manifest、Agent/RAG
-指标、覆盖矩阵、多原因失败报告和 Markdown 摘要。工作区不干净时默认拒绝正式
+每次运行会生成 commit/数据/索引/模型/Prompt/工具合同 manifest、请求/有效 RAG
+参数证据、Agent/RAG 指标、覆盖矩阵、多原因失败报告和 Markdown 摘要。RAG 报告
+分别展示 Final-ranked Recall@k、Prompt Context Recall 和 Final Reference Recall；
+后两者是诊断指标，不改变 v2 Final Score。工作区不干净时默认拒绝正式
 运行；实验运行必须显式使用 `--allow-dirty` 并会被标记。两轮结果可比较：
 
 ```bash
@@ -837,9 +840,13 @@ python scripts/run_evaluation_baseline.py \
   --judge-model deepseek-chat
 ```
 
-RAG 输出仍包括 `predictions.csv`、`per_question_report.csv`、
-`summary_report.csv`、`summary_report.json` 和 `llm_judge_details.jsonl`，指标公式、
-Judge Prompt 和报告字段不变。
+RAG 输出包括 `predictions.csv`、`per_question_report.csv`、`summary_report.csv`、
+`summary_report.json` 和 `llm_judge_details.jsonl`。Prediction v2 分别保存 Final、
+Context 和 Reference chunk IDs 及安全计数，不保存完整 Context/chunk 正文；旧 v1
+文件仍可读取，缺失的新指标显示 unavailable。Judge Prompt 和 Final Score 公式不变。
+
+Core 不评测真实联网能力；Judge 关闭时不具备完整语义答案质量判断；Online 结果受
+外部服务和内容变化影响，不适合作为稳定 CI 门禁。
 
 HTTP 性能测试是独立入口；`concurrency=1` 即串行基线，问题只从 cases 文件读取：
 

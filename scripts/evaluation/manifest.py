@@ -16,7 +16,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from pydantic import SecretStr
 
@@ -39,6 +39,8 @@ PROMPT_INPUT_FILES = (
     "app/tools/compare_documents.py",
     "app/tools/registry.py",
 )
+CONTEXT_SELECTION_SOURCE = "app/rag/generation.py"
+PREDICTION_SCHEMA_VERSION = 2
 
 
 def sha256_file(path: str | Path | None) -> str:
@@ -220,10 +222,27 @@ def build_manifest(
     judge_model: str,
     rag_status: dict[str, Any] | None = None,
     generated_at: str | None = None,
+    effective_rag_parameters: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """用显式白名单生成 manifest，绝不 dump 完整 Settings。"""
     tool_names, _, contract_hash = build_tool_contract(settings)
     git_state = get_git_state()
+    effective_parameters = dict(effective_rag_parameters or {})
+    effective_top_k = int(
+        effective_parameters.get("effective_top_k", top_k)
+    )
+    effective_decompose_top_k = int(
+        effective_parameters.get(
+            "effective_decompose_top_k",
+            decompose_top_k,
+        )
+    )
+    prediction_schema_version = int(
+        effective_parameters.get(
+            "prediction_schema_version",
+            PREDICTION_SCHEMA_VERSION,
+        )
+    )
     manifest = {
         "schema_version": 2,
         "run_id": run_id,
@@ -253,7 +272,19 @@ def build_manifest(
                 coverage_report.get("category", {})
             ),
         },
-        "rag": _read_index_metadata(settings, rag_status),
+        "rag": {
+            **_read_index_metadata(settings, rag_status),
+            "prediction_schema_version": prediction_schema_version,
+            "max_context_chars": settings.max_context_chars,
+            "requested_top_k": top_k,
+            "effective_top_k": effective_top_k,
+            "requested_decompose_top_k": decompose_top_k,
+            "effective_decompose_top_k": effective_decompose_top_k,
+            "context_selection_source": CONTEXT_SELECTION_SOURCE,
+            "context_selection_source_sha256": sha256_file(
+                PROJECT_ROOT / CONTEXT_SELECTION_SOURCE
+            ),
+        },
         "agent": {
             "answer_model": settings.model_name,
             "query_rewrite_enabled": settings.enable_query_rewrite,

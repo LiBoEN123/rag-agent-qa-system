@@ -265,6 +265,7 @@ def test_runner_writes_expected_output_structure(
 ):
     settings = _settings(tmp_path)
     output = tmp_path / "run"
+    rag_call = {}
 
     @contextmanager
     def no_scope(_settings):
@@ -306,14 +307,25 @@ def test_runner_writes_expected_output_structure(
         "run_agent_baseline",
         lambda *args, **kwargs: ([], agent_summary),
     )
-    monkeypatch.setattr(
-        runner,
-        "run_rag_baseline",
-        lambda **kwargs: {
+    def fake_rag_baseline(**kwargs):
+        rag_call.update(kwargs)
+        return {
             "rows": [],
             "summary": {"overall": {"prediction_coverage": 1.0}},
             "judge_enabled": False,
-        },
+            "prediction_metadata": {
+                "prediction_schema_version": 2,
+                "effective_top_k": kwargs["top_k"],
+                "effective_decompose_top_k": kwargs[
+                    "decompose_top_k"
+                ],
+            },
+        }
+
+    monkeypatch.setattr(
+        runner,
+        "run_rag_baseline",
+        fake_rag_baseline,
     )
     monkeypatch.setattr(
         runner,
@@ -333,6 +345,10 @@ def test_runner_writes_expected_output_structure(
             str(FIXTURE),
             "--output-dir",
             str(output),
+            "--top-k",
+            "3",
+            "--decompose-top-k",
+            "7",
         ]
     )
 
@@ -353,6 +369,8 @@ def test_runner_writes_expected_output_structure(
     }
     report = (output / "baseline_report.md").read_text(encoding="utf-8")
     assert "LLM Judge skipped" in report
+    assert rag_call["top_k"] == 3
+    assert rag_call["decompose_top_k"] == 7
 
 
 def test_dirty_worktree_requires_explicit_allow_dirty(
@@ -404,12 +422,21 @@ def test_unified_rag_predictions_fail_fast_on_model_error(
     monkeypatch.setattr(
         rag_predictions,
         "run_rag_once_with_result",
-        lambda question, top_k: (
+        lambda question, top_k, decompose_top_k: (
             {
                 "status": "MODEL_ERROR",
                 "answer": "",
             },
-            [],
+            rag_predictions.RagPredictionTrace(
+                final_chunk_ids=(),
+                context_chunk_ids=(),
+                reference_chunk_ids=(),
+                context_char_count=0,
+                top_k=top_k,
+                decompose_top_k=decompose_top_k,
+                decompose_llm_used=False,
+                status="MODEL_ERROR",
+            ),
         ),
     )
 

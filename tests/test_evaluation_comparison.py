@@ -10,6 +10,7 @@ from scripts.evaluation.comparison import (
     evaluate_regressions,
     load_thresholds,
     main,
+    render_markdown,
 )
 
 
@@ -195,6 +196,75 @@ def test_default_comparison_reports_without_failure_exit(tmp_path):
         )
         == 0
     )
+
+
+def test_comparison_marks_new_metrics_unavailable_for_old_schema(tmp_path):
+    baseline = tmp_path / "baseline"
+    candidate = tmp_path / "candidate"
+    for path in (baseline, candidate):
+        _write_run(
+            path,
+            cases=[],
+            pass_rate=1,
+            first_tool=1,
+            source=1,
+            p95=10,
+        )
+    candidate_summary_path = candidate / "baseline_summary.json"
+    candidate_summary = json.loads(
+        candidate_summary_path.read_text(encoding="utf-8")
+    )
+    candidate_summary["rag"]["overall"].update(
+        {
+            "context_gold_chunk_recall": 0.8,
+            "reference_gold_chunk_recall": 0.6,
+            "context_truncation_rate": 0.2,
+            "gold_lost_by_context_count": 2,
+            "gold_lost_by_reference_count": 3,
+        }
+    )
+    candidate_summary_path.write_text(
+        json.dumps(candidate_summary),
+        encoding="utf-8",
+    )
+
+    comparison = compare_runs(baseline, candidate)
+
+    metric = comparison["metrics"]["context_gold_chunk_recall"]
+    assert metric == {
+        "baseline": None,
+        "candidate": 0.8,
+        "delta": None,
+    }
+    assert "unavailable" in render_markdown(comparison)
+
+
+def test_comparison_calculates_new_metric_delta_for_two_v2_runs(tmp_path):
+    baseline = tmp_path / "baseline"
+    candidate = tmp_path / "candidate"
+    for path, value in ((baseline, 0.7), (candidate, 0.8)):
+        _write_run(
+            path,
+            cases=[],
+            pass_rate=1,
+            first_tool=1,
+            source=1,
+            p95=10,
+        )
+        summary_path = path / "baseline_summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        summary["rag"]["overall"][
+            "context_gold_chunk_recall"
+        ] = value
+        summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    comparison = compare_runs(baseline, candidate)
+
+    assert comparison["metrics"]["context_gold_chunk_recall"] == {
+        "baseline": 0.7,
+        "candidate": 0.8,
+        "delta": 0.1,
+    }
 
 
 def test_unknown_or_negative_threshold_is_rejected(tmp_path):

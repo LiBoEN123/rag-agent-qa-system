@@ -20,6 +20,8 @@ from scripts.evaluation.rag.common import (
     is_standalone_refusal,
     json_dumps,
     mean,
+    parse_chunk_ids_field,
+    prediction_schema_version,
 )
 from scripts.evaluation.rag.judge import (
     LLMJudgeConfig,
@@ -30,11 +32,32 @@ from scripts.evaluation.rag.judge import (
 )
 from scripts.evaluation.rag.retrieval import (
     collect_retrieved_evidence,
+    score_evidence_chunks,
     score_retrieval,
 )
 
 
 logger = get_logger("rag_evaluator")
+
+
+def _optional_int(value: Any) -> int | None:
+    """解析可选整数预测元数据，缺失或非法时返回 None。"""
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _metric(
+    scored: Dict[str, Any] | None,
+    field: str,
+) -> float | None:
+    """读取可选证据层指标并稳定四舍五入。"""
+    if scored is None:
+        return None
+    return round(float(scored[field]), 4)
 
 
 def behavior_score(answer: str, expected: str, key_recall: float, forbidden_hit: bool) -> Tuple[float, str]:
@@ -107,6 +130,61 @@ def evaluate(
         pred = preds.get(qid, {})
         answer = get_answer(pred)
         retrieval = score_retrieval(pred, q, chunk_index.chunk_doc_map, chunk_index.chunk_text_map, k)
+        schema_version = prediction_schema_version(pred)
+        final_chunk_ids = retrieval["retrieved_chunk_ids"]
+        context_chunk_ids: List[int] | None = None
+        reference_chunk_ids: List[int] | None = None
+        context_scored: Dict[str, Any] | None = None
+        reference_scored: Dict[str, Any] | None = None
+        context_truncated: bool | None = None
+        final_to_context_drop_count: int | None = None
+        gold_lost_by_context: bool | None = None
+        gold_lost_by_reference: bool | None = None
+        if schema_version >= 2:
+            context_chunk_ids = parse_chunk_ids_field(
+                pred,
+                "context_chunk_ids",
+            )
+            reference_chunk_ids = parse_chunk_ids_field(
+                pred,
+                "reference_chunk_ids",
+            )
+            context_scored = score_evidence_chunks(
+                context_chunk_ids,
+                q,
+                chunk_index.chunk_doc_map,
+                chunk_index.chunk_text_map,
+                scored_gold_chunk_ids=retrieval[
+                    "scored_gold_chunk_ids"
+                ],
+            )
+            reference_scored = score_evidence_chunks(
+                reference_chunk_ids,
+                q,
+                chunk_index.chunk_doc_map,
+                chunk_index.chunk_text_map,
+                scored_gold_chunk_ids=retrieval[
+                    "scored_gold_chunk_ids"
+                ],
+            )
+            context_truncated = (
+                len(context_chunk_ids) < len(final_chunk_ids)
+            )
+            final_to_context_drop_count = (
+                len(final_chunk_ids) - len(context_chunk_ids)
+            )
+            gold_set = set(retrieval["scored_gold_chunk_ids"])
+            gold_in_final = bool(gold_set & set(final_chunk_ids))
+            gold_in_context = bool(gold_set & set(context_chunk_ids))
+            gold_in_reference = bool(
+                gold_set & set(reference_chunk_ids)
+            )
+            gold_lost_by_context = (
+                gold_in_final and not gold_in_context
+            )
+            gold_lost_by_reference = (
+                gold_in_context and not gold_in_reference
+            )
         judge_evidence = collect_retrieved_evidence(retrieval, chunk_index)
 
         key_point_result = unavailable_key_point_result(q.get("gold_key_points", []), "LLM judge 未启用")
@@ -182,6 +260,7 @@ def evaluate(
         )
         # final_score 使用严格 gold chunk-id recall，而不是 loose 的 evidence recall。
         # 否则检索到非 gold 文档中的重复片段时，chunk-id 指标和综合分会被高估。
+        # Context 与 Reference 指标仅用于诊断，不参与 Baseline v2 Final Score。
         fscore = final_score(
             q.get("expected_behavior", "answer"),
             behavior,
@@ -206,6 +285,35 @@ def evaluate(
             "retrieval_gold_chunk_recall_at_k": round(retrieval["gold_chunk_recall_at_k"], 4),
             "retrieval_all_gold_hit_at_k": round(retrieval["all_gold_hit_at_k"], 4),
             "retrieval_doc_hit_at_k": round(retrieval["doc_hit_at_k"], 4),
+            "context_gold_chunk_hit": _metric(
+                context_scored,
+                "gold_chunk_hit",
+            ),
+            "context_gold_chunk_recall": _metric(
+                context_scored,
+                "gold_chunk_recall",
+            ),
+            "context_all_gold_hit": _metric(
+                context_scored,
+                "all_gold_hit",
+            ),
+            "context_doc_hit": _metric(context_scored, "doc_hit"),
+            "reference_gold_chunk_hit": _metric(
+                reference_scored,
+                "gold_chunk_hit",
+            ),
+            "reference_gold_chunk_recall": _metric(
+                reference_scored,
+                "gold_chunk_recall",
+            ),
+            "reference_all_gold_hit": _metric(
+                reference_scored,
+                "all_gold_hit",
+            ),
+            "reference_doc_hit": _metric(
+                reference_scored,
+                "doc_hit",
+            ),
             "forbidden_hit": forbidden_hit,
             "covered_count": key_point_result["covered_count"],
             "partial_count": key_point_result["partial_count"],
@@ -225,6 +333,83 @@ def evaluate(
             "hit_chunk_ids": json.dumps(retrieval["hit_chunk_ids"], ensure_ascii=False),
             "missing_gold_chunk_ids": json.dumps(retrieval["missing_gold_chunk_ids"], ensure_ascii=False),
             "retrieved_chunk_ids": json.dumps(retrieval["retrieved_chunk_ids"], ensure_ascii=False),
+            "prediction_schema_version": schema_version,
+            "final_chunk_ids": json.dumps(
+                final_chunk_ids,
+                ensure_ascii=False,
+            ),
+            "context_chunk_ids": (
+                json.dumps(context_chunk_ids, ensure_ascii=False)
+                if context_chunk_ids is not None
+                else None
+            ),
+            "context_hit_chunk_ids": (
+                json.dumps(
+                    context_scored["hit_chunk_ids"],
+                    ensure_ascii=False,
+                )
+                if context_scored is not None
+                else None
+            ),
+            "context_missing_gold_chunk_ids": (
+                json.dumps(
+                    context_scored["missing_gold_chunk_ids"],
+                    ensure_ascii=False,
+                )
+                if context_scored is not None
+                else None
+            ),
+            "reference_chunk_ids": (
+                json.dumps(reference_chunk_ids, ensure_ascii=False)
+                if reference_chunk_ids is not None
+                else None
+            ),
+            "reference_hit_chunk_ids": (
+                json.dumps(
+                    reference_scored["hit_chunk_ids"],
+                    ensure_ascii=False,
+                )
+                if reference_scored is not None
+                else None
+            ),
+            "reference_missing_gold_chunk_ids": (
+                json.dumps(
+                    reference_scored["missing_gold_chunk_ids"],
+                    ensure_ascii=False,
+                )
+                if reference_scored is not None
+                else None
+            ),
+            "final_chunk_count": (
+                len(final_chunk_ids) if schema_version >= 2 else None
+            ),
+            "context_chunk_count": (
+                len(context_chunk_ids)
+                if context_chunk_ids is not None
+                else None
+            ),
+            "reference_chunk_count": (
+                len(reference_chunk_ids)
+                if reference_chunk_ids is not None
+                else None
+            ),
+            "context_char_count": _optional_int(
+                pred.get("context_char_count")
+            ),
+            "top_k": _optional_int(pred.get("top_k")),
+            "decompose_top_k": _optional_int(
+                pred.get("decompose_top_k")
+            ),
+            "decompose_llm_used": pred.get("decompose_llm_used"),
+            "status": pred.get("status"),
+            "context_truncated": context_truncated,
+            "final_to_context_drop_count": final_to_context_drop_count,
+            "gold_present_in_final_but_missing_in_context": (
+                gold_lost_by_context
+            ),
+            "gold_present_in_context_but_not_referenced": (
+                gold_lost_by_reference
+            ),
             "gold_answer": q.get("gold_answer", ""),
             "answer": answer,
         }
@@ -268,6 +453,28 @@ def summarize(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         for name, vals in by.items():
             groups[f"{key}:{name}"] = vals
 
+    def optional_mean(
+        vals: List[Dict[str, Any]],
+        field: str,
+    ) -> float | None:
+        available = [
+            float(row[field])
+            for row in vals
+            if row.get(field) is not None
+        ]
+        return round(mean(available), 4) if available else None
+
+    def optional_count(
+        vals: List[Dict[str, Any]],
+        field: str,
+    ) -> int | None:
+        available = [
+            bool(row[field])
+            for row in vals
+            if row.get(field) is not None
+        ]
+        return sum(available) if available else None
+
     out = {}
     for name, vals in groups.items():
         out[name] = {
@@ -280,6 +487,59 @@ def summarize(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "gold_chunk_recall_at_k": round(mean([float(r["retrieval_gold_chunk_recall_at_k"]) for r in vals]), 4),
             "all_gold_hit_at_k": round(mean([float(r["retrieval_all_gold_hit_at_k"]) for r in vals]), 4),
             "doc_hit_at_k": round(mean([float(r["retrieval_doc_hit_at_k"]) for r in vals]), 4),
+            "context_gold_chunk_hit": optional_mean(
+                vals,
+                "context_gold_chunk_hit",
+            ),
+            "context_gold_chunk_recall": optional_mean(
+                vals,
+                "context_gold_chunk_recall",
+            ),
+            "context_all_gold_hit": optional_mean(
+                vals,
+                "context_all_gold_hit",
+            ),
+            "context_doc_hit": optional_mean(vals, "context_doc_hit"),
+            "reference_gold_chunk_hit": optional_mean(
+                vals,
+                "reference_gold_chunk_hit",
+            ),
+            "reference_gold_chunk_recall": optional_mean(
+                vals,
+                "reference_gold_chunk_recall",
+            ),
+            "reference_all_gold_hit": optional_mean(
+                vals,
+                "reference_all_gold_hit",
+            ),
+            "reference_doc_hit": optional_mean(
+                vals,
+                "reference_doc_hit",
+            ),
+            "context_truncation_rate": optional_mean(
+                vals,
+                "context_truncated",
+            ),
+            "avg_final_chunk_count": optional_mean(
+                vals,
+                "final_chunk_count",
+            ),
+            "avg_context_chunk_count": optional_mean(
+                vals,
+                "context_chunk_count",
+            ),
+            "avg_reference_chunk_count": optional_mean(
+                vals,
+                "reference_chunk_count",
+            ),
+            "gold_lost_by_context_count": optional_count(
+                vals,
+                "gold_present_in_final_but_missing_in_context",
+            ),
+            "gold_lost_by_reference_count": optional_count(
+                vals,
+                "gold_present_in_context_but_not_referenced",
+            ),
             "forbidden_rate": round(mean([1.0 if r["forbidden_hit"] else 0.0 for r in vals]), 4),
             "llm_judge_coverage": round(mean([1.0 if r["key_point_judge_used"] else 0.0 for r in vals]), 4),
             "avg_contradicted_count": round(mean([float(r["contradicted_count"]) for r in vals]), 4),

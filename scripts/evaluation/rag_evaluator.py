@@ -294,6 +294,24 @@ def run_rag_evaluation(
     print(f"Gold chunk recall@{k}: {overall['gold_chunk_recall_at_k']:.2%}")
     print(f"All gold hit@{k}: {overall['all_gold_hit_at_k']:.2%}")
     print(f"Doc hit@{k}: {overall['doc_hit_at_k']:.2%}")
+    if overall.get("context_gold_chunk_recall") is not None:
+        print(
+            "Context gold chunk recall: "
+            f"{overall['context_gold_chunk_recall']:.2%}"
+        )
+        print(
+            "Reference gold chunk recall: "
+            f"{overall['reference_gold_chunk_recall']:.2%}"
+        )
+        print(
+            "Context truncation rate: "
+            f"{overall['context_truncation_rate']:.2%}"
+        )
+        print(
+            "Gold lost by context/reference: "
+            f"{overall['gold_lost_by_context_count']} / "
+            f"{overall['gold_lost_by_reference_count']}"
+        )
     print(f"Forbidden/hallucination rate: {overall['forbidden_rate']:.2%}")
     print(f"\nReports written to: {out_dir}")
     return {

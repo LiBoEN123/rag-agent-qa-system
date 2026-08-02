@@ -310,45 +310,51 @@ python scripts/compare_evaluation_runs.py \
 不要把同一个目录同时作为 baseline 和 candidate。那只能验证比较器可以读取格式，不能
 提供任何运行一致性或质量变化证据。
 
-## 九、当前分支已知限制
+## 九、参数与证据口径
 
-以下限制来自当前代码和真实首轮产物。修复后必须同步更新本节。
+### 1. 独立 RAG 参数合同
 
-### 1. 独立 RAG 路径没有传递 `decompose_top_k`
+`run_rag_baseline -> run_predictions -> run_rag_once_with_result ->
+run_rag_subgraph` 会显式传递 `top_k` 和 `decompose_top_k`。Prediction v2 逐题记录
+两个有效值；Runner 汇总后验证它们必须与 CLI 请求值相同，否则中止运行。
+Manifest 同时记录 `requested_*` 和 `effective_*`，不再把 Settings 回退值当作 CLI
+执行证据。
 
-Runner 会解析并在 Manifest 中记录 `--decompose-top-k`，但当前
-`run_rag_baseline -> run_predictions -> run_rag_subgraph` 调用链只传递 `top_k`。
-RAG 子图因此回退到 `AppSettings.decompose_top_k`。
+### 2. Final、Context 与 Reference
 
-这会导致命令、Manifest 和实际多查询 `final_chunks` 数量不一致。在该问题修复并重跑
-前，不应把现有 RAG-only/Combined 结果当作指定 `decompose_top_k` 下的正式可复现
-结果。Agent 调用链会通过 `ChatServiceRequest` 显式传递该值，不受同一遗漏影响。
-
-### 2. `Recall@k` 不等于回答模型实际上下文覆盖
-
-当前 evaluator 对 `predictions.csv` 中的 `retrieved_chunk_ids` 直接取前 `k` 个计算
-`Recall@k`。多查询路径可能返回更多 `final_chunks`，而回答上下文还会受
-`max_context_chars` 截断。
-
-因此需要区分：
+Prediction v2 和报告明确区分：
 
 ```text
-基础召回候选
-最终排序前 k 个
-完整 final_chunks
-真正进入 Prompt 的 context chunks
+final_chunk_ids[:k]  -> Retrieval Recall@k
+context_chunk_ids    -> Prompt Context Recall
+reference_chunk_ids  -> Final Reference Recall
 ```
 
-当前产物没有单独保存最后一项。`Recall@5` 可以解释为前五排序质量，但不能直接代表
-回答模型实际看到了多少 Gold 证据。
+`context_chunk_ids` 由生产 `app/rag/generation.py` 的同一 Context 选择函数返回，受
+`max_context_chars` 约束；不解析 Prompt 字符串，也不保存完整 Context 或 chunk 正文。
+`retrieved_chunk_ids` 暂时保留为 `final_chunk_ids` 的弃用兼容别名。旧 v1 prediction
+仍可计算 Retrieval 指标，但 Context/Reference 指标显示为 unavailable，而不是零。
 
-### 3. Core 不评测真实联网能力
+Context 和 Reference 指标当前只用于诊断，不参与 Evaluation Baseline v2 Final Score。
+
+## 十、仍存在的限制
+
+### 1. Core 不评测真实联网能力
 
 Core Agent 只开放本地知识库权限。天气、股票等 Core case 只能检查 Web 权限关闭时的
 安全退化和结果状态，不能评判有网络时的工具选择或实时答案质量。联网能力必须通过
 显式 Online case 单独评测，安全拒答问题也不应强制要求无意义的本地知识库调用。
 
-## 十、常见阻塞与处理
+### 2. Judge 关闭时语义答案质量不完整
+
+不启用 `--use-llm-judge` 时，关键点覆盖和语义 forbidden 判断不可用；确定性
+Retrieval/Context/Reference 指标不能替代完整答案质量判断。
+
+### 3. Online 结果不适合作为稳定 CI 门禁
+
+Online 工具受网络、搜索结果和外部网页变化影响，应与 Core 分开记录和人工复核。
+
+## 十一、常见阻塞与处理
 
 ### 工作区不干净
 
@@ -379,7 +385,7 @@ Runner 不覆盖已有结果。保留原目录作为证据，为重试使用新�
 检查是否显式使用 `--include-online`，再区分权限不可见、搜索/代理失败、网页 SSRF
 拒绝、远端内容变化和模型工具选择。Online 失败不得混入稳定 Core 质量结论。
 
-## 十一、建议的完整质量门
+## 十二、建议的完整质量门
 
 修改评测实现、数据或文档后，至少执行：
 

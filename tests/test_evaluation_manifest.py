@@ -85,6 +85,17 @@ def test_build_manifest_records_commit_dirty_hashes_and_safe_whitelist(
     assert manifest["data"]["agent_cases_sha256"]
     assert manifest["agent"]["tool_contract_sha256"] == "contract-hash"
     assert manifest["rag"]["index_manifest_sha256"] == ""
+    assert manifest["rag"]["prediction_schema_version"] == 2
+    assert manifest["rag"]["max_context_chars"] == settings.max_context_chars
+    assert manifest["rag"]["requested_top_k"] == 5
+    assert manifest["rag"]["effective_top_k"] == 5
+    assert manifest["rag"]["requested_decompose_top_k"] == 10
+    assert manifest["rag"]["effective_decompose_top_k"] == 10
+    assert (
+        manifest["rag"]["context_selection_source"]
+        == "app/rag/generation.py"
+    )
+    assert manifest["rag"]["context_selection_source_sha256"]
     assert "do-not-leak" not in serialized
     assert "rewrite-do-not-leak" not in serialized
 

@@ -53,17 +53,22 @@ def _load_jsonl_by_case(path: Path) -> dict[str, dict[str, Any]]:
     return rows
 
 
-def _metric(summary: dict[str, Any], path: tuple[str, ...]) -> float:
-    """读取嵌套数值指标；缺失返回 0。"""
+def _metric(
+    summary: dict[str, Any],
+    path: tuple[str, ...],
+) -> float | None:
+    """读取嵌套数值指标；旧 Schema 缺失时明确返回 None。"""
     value: Any = summary
     for key in path:
-        if not isinstance(value, dict):
-            return 0.0
-        value = value.get(key)
+        if not isinstance(value, dict) or key not in value:
+            return None
+        value = value[key]
+    if value is None or value == "":
+        return None
     try:
-        return float(value or 0)
+        return float(value)
     except (TypeError, ValueError):
-        return 0.0
+        return None
 
 
 def _category_rates(summary: dict[str, Any]) -> dict[str, float]:
@@ -84,14 +89,18 @@ def _metric_delta(
     baseline: dict[str, Any],
     candidate: dict[str, Any],
     path: tuple[str, ...],
-) -> dict[str, float]:
+) -> dict[str, float | None]:
     """返回基线、候选和候选减基线。"""
     before = _metric(baseline, path)
     after = _metric(candidate, path)
     return {
         "baseline": before,
         "candidate": after,
-        "delta": round(after - before, 6),
+        "delta": (
+            round(after - before, 6)
+            if before is not None and after is not None
+            else None
+        ),
     }
 
 
@@ -180,6 +189,31 @@ def compare_runs(
             "overall",
             "avg_final_score",
         ),
+        "context_gold_chunk_recall": (
+            "rag",
+            "overall",
+            "context_gold_chunk_recall",
+        ),
+        "reference_gold_chunk_recall": (
+            "rag",
+            "overall",
+            "reference_gold_chunk_recall",
+        ),
+        "context_truncation_rate": (
+            "rag",
+            "overall",
+            "context_truncation_rate",
+        ),
+        "gold_lost_by_context_count": (
+            "rag",
+            "overall",
+            "gold_lost_by_context_count",
+        ),
+        "gold_lost_by_reference_count": (
+            "rag",
+            "overall",
+            "gold_lost_by_reference_count",
+        ),
     }
     before_categories = _category_rates(baseline)
     after_categories = _category_rates(candidate)
@@ -255,7 +289,7 @@ def evaluate_regressions(
         if threshold_name not in thresholds:
             continue
         delta = metrics[metric_name]["delta"]
-        if delta < -thresholds[threshold_name]:
+        if delta is not None and delta < -thresholds[threshold_name]:
             regressions.append(
                 {
                     "threshold": threshold_name,
@@ -268,7 +302,7 @@ def evaluate_regressions(
     if latency_name in thresholds:
         before = metrics["p95_latency_ms"]["baseline"]
         after = metrics["p95_latency_ms"]["candidate"]
-        if before > 0:
+        if before is not None and after is not None and before > 0:
             ratio = (after - before) / before
             if ratio > thresholds[latency_name]:
                 regressions.append(
@@ -308,9 +342,23 @@ def render_markdown(comparison: dict[str, Any]) -> str:
         "| --- | ---: | ---: | ---: |",
     ]
     for name, values in comparison["metrics"].items():
+        before = (
+            values["baseline"]
+            if values["baseline"] is not None
+            else "unavailable"
+        )
+        after = (
+            values["candidate"]
+            if values["candidate"] is not None
+            else "unavailable"
+        )
+        delta = (
+            values["delta"]
+            if values["delta"] is not None
+            else "unavailable"
+        )
         lines.append(
-            f"| {name} | {values['baseline']} | "
-            f"{values['candidate']} | {values['delta']} |"
+            f"| {name} | {before} | {after} | {delta} |"
         )
     lines.extend(["", "## Threshold regressions", ""])
     regressions = comparison.get("regressions") or []

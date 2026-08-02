@@ -22,7 +22,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 ANSWER_FIELDS = ["answer", "generated_answer", "actual_answer", "response", "model_answer"]
 
-CHUNK_FIELDS = ["retrieved_chunk_ids", "retrieved_chunks", "chunk_ids", "top_chunk_ids"]
+CHUNK_FIELDS = [
+    "final_chunk_ids",
+    "retrieved_chunk_ids",
+    "retrieved_chunks",
+    "chunk_ids",
+    "top_chunk_ids",
+]
 
 DOC_FIELDS = ["retrieved_doc_ids", "retrieved_docs", "doc_ids", "top_doc_ids"]
 
@@ -173,13 +179,8 @@ def parse_listish(value: Any) -> List[Any]:
     return [p for p in parts if p != ""]
 
 
-def parse_chunk_ids(pred: Dict[str, Any]) -> List[int]:
-    """从预测记录中提取检索到的 chunk_id 列表。"""
-    value = None
-    for k in CHUNK_FIELDS:
-        if k in pred:
-            value = pred[k]
-            break
+def parse_chunk_id_value(value: Any) -> List[int]:
+    """把单个预测字段解析成有序整数 chunk_id 列表。"""
     raw = parse_listish(value)
     ids = []
     for x in raw:
@@ -196,6 +197,32 @@ def parse_chunk_ids(pred: Dict[str, Any]) -> List[int]:
         if m:
             ids.append(int(m.group(1)))
     return ids
+
+
+def parse_chunk_ids(pred: Dict[str, Any]) -> List[int]:
+    """优先从 final_chunk_ids 提取最终排序 chunk_id。"""
+    value = None
+    for key in CHUNK_FIELDS:
+        if key in pred:
+            value = pred[key]
+            break
+    return parse_chunk_id_value(value)
+
+
+def parse_chunk_ids_field(
+    pred: Dict[str, Any],
+    field: str,
+) -> List[int]:
+    """只解析指定证据层字段，不在不同语义字段间回退。"""
+    return parse_chunk_id_value(pred.get(field))
+
+
+def prediction_schema_version(pred: Dict[str, Any]) -> int:
+    """读取预测 Schema；旧文件没有版本字段时按 v1 处理。"""
+    try:
+        return int(pred.get("prediction_schema_version") or 1)
+    except (TypeError, ValueError):
+        return 1
 
 
 def parse_doc_ids(pred: Dict[str, Any]) -> List[str]:

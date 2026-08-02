@@ -49,7 +49,8 @@ python scripts/run_evaluation_baseline.py \
   --agent-cases data/eval/agent_eval_cases_v2.json \
   --rag-eval-file data/eval/rag_eval_questions_v2_semantic_fixed.json \
   --output-dir outputs/evaluation_baseline_v2/initial-core \
-  --top-k 5
+  --top-k 5 \
+  --decompose-top-k 5
 ```
 
 只运行一个层：
@@ -132,6 +133,8 @@ outputs/evaluation_baseline_v2/<run_id>/
   rerank、chunk size 和 overlap；
 - 回答、Query Rewrite、Decompose 模型名和开关、温度、token、top-k 和 Agent
   预算；
+- Prediction Schema 版本、`max_context_chars`、请求/有效的 `top_k` 与
+  `decompose_top_k`，以及生产 Context 选择源文件和 SHA-256；
 - 当前八个工具名、完整 Tool contract hash；
 - Prompt、Query Rewrite、Decompose、Generation、Compare 和工具描述所在源文件
   的 SHA-256；
@@ -150,10 +153,24 @@ Agent 指标按执行 case 计算；跳过的 Online case 不进入分子或分�
 Agent 结果按 suite、category、expected status、expected first tool 和 tags 分组。
 Core 与 Online 在 `groups.suite` 中独立。
 
-RAG 指标直接复用 `scripts/evaluation/rag/evaluation.py`，包括 prediction coverage、
-gold chunk hit/recall、all-gold hit、doc hit、behavior、key-point、forbidden 和
-最终分。公式未被统一 Runner 修改；key-point/forbidden 语义指标是否有效取决于
-LLM Judge 是否启用。
+RAG 指标直接复用 `scripts/evaluation/rag/evaluation.py`。证据指标分三层：
+
+| 层 | 字段 | 含义 |
+| --- | --- | --- |
+| Final-ranked | `final_chunk_ids[:k]` | 原有 Retrieval Recall@k |
+| Prompt Context | `context_chunk_ids` | 字符预算后组装进回答 Context 的完整 chunks |
+| Final Reference | `reference_chunk_ids` | 模型选择并成功绑定的引用 chunks |
+
+三层分别报告 Gold hit/recall、all-gold hit 和 doc hit。报告还包含 Context 截断率、
+各层平均 chunk 数、Context 丢失 Gold 的题数和 Reference 丢失 Gold 的题数。
+Retrieval Recall@k 不等于 Prompt Context Recall；Prompt Context Recall 也不等于
+Final Reference Recall。新增 Context/Reference 指标只用于诊断，不参与 v2 Final
+Score，原公式仍使用 `retrieval_gold_chunk_recall_at_k`。
+
+Prediction Schema v2 保存三层 ID、计数、Context 字符数、有效参数、状态和 Decompose
+调用标志，不保存完整 Context 或 chunk 正文。`retrieved_chunk_ids` 是
+`final_chunk_ids` 的弃用兼容别名。旧 v1 prediction 仍可读取；缺失的 Context 和
+Reference 指标为 `null`/unavailable，不会被当成零。
 
 Judge 关闭时，拒答行为只用高精度规则识别整段独立拒答；长答案中出现“未说明”
 或“未提供”等局部证据限制，不会被直接当作整段拒答。语义关键点覆盖和 forbidden
@@ -178,6 +195,8 @@ source_missing
 tool_output_schema_missing
 rag_document_miss
 rag_chunk_miss
+rag_context_gold_miss
+rag_reference_gold_miss
 rag_answer_keypoint_miss
 rag_unexpected_refusal
 rag_missing_refusal
@@ -196,7 +215,8 @@ python scripts/compare_evaluation_runs.py \
 
 默认在 candidate 目录写 `comparison.json` 和 `comparison.md`，只报告 case
 增删、新增失败、已修复失败、发生变化的 case、总体和 category 指标、RAG 指标、
-P50/P95、平均模型及工具调用，不因下降返回失败退出码。
+Context/Reference Recall 与丢失诊断、P50/P95、平均模型及工具调用，不因下降返回
+失败退出码。旧运行没有新指标时显示 unavailable，不伪造为零。
 
 只有同时显式提供版本化阈值和开关时，回退才返回非零：
 
@@ -226,6 +246,12 @@ python scripts/compare_evaluation_runs.py \
 
 CI 只运行数据校验，不运行真实模型、索引或网络。真实 baseline 属于受控、本地的
 产品质量流程。
+
+## 已知限制
+
+- Core 不评测真实联网能力；Online 必须显式启用并与 Core 分开解释。
+- Judge 关闭时不具备完整的语义答案质量判断，确定性证据指标不能替代 Judge。
+- Online 结果受外部服务和内容变化影响，不适合作为稳定 CI 门禁。
 
 ## 与其他维护入口的边界
 
