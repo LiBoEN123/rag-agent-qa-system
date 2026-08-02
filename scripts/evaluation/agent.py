@@ -462,6 +462,9 @@ def score_agent_turn(
     actual = extract_actual_fields(result)
     calls = _tool_calls(result)
     actual_tools = actual["actual_tools"]
+    actual_tool_statuses = [
+        str(step.get("tool_status") or "") for step in calls
+    ]
     legacy_case = _expected_as_legacy(expected)
     keyword = check_keywords(legacy_case, result)
     source = _check_sources(expected, result)
@@ -497,6 +500,10 @@ def score_agent_turn(
             not expected.tool_sequence
             or actual_tools == expected.tool_sequence
         ),
+        "tool_status_sequence": (
+            not expected.tool_status_sequence
+            or actual_tool_statuses == expected.tool_status_sequence
+        ),
         "keyword": keyword["keyword_pass"],
         "source": source["source_pass"],
         "forbidden": forbidden["forbidden_pass"],
@@ -530,7 +537,12 @@ def score_agent_turn(
         failure_reasons.append("first_tool_mismatch")
     if not checks["tools_contains"] or not checks["tool_sequence"]:
         failure_reasons.append("tool_sequence_mismatch")
-    if any(step.get("tool_status") != "success" for step in calls):
+    if not checks["tool_status_sequence"]:
+        failure_reasons.append("tool_status_sequence_mismatch")
+    if (
+        not expected.tool_status_sequence
+        and any(step.get("tool_status") != "success" for step in calls)
+    ):
         failure_reasons.append("tool_call_failed")
     if not checks["keyword"]:
         failure_reasons.append("keyword_missing")
@@ -560,6 +572,7 @@ def score_agent_turn(
         "actual_status": actual["actual_status"],
         "actual_first_tool": actual["actual_tool"],
         "actual_tools": actual_tools,
+        "actual_tool_statuses": actual_tool_statuses,
         "tool_call_count": len(calls),
         "successful_tool_call_count": sum(
             step.get("tool_status") == "success" for step in calls

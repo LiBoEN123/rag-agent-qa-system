@@ -106,6 +106,15 @@ def test_valid_multi_turn_case():
             ),
             "不能超过",
         ),
+        (
+            lambda raw: raw["cases"][0]["expected"].update(
+                {
+                    "tool_sequence": ["search_knowledge_base"],
+                    "tool_status_sequence": ["error", "success"],
+                }
+            ),
+            "长度必须与 tool_sequence 一致",
+        ),
     ],
 )
 def test_invalid_schema_cases(mutation, match):

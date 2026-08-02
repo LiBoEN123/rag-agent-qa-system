@@ -122,6 +122,32 @@ def test_score_agent_turn_uses_captured_keys_without_persisting_values():
     assert "tool_output_records" not in row
 
 
+def test_score_agent_turn_accepts_explicit_error_then_success_recovery():
+    result = _result(tool_status="error")
+    result["tool_trace"].append(
+        {
+            "step": "tool_call",
+            "tool_name": "simple_calculator",
+            "tool_status": "success",
+            "tool_output": {
+                "expression": "1+2*3",
+                "result": 7,
+            },
+        }
+    )
+    expected = _expected(
+        tool_sequence=["simple_calculator", "simple_calculator"],
+        tool_status_sequence=["error", "success"],
+    )
+
+    row = _score(expected=expected, result=result)
+
+    assert row["passed"] is True
+    assert row["actual_tool_statuses"] == ["error", "success"]
+    assert row["successful_tool_call_count"] == 1
+    assert "tool_call_failed" not in row["failure_reasons"]
+
+
 def test_score_agent_turn_collects_multiple_failure_reasons():
     expected = _expected(
         status="NO_RELEVANT_INFO",

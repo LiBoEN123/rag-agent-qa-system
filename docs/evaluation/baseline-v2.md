@@ -88,6 +88,10 @@ metrics、bad case、trace 或工具审计文件。
 Runner 仅在当前评测调用的内存中捕获真实工具输出的字段名；字段值不会进入评测
 记录、报告或 manifest，调用结束后立即丢弃。
 
+需要验证工具失败后恢复的 case，必须同时声明 `tool_sequence` 和等长的
+`tool_status_sequence`（元素只能是 `success` 或 `error`）。只有显式写入的失败
+状态才属于预期行为；普通 case 中任何工具失败仍记为 `tool_call_failed`。
+
 Core case 的工具权限只有本地知识库读取；只有 Online case 才开放 `web:search`
 和 `web:fetch`。这使 Core 运行不会意外访问真实 Web Search、Web Fetch 或 Web
 PDF Fetch。
@@ -166,6 +170,7 @@ action_mismatch
 status_mismatch
 first_tool_mismatch
 tool_sequence_mismatch
+tool_status_sequence_mismatch
 tool_call_failed
 keyword_missing
 forbidden_keyword_hit
@@ -212,6 +217,7 @@ python scripts/compare_evaluation_runs.py \
    truth。
 2. 选择 `core` 或 `online`，填写唯一 ID、category、问题和确定性 expected。
 3. 工具期望写真实 `tool_call` 名，不使用 Router 的旧 `tool_name`。
+   恢复 case 还要用 `tool_status_sequence` 明确每次调用预期成功或失败。
 4. 来源和关键词只写已核验内容；不能可靠确定时留空或把 case 标为 disabled 并写
    明原因。
 5. 多轮 case 使用独立 `session_id`；Query Rewrite 期望放在对应 turn 的

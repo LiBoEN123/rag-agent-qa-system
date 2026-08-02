@@ -522,6 +522,7 @@
         "first_tool": "get_chunk_text",
         "tools_contains": ["get_chunk_text"],
         "tool_sequence": ["get_chunk_text", "get_chunk_text"],
+        "tool_status_sequence": ["error", "success"],
         "keywords": ["综合业务系统", "学生服务", "办理缓考免考"],
         "min_keyword_hits": 2,
         "tool_output_keys": ["chunk_id", "chunk"]

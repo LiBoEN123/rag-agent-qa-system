@@ -20,6 +20,7 @@ from app.contracts.chat import AgentResultStatus
 
 SuiteName = Literal["core", "online"]
 SourceMatch = Literal["any", "all", "none"]
+ToolCallStatus = Literal["success", "error"]
 
 
 class ExpectedOutcome(BaseModel):
@@ -33,6 +34,7 @@ class ExpectedOutcome(BaseModel):
     first_tool: str = ""
     tools_contains: list[str] = Field(default_factory=list)
     tool_sequence: list[str] = Field(default_factory=list)
+    tool_status_sequence: list[ToolCallStatus] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
     min_keyword_hits: int = Field(default=0, ge=0)
     forbidden_keywords: list[str] = Field(default_factory=list)
@@ -52,6 +54,12 @@ class ExpectedOutcome(BaseModel):
         if self.min_rewrite_keyword_hits > len(self.rewrite_keywords):
             raise ValueError(
                 "min_rewrite_keyword_hits 不能超过 rewrite_keywords 数量"
+            )
+        if self.tool_status_sequence and (
+            len(self.tool_status_sequence) != len(self.tool_sequence)
+        ):
+            raise ValueError(
+                "tool_status_sequence 长度必须与 tool_sequence 一致"
             )
         return self
 
