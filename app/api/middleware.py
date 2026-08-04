@@ -14,7 +14,7 @@ logger = get_logger("chat_service")
 
 async def trace_and_timing_middleware(request: Request, call_next):
     """为聊天请求注入追踪编号，并记录端到端耗时响应头。"""
-    if request.url.path != "/chat":
+    if request.url.path not in {"/chat", "/chat/stream"}:
         return await call_next(request)
 
     trace_id = request.headers.get("X-Trace-Id") or create_trace_id()
@@ -43,12 +43,22 @@ async def trace_and_timing_middleware(request: Request, call_next):
         raise
 
     total_cost_ms = int((time.perf_counter() - request_enter_perf) * 1000)
-    logger.info(
-        "[trace_id=%s] [http] response_end status_code=%s total_cost_ms=%s",
-        trace_id,
-        response.status_code,
-        total_cost_ms,
-    )
+    if request.url.path == "/chat/stream":
+        logger.info(
+            "[trace_id=%s] [http] stream_established status_code=%s "
+            "setup_cost_ms=%s",
+            trace_id,
+            response.status_code,
+            total_cost_ms,
+        )
+    else:
+        logger.info(
+            "[trace_id=%s] [http] response_end status_code=%s total_cost_ms=%s",
+            trace_id,
+            response.status_code,
+            total_cost_ms,
+        )
     response.headers["X-Trace-Id"] = trace_id
-    response.headers["X-Total-Cost-Ms"] = str(total_cost_ms)
+    if request.url.path == "/chat":
+        response.headers["X-Total-Cost-Ms"] = str(total_cost_ms)
     return response

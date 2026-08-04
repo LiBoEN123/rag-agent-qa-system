@@ -8,8 +8,8 @@
 
 | 顺序 | 文件 | 只需要理解 |
 | --- | --- | --- |
-| 1 | `app/api/application.py`、`app/api/chat.py` | FastAPI 如何组装，以及 HTTP 如何进入 ChatService |
-| 2 | `app/services/chat_service.py`、`chat_models.py`、`chat_telemetry.py` | 应用流程、数据模型和 telemetry 如何分工 |
+| 1 | `app/api/application.py`、`app/api/chat.py`、`app/api/streaming.py` | FastAPI 如何组装，以及同步 JSON/SSE 如何进入 ChatService |
+| 2 | `app/services/chat_service.py`、`chat_models.py`、`chat_stream_models.py`、`chat_telemetry.py` | 同步/流式流程、事件模型和 telemetry 如何分工 |
 | 3 | `app/contracts/chat.py` | Result status 如何唯一决定 HTTP、API 和 metrics 状态 |
 | 4 | `app/graph/builder.py` | 父图固定入口、节点、边和条件出口 |
 | 5 | `app/graph/state.py` | 唯一完整请求状态及 reducer |
@@ -43,6 +43,29 @@ FastAPI application
 → Finalize
 ```
 
+流式入口复用同一条业务链，只把执行门面和 HTTP 适配替换为：
+
+```text
+POST /chat/stream
+→ ChatService.stream
+→ stream_agent_langgraph
+→ graph.astream(updates/messages, subgraphs=True, version=v2)
+→ project_graph_stream_part 安全投影
+→ ChatStreamSSEEncoder
+→ SSE final / done
+```
+
+`app.graph.runtime` 是同步 `invoke` 与异步 `astream` 共享的参数校验、graph input、
+ToolInvocationContext、Checkpointer thread ID、recursion limit 和 max concurrency
+所有者；同步与流式入口分别取得匹配的同步/异步 compiled Graph。流式 projector 不把 State update、
+ToolMessage、工具参数/原始结果、reasoning 或 RAG JSON 交给 API；最终结果仍经过唯一
+`ChatStatusPolicy` 和 `build_chat_response_from_outcome()`。完整接口合同见
+[聊天流式 API](api/chat-streaming.md)。
+
+`RegistryToolsMiddleware` 与 `ProjectToolGovernanceMiddleware` 的 model/tool wrap hook
+必须成对提供同步和异步实现。同步入口调用 `wrap_*`，流式入口调用 `awrap_*`；两套入口
+复用同一纯治理逻辑。只实现同步 hook 会让 `graph.astream()` 在首次模型或工具调用前失败。
+
 ChatService 不调用 Router，也不生成或注入 decision。`route_node` 是生产代码中确定性 Router 的唯一所有者；正常 `/chat`、评测脚本和其他 `run_agent_langgraph()` 调用都会先经过它一次。Router 只决定 `agent`、`direct_answer` 或 `clarify`，具体工具始终由 `create_agent` 根据请求可见 Schema 选择。
 
 `search_knowledge_base` 与普通工具一样由 Agent Model 根据动态 Schema 选择，并经过相同的 Registry/Runtime 治理链。成功结果通过 `Command.PARENT` 和 `pending_rag_result` 回到父图，再进入原 RAG 子图。不要把它移回 Router 或绕过 Runtime。
@@ -74,7 +97,7 @@ inspection 使用 `AppSettings(_env_file=None, ...)`，不会读取维护者 `.e
 | 角色模型 | 首次对应 Model Factory getter | `clear_model_factory_cache()` |
 | 默认 Tool Registry | 首次 `get_tool_registry()` | `clear_tool_registry_cache()` |
 | Tool Runtime | 首次 dispatch / `get_tool_runtime()` | `reset_tool_runtime()` |
-| Graph / Checkpointer | lifespan 预编译或首次请求 | `reset_agent_graph_runtime()` / `close_agent_graph_runtime()` |
+| Graph / Checkpointer | 同步 Graph 在 lifespan 预编译，流式 Graph 首次请求创建 | 同步上下文使用 `reset_agent_graph_runtime()`，应用异步关闭使用 `areset_agent_graph_runtime()` |
 
 `.env` 不是动态热更新接口。若测试要切换进程级配置，应先关闭 Runtime 和
 Graph/Checkpointer，再依次失效 Model、Registry、Settings 缓存；生产环境优先重启
@@ -211,6 +234,8 @@ graph TD;
 | `app/graph/state.py` | 声明唯一完整 `AgentGraphState` 及 reducer |
 | `app/graph/conditions.py` | 声明父图无副作用分支条件 |
 | `app/graph/nodes.py` | 独占 Router 调用/计时；组合各节点的显式字段更新 |
+| `app/graph/runtime.py` | 共享调用准备与同步 `graph.invoke` 门面 |
+| `app/graph/streaming.py` | 异步 `graph.astream`、消息缓冲和安全事件投影 |
 | `app/contracts/chat.py` | 声明唯一 Result-to-HTTP/API/metrics 状态策略 |
 | `app/agent/router.py` | 只产生 agent/direct_answer/clarify 的确定性决策 |
 | `app/agent/results.py` | 校验完整 AgentRunResult；集中内部和 RAG 状态转换 |
@@ -228,13 +253,15 @@ graph TD;
 | `app/tools/web_pdf_fetch.py` | 校验 PDF magic；通过 pypdf 提取页范围和有限元数据 |
 | `app/agent/runtime.py` | 构造兼容 decide/LLM trace；保存 trace |
 | `app/services/chat_models.py` | 声明框架无关 Chat 请求、结果和内部上下文 |
-| `app/services/chat_service.py` | 编排 Settings、Query Rewrite、Runtime、状态策略和 session |
+| `app/services/chat_stream_models.py` | 声明七种框架无关 Chat stream 事件 |
+| `app/services/chat_service.py` | 编排同步/流式 Query Rewrite、Runtime、状态策略和 session |
 | `app/services/chat_telemetry.py` | 初始化/合并/finalize metrics，安全写 bad case，格式化工具调用链 |
 | `app/api/application.py` | 创建 FastAPI；组装 lifespan、middleware 和全部 Router |
-| `app/api/chat.py` | 把 `/chat` HTTP 上下文适配为 ChatServiceRequest |
+| `app/api/chat.py` | 把 `/chat` 与 `/chat/stream` HTTP 上下文适配为同一 Service |
+| `app/api/streaming.py` | 严格公开字段投影、sequence/timestamp 与 SSE wire 编码 |
 | `app/api/health.py` | 提供无外部依赖的进程存活检查 |
 | `app/api/lifecycle.py` | 校验并初始化 RAG/Graph；关闭 Graph/Tool Runtime |
-| `app/api/middleware.py` | 适配 FastAPI Request；维护 `/chat` trace 与端到端响应头 |
+| `app/api/middleware.py` | 维护两个聊天入口的 trace；只为同步 `/chat` 写总耗时响应头 |
 | `app/api/http_logging.py` | 显式、幂等配置 Uvicorn access-log URL 展示 |
 | `app/api/responses.py` | 沿单一具体函数规范化 confidence/LLM usage 并构造 ChatResponse |
 | `app/common/logging.py` | 构造框架无关的应用 logger，不修改 Uvicorn 全局状态 |
@@ -262,6 +289,9 @@ Provider 的模型可见性层只复用 `has_permission()` 检查全部 `ToolSpe
 | 某 Result status 的 HTTP/code/message 是什么 | `app/contracts/chat.py` |
 | metrics 状态为什么这样记录 | `ChatStatusPolicy.metric_status` |
 | API 字段如何构造 | `app/api/responses.py` |
+| SSE sequence/信封为什么这样构造 | `app/api/streaming.py` |
+| 为什么某个 token 没有流出 | `app/graph/streaming.py` 的消息类型/block/namespace/metadata 白名单 |
+| 客户端断开为何不保存部分回答 | `app/api/chat.py`、`ChatService.stream()` 的 generator close/finalize |
 | RAG 状态如何进入 Agent | `app/agent/results.py::map_rag_status_to_agent_status` |
 | 工具事件如何进入状态 | `app/agent/framework_agent.py`、`app/agent/tool_events.py` |
 | RAG 结果如何写回 | `app/agent/answer.py`、`rag_subgraph_node` |
@@ -339,7 +369,7 @@ lint-imports
 lint-imports --verbose
 ```
 
-脚本只使用普通 `build_agent_graph().compile()`，不会调用带 Checkpointer 的缓存入口；也不会初始化模型、DDGS、requests-hardened Manager、Trafilatura、PdfReader、执行 handler、访问网络或读取/重建 RAG 索引。报告验证 `AgentGraphState` 没有嵌套状态且包含全部业务字段，`AgentRunResult` 字段完整并拒绝 extra，所有 Result status 恰好有一项 policy，Graph result 仍是普通字典，API response adapter 没有 Runtime/Graph 反向依赖，并检查 application factory、独立 Chat Router、ChatService/telemetry 分工、当前架构文档和历史归档。报告还分别列出 Registry 的八个 `registered_tools` 和默认 Context 的 `default_visible_tools`，验证默认可见集合、权限及 Web 工具契约。它只读取 `.importlinter` 的公开配置结构，报告 `import_linter_configured`、四项关键合同和 `zero_import_ignores`；不分析或复制 import graph。版本来自 `importlib.metadata`，图来自 `get_graph()`/`get_graph(xray=True)`，Mermaid 来自 `draw_mermaid()`，工具参数来自模型可见的 Pydantic JSON Schema。实际模块方向必须由官方 `lint-imports` 全量检查。
+脚本只使用普通 `build_agent_graph().compile()`，不会调用带 Checkpointer 的缓存入口；也不会初始化模型、DDGS、requests-hardened Manager、Trafilatura、PdfReader、执行 handler、访问网络或读取/重建 RAG 索引。报告验证 `AgentGraphState` 没有嵌套状态且包含全部业务字段，`AgentRunResult` 字段完整并拒绝 extra，所有 Result status 恰好有一项 policy，Graph result 仍是普通字典，API response adapter 没有 Runtime/Graph 反向依赖，并检查 application factory、同步/流式 Chat Router、共享 Service、`graph.astream` Runtime、事件合同、ChatService/telemetry 分工、当前架构文档和历史归档。报告还分别列出 Registry 的八个 `registered_tools` 和默认 Context 的 `default_visible_tools`，验证默认可见集合、权限及 Web 工具契约。它只读取 `.importlinter` 的公开配置结构，报告 `import_linter_configured`、四项关键合同和 `zero_import_ignores`；不分析或复制 import graph。版本来自 `importlib.metadata`，图来自 `get_graph()`/`get_graph(xray=True)`，Mermaid 来自 `draw_mermaid()`，工具参数来自模型可见的 Pydantic JSON Schema。实际模块方向必须由官方 `lint-imports` 全量检查。
 
 升级 LangChain、LangGraph、Pydantic 或调整 package 时，先运行 `lint-imports`、契约测试和 `--check`。重点确认父图节点未改变、xray 仍能展开 `framework_agent`、model/tools 和调用限制节点仍存在、`ToolRuntime` 注入字段未暴露给模型，并重新生成本页 Mermaid。
 

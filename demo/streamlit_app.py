@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import uuid
+from collections.abc import Callable, Iterable, Iterator
 from typing import Any
 
 import requests
@@ -10,6 +12,22 @@ import streamlit as st
 DEFAULT_BACKEND_URL = "http://127.0.0.1:8000"
 REQUEST_TIMEOUT_SECONDS = 120
 ApiResult = tuple[dict[str, Any] | None, int | None, str | None]
+StreamEventHandler = Callable[[str, dict[str, Any]], None]
+
+CHAT_STREAM_EVENTS = frozenset(
+    {"start", "progress", "tool", "answer_delta", "final", "error", "done"}
+)
+PROGRESS_STAGE_LABELS = {
+    "query_rewrite": "检查会话上下文",
+    "routing": "分析问题处理路径",
+    "agent": "执行 Agent",
+    "rag": "整理知识库证据",
+    "finalizing": "确认最终结果",
+}
+
+
+class ChatStreamProtocolError(ValueError):
+    """表示后端聊天流不符合当前公开 SSE 合同。"""
 
 
 def new_session_id() -> str:
@@ -117,6 +135,202 @@ def get_json(
     )
 
 
+def iter_sse_events(
+    lines: Iterable[str | bytes],
+) -> Iterator[dict[str, str]]:
+    """把 HTTP 行流解析为 SSE event/id/data 字段，忽略心跳注释。"""
+    fields: dict[str, str] = {}
+    data_lines: list[str] = []
+    for raw_line in lines:
+        if isinstance(raw_line, bytes):
+            try:
+                line = raw_line.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ChatStreamProtocolError("SSE 响应不是 UTF-8") from exc
+        else:
+            line = raw_line
+        line = line.rstrip("\r\n")
+
+        if not line:
+            if fields or data_lines:
+                fields["data"] = "\n".join(data_lines)
+                yield fields
+                fields = {}
+                data_lines = []
+            continue
+        if line.startswith(":"):
+            continue
+
+        name, separator, value = line.partition(":")
+        if separator and value.startswith(" "):
+            value = value[1:]
+        if name == "data":
+            data_lines.append(value)
+        elif name in {"event", "id"}:
+            fields[name] = value
+
+    if fields or data_lines:
+        fields["data"] = "\n".join(data_lines)
+        yield fields
+
+
+def consume_chat_stream_events(
+    lines: Iterable[str | bytes],
+    *,
+    on_event: StreamEventHandler | None = None,
+) -> ApiResult:
+    """校验聊天 SSE 合同、通知 UI，并返回 final 中的权威响应。"""
+    handler = (
+        on_event
+        if on_event is not None
+        else (lambda event, envelope: None)
+    )
+    expected_sequence = 1
+    trace_id = ""
+    event_count = 0
+    final_response: dict[str, Any] | None = None
+    final_http_status: int | None = None
+    final_seen = False
+    error_seen = False
+    done_seen = False
+
+    for fields in iter_sse_events(lines):
+        if done_seen:
+            raise ChatStreamProtocolError("done 后仍收到业务事件")
+
+        event = fields.get("event", "")
+        if event not in CHAT_STREAM_EVENTS:
+            raise ChatStreamProtocolError("收到未知 SSE 事件")
+        if event_count == 0 and event != "start":
+            raise ChatStreamProtocolError("聊天流第一条事件不是 start")
+        if event_count > 0 and event == "start":
+            raise ChatStreamProtocolError("聊天流重复发送 start")
+        if (final_seen or error_seen) and event != "done":
+            raise ChatStreamProtocolError("final 或 error 后只能发送 done")
+
+        try:
+            envelope = json.loads(fields.get("data", ""))
+        except json.JSONDecodeError as exc:
+            raise ChatStreamProtocolError("SSE data 不是有效 JSON") from exc
+        if not isinstance(envelope, dict):
+            raise ChatStreamProtocolError("SSE 信封不是 JSON object")
+        if envelope.get("schema_version") != 1:
+            raise ChatStreamProtocolError("SSE schema_version 不受支持")
+        timestamp = envelope.get("timestamp")
+        if not isinstance(timestamp, str) or not timestamp.strip():
+            raise ChatStreamProtocolError("SSE timestamp 缺失")
+
+        sequence = envelope.get("sequence")
+        if isinstance(sequence, bool) or sequence != expected_sequence:
+            raise ChatStreamProtocolError("SSE sequence 不连续")
+        if fields.get("id") != str(sequence):
+            raise ChatStreamProtocolError("SSE id 与 sequence 不一致")
+
+        current_trace_id = envelope.get("trace_id")
+        if not isinstance(current_trace_id, str) or not current_trace_id:
+            raise ChatStreamProtocolError("SSE trace_id 缺失")
+        if trace_id and current_trace_id != trace_id:
+            raise ChatStreamProtocolError("SSE trace_id 在请求中发生变化")
+        trace_id = current_trace_id
+
+        data = envelope.get("data")
+        if not isinstance(data, dict):
+            raise ChatStreamProtocolError("SSE data 字段不是 object")
+
+        if event == "final":
+            response_json = data.get("response")
+            http_status = data.get("http_status")
+            if not isinstance(response_json, dict):
+                raise ChatStreamProtocolError("final 缺少标准 ChatResponse")
+            if isinstance(http_status, bool) or not isinstance(http_status, int):
+                raise ChatStreamProtocolError("final http_status 非法")
+            final_response = response_json
+            final_http_status = http_status
+            final_seen = True
+        elif event == "error":
+            error_seen = True
+        elif event == "done":
+            reason = data.get("reason")
+            if reason == "completed" and not final_seen:
+                raise ChatStreamProtocolError("completed 流缺少 final")
+            if reason == "error" and not error_seen:
+                raise ChatStreamProtocolError("error 流缺少 error 事件")
+            if reason not in {"completed", "error"}:
+                raise ChatStreamProtocolError("done reason 非法")
+            done_seen = True
+
+        handler(event, envelope)
+        event_count += 1
+        expected_sequence += 1
+
+    if event_count == 0:
+        raise ChatStreamProtocolError("后端没有返回 SSE 事件")
+    if not done_seen:
+        raise ChatStreamProtocolError("聊天流未发送 done")
+    if final_response is not None:
+        return final_response, final_http_status, None
+    if error_seen:
+        return None, 200, "流式处理失败"
+    raise ChatStreamProtocolError("聊天流没有权威 final 结果")
+
+
+def request_chat_stream(
+    backend_url: str,
+    payload: dict[str, Any],
+    *,
+    on_event: StreamEventHandler | None = None,
+    timeout: int = REQUEST_TIMEOUT_SECONDS,
+) -> ApiResult:
+    """调用聊天 SSE 接口；建流前 JSON 错误仍按普通响应返回。"""
+    url = f"{normalize_backend_url(backend_url)}/chat/stream"
+    try:
+        with requests.post(
+            url,
+            json=payload,
+            headers={"Accept": "text/event-stream"},
+            stream=True,
+            timeout=timeout,
+        ) as response:
+            if response.status_code != 200:
+                try:
+                    data = response.json()
+                except ValueError:
+                    return (
+                        None,
+                        response.status_code,
+                        f"后端返回 HTTP {response.status_code}，但没有标准 JSON 错误响应。",
+                    )
+                if not isinstance(data, dict):
+                    return (
+                        None,
+                        response.status_code,
+                        "后端错误响应不是 JSON object。",
+                    )
+                return data, response.status_code, None
+
+            content_type = response.headers.get("content-type", "").lower()
+            if not content_type.startswith("text/event-stream"):
+                return None, 200, "后端没有返回 text/event-stream。"
+            response.encoding = "utf-8"
+            try:
+                return consume_chat_stream_events(
+                    response.iter_lines(chunk_size=1, decode_unicode=True),
+                    on_event=on_event,
+                )
+            except ChatStreamProtocolError as exc:
+                return None, response.status_code, f"流式响应协议错误：{exc}"
+    except requests.exceptions.ConnectionError:
+        return (
+            None,
+            None,
+            f"无法连接后端：{url}。请先启动 FastAPI 服务：uvicorn app.main:app --reload",
+        )
+    except requests.exceptions.Timeout:
+        return None, None, f"流式请求超时：{url}。请稍后重试。"
+    except requests.exceptions.RequestException as exc:
+        return None, None, f"流式请求失败：{url}，错误信息：{exc}"
+
+
 @st.cache_data(ttl=5, show_spinner=False)
 def request_health(backend_url: str) -> ApiResult:
     """短时缓存健康检查，避免每次 Streamlit 重跑都访问后端。"""
@@ -173,10 +387,12 @@ def table_rows(items: list[dict[str, Any]], columns: list[str]) -> list[dict[str
 def render_chat_response_details(
     response_json: dict[str, Any],
     status_code: int | None,
+    *,
+    endpoint: str = "/chat",
 ) -> None:
-    """渲染 /chat 接口的指标、引用、工具链路和完整 JSON。"""
+    """渲染聊天接口的指标、引用、工具链路和完整 JSON。"""
     with st.expander("本轮详情", expanded=False):
-        render_http_warning("/chat", status_code)
+        render_http_warning(endpoint, status_code)
 
         data = response_json.get("data") or {}
         trace_id = pick(response_json, "trace_id", "")
@@ -658,6 +874,20 @@ def extract_assistant_content(
     return "后端没有返回 answer。"
 
 
+def build_chat_payload(
+    question: str,
+    top_k: int,
+    decompose_top_k: int,
+) -> dict[str, Any]:
+    """构造同步和流式聊天共用的公开请求体。"""
+    return {
+        "question": question,
+        "top_k": int(top_k),
+        "decompose_top_k": int(decompose_top_k),
+        "session_id": st.session_state["session_id"],
+    }
+
+
 def request_chat_response(
     backend_url: str,
     question: str,
@@ -665,14 +895,27 @@ def request_chat_response(
     decompose_top_k: int,
 ) -> ApiResult:
     """调用 /chat 接口，并携带当前 Streamlit 会话中的 session_id。"""
-    payload = {
-        "question": question,
-        "top_k": int(top_k),
-        "decompose_top_k": int(decompose_top_k),
-        "session_id": st.session_state["session_id"],
-    }
+    return post_json(
+        backend_url,
+        "/chat",
+        payload=build_chat_payload(question, top_k, decompose_top_k),
+    )
 
-    return post_json(backend_url, "/chat", payload=payload)
+
+def request_chat_stream_response(
+    backend_url: str,
+    question: str,
+    top_k: int,
+    decompose_top_k: int,
+    *,
+    on_event: StreamEventHandler | None = None,
+) -> ApiResult:
+    """调用 /chat/stream，并返回 final 内的标准 ChatResponse。"""
+    return request_chat_stream(
+        backend_url,
+        build_chat_payload(question, top_k, decompose_top_k),
+        on_event=on_event,
+    )
 
 
 def render_message_detail(message: dict[str, Any]) -> None:
@@ -684,7 +927,11 @@ def render_message_detail(message: dict[str, Any]) -> None:
     if not response_json:
         return
 
-    render_chat_response_details(response_json, message.get("status_code"))
+    render_chat_response_details(
+        response_json,
+        message.get("status_code"),
+        endpoint=str(message.get("endpoint") or "/chat"),
+    )
 
 
 def render_chat_message(message: dict[str, Any]) -> None:
@@ -722,6 +969,8 @@ def handle_chat_prompt(
     prompt: str,
     top_k: int,
     decompose_top_k: int,
+    *,
+    streaming: bool = True,
 ) -> None:
     """处理一次聊天输入，更新前端消息并展示助手响应。"""
     question = prompt.strip()
@@ -734,16 +983,104 @@ def handle_chat_prompt(
     render_chat_message(user_message)
 
     with st.chat_message("assistant"):
-        with st.spinner("正在生成回答..."):
-            response_json, status_code, error = request_chat_response(
+        endpoint = "/chat/stream" if streaming else "/chat"
+        if streaming:
+            status_panel = st.status("正在建立聊天流...", expanded=True)
+            answer_placeholder = st.empty()
+            streamed_answer_parts: list[str] = []
+
+            def render_stream_event(
+                event: str,
+                envelope: dict[str, Any],
+            ) -> None:
+                """只使用 SSE 公开合同字段增量更新当前助手气泡。"""
+                data = envelope.get("data")
+                data = data if isinstance(data, dict) else {}
+                if event == "start":
+                    status_panel.update(label="聊天请求已开始", state="running")
+                elif event == "progress":
+                    stage = str(data.get("stage") or "")
+                    stage_label = PROGRESS_STAGE_LABELS.get(stage, "处理请求")
+                    progress_status = str(data.get("status") or "")
+                    if progress_status == "started":
+                        status_panel.update(
+                            label=f"正在{stage_label}...",
+                            state="running",
+                        )
+                    elif progress_status == "failed":
+                        status_panel.write(f"{stage_label}：失败")
+                    else:
+                        status_panel.write(
+                            f"{stage_label}：{progress_status or '已更新'}"
+                        )
+                elif event == "tool":
+                    tool_name = str(data.get("tool_name") or "未知工具")
+                    phase = str(data.get("phase") or "")
+                    tool_status = str(data.get("status") or "")
+                    if phase == "started":
+                        status_panel.update(
+                            label=f"正在调用工具 {tool_name}...",
+                            state="running",
+                        )
+                    else:
+                        cost_ms = data.get("cost_ms", "-")
+                        status_panel.write(
+                            f"工具 {tool_name}：{tool_status or 'completed'} "
+                            f"({cost_ms} ms)"
+                        )
+                elif event == "answer_delta":
+                    text = data.get("text")
+                    if isinstance(text, str) and text:
+                        streamed_answer_parts.append(text)
+                        answer_placeholder.markdown(
+                            "".join(streamed_answer_parts)
+                        )
+                elif event == "final":
+                    status_panel.update(
+                        label="已收到最终结果",
+                        state="running",
+                    )
+                elif event == "error":
+                    status_panel.update(
+                        label="聊天流处理失败",
+                        state="error",
+                    )
+
+            response_json, status_code, error = request_chat_stream_response(
                 backend_url,
                 question,
                 top_k,
                 decompose_top_k,
+                on_event=render_stream_event,
             )
-
-        content = extract_assistant_content(response_json, error)
-        st.write(content)
+            content = extract_assistant_content(response_json, error)
+            answer_placeholder.markdown(content)
+            if error:
+                status_panel.update(
+                    label="本轮请求未正常完成",
+                    state="error",
+                    expanded=True,
+                )
+            else:
+                public_status = str(
+                    ((response_json or {}).get("data") or {}).get("status")
+                    or "completed"
+                )
+                status_panel.update(
+                    label=f"处理完成（{public_status}）",
+                    state="complete",
+                    expanded=False,
+                )
+        else:
+            with st.spinner("正在生成回答..."):
+                response_json, status_code, error = request_chat_response(
+                    backend_url,
+                    question,
+                    top_k,
+                    decompose_top_k,
+                )
+            content = extract_assistant_content(response_json, error)
+            st.write(content)
 
         assistant_message = {
             "role": "assistant",
@@ -751,6 +1088,7 @@ def handle_chat_prompt(
             "response_json": response_json,
             "status_code": status_code,
             "error": error,
+            "endpoint": endpoint,
         }
         render_message_detail(assistant_message)
         st.session_state["messages"].append(assistant_message)
@@ -777,6 +1115,15 @@ def main() -> None:
     st.sidebar.caption(f"session_id: `{st.session_state['session_id']}`")
 
     st.sidebar.subheader("请求参数")
+    chat_mode = st.sidebar.radio(
+        "聊天模式",
+        options=("流式", "同步"),
+        index=0,
+        key="chat_mode",
+    )
+    st.sidebar.caption(
+        "流式模式展示安全进度和答案增量；最终结果始终以 final 为准。"
+    )
     top_k = st.sidebar.number_input("top_k", min_value=1, max_value=10, value=5, step=1)
     decompose_top_k = st.sidebar.number_input(
         "decompose_top_k",
@@ -803,6 +1150,7 @@ def main() -> None:
                 pending_prompt,
                 top_k,
                 decompose_top_k,
+                streaming=chat_mode == "流式",
             )
             if pending_prompt.strip():
                 st.rerun()

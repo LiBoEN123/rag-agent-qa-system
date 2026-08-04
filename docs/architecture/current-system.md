@@ -17,7 +17,7 @@ FastAPI application
 → RAG Subgraph（仅本地知识库检索成功时）
 → AgentRunResult
 → ChatStatusPolicy
-→ ChatResponse
+→ ChatResponse（同步 JSON 或 SSE final）
 ```
 
 `app.main` 只调用 `app.api.application.create_app()`。组合根创建 FastAPI、
@@ -26,10 +26,17 @@ middleware、Chat Router、health Router 和 diagnostics Router；真实 RAG/Gra
 `ChatServiceRequest`，调用已注入的 `ChatService`，再通过
 `app.api.responses` 的单一函数构造响应。
 
-`ChatService` 是同步应用流程协调器：取得请求级 Settings 快照、读取 session
-历史、执行 Query Rewrite、调用 `run_agent_langgraph()`、应用唯一状态策略、安排
-session 保存，并委托 `chat_telemetry` 完成 metrics、bad case 和调用链收尾。Service
-模型位于 `chat_models.py`，不包含 FastAPI Request/Response 或第二套 Agent State。
+`ChatService` 是同步与流式应用流程协调器：取得请求级 Settings 快照、读取 session
+历史、执行 Query Rewrite、调用 `run_agent_langgraph()` 或
+`stream_agent_langgraph()`、应用唯一状态策略、安排 session 保存，并委托
+`chat_telemetry` 完成 metrics、bad case 和调用链收尾。Service 模型不包含 FastAPI
+Request/Response 或第二套 Agent State。
+
+`POST /chat` 保持同步 JSON 行为；`POST /chat/stream` 由同一个 Router 闭包和同一个
+Service 实例提供 SSE。流式链为
+`ChatService.stream → graph.astream(updates/messages, subgraphs=True, v2) → 安全投影 → SSE`。
+`final` 仍调用唯一 `build_chat_response_from_outcome()`，详细 HTTP/事件/安全合同见
+[聊天流式 API](../api/chat-streaming.md)。
 
 ## LangGraph 父图
 
@@ -142,7 +149,7 @@ api → services → graph → agent → tools → rag → llm
 | --- | --- |
 | Session | SQLite user/assistant 会话消息，用于多轮 Query Rewrite |
 | Agent trace | SQLite `agent_runs` / `agent_steps`，按配置选择性记录运行摘要与步骤 |
-| LangGraph Checkpointer | disabled、memory 或本地 SQLite 的图状态快照，与 session 表职责不同 |
+| LangGraph Checkpointer | disabled、memory 或本地 SQLite 的图状态快照；同步/流式 Graph 分别使用同步/异步 Saver，与 session 表职责不同 |
 | RAG index | ChromaDB 向量与 metadata、BM25 内存索引及 manifest 构建指纹 |
 | Metrics / bad case / tool audit | 独立 JSONL 可观测记录，不作为业务状态源 |
 
@@ -164,8 +171,9 @@ git diff --check
 ```
 
 Runtime Inspection 检查父图、Framework Agent、八个 ToolSpec、单一 State/Result/
-Status Policy、Settings 边界、应用组合根和文档归档；Import Linter 负责完整 import
-graph。自动测试使用 fake 隔离模型、网络、RAG 索引和生产持久化副作用。
+Status Policy、同步/流式聊天路由、共享 Service、Graph streaming Runtime、Settings
+边界、应用组合根和文档归档；Import Linter 负责完整 import graph。自动测试使用 fake
+隔离模型、网络、RAG 索引和生产持久化副作用。
 
 产品质量阶段使用
 [Evaluation Baseline v2](../evaluation/baseline-v2.md) 组合现有 Agent 与 RAG
@@ -178,7 +186,7 @@ Agent Result、工具、RAG、配置或持久化所有权。HTTP 性能测试、
 
 ## 已知产品边界
 
-- 无 Streaming。
+- RAG JSON 生成节点不提供 token streaming；完整结果由 SSE `final` 返回。
 - 无 Interrupt/Resume 和跨请求人工审批恢复。
 - 无 MCP、SQL 工具和多 Agent 编排。
 - 无生产级分布式 Checkpointer。

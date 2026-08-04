@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import sqlite3
 import threading
 import uuid
 from pathlib import Path
 
+import aiosqlite
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -21,6 +23,12 @@ _lock = threading.RLock()
 _checkpointer: BaseCheckpointSaver | None = None
 _sqlite_connection: sqlite3.Connection | None = None
 _instance_key: tuple[str, str] | None = None
+_async_checkpointer: BaseCheckpointSaver | None = None
+_async_sqlite_connection: aiosqlite.Connection | None = None
+_async_instance_key: tuple[str, str] | None = None
+_async_owner_loop: asyncio.AbstractEventLoop | None = None
+_async_init_lock: asyncio.Lock | None = None
+_async_init_lock_loop: asyncio.AbstractEventLoop | None = None
 
 
 def get_checkpointer_mode(settings: AppSettings | None = None) -> str:
@@ -70,6 +78,51 @@ def _create_sqlite_checkpointer(
     return saver, connection
 
 
+async def _create_async_sqlite_checkpointer(
+    path: Path,
+) -> tuple[BaseCheckpointSaver, aiosqlite.Connection]:
+    """创建异步 SQLite Saver，并立即验证数据库可初始化。"""
+    connection: aiosqlite.Connection | None = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        connection = await aiosqlite.connect(str(path), timeout=30.0)
+    except (OSError, sqlite3.Error) as exc:
+        raise RuntimeError(
+            f"无法打开 LangGraph Checkpoint SQLite 数据库: {path}"
+        ) from exc
+
+    try:
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+        saver = AsyncSqliteSaver(connection)
+        await saver.setup()
+    except Exception as exc:
+        await connection.close()
+        raise RuntimeError(
+            f"无法初始化 LangGraph 异步 SQLite Checkpointer: {path}"
+        ) from exc
+    return saver, connection
+
+
+def _get_async_init_lock() -> asyncio.Lock:
+    """返回绑定当前事件循环的初始化锁，避免首批流请求重复建连接。"""
+    global _async_init_lock, _async_init_lock_loop
+
+    loop = asyncio.get_running_loop()
+    if _async_init_lock is None:
+        _async_init_lock = asyncio.Lock()
+        _async_init_lock_loop = loop
+    elif _async_init_lock_loop is not loop:
+        if _async_checkpointer is not None:
+            raise RuntimeError(
+                "LangGraph 异步 Checkpointer 的事件循环已变化，"
+                "请先重置 Agent Graph Runtime"
+            )
+        _async_init_lock = asyncio.Lock()
+        _async_init_lock_loop = loop
+    return _async_init_lock
+
+
 def initialize_checkpointer(
     settings: AppSettings | None = None,
 ) -> BaseCheckpointSaver | None:
@@ -114,6 +167,62 @@ def get_checkpointer(
     return initialize_checkpointer(settings)
 
 
+async def initialize_async_checkpointer(
+    settings: AppSettings | None = None,
+) -> BaseCheckpointSaver | None:
+    """按配置创建流式 Runtime 专用的异步 Checkpointer。"""
+    global _async_checkpointer, _async_instance_key
+    global _async_owner_loop, _async_sqlite_connection
+
+    resolved = settings or get_settings()
+    requested_key = _effective_instance_key(resolved)
+    if requested_key is None:
+        return None
+
+    loop = asyncio.get_running_loop()
+    lock = _get_async_init_lock()
+    async with lock:
+        if _async_checkpointer is not None:
+            if _async_instance_key != requested_key:
+                raise RuntimeError(
+                    "LangGraph 异步 Checkpointer 配置已变化，"
+                    "请先重置 Agent Graph Runtime"
+                )
+            if _async_owner_loop is not loop:
+                raise RuntimeError(
+                    "LangGraph 异步 Checkpointer 的事件循环已变化，"
+                    "请先重置 Agent Graph Runtime"
+                )
+            return _async_checkpointer
+
+        mode, raw_path = requested_key
+        if mode == "memory":
+            saver: BaseCheckpointSaver = InMemorySaver()
+            connection = None
+        else:
+            saver, connection = await _create_async_sqlite_checkpointer(
+                Path(raw_path)
+            )
+
+        _async_checkpointer = saver
+        _async_sqlite_connection = connection
+        _async_instance_key = requested_key
+        _async_owner_loop = loop
+        logger.info(
+            "[langgraph] async_checkpointer_initialized mode=%s db_path=%s",
+            mode,
+            raw_path or "-",
+        )
+        return _async_checkpointer
+
+
+async def get_async_checkpointer(
+    settings: AppSettings | None = None,
+) -> BaseCheckpointSaver | None:
+    """返回当前事件循环内复用的流式 Checkpointer。"""
+    return await initialize_async_checkpointer(settings)
+
+
 def close_checkpointer() -> None:
     """安全失效 compiled Graph，并幂等关闭 Checkpointer 资源。"""
     global _checkpointer, _instance_key, _sqlite_connection
@@ -145,9 +254,46 @@ def close_checkpointer() -> None:
             )
 
 
+def has_async_checkpointer() -> bool:
+    """返回是否存在需要由异步生命周期释放的 Saver。"""
+    return _async_checkpointer is not None
+
+
+async def close_async_checkpointer() -> None:
+    """幂等关闭流式 Runtime 持有的异步 SQLite 连接。"""
+    global _async_checkpointer, _async_instance_key
+    global _async_init_lock, _async_init_lock_loop
+    global _async_owner_loop, _async_sqlite_connection
+
+    connection = _async_sqlite_connection
+    mode = _async_instance_key[0] if _async_instance_key else "disabled"
+    _async_checkpointer = None
+    _async_sqlite_connection = None
+    _async_instance_key = None
+    _async_owner_loop = None
+    _async_init_lock = None
+    _async_init_lock_loop = None
+    if connection is None:
+        return
+    try:
+        await connection.close()
+        logger.info("[langgraph] async_checkpointer_closed mode=%s", mode)
+    except (RuntimeError, sqlite3.Error) as exc:
+        logger.warning(
+            "[langgraph] async_checkpointer_close_failed mode=%s error=%s",
+            mode,
+            str(exc)[:200],
+        )
+
+
 def clear_checkpointer_cache() -> None:
     """关闭并清理全局 Saver，供测试和配置重载使用。"""
     close_checkpointer()
+
+
+async def clear_async_checkpointer_cache() -> None:
+    """关闭并清理流式 Runtime 的 Saver，供生命周期和测试使用。"""
+    await close_async_checkpointer()
 
 
 def build_checkpoint_thread_id(
@@ -168,9 +314,14 @@ def build_checkpoint_thread_id(
 
 __all__ = [
     "build_checkpoint_thread_id",
+    "clear_async_checkpointer_cache",
     "clear_checkpointer_cache",
+    "close_async_checkpointer",
     "close_checkpointer",
+    "get_async_checkpointer",
     "get_checkpointer",
     "get_checkpointer_mode",
+    "has_async_checkpointer",
+    "initialize_async_checkpointer",
     "initialize_checkpointer",
 ]

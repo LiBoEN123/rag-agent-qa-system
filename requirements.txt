@@ -19,6 +19,7 @@ langchain-core
 langchain-openai
 langgraph
 langgraph-checkpoint-sqlite
+aiosqlite
 pypdf
 python-docx
 huggingface-hub

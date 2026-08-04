@@ -6,8 +6,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,6 +27,10 @@ from app.contracts.chat import (
     get_chat_status_policy,
 )
 from app.graph.runtime import run_agent_langgraph
+from app.graph.streaming import (
+    AgentRuntimeStreamEvent,
+    stream_agent_langgraph,
+)
 from app.observability.metrics import (
     attach_query_rewrite_trace,
     build_query_rewrite_trace,
@@ -40,6 +45,7 @@ from app.services.chat_models import (
     ChatServiceOutcome,
     ChatServiceRequest,
 )
+from app.services.chat_stream_models import ChatStreamEvent
 from app.services.chat_telemetry import (
     apply_result_metrics,
     build_initial_bad_case,
@@ -94,6 +100,9 @@ class ChatServiceDependencies:
     append_message: Callable[[str | None, str, str], None]
     now_iso: Callable[[], str]
     perf_counter: Callable[[], float]
+    stream_agent_langgraph: Callable[
+        ..., AsyncIterator[AgentRuntimeStreamEvent]
+    ] = stream_agent_langgraph
 
 
 def get_default_chat_service_dependencies() -> ChatServiceDependencies:
@@ -120,7 +129,7 @@ def create_default_chat_service() -> ChatService:
 
 
 class ChatService:
-    """同步执行一次完整聊天业务流程。"""
+    """以同步或流式方式执行同一套完整聊天业务流程。"""
 
     def __init__(self, dependencies: ChatServiceDependencies):
         """保存可替换依赖；构造阶段不执行检索、模型或数据库调用。"""
@@ -134,16 +143,7 @@ class ChatService:
             if not context.original_question:
                 return self._empty_question_outcome(context)
 
-            context.final_top_k = (
-                request.top_k
-                if request.top_k is not None
-                else settings.top_k
-            )
-            context.decompose_top_k = (
-                request.decompose_top_k
-                if request.decompose_top_k is not None
-                else settings.decompose_top_k
-            )
+            self._configure_runtime_counts(context, settings=settings)
 
             self._rewrite_question(context)
 
@@ -155,28 +155,288 @@ class ChatService:
 
             return self._build_result_outcome(context, result)
         except Exception as exc:
-            logger.exception(
-                "[trace_id=%s] [chat] 未知异常 error=%s",
-                request.trace_id,
-                exc,
-            )
-            context.metrics["status"] = "internal_error"
-            context.metrics["reason"] = str(exc)
-            return ChatServiceOutcome(
-                http_status=500,
-                code="INTERNAL_ERROR",
-                message="服务器内部错误",
-                question=context.original_question,
-                result=build_internal_error_result(
-                    exc,
-                    runtime_label="ChatService",
-                    answer="",
-                    tool_trace=[],
-                ),
-                response_status="error",
-            )
+            return self._unknown_exception_outcome(context, exc)
         finally:
             self._finalize(context)
+
+    async def stream(
+        self,
+        request: ChatServiceRequest,
+    ) -> AsyncIterator[ChatStreamEvent]:
+        """流式编排同一业务流程，并在唯一 finally 中完成收尾。"""
+        settings = self._deps.settings_provider()
+        context = self._initialize_context(request)
+        context.metrics.update(
+            {
+                "streaming": True,
+                "stream_event_count": 0,
+                "answer_delta_count": 0,
+                "streamed_answer_chars": 0,
+                "first_event_ms": None,
+                "first_answer_delta_ms": None,
+                "client_disconnected": True,
+                "streamed_answer_matches_final": None,
+            }
+        )
+        runtime_stream: object | None = None
+        agent_start: float | None = None
+        final_outcome_formed = False
+        try:
+            if not context.original_question:
+                outcome = self._empty_question_outcome(context)
+                yield self._record_stream_event(
+                    context,
+                    "start",
+                    {"session_id_present": bool(context.session_id)},
+                )
+                final_event = self._build_final_stream_event(context, outcome)
+                final_outcome_formed = True
+                yield final_event
+                context.metrics["client_disconnected"] = False
+                yield self._record_stream_event(
+                    context,
+                    "done",
+                    {"reason": "completed"},
+                )
+                return
+
+            self._configure_runtime_counts(context, settings=settings)
+            yield self._record_stream_event(
+                context,
+                "start",
+                {"session_id_present": bool(context.session_id)},
+            )
+            yield self._record_stream_event(
+                context,
+                "progress",
+                {"stage": "query_rewrite", "status": "started"},
+            )
+            await asyncio.to_thread(self._rewrite_question, context)
+            yield self._record_stream_event(
+                context,
+                "progress",
+                {
+                    "stage": "query_rewrite",
+                    "status": (
+                        "completed"
+                        if context.metrics["query_rewrite_used"]
+                        else "skipped"
+                    ),
+                },
+            )
+            yield self._record_stream_event(
+                context,
+                "progress",
+                {"stage": "routing", "status": "started"},
+            )
+            yield self._record_stream_event(
+                context,
+                "progress",
+                {"stage": "agent", "status": "started"},
+            )
+
+            agent_start = self._deps.perf_counter()
+            result: dict[str, Any] | None = None
+            streamed_answer_parts: list[str] = []
+            try:
+                runtime_stream = self._deps.stream_agent_langgraph(
+                    write_bad_cases=self._deps.write_bad_cases,
+                    original_question=context.original_question,
+                    effective_question=context.effective_question,
+                    top_k=context.final_top_k,
+                    decompose_top_k=context.decompose_top_k,
+                    trace_id=context.request.trace_id,
+                    session_id=context.session_id or None,
+                    bad_case=context.bad_case,
+                )
+                async for runtime_event in runtime_stream:
+                    if runtime_event.event == "result":
+                        runtime_result = runtime_event.data.get("result")
+                        if not isinstance(runtime_result, dict):
+                            raise RuntimeError(
+                                "streaming Runtime returned an invalid result"
+                            )
+                        result = runtime_result
+                        continue
+                    if runtime_event.event not in {
+                        "progress",
+                        "tool",
+                        "answer_delta",
+                    }:
+                        continue
+                    if runtime_event.event == "answer_delta":
+                        delta = runtime_event.data.get("text")
+                        if not isinstance(delta, str) or not delta:
+                            continue
+                        streamed_answer_parts.append(delta)
+                    elif runtime_event.event == "tool" and (
+                        runtime_event.data.get("phase") == "completed"
+                    ):
+                        context.metrics["tool_called"] = True
+                        context.metrics["tool_name"] = str(
+                            runtime_event.data.get("tool_name") or ""
+                        )
+                        context.metrics["tool_success"] = (
+                            runtime_event.data.get("status") == "success"
+                        )
+                    yield self._record_stream_event(
+                        context,
+                        runtime_event.event,
+                        dict(runtime_event.data),
+                    )
+                if result is None:
+                    raise RuntimeError(
+                        "streaming Runtime did not return a final result"
+                    )
+                result = self._complete_agent_result(
+                    context,
+                    result,
+                    agent_start=agent_start,
+                )
+                self._collect_result_metrics(context, result)
+                outcome = self._build_result_outcome(context, result)
+            except Exception as exc:
+                outcome = await asyncio.to_thread(
+                    self._runtime_exception_outcome,
+                    context,
+                    exc,
+                )
+
+            yield self._record_stream_event(
+                context,
+                "progress",
+                {"stage": "agent", "status": "completed"},
+            )
+            yield self._record_stream_event(
+                context,
+                "progress",
+                {"stage": "finalizing", "status": "started"},
+            )
+            final_answer = str(outcome.result.get("answer") or "")
+            streamed_answer_text = "".join(streamed_answer_parts)
+            if streamed_answer_parts:
+                context.metrics["streamed_answer_matches_final"] = (
+                    streamed_answer_text == final_answer
+                )
+            yield self._record_stream_event(
+                context,
+                "progress",
+                {"stage": "finalizing", "status": "completed"},
+            )
+            final_event = self._build_final_stream_event(context, outcome)
+            final_outcome_formed = True
+            yield final_event
+            context.metrics["client_disconnected"] = False
+            yield self._record_stream_event(
+                context,
+                "done",
+                {"reason": "completed"},
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            outcome = self._unknown_exception_outcome(context, exc)
+            final_event = self._build_final_stream_event(context, outcome)
+            final_outcome_formed = True
+            yield final_event
+            context.metrics["client_disconnected"] = False
+            yield self._record_stream_event(
+                context,
+                "done",
+                {"reason": "completed"},
+            )
+        finally:
+            if runtime_stream is not None:
+                await self._close_async_stream(runtime_stream)
+            if agent_start is not None and not context.metrics.get("agent_cost_ms"):
+                context.metrics["agent_cost_ms"] = max(
+                    0,
+                    int(
+                        (self._deps.perf_counter() - agent_start)
+                        * 1000
+                    ),
+                )
+            if not final_outcome_formed:
+                context.session_should_store = False
+                context.metrics["client_disconnected"] = True
+                context.metrics["status"] = "client_disconnected"
+                context.metrics["reason"] = "client_disconnected"
+            await asyncio.to_thread(self._finalize, context)
+
+    @staticmethod
+    async def _close_async_stream(stream: object) -> None:
+        """关闭下游异步生成器，使客户端取消尽可能向 Graph 传播。"""
+        close = getattr(stream, "aclose", None)
+        if callable(close):
+            await close()
+
+    def _configure_runtime_counts(
+        self,
+        context: ChatRequestContext,
+        *,
+        settings: AppSettings,
+    ) -> None:
+        """为同步和流式调用解析同一组 Runtime 数量参数。"""
+        request = context.request
+        context.final_top_k = (
+            request.top_k if request.top_k is not None else settings.top_k
+        )
+        context.decompose_top_k = (
+            request.decompose_top_k
+            if request.decompose_top_k is not None
+            else settings.decompose_top_k
+        )
+
+    def _record_stream_event(
+        self,
+        context: ChatRequestContext,
+        event: str,
+        data: dict[str, Any],
+    ) -> ChatStreamEvent:
+        """更新请求级流指标，并构造不含 HTTP 细节的事件。"""
+        metrics = context.metrics
+        metrics["stream_event_count"] = int(
+            metrics.get("stream_event_count", 0) or 0
+        ) + 1
+        elapsed_ms = max(
+            0,
+            int(
+                (self._deps.perf_counter() - context.process_start_perf)
+                * 1000
+            ),
+        )
+        if metrics.get("first_event_ms") is None:
+            metrics["first_event_ms"] = elapsed_ms
+        if event == "answer_delta":
+            text = str(data.get("text") or "")
+            metrics["answer_delta_count"] = int(
+                metrics.get("answer_delta_count", 0) or 0
+            ) + 1
+            metrics["streamed_answer_chars"] = int(
+                metrics.get("streamed_answer_chars", 0) or 0
+            ) + len(text)
+            if metrics.get("first_answer_delta_ms") is None:
+                metrics["first_answer_delta_ms"] = elapsed_ms
+        return ChatStreamEvent(event=event, data=data)
+
+    def _build_final_stream_event(
+        self,
+        context: ChatRequestContext,
+        outcome: ChatServiceOutcome,
+    ) -> ChatStreamEvent:
+        """携带待 API 映射的 outcome；该内部对象不会直接 JSON 序列化。"""
+        total_cost_ms = max(
+            0,
+            int(
+                (self._deps.perf_counter() - context.request_enter_perf)
+                * 1000
+            ),
+        )
+        return self._record_stream_event(
+            context,
+            "final",
+            {"outcome": outcome, "total_cost_ms": total_cost_ms},
+        )
 
     def _initialize_context(
         self,
@@ -302,6 +562,20 @@ class ChatService:
             session_id=context.session_id or None,
             bad_case=context.bad_case,
         )
+        return self._complete_agent_result(
+            context,
+            result,
+            agent_start=agent_start,
+        )
+
+    def _complete_agent_result(
+        self,
+        context: ChatRequestContext,
+        result: dict[str, Any],
+        *,
+        agent_start: float,
+    ) -> dict[str, Any]:
+        """复用 Query Rewrite trace、Result 校验、日志和 Agent 耗时。"""
         result = self._deps.attach_query_rewrite_trace(
             result,
             context.rewrite_trace,
@@ -345,6 +619,33 @@ class ChatService:
             len(result.get("references") or []),
         )
         return result
+
+    def _unknown_exception_outcome(
+        self,
+        context: ChatRequestContext,
+        exc: Exception,
+    ) -> ChatServiceOutcome:
+        """把服务级未知异常映射为现有 INTERNAL_ERROR 结果。"""
+        logger.exception(
+            "[trace_id=%s] [chat] 未知异常 error=%s",
+            context.request.trace_id,
+            exc,
+        )
+        context.metrics["status"] = "internal_error"
+        context.metrics["reason"] = str(exc)
+        return ChatServiceOutcome(
+            http_status=500,
+            code="INTERNAL_ERROR",
+            message="服务器内部错误",
+            question=context.original_question,
+            result=build_internal_error_result(
+                exc,
+                runtime_label="ChatService",
+                answer="",
+                tool_trace=[],
+            ),
+            response_status="error",
+        )
 
     def _collect_result_metrics(
         self,
@@ -460,6 +761,9 @@ class ChatService:
             )
 
     def _finalize(self, context: ChatRequestContext) -> None:
+        if context.finalized:
+            return
+        context.finalized = True
         if context.session_should_store:
             self._save_session_turn(context)
         finalize_chat_telemetry(

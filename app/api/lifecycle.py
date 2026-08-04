@@ -89,6 +89,19 @@ def close_agent_graph_runtime() -> None:
         )
 
 
+async def aclose_agent_graph_runtime() -> None:
+    """在应用事件循环中关闭同步与流式 Agent Graph Runtime。"""
+    try:
+        from app.graph.builder import areset_agent_graph_runtime
+
+        await areset_agent_graph_runtime()
+    except Exception as exc:
+        logger.warning(
+            "[shutdown] async_langgraph_runtime_close_failed error=%s",
+            str(exc)[:200],
+        )
+
+
 def close_tool_runtime() -> None:
     """关闭工具线程池；关闭异常只记录日志，不阻塞其他资源清理。"""
     try:

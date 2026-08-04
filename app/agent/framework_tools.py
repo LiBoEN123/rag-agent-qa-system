@@ -235,7 +235,20 @@ class RegistryToolsMiddleware(AgentMiddleware):
         """向本次模型调用注入 Provider 提供的动态工具。"""
         return handler(request.override(tools=self._tools(request.runtime.context)))
 
+    async def awrap_model_call(self, request, handler):
+        """在异步模型调用中注入同一组请求级动态工具。"""
+        return await handler(
+            request.override(tools=self._tools(request.runtime.context))
+        )
+
     def wrap_tool_call(self, request, handler):
         """以同一 Provider 语义解析模型实际请求的工具。"""
         tools = {tool.name: tool for tool in self._tools(request.runtime.context)}
         return handler(request.override(tool=tools.get(request.tool_call["name"])))
+
+    async def awrap_tool_call(self, request, handler):
+        """在异步工具调用中保持与模型可见工具相同的解析语义。"""
+        tools = {tool.name: tool for tool in self._tools(request.runtime.context)}
+        return await handler(
+            request.override(tool=tools.get(request.tool_call["name"]))
+        )

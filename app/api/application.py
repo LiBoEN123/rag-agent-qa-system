@@ -15,7 +15,7 @@ from app.api.health import create_health_router
 from app.api.http_logging import configure_uvicorn_access_log
 from app.api.lifecycle import (
     StartupDependencies,
-    close_agent_graph_runtime,
+    aclose_agent_graph_runtime,
     close_tool_runtime,
     initialize_agent_graph_runtime,
     initialize_rag,
@@ -87,7 +87,7 @@ async def lifespan(_app: FastAPI):
         yield
     finally:
         close_tool_runtime()
-        close_agent_graph_runtime()
+        await aclose_agent_graph_runtime()
 
 
 def create_app(

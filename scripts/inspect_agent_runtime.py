@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import configparser
 import json
 import re
@@ -39,6 +40,9 @@ from app.contracts.chat import (  # noqa: E402
 from app.config import AppSettings  # noqa: E402
 from app.graph.builder import build_agent_graph  # noqa: E402
 from app.graph.state import AgentGraphState  # noqa: E402
+from app.services.chat_stream_models import (  # noqa: E402
+    CHAT_STREAM_EVENT_NAMES,
+)
 from app.tools.context import (  # noqa: E402
     ToolInvocationContext,
     build_default_tool_context,
@@ -421,6 +425,12 @@ def inspect_runtime(
     chat_router_source = (
         PROJECT_ROOT / "app/api/chat.py"
     ).read_text(encoding="utf-8")
+    graph_runtime_source = (
+        PROJECT_ROOT / "app/graph/runtime.py"
+    ).read_text(encoding="utf-8")
+    graph_streaming_source = (
+        PROJECT_ROOT / "app/graph/streaming.py"
+    ).read_text(encoding="utf-8")
     application_source = (
         PROJECT_ROOT / "app/api/application.py"
     ).read_text(encoding="utf-8")
@@ -512,6 +522,67 @@ def inspect_runtime(
             "def apply_result_metrics(",
             "def finalize_chat_telemetry(",
         )
+    )
+    chat_router_tree = ast.parse(chat_router_source)
+    graph_streaming_tree = ast.parse(graph_streaming_source)
+    route_paths = {
+        decorator.args[0].value
+        for node in ast.walk(chat_router_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for decorator in node.decorator_list
+        if isinstance(decorator, ast.Call)
+        and isinstance(decorator.func, ast.Attribute)
+        and decorator.func.attr == "post"
+        and decorator.args
+        and isinstance(decorator.args[0], ast.Constant)
+        and isinstance(decorator.args[0].value, str)
+    }
+    chat_service_calls = {
+        node.func.attr
+        for node in ast.walk(chat_router_tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "chat_service"
+    }
+    graph_stream_functions = {
+        node.name
+        for node in ast.walk(graph_streaming_tree)
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+    graph_stream_calls = {
+        node.func.attr
+        for node in ast.walk(graph_streaming_tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+    }
+    chat_stream_route_present = "/chat/stream" in route_paths
+    chat_stream_uses_same_service = {
+        "handle",
+        "stream",
+    } <= chat_service_calls
+    graph_streaming_runtime_present = (
+        "stream_agent_langgraph" in graph_stream_functions
+        and "astream" in graph_stream_calls
+        and "prepare_async_agent_runtime_invocation"
+        in graph_streaming_source
+        and "prepare_async_agent_runtime_invocation" in graph_runtime_source
+        and "prepare_agent_runtime_invocation" in graph_runtime_source
+        and "_prepare_agent_runtime_fields" in graph_runtime_source
+    )
+    stream_event_contract_present = CHAT_STREAM_EVENT_NAMES == {
+        "start",
+        "progress",
+        "tool",
+        "answer_delta",
+        "final",
+        "error",
+        "done",
+    }
+    sync_chat_route_preserved = (
+        "/chat" in route_paths
+        and "handle" in chat_service_calls
+        and "build_chat_response_from_outcome" in chat_router_source
     )
     current_architecture_documented = (
         PROJECT_ROOT / "docs/architecture/current-system.md"
@@ -776,6 +847,32 @@ def inspect_runtime(
             "chat telemetry helpers must live in the services telemetry module",
         ),
         _check(
+            "chat_stream_route_present",
+            chat_stream_route_present,
+            "chat router must register POST /chat/stream",
+        ),
+        _check(
+            "chat_stream_uses_same_service",
+            chat_stream_uses_same_service,
+            "sync and streaming routes must close over the same ChatService",
+        ),
+        _check(
+            "graph_streaming_runtime_present",
+            graph_streaming_runtime_present,
+            "streaming Runtime must use graph.astream, async Graph prep, "
+            "and shared invocation fields",
+        ),
+        _check(
+            "stream_event_contract_present",
+            stream_event_contract_present,
+            "stream event contract must contain the seven public event names",
+        ),
+        _check(
+            "sync_chat_route_preserved",
+            sync_chat_route_preserved,
+            "POST /chat and its response adapter must remain present",
+        ),
+        _check(
             "current_architecture_documented",
             current_architecture_documented,
             "current-system architecture document must exist",
@@ -901,6 +998,12 @@ def inspect_runtime(
             }
             for status in AgentResultStatus
         ],
+        "chat_streaming_contract": {
+            "events": sorted(CHAT_STREAM_EVENT_NAMES),
+            "route": "/chat/stream",
+            "uses_graph_astream": graph_streaming_runtime_present,
+            "sync_route": "/chat",
+        },
         "parent_graph": {**parent_data, "xray_nodes": xray_nodes},
         "framework_agent": framework_data,
         "middleware_nodes": sorted(

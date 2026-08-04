@@ -5,7 +5,7 @@
 当前实现的职责、调用链和持久化边界见
 [当前系统架构](docs/architecture/current-system.md)。
 
-本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。`/chat` 唯一使用 LangGraph 父图中的 LangChain `create_agent` 执行模型—工具循环；传入 `session_id` 时还会结合 SQLite 中最近的会话历史对短追问做 Query Rewrite。
+本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。同步 `/chat` 与 SSE `/chat/stream` 复用 LangGraph 父图中的 LangChain `create_agent` 模型—工具循环；传入 `session_id` 时还会结合 SQLite 中最近的会话历史对短追问做 Query Rewrite。
 
 ## 项目亮点
 
@@ -20,7 +20,8 @@
 - 多轮追问改写：同一 `session_id` 下通过 SQLite 保留最近会话历史，短追问和指代问题会先改写成独立检索问题。
 - 工具调用：支持知识库检索、公开网页搜索与受治理的单页正文提取、双文档内容对比、简单四则运算、列出知识库文档和查看指定 chunk 原文。
 - 引用绑定和拒答机制：模型输出的 `Reference N` 会绑定回真实文件与 chunk；证据不足或引用支撑不足时拒答。
-- 可观测性：每次 `/chat` 请求记录 `trace_id`、阶段耗时、状态、工具调用、引用数量和 LLM 调用次数。
+- 同步与流式聊天：保留 `/chat` JSON 合同，并提供 `/chat/stream` 的 progress、tool、安全答案增量和权威 final SSE 事件。
+- 可观测性：每次同步或流式聊天请求记录 `trace_id`、阶段耗时、状态、工具调用、引用数量和 LLM 调用次数。
 - bad case 日志：对模型格式异常、引用异常、工具异常、索引未就绪等失败样例做结构化记录。
 - 离线评测闭环：支持批量生成预测结果，并从答案质量、检索命中、行为约束和可选 LLM Judge 语义判断等维度评测。
 
@@ -28,7 +29,7 @@
 
 ```mermaid
 flowchart TD
-    User[用户问题] --> API[FastAPI /chat]
+    User[用户问题] --> API[FastAPI /chat 或 /chat/stream]
     API --> Service[ChatService]
     Service --> History[(SQLite Session History)]
     History --> Rewrite[Query Rewrite]
@@ -189,7 +190,7 @@ flowchart TD
 - 启动时基于 manifest 判断是否需要重建索引；知识库文件、chunk 参数、embedding/rerank 模型或 pipeline 版本变化会触发重建。
 - 多轮会话历史保存在 `SQLITE_DB_PATH` 指定的 SQLite 数据库中，每个 `session_id` 默认读取最近 6 条 user/assistant 消息，服务重启后仍可继续使用。
 - 设置 `ENABLE_AGENT_TRACE_STORE=true` 后，Agent 的运行摘要和步骤明细会写入同一 SQLite 数据库的 `agent_runs`、`agent_steps` 表。
-- `/chat` 请求支持继承或生成 `trace_id`，响应头返回 `X-Trace-Id` 和 `X-Total-Cost-Ms`。
+- `/chat` 请求支持继承或生成 `trace_id`，响应头返回 `X-Trace-Id` 和 `X-Total-Cost-Ms`；`/chat/stream` 只在响应头返回 `X-Trace-Id`，真实总耗时位于 `final.data.total_cost_ms`。
 - metrics 记录 Query Rewrite、路由、Agent、检索、问题拆分、重排、上下文构造、LLM 调用、JSON 解析等阶段耗时和 LLM 调用次数。
 - bad case 日志用于定位失败样例，包括模型 JSON 解析失败、引用异常、工具异常、内部异常和索引未就绪。
 
@@ -205,7 +206,7 @@ flowchart TD
 父图的 `route_node` 唯一持有，因此聊天业务可脱离 FastAPI 测试且不会形成第二个
 路由入口。
 
-API 请求与响应 Schema、HTTP 状态语义和 trace 响应头保持不变；ChatService 固定调用 LangGraph 主图，知识库回答统一进入 RAG 子图。
+同步 API 请求/响应 Schema、HTTP 状态和 trace/total-cost 响应头保持不变；流式入口复用同一个 ChatService，完整 SSE 合同见 [聊天流式 API](docs/api/chat-streaming.md)。
 
 FastAPI middleware 与 Uvicorn access-log 适配分别位于
 `app/api/middleware.py` 和 `app/api/http_logging.py`。Uvicorn filter 只在
@@ -241,6 +242,8 @@ Agent Runtime。
 模型—工具循环由 `langchain.agents.create_agent` 构建；其内部使用 LangGraph 标准 model/tools 节点处理 Pydantic 校验、同轮调用和基础 ToolMessage。动态工具通过 Middleware 覆盖请求，而不是在父图节点中手工 `bind_tools()`。`ModelCallLimitMiddleware` 和 `ToolCallLimitMiddleware` 分别执行单次 run 的模型与工具调用上限，父图调用还设置 `recursion_limit` 作为最终图级兜底。
 
 `ProjectToolGovernanceMiddleware` 只保留框架无法决定的项目语义：错误码分类、累计错误、连续相同调用/错误、协作式总耗时预算以及 terminal error 同批 fail-closed。已注册工具的调用指纹复用 `app.tools.policy.build_tool_args_fingerprint()`；未知模型 JSON 只做小型 JSON-compatible fallback。它不执行 handler、不复制 ToolRuntime 重试，也不自行实现参数校验或工具循环。
+
+两个项目 Middleware 同时实现同步 `wrap_model_call` / `wrap_tool_call` 和异步 `awrap_model_call` / `awrap_tool_call`；`/chat` 与 `/chat/stream` 因此共享完全相同的动态工具可见性、模型事件、工具治理、停止条件和 RAG handoff，而不是由异步路径绕过治理。
 
 ## Web Search
 
@@ -316,7 +319,7 @@ python scripts/smoke_test_online_tools.py pdf \
 
 项目当前唯一 Agent Runtime 是 LangGraph 父图中的 LangChain `create_agent` 子图。旧 `agent_model`、`governed_tools` 和 `limit_handler` 自定义循环已经删除，不提供双实现或运行时回滚开关；需要回滚版本时使用 Git commit、tag 或 release。
 
-当前请求链路为 `FastAPI application → Chat Router → ChatService → Session History / Query Rewrite → run_agent_langgraph → route → initialize → framework_agent / compose → Finalize → Session / Metrics → API Response`。ChatService 不调用 Router，也不生成或传入 decision；正常 `/chat`、离线评测和其他 Runtime 调用方都共享父图入口的同一个 Router。Router 不枚举工具意图，也不调用模型；它把普通请求交给能看到动态工具 Schema 的 Agent Model。
+同步请求链路为 `FastAPI application → Chat Router → ChatService → Session History / Query Rewrite → run_agent_langgraph → route → initialize → framework_agent / compose → Finalize → Session / Metrics → API Response`。流式入口把 Runtime 门面替换为 `stream_agent_langgraph → graph.astream → 安全事件投影 → SSE`，最终结果仍回到同一状态策略和 Response mapper。ChatService 不调用 Router，也不生成或传入 decision；正常 `/chat`、`/chat/stream`、离线评测和其他 Runtime 调用方都共享父图入口的同一个 Router。Router 不枚举工具意图，也不调用模型；它把普通请求交给能看到动态工具 Schema 的 Agent Model。
 
 主图的核心结构为：
 
@@ -337,7 +340,7 @@ START → route → initialize
 
 ### LangGraph RAG 子图
 
-知识库问答由独立子图依次执行问题歧义判断、Query Decompose、检索与重排、Evidence Gate、Context Build、回答生成、JSON 解析、引用绑定与验证。子图复用现有检索、Rerank、ChromaDB、模型网关、引用和置信度算法，API Schema 没有变化。`search_knowledge_base` 成功时工具返回 `Command.PARENT` 更新 ToolMessage 与 `pending_rag_result`；父图薄适配节点据此进入 RAG 子图，避免 Agent Model 直接基于原始 chunks 生成无引用答案。Evaluation Baseline v2 也固定使用同一 LangGraph Runtime；Streaming 和 Interrupt 仍未实现。
+知识库问答由独立子图依次执行问题歧义判断、Query Decompose、检索与重排、Evidence Gate、Context Build、回答生成、JSON 解析、引用绑定与验证。子图复用现有检索、Rerank、ChromaDB、模型网关、引用和置信度算法，API Schema 没有变化。`search_knowledge_base` 成功时工具返回 `Command.PARENT` 更新 ToolMessage 与 `pending_rag_result`；父图薄适配节点据此进入 RAG 子图，避免 Agent Model 直接基于原始 chunks 生成无引用答案。Evaluation Baseline v2 也固定使用同一 LangGraph Runtime。SSE 会流出 RAG 进度和安全工具状态，但不会流出 RAG JSON token；完整回答位于 `final`。Interrupt 仍未实现。
 
 ### LangGraph Checkpointer
 
@@ -350,11 +353,11 @@ LANGGRAPH_CHECKPOINTER=sqlite
 LANGGRAPH_CHECKPOINT_DB_PATH=./data/langgraph_checkpoints.sqlite3
 ```
 
-`memory` 仅适合测试和本地实验，进程退出后状态会丢失；`sqlite` 适合本地运行和开发。当前每次 `/chat` 请求都会根据该请求的 `trace_id` 生成独立且经过摘要处理的 Graph thread，因此同一 `session_id` 的不同请求也不会累积上一轮的 `decision`、业务结果字段或 `result`。Checkpoint 的 channel payload 直接对应平铺的 `AgentGraphState`，其中 observation 是普通字典；SQLite Saver 的表结构没有变化。
+`memory` 仅适合测试和本地实验，进程退出后状态会丢失；`sqlite` 适合本地运行和开发。同步 `/chat` 使用 `SqliteSaver`，流式 `/chat/stream` 使用 `AsyncSqliteSaver` 与独立异步连接，两者保持相同数据库路径、表结构和 thread ID 规则。当前每次请求都会根据该请求的 `trace_id` 生成独立且经过摘要处理的 Graph thread，因此同一 `session_id` 的不同请求也不会累积上一轮的 `decision`、业务结果字段或 `result`。Checkpoint 的 channel payload 直接对应平铺的 `AgentGraphState`，其中 observation 是普通字典；SQLite Saver 的表结构没有变化。
 
 Checkpointer 只保存 Graph 节点执行快照，不替代应用级聊天历史。Query Rewrite 仍从 `SQLITE_DB_PATH` 指定的 session 数据库读取最近消息，用户和助手消息也仍写入该数据库。Checkpoint 文件可能包含用户问题、工具结果、模型回答、引用信息和 Graph 中间状态，不能提交到 Git 仓库，并应按敏感业务数据保护。
 
-当前尚未实现 Checkpoint 自动恢复、Replay、Time Travel、Interrupt、人工审批、Streaming、Checkpoint 管理 API 或生产级分布式 Checkpointer。
+当前尚未实现 Checkpoint 自动恢复、Replay、Time Travel、Interrupt、人工审批、RAG JSON token streaming、Checkpoint 管理 API 或生产级分布式 Checkpointer。
 
 ### Tool Calling 自动测试与真实模型冒烟
 
@@ -459,7 +462,10 @@ uvicorn app.main:app --reload
 streamlit run demo/streamlit_app.py
 ```
 
-页面默认连接 `http://127.0.0.1:8000`，也可以在侧边栏修改后端地址。
+页面默认连接 `http://127.0.0.1:8000`，也可以在侧边栏修改后端地址。聊天面板默认
+调用 `/chat/stream`，实时展示安全的处理阶段、工具状态和直接回答文本增量，并只把
+`final.data.response` 写入本轮完整消息；RAG 请求没有 `answer_delta` 时会继续显示进度
+并等待 `final`。侧边栏可显式切换到同步 `/chat`，流建立后不会自动重发同步请求。
 
 ## 环境变量
 
@@ -630,10 +636,11 @@ DECOMPOSE_API_URL=http://127.0.0.1:11434/v1/chat/completions
 | `/docs-preview` | GET | 查看已加载文档列表 |
 | `/chunks-preview` | GET | 查看 chunk 预览，支持 `max_len`、`limit`、`file_name` |
 | `/chat` | POST | 完整 Agent + RAG 问答入口 |
+| `/chat/stream` | POST | 复用同一业务链的 SSE 聊天入口；`final` 是权威结果 |
 | `/search` | POST | 只执行检索和 rerank，不调用回答模型 |
 | `/decide` | POST | 只返回 Agent 路由决策，不执行工具或 RAG |
 | `/kb_summary` | POST | 返回知识库 ready 状态、文档数、chunk 数和 `index_source` |
-| `/metrics-summary` | GET | 汇总最近 N 条 `/chat` 请求指标 |
+| `/metrics-summary` | GET | 汇总最近 N 条同步/流式聊天请求指标 |
 
 ### `/chat` 请求示例
 
@@ -648,6 +655,21 @@ curl -X POST "http://127.0.0.1:8000/chat" \
     "session_id": "demo_session_001"
   }'
 ```
+
+### `/chat/stream` SSE 示例
+
+```bash
+curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{"question":"缓考应该如何办理？","top_k":5}'
+```
+
+合法非空问题返回 `HTTP 200 text/event-stream`，事件边界为
+`start → progress/tool/answer_delta... → final → done`。空问题在建流前保持
+`HTTP 400 application/json`；业务错误通过标准 `final.data.response` 表达。部分 RAG
+请求可能没有 `answer_delta`，完整答案始终在 `final`。事件字段、安全过滤、断开语义
+和 Python 冒烟命令见 [聊天流式 API 文档](docs/api/chat-streaming.md)。
 
 核心响应字段：
 
@@ -765,17 +787,17 @@ python scripts/cache_models.py
 
 ## 日志与可观测性
 
-`/chat` 会为每次请求生成或继承 `trace_id`：
+`/chat` 与 `/chat/stream` 会为每次请求生成或继承 `trace_id`：
 
 - 请求头可传入 `X-Trace-Id`。
-- 响应头会返回 `X-Trace-Id` 和 `X-Total-Cost-Ms`。
-- 响应体也包含 `trace_id`。
+- 两个入口都在响应头返回 `X-Trace-Id`；只有同步 `/chat` 返回准确的 `X-Total-Cost-Ms`。
+- 同步响应体和每个 SSE 信封都包含 `trace_id`；流式真实总耗时位于 `final`。
 
 日志文件：
 
 | 文件 | 说明 |
 | --- | --- |
-| `logs/metrics.jsonl` | 每次 `/chat` 的耗时、状态、action、引用数、工具信息、Query Rewrite 和 LLM 调用统计 |
+| `logs/metrics.jsonl` | 每次同步/流式聊天的耗时、状态、action、引用数、工具信息、Query Rewrite、LLM 与流事件统计 |
 | `logs/tool_calls.jsonl` | 每次工具调用的输入、输出、耗时和是否成功 |
 | `logs/bad_cases.jsonl` | 模型 JSON 解析失败、引用异常、工具异常、内部异常、索引未就绪等失败样例 |
 
@@ -886,7 +908,8 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   ├── main.py                  # 正式 ASGI 入口：app.main:app
 │   ├── api/
 │   │   ├── application.py       # FastAPI 组合根、lifespan 和 Router 注册
-│   │   ├── chat.py              # /chat HTTP Router
+│   │   ├── chat.py              # /chat 与 /chat/stream HTTP Router
+│   │   ├── streaming.py         # SSE 信封、白名单投影与编码
 │   │   ├── health.py            # 轻量进程存活检查
 │   │   ├── middleware.py        # HTTP trace 和端到端耗时
 │   │   ├── http_logging.py      # 显式 Uvicorn access-log 适配
@@ -916,7 +939,8 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   │   ├── conditions.py        # Router 条件入口
 │   │   ├── checkpointing.py      # Checkpointer 配置、缓存和 thread_id
 │   │   ├── builder.py           # StateGraph 构建、连接与缓存编译
-│   │   └── runtime.py           # LangGraph 兼容 Runtime 门面
+│   │   ├── runtime.py           # 共享调用准备与同步 Runtime 门面
+│   │   └── streaming.py         # 异步 astream 与安全 Graph 事件投影
 │   ├── rag/
 │   │   ├── __init__.py          # RAG 公共门面和依赖注入
 │   │   ├── pipeline.py          # 索引状态、生命周期与检索门面
@@ -948,7 +972,8 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   │   └── schemas.py           # 工具参数模型
 │   ├── services/
 │   │   ├── chat_models.py       # 框架无关请求、结果和内部上下文
-│   │   ├── chat_service.py      # Query Rewrite、Runtime、状态策略和会话编排
+│   │   ├── chat_stream_models.py # 框架无关流事件合同
+│   │   ├── chat_service.py      # 同步/流式 Query Rewrite、Runtime、状态策略和会话编排
 │   │   └── chat_telemetry.py    # metrics、bad case 和 tool_call_chain 收尾
 │   ├── llm/                     # 统一模型工厂、调用网关、Schema 和错误类型
 │   ├── storage/                 # SQLite、session 和 Agent trace 存储
@@ -969,6 +994,7 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   ├── benchmark_chat_api.py    # /chat 串行与并发性能测试
 │   ├── smoke_test_online_tools.py # Online Tool 真实连通性子命令
 │   ├── smoke_test_agent_tool_calling.py # 模型 Tool Calling 协议
+│   ├── smoke_test_chat_stream.py # /chat/stream 安全摘要冒烟客户端
 │   ├── inspect_agent_runtime.py # CI 架构合同检查
 │   ├── summarize_logs.py        # metrics/bad_cases 日志汇总
 │   ├── cache_models.py          # 预下载 embedding/rerank 模型
@@ -981,6 +1007,8 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   │   └── module-boundaries.md # 可执行模块依赖方向
 │   ├── evaluation/
 │   │   └── baseline-v2.md       # v2 数据、运行、输出与比较合同
+│   ├── api/
+│   │   └── chat-streaming.md     # SSE HTTP、事件、安全与断开合同
 │   └── history/
 │       └── agent-evolution-2026.md # PR0～PR16 历史演进归档
 ├── tests/                       # 单元测试和接口测试
@@ -1049,6 +1077,6 @@ docker run --rm -p 8000:8000 --env-file .env \
 - 多轮历史使用本地 SQLite 持久化，适合单实例运行；多实例部署时需要额外规划共享存储和并发策略。
 - SQLite Checkpointer 适合单进程本地开发；高并发、多进程共享、数据持续增长和敏感状态留存需要额外的容量、权限及清理策略。
 - Agent 已通过唯一的 `create_agent` 路径支持 Registry-driven 多轮工具观察、同轮多个工具调用和参数修正，并具备错误次数、重复调用/错误、总耗时和同批 fail-closed 防护。
-- 当前尚未实现 Streaming、Interrupt/Resume、SQL、MCP、写工具的跨请求人工审批恢复或多 Agent。
+- 当前尚未实现 RAG JSON token streaming、Interrupt/Resume、SQL、MCP、写工具的跨请求人工审批恢复或多 Agent。
 - 当前 Checkpointer 面向单进程本地使用，不是生产级分布式 Checkpointer。
 - retrieval_confidence 和 answer_confidence 是启发式估计，不等同于严格概率。
