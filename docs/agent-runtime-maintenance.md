@@ -76,6 +76,12 @@ ChatService 不调用 Router，也不生成或注入 decision。`route_node` 是
 
 `web_pdf_fetch` 同样是普通 ToolMessage 路径，负责已知公开 PDF 的有限页范围。HTML 与 PDF 共用 `app/tools/web_download.py` 中的 requests-hardened 下载入口；PDF 使用已有 pypdf 提取带 `[Page N]` 边界的文本。它不进入本地 RAG、不持久化 PDF，也不生成本地 references。模型误用 `web_fetch` 读取 PDF 时，可根据内容类型错误 ToolMessage 在同一 `create_agent` 循环中改用 `web_pdf_fetch`，不需要 Router 或父图特判。
 
+`list_sql_tables`、`describe_sql_table` 和 `query_sql_readonly` 是默认关闭的普通
+ToolMessage 路径，只在 SQL 配置启用时注册，并统一要求 `database:read`。Registry
+handler 只调用 `app/tools/sql_readonly/` Service；sqlglot AST、SQLAlchemy Engine/
+Inspector、SQLite 数据库层只读和输出截断不进入 Router、父图、ChatService 或 SSE
+projector。数据库内容始终是不可信数据。详见[只读 SQL 工具](tools/sql-readonly.md)。
+
 ## 配置快照与生命周期
 
 `app.config.AppSettings` 是唯一完整应用配置模型。它基于官方
@@ -97,6 +103,7 @@ inspection 使用 `AppSettings(_env_file=None, ...)`，不会读取维护者 `.e
 | 角色模型 | 首次对应 Model Factory getter | `clear_model_factory_cache()` |
 | 默认 Tool Registry | 首次 `get_tool_registry()` | `clear_tool_registry_cache()` |
 | Tool Runtime | 首次 dispatch / `get_tool_runtime()` | `reset_tool_runtime()` |
+| SQL Engine | 第一次实际 SQL 工具调用 | `clear_sql_engine_cache()`；lifespan shutdown 自动 dispose |
 | Graph / Checkpointer | 同步 Graph 在 lifespan 预编译，流式 Graph 首次请求创建 | 同步上下文使用 `reset_agent_graph_runtime()`，应用异步关闭使用 `areset_agent_graph_runtime()` |
 
 `.env` 不是动态热更新接口。若测试要切换进程级配置，应先关闭 Runtime 和
@@ -251,6 +258,10 @@ graph TD;
 | `app/tools/web_download.py` | 为 HTML/PDF 提供共用 hardened 有限下载适配 |
 | `app/tools/web_fetch.py` | 处理 HTML/XHTML/纯文本并调用 Trafilatura |
 | `app/tools/web_pdf_fetch.py` | 校验 PDF magic；通过 pypdf 提取页范围和有限元数据 |
+| `app/tools/sql_readonly/engine.py` | 惰性 SQLAlchemy Engine、SQLite 只读连接、语句超时和 dispose |
+| `app/tools/sql_readonly/policy.py` | sqlglot 单语句只读 AST、物理表 allowlist、危险函数和 LIMIT |
+| `app/tools/sql_readonly/service.py` | Inspector、查询事务边界、安全错误和结果转换 |
+| `app/tools/sql_readonly/serialization.py` | 列名/值规范化与单元格、行、总输出限制 |
 | `app/agent/runtime.py` | 构造兼容 decide/LLM trace；保存 trace |
 | `app/services/chat_models.py` | 声明框架无关 Chat 请求、结果和内部上下文 |
 | `app/services/chat_stream_models.py` | 声明七种框架无关 Chat stream 事件 |
@@ -305,6 +316,7 @@ Provider 的模型可见性层只复用 `has_permission()` 检查全部 `ToolSpe
 | 工具为什么失败 | `app/tools/runtime.py`、Policy 和对应 ToolSpec handler |
 | 模型为什么看不到某个工具 | `app/tools/providers/local.py`、`ToolSpec.required_permissions` |
 | Web Search 为什么模型看不到 | `TOOL_DEFAULT_PERMISSIONS`、`app/tools/providers/local.py` |
+| SQL 工具为什么模型看不到 | `SQL_TOOL_ENABLED`、`SQL_ALLOWED_TABLES`、`database:read` 与 Provider 可见性 |
 | Web Search 为什么执行失败 | `app/tools/web_search.py`、`app/tools/runtime.py` |
 | 搜索结果为什么为空 | DDGS region、`backend="auto"`、网络条件 |
 | Web Search 为什么没有进入 RAG | 它是普通 Agent 工具；只有本地知识库检索进入 RAG |

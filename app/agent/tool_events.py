@@ -50,6 +50,7 @@ def build_tool_observation(
     raw_error = str(result.get("error") or "")
     safe_policy_codes = {
         "permission_denied",
+        "sql_permission_denied",
         "approval_required",
         "missing_idempotency_key",
         "invalid_invocation_context",

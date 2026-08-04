@@ -78,7 +78,7 @@ Graph State 和 Checkpoint 保存普通字典，不保存 Pydantic 实例。未�
 
 ## 工具系统
 
-生产 Registry 固定注册八个 `ToolSpec`：
+生产 Registry 默认固定注册八个 `ToolSpec`：
 
 1. `search_knowledge_base`
 2. `compare_documents`
@@ -88,6 +88,19 @@ Graph State 和 Checkpoint 保存普通字典，不保存 Pydantic 实例。未�
 6. `web_search`
 7. `web_fetch`
 8. `web_pdf_fetch`
+
+只有 `SQL_TOOL_ENABLED=true` 时才额外注册：
+
+9. `list_sql_tables`
+10. `describe_sql_table`
+11. `query_sql_readonly`
+
+三个 SQL 工具全部要求请求 Context 显式拥有 `database:read`，启用配置不会自动授权。
+它们仍走同一个 Provider、StructuredTool、Registry 和 Runtime，只在 handler 之后进入
+独立的 `app/tools/sql_readonly/`：sqlglot 负责单语句只读 AST、物理表 allowlist、
+危险函数和 LIMIT，SQLAlchemy 负责 Engine、Inspector、连接和执行。`/chat`、
+`/chat/stream`、ChatService 与 SSE projector 没有 SQL 分支；完整安全合同见
+[只读 SQL 工具](../tools/sql-readonly.md)。
 
 模型可见性由 Provider 根据请求权限过滤，执行期治理仍只有一条路径：
 
@@ -127,6 +140,7 @@ configure_uvicorn_access_log()
 → initialize_agent_graph_runtime()
 → yield
 → close_tool_runtime()
+→ close_sql_engine_runtime()
 → close_agent_graph_runtime()
 ```
 
@@ -152,6 +166,7 @@ api → services → graph → agent → tools → rag → llm
 | LangGraph Checkpointer | disabled、memory 或本地 SQLite 的图状态快照；同步/流式 Graph 分别使用同步/异步 Saver，与 session 表职责不同 |
 | RAG index | ChromaDB 向量与 metadata、BM25 内存索引及 manifest 构建指纹 |
 | Metrics / bad case / tool audit | 独立 JSONL 可观测记录，不作为业务状态源 |
+| 可选业务 SQL 数据源 | 部署者显式配置的外部只读数据源；禁止指向 Session、Checkpoint、Chroma 或 Evaluation 持久化 |
 
 这些存储的 Schema 和所有权彼此独立；ChatService 拆分没有改变 SQLite、Chroma 或
 Checkpointer 协议。
@@ -170,7 +185,7 @@ python -m pip check
 git diff --check
 ```
 
-Runtime Inspection 检查父图、Framework Agent、八个 ToolSpec、单一 State/Result/
+Runtime Inspection 检查父图、Framework Agent、默认八个 ToolSpec、可选 SQL 合同、单一 State/Result/
 Status Policy、同步/流式聊天路由、共享 Service、Graph streaming Runtime、Settings
 边界、应用组合根和文档归档；Import Linter 负责完整 import graph。自动测试使用 fake
 隔离模型、网络、RAG 索引和生产持久化副作用。
@@ -188,7 +203,7 @@ Agent Result、工具、RAG、配置或持久化所有权。HTTP 性能测试、
 
 - RAG JSON 生成节点不提供 token streaming；完整结果由 SSE `final` 返回。
 - 无 Interrupt/Resume 和跨请求人工审批恢复。
-- 无 MCP、SQL 工具和多 Agent 编排。
+- 无 MCP、SQL 写操作/自动迁移和多 Agent 编排。
 - 无生产级分布式 Checkpointer。
 - 无 OCR；扫描件 PDF 不能提取文本时不会自动识别图片内容。
 

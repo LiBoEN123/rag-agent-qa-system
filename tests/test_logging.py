@@ -94,6 +94,11 @@ def test_fastapi_lifespan_explicitly_configures_uvicorn_access(monkeypatch):
     )
     monkeypatch.setattr(
         api_application,
+        "close_sql_engine_runtime",
+        lambda: calls.append("close_sql_engines"),
+    )
+    monkeypatch.setattr(
+        api_application,
         "aclose_agent_graph_runtime",
         close_graph,
     )
@@ -109,5 +114,6 @@ def test_fastapi_lifespan_explicitly_configures_uvicorn_access(monkeypatch):
         "configure_http_logging",
         "start",
         "close_tools",
+        "close_sql_engines",
         "close_graph",
     ]

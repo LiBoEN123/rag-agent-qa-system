@@ -16,6 +16,7 @@ from app.api.http_logging import configure_uvicorn_access_log
 from app.api.lifecycle import (
     StartupDependencies,
     aclose_agent_graph_runtime,
+    close_sql_engine_runtime,
     close_tool_runtime,
     initialize_agent_graph_runtime,
     initialize_rag,
@@ -87,6 +88,7 @@ async def lifespan(_app: FastAPI):
         yield
     finally:
         close_tool_runtime()
+        close_sql_engine_runtime()
         await aclose_agent_graph_runtime()
 
 

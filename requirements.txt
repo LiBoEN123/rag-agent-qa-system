@@ -20,6 +20,8 @@ langchain-openai
 langgraph
 langgraph-checkpoint-sqlite
 aiosqlite
+SQLAlchemy
+sqlglot
 pypdf
 python-docx
 huggingface-hub

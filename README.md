@@ -4,6 +4,8 @@
 
 当前实现的职责、调用链和持久化边界见
 [当前系统架构](docs/architecture/current-system.md)。
+受治理的业务数据库接入见
+[只读 SQL 工具](docs/tools/sql-readonly.md)。
 
 本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。同步 `/chat` 与 SSE `/chat/stream` 复用 LangGraph 父图中的 LangChain `create_agent` 模型—工具循环；传入 `session_id` 时还会结合 SQLite 中最近的会话历史对短追问做 Query Rewrite。
 
@@ -18,7 +20,7 @@
 - 权限感知的 Registry-driven 工具发现：Provider 按请求权限只暴露满足 `required_permissions` 的工具，Middleware 将其注入模型和执行层；工具仍经 `StructuredTool → ToolRegistry → ToolRuntime` 执行。
 - Agent 循环防护：工具错误总数、连续相同调用、连续相同错误和模型/工具累计耗时均有独立预算；终止错误对同批后续调用 fail-closed，并补齐关联 ToolMessage。
 - 多轮追问改写：同一 `session_id` 下通过 SQLite 保留最近会话历史，短追问和指代问题会先改写成独立检索问题。
-- 工具调用：支持知识库检索、公开网页搜索与受治理的单页正文提取、双文档内容对比、简单四则运算、列出知识库文档和查看指定 chunk 原文。
+- 工具调用：支持知识库检索、公开网页搜索与受治理的单页正文提取、双文档内容对比、简单四则运算、列出知识库文档、查看指定 chunk 原文，以及默认关闭的 allowlist 只读 SQL 查询。
 - 引用绑定和拒答机制：模型输出的 `Reference N` 会绑定回真实文件与 chunk；证据不足或引用支撑不足时拒答。
 - 同步与流式聊天：保留 `/chat` JSON 合同，并提供 `/chat/stream` 的 progress、tool、安全答案增量和权威 final SSE 事件。
 - 可观测性：每次同步或流式聊天请求记录 `trace_id`、阶段耗时、状态、工具调用、引用数量和 LLM 调用次数。
@@ -135,7 +137,7 @@ flowchart TD
 | Agent 路由 | 父图 `route` 是唯一 Router 所有者；所有 Runtime 调用先路由再 initialize。正常请求输出 `agent`，`direct_answer` / `clarify` 在 initialize + compose 中安全短路 |
 | 工具发现 | `ToolProvider` 按请求权限过滤模型可见 ToolSpec，`RegistryToolsMiddleware` 对模型绑定和实际执行使用同一组请求级 StructuredTool；普通新工具无需修改核心编排 |
 | Agent Guardrail | 工具错误总数、连续相同调用/错误、累计模型与工具耗时预算、同批 fail-closed、无悬空 ToolMessage |
-| 工具调用 | Registry 注册八个生产工具：`search_knowledge_base`、`web_search`、`web_fetch`、`web_pdf_fetch`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text`；默认可见数量由请求权限决定 |
+| 工具调用 | 默认 Registry 保持八个生产工具；显式启用只读 SQL 后额外注册 `list_sql_tables`、`describe_sql_table`、`query_sql_readonly`。模型可见集合始终由请求权限决定 |
 | 可观测性 | `trace_id`、请求耗时、阶段耗时、工具调用日志、metrics 汇总接口 |
 | 失败分析 | `logs/bad_cases.jsonl` 记录值得分析的失败样例 |
 | 评测 | 支持规则评测、Chroma/chunks 索引取证和可选 LLM Judge 语义评估 |
@@ -244,6 +246,26 @@ Agent Runtime。
 `ProjectToolGovernanceMiddleware` 只保留框架无法决定的项目语义：错误码分类、累计错误、连续相同调用/错误、协作式总耗时预算以及 terminal error 同批 fail-closed。已注册工具的调用指纹复用 `app.tools.policy.build_tool_args_fingerprint()`；未知模型 JSON 只做小型 JSON-compatible fallback。它不执行 handler、不复制 ToolRuntime 重试，也不自行实现参数校验或工具循环。
 
 两个项目 Middleware 同时实现同步 `wrap_model_call` / `wrap_tool_call` 和异步 `awrap_model_call` / `awrap_tool_call`；`/chat` 与 `/chat/stream` 因此共享完全相同的动态工具可见性、模型事件、工具治理、停止条件和 RAG handoff，而不是由异步路径绕过治理。
+
+## 只读 SQL 工具
+
+只读 SQL 能力默认关闭；关闭时不创建 Engine、不连接数据库、不注册工具，默认八个
+工具和 Evaluation Baseline 合同保持不变。显式启用时还必须配置非空表 allowlist，
+并把 `database:read` 加入目标请求主体权限：
+
+```env
+SQL_TOOL_ENABLED=true
+SQL_DATABASE_URL=sqlite:////srv/rag-agent/business.sqlite3
+SQL_ALLOWED_TABLES=students,courses
+TOOL_DEFAULT_PERMISSIONS=knowledge_base:read,database:read
+```
+
+第一版正式验证 SQLite，并在 sqlglot 单语句只读 AST、物理表 allowlist、危险函数、
+AST `LIMIT`、语句超时和有限输出之外，同时使用 SQLite `mode=ro` 与
+`PRAGMA query_only=ON`。AST 不是数据库权限替代品；其他数据库未来安装驱动后仍必须
+使用数据库侧只读账号。数据库内容统一标记为不可信数据，不能当成系统或工具指令。
+该数据源不得指向项目 Session、Checkpoint、Chroma 或 Evaluation 持久化。完整配置、
+错误边界和手动冒烟命令见[只读 SQL 工具文档](docs/tools/sql-readonly.md)。
 
 ## Web Search
 
@@ -526,7 +548,15 @@ Tool Runtime、Graph/Checkpointer 缓存；生产服务通常直接重启进程�
 | `WEB_PDF_MAX_RESPONSE_BYTES` | Web PDF 解压后响应上限，默认 `10000000` bytes |
 | `WEB_PDF_MAX_DOCUMENT_PAGES` | Web PDF 允许的文档总页数上限，默认 `1000` |
 | `WEB_PDF_TOOL_TIMEOUT_SECONDS` | Web PDF ToolRuntime 总体超时，默认 `45` 秒，必须大于连接与读取超时之和 |
-| `TOOL_DEFAULT_PERMISSIONS` | 默认服务主体权限；默认仅 `knowledge_base:read`，需分别显式加入 `web:search`、`web:fetch` 才暴露相应 Web 工具 |
+| `SQL_TOOL_ENABLED` | 是否注册只读 SQL 工具，默认 `false`；关闭时不创建 Engine 或连接数据库 |
+| `SQL_DATABASE_URL` | `SecretStr` 业务数据库 URL；启用时必填，禁止指向项目内部持久化 |
+| `SQL_ALLOWED_TABLES` | 逗号分隔的 `table` / `schema.table` 硬 allowlist；启用时必填 |
+| `SQL_DEFAULT_SCHEMA` | 可选默认 Schema；模型只能请求它或 allowlist 明示 Schema |
+| `SQL_MAX_ROWS` / `SQL_MAX_COLUMNS` | 查询最大返回行数和列数，默认 `50` / `50` |
+| `SQL_MAX_CELL_CHARS` / `SQL_MAX_OUTPUT_CHARS` | 单元格与整体结构化输出字符上限，默认 `1000` / `50000` |
+| `SQL_STATEMENT_TIMEOUT_MS` | 数据库语句超时，默认 `5000` ms，必须小于工具总体超时 |
+| `SQL_TOOL_TIMEOUT_SECONDS` | ToolRuntime SQL 工具总体超时，默认 `10` 秒 |
+| `TOOL_DEFAULT_PERMISSIONS` | 默认服务主体权限；默认仅 `knowledge_base:read`，需显式加入 `web:search`、`web:fetch`、`database:read` 才暴露对应可选工具 |
 | `USE_LLM_JUDGE` | 评测脚本是否启用 LLM Judge，默认 `false` |
 | `JUDGE_API_KEY` | 评测 Judge 模型 API Key；为空时可复用回答模型 Key |
 | `JUDGE_MODEL` | 评测 Judge 模型名称 |
@@ -1077,6 +1107,6 @@ docker run --rm -p 8000:8000 --env-file .env \
 - 多轮历史使用本地 SQLite 持久化，适合单实例运行；多实例部署时需要额外规划共享存储和并发策略。
 - SQLite Checkpointer 适合单进程本地开发；高并发、多进程共享、数据持续增长和敏感状态留存需要额外的容量、权限及清理策略。
 - Agent 已通过唯一的 `create_agent` 路径支持 Registry-driven 多轮工具观察、同轮多个工具调用和参数修正，并具备错误次数、重复调用/错误、总耗时和同批 fail-closed 防护。
-- 当前尚未实现 RAG JSON token streaming、Interrupt/Resume、SQL、MCP、写工具的跨请求人工审批恢复或多 Agent。
+- 当前尚未实现 RAG JSON token streaming、Interrupt/Resume、SQL 写操作/自动迁移、MCP、写工具的跨请求人工审批恢复或多 Agent。
 - 当前 Checkpointer 面向单进程本地使用，不是生产级分布式 Checkpointer。
 - retrieval_confidence 和 answer_confidence 是启发式估计，不等同于严格概率。

@@ -113,3 +113,16 @@ def close_tool_runtime() -> None:
             "[shutdown] tool_runtime_close_failed error=%s",
             str(exc)[:200],
         )
+
+
+def close_sql_engine_runtime() -> None:
+    """dispose 惰性 SQL Engine 缓存；未启用或未调用时保持空操作。"""
+    try:
+        from app.tools.sql_readonly.engine import clear_sql_engine_cache
+
+        clear_sql_engine_cache()
+    except Exception as exc:
+        logger.warning(
+            "[shutdown] sql_engine_close_failed error_type=%s",
+            type(exc).__name__,
+        )

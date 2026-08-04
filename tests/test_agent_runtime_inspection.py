@@ -87,6 +87,13 @@ def test_runtime_report_preserves_graph_contract(
         "http_framework_boundary",
         "settings_framework_boundary",
         "zero_import_ignores",
+        "sql_tools_disabled_by_default",
+        "sql_tools_require_database_read",
+        "sql_tools_are_read_only",
+        "sql_tools_use_registry_runtime",
+        "sql_tools_have_pydantic_contracts",
+        "sql_tools_do_not_require_approval",
+        "sql_tools_share_chat_paths",
     } <= {item["name"] for item in report["checks"]}
     assert report["module_boundaries"] == {
         "import_linter_configured": True,

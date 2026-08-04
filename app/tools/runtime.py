@@ -790,6 +790,7 @@ class ToolRuntime:
         """避免把 handler 异常中的业务参数原值复制进审计。"""
         safe_codes = {
             ToolErrorCode.PERMISSION_DENIED,
+            ToolErrorCode.SQL_PERMISSION_DENIED,
             ToolErrorCode.APPROVAL_REQUIRED,
             ToolErrorCode.MISSING_IDEMPOTENCY_KEY,
             ToolErrorCode.INVALID_INVOCATION_CONTEXT,
@@ -842,6 +843,7 @@ class ToolRuntime:
         """只允许幂等工具对明确可重试且非超时的错误重试。"""
         governance_errors = {
             ToolErrorCode.PERMISSION_DENIED,
+            ToolErrorCode.SQL_PERMISSION_DENIED,
             ToolErrorCode.APPROVAL_REQUIRED,
             ToolErrorCode.MISSING_IDEMPOTENCY_KEY,
             ToolErrorCode.INVALID_INVOCATION_CONTEXT,

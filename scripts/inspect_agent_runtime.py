@@ -19,7 +19,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, get_origin
 
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 from pydantic_settings import BaseSettings
 
 
@@ -66,7 +66,14 @@ PACKAGES = (
     "pydantic-settings",
     "pypdf",
     "requests-hardened",
+    "SQLAlchemy",
+    "sqlglot",
 )
+SQL_TOOL_NAMES = {
+    "list_sql_tables",
+    "describe_sql_table",
+    "query_sql_readonly",
+}
 EXPECTED_PARENT_NODES = {
     "route", "initialize", "framework_agent", "adapt_framework",
     "rag_subgraph", "compose", "finalize",
@@ -700,7 +707,81 @@ def inspect_runtime(
     )
     pdf_authorized_visibility_ok = True
     module_boundaries = _inspect_import_linter_config()
-    registered_tool_count_ok = len(registered_tools) == 8
+    expected_tool_count = 11 if resolved_settings.sql_tool_enabled else 8
+    registered_tool_count_ok = len(registered_tools) == expected_tool_count
+
+    disabled_sql_settings = resolved_settings.model_copy(
+        update={"sql_tool_enabled": False}
+    )
+    disabled_sql_registry = ToolRegistry()
+    register_default_tools(
+        disabled_sql_registry,
+        settings=disabled_sql_settings,
+    )
+    enabled_sql_settings = resolved_settings.model_copy(
+        update={
+            "sql_tool_enabled": True,
+            "sql_database_url": SecretStr(
+                "sqlite:////tmp/agent-runtime-inspection-business.sqlite3"
+            ),
+            "sql_allowed_tables": ("inspection_table",),
+        }
+    )
+    enabled_sql_registry = ToolRegistry()
+    register_default_tools(enabled_sql_registry, settings=enabled_sql_settings)
+    enabled_sql_specs = [
+        enabled_sql_registry.get(name) for name in sorted(SQL_TOOL_NAMES)
+    ]
+    sql_tools_disabled_by_default = (
+        AppSettings.model_fields["sql_tool_enabled"].default is False
+        and not (SQL_TOOL_NAMES & set(disabled_sql_registry.names()))
+    )
+    sql_tools_require_database_read = all(
+        isinstance(spec, ToolSpec)
+        and spec.required_permissions == ("database:read",)
+        for spec in enabled_sql_specs
+    )
+    sql_tools_are_read_only = all(
+        isinstance(spec, ToolSpec)
+        and spec.risk_level.value == "read_only"
+        and spec.max_retries == 0
+        and spec.idempotent
+        for spec in enabled_sql_specs
+    )
+    sql_tools_have_pydantic_contracts = all(
+        isinstance(spec, ToolSpec)
+        and isinstance(spec.args_model, type)
+        and issubclass(spec.args_model, BaseModel)
+        and isinstance(spec.output_model, type)
+        and issubclass(spec.output_model, BaseModel)
+        for spec in enabled_sql_specs
+    )
+    sql_tools_do_not_require_approval = all(
+        isinstance(spec, ToolSpec) and not spec.requires_approval
+        for spec in enabled_sql_specs
+    )
+    sql_context = ToolInvocationContext(
+        principal_id="agent_runtime_inspection",
+        permissions=("database:read",),
+        source="agent_runtime_inspection",
+    )
+    sql_framework_names = {
+        tool.name
+        for tool in build_framework_tools(
+            LocalToolProvider(enabled_sql_registry),
+            context=sql_context,
+        )
+    }
+    sql_tools_use_registry_runtime = SQL_TOOL_NAMES <= sql_framework_names
+    sql_tools_share_chat_paths = not any(
+        name in source
+        for name in SQL_TOOL_NAMES
+        for source in (
+            chat_router_source,
+            service_source,
+            graph_streaming_source,
+        )
+    )
     if enforce_default_registry:
         default_context = build_default_tool_context(
             source="agent_runtime_inspection",
@@ -903,7 +984,7 @@ def inspect_runtime(
         _check(
             "registered_tool_count",
             not enforce_default_registry or registered_tool_count_ok,
-            "default registry must contain exactly eight production tools",
+            "registry count must be eight by default and eleven when SQL is enabled",
         ),
         _check(
             "default_tool_visibility",
@@ -970,6 +1051,41 @@ def inspect_runtime(
             "web_pdf_fetch_authorized_visibility",
             not enforce_default_registry or pdf_authorized_visibility_ok,
             "web_pdf_fetch is hidden despite web:fetch permission",
+        ),
+        _check(
+            "sql_tools_disabled_by_default",
+            sql_tools_disabled_by_default,
+            "SQL tools must be absent from the default disabled registry",
+        ),
+        _check(
+            "sql_tools_require_database_read",
+            sql_tools_require_database_read,
+            "all SQL tools must require exactly database:read",
+        ),
+        _check(
+            "sql_tools_are_read_only",
+            sql_tools_are_read_only,
+            "SQL tools must be read-only, idempotent, and non-retrying",
+        ),
+        _check(
+            "sql_tools_use_registry_runtime",
+            sql_tools_use_registry_runtime,
+            "enabled SQL tools must be projected from ToolRegistry",
+        ),
+        _check(
+            "sql_tools_have_pydantic_contracts",
+            sql_tools_have_pydantic_contracts,
+            "SQL tools must declare Pydantic input and output models",
+        ),
+        _check(
+            "sql_tools_do_not_require_approval",
+            sql_tools_do_not_require_approval,
+            "read-only SQL tools must not require approval",
+        ),
+        _check(
+            "sql_tools_share_chat_paths",
+            sql_tools_share_chat_paths,
+            "chat and streaming modules must not contain SQL-specific branches",
         ),
         _check("source_file_budgets", not over_budget, "; ".join(over_budget)),
     ]
