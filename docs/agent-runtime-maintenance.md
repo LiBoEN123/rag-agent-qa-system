@@ -22,6 +22,7 @@
 | 12 | `app/agent/framework_middleware.py` | 项目错误分类、预算、循环防护和同批 fail-closed |
 | 13 | `app/agent/framework_tools.py` | 动态 StructuredTool、Registry dispatch 和 RAG handoff |
 | 14 | `app/tools/runtime.py` | 单次工具调用的策略、审计、超时、重试和输出校验 |
+| 15 | `app/tools/mcp/` | 可选 MCP 配置、启动 discovery、权限 Provider、同步/异步 bridge 和安全输出 |
 
 ## 主调用链
 
@@ -34,10 +35,8 @@ FastAPI application
 → LangGraph Parent Graph: route → initialize
 → LangChain create_agent
 → RegistryToolsMiddleware / ProjectToolGovernanceMiddleware
-→ StructuredTool
-→ ToolRegistry.dispatch
-→ ToolRuntime.execute
-→ ToolSpec.handler
+→ 本地 StructuredTool → ToolRegistry.dispatch → ToolRuntime.execute → ToolSpec.handler
+  或 governed MCP StructuredTool → 官方 adapter coroutine
 → ToolMessage / Command.PARENT
 → RAG Subgraph 或 Compose
 → Finalize
@@ -82,6 +81,15 @@ handler 只调用 `app/tools/sql_readonly/` Service；sqlglot AST、SQLAlchemy E
 Inspector、SQLite 数据库层只读和输出截断不进入 Router、父图、ChatService 或 SSE
 projector。数据库内容始终是不可信数据。详见[只读 SQL 工具](tools/sql-readonly.md)。
 
+MCP Client 也是默认关闭的动态工具源，但不把 adapter `StructuredTool` 反向转换为
+`ToolSpec`。应用启动期完成一次 discovery/cache，模型与执行 hook 只按
+`mcp:<server>` 权限读取 cache，不在每轮模型调用时连接 Server。MCP 结果先被 bridge
+转换为现有 `tool_success()` / `tool_error()`，随后仍由
+`ProjectToolGovernanceMiddleware` 处理调用数、错误数、重复调用、累计耗时和
+ToolMessage pairing。同步工具入口只在无 event loop 的 ToolNode 线程中建立短生命周期
+loop，异步入口直接 await adapter coroutine；不要在 ChatService、父图或 SSE 增加 MCP
+分支。详见[受治理的 MCP Client 工具源](tools/mcp-client.md)。
+
 ## 配置快照与生命周期
 
 `app.config.AppSettings` 是唯一完整应用配置模型。它基于官方
@@ -104,6 +112,7 @@ inspection 使用 `AppSettings(_env_file=None, ...)`，不会读取维护者 `.e
 | 默认 Tool Registry | 首次 `get_tool_registry()` | `clear_tool_registry_cache()` |
 | Tool Runtime | 首次 dispatch / `get_tool_runtime()` | `reset_tool_runtime()` |
 | SQL Engine | 第一次实际 SQL 工具调用 | `clear_sql_engine_cache()`；lifespan shutdown 自动 dispose |
+| MCP Client / Tool cache | 显式启用时由 lifespan 启动 discovery | `close_mcp_runtime()`；配置变更需重启，不热加载 |
 | Graph / Checkpointer | 同步 Graph 在 lifespan 预编译，流式 Graph 首次请求创建 | 同步上下文使用 `reset_agent_graph_runtime()`，应用异步关闭使用 `areset_agent_graph_runtime()` |
 
 `.env` 不是动态热更新接口。若测试要切换进程级配置，应先关闭 Runtime 和
@@ -254,6 +263,12 @@ graph TD;
 | `app/tools/providers/local.py` | 按请求 `required_permissions` 过滤模型可见工具 |
 | `app/tools/registry.py` | 注册 ToolSpec；统一分发工具 |
 | `app/tools/runtime.py` | 治理并执行单次工具调用 |
+| `app/tools/mcp/config.py` | MCP JSON Schema、URL 和 Header 环境引用校验 |
+| `app/tools/mcp/client.py` | `MultiServerMCPClient` 与启动/关闭 cache 生命周期 |
+| `app/tools/mcp/discovery.py` | allowlist、annotation、prefix、数量与冲突校验 |
+| `app/tools/mcp/bridge.py` | adapter interceptor、同步/异步兼容、ToolResult 与审计归一化 |
+| `app/tools/mcp/provider.py` | 按 `mcp:<server>` 权限提供 cached MCP tools |
+| `app/tools/mcp/serialization.py` | 不可信 MCP 文本/structured content 的脱敏与体量限制 |
 | `app/tools/web_search.py` | 调用 DDGS；映射参数、规范化结果和转换公开异常 |
 | `app/tools/web_download.py` | 为 HTML/PDF 提供共用 hardened 有限下载适配 |
 | `app/tools/web_fetch.py` | 处理 HTML/XHTML/纯文本并调用 Trafilatura |

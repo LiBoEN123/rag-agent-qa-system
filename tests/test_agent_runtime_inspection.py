@@ -94,6 +94,15 @@ def test_runtime_report_preserves_graph_contract(
         "sql_tools_have_pydantic_contracts",
         "sql_tools_do_not_require_approval",
         "sql_tools_share_chat_paths",
+        "mcp_disabled_by_default",
+        "mcp_uses_langchain_adapter",
+        "mcp_http_only_v1",
+        "mcp_tools_require_server_permission",
+        "mcp_tools_have_local_allowlist",
+        "mcp_tool_names_are_prefixed",
+        "mcp_outputs_are_untrusted",
+        "mcp_local_registry_path_preserved",
+        "mcp_governance_path_preserved",
     } <= {item["name"] for item in report["checks"]}
     assert report["module_boundaries"] == {
         "import_linter_configured": True,
@@ -105,6 +114,12 @@ def test_runtime_report_preserves_graph_contract(
     }
     assert report["agent_result_contract"]["model"] == "AgentRunResult"
     assert report["agent_result_contract"]["extra"] == "forbid"
+    assert report["mcp_client"] == {
+        "enabled_by_default": False,
+        "config_version": 1,
+        "transport": "streamable_http",
+        "dependency": "0.3.2",
+    }
     assert {
         item["result_status"] for item in report["chat_status_policy"]
     } == {

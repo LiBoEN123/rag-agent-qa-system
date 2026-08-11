@@ -6,6 +6,8 @@
 [当前系统架构](docs/architecture/current-system.md)。
 受治理的业务数据库接入见
 [只读 SQL 工具](docs/tools/sql-readonly.md)。
+外部只读工具接入见
+[受治理的 MCP Client 工具源](docs/tools/mcp-client.md)。
 
 本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。同步 `/chat` 与 SSE `/chat/stream` 复用 LangGraph 父图中的 LangChain `create_agent` 模型—工具循环；传入 `session_id` 时还会结合 SQLite 中最近的会话历史对短追问做 Query Rewrite。
 
@@ -17,10 +19,10 @@
 - ChromaDB 持久化：chunk 文本、metadata 和 embedding 持久化保存，服务重启可复用索引缓存。
 - 图内确定性入口 Router：由 LangGraph 父图在每次 Runtime 调用时执行一次，只处理空问题、少量稳定直答和明确澄清；其他自然语言请求统一进入 `agent`，具体工具由 Agent Model 根据当前请求可见的动态 Tool Schema 选择。
 - 框架原生 Agent Runtime：LangGraph 父图嵌入 LangChain `create_agent` 子图，由框架管理模型—工具循环、参数校验、ToolMessage 和调用上限。
-- 权限感知的 Registry-driven 工具发现：Provider 按请求权限只暴露满足 `required_permissions` 的工具，Middleware 将其注入模型和执行层；工具仍经 `StructuredTool → ToolRegistry → ToolRuntime` 执行。
+- 权限感知的动态工具发现：本地 Provider 按 `required_permissions` 过滤 Registry tools；可选 MCP Provider 按 `mcp:<server>` 过滤启动期缓存的 adapter tools，两者由同一 Middleware 注入模型和执行层。
 - Agent 循环防护：工具错误总数、连续相同调用、连续相同错误和模型/工具累计耗时均有独立预算；终止错误对同批后续调用 fail-closed，并补齐关联 ToolMessage。
 - 多轮追问改写：同一 `session_id` 下通过 SQLite 保留最近会话历史，短追问和指代问题会先改写成独立检索问题。
-- 工具调用：支持知识库检索、公开网页搜索与受治理的单页正文提取、双文档内容对比、简单四则运算、列出知识库文档、查看指定 chunk 原文，以及默认关闭的 allowlist 只读 SQL 查询。
+- 工具调用：支持知识库检索、公开网页搜索与受治理的正文提取、文档工具、计算，以及默认关闭的 allowlist 只读 SQL 与 Streamable HTTP MCP Client 工具源。
 - 引用绑定和拒答机制：模型输出的 `Reference N` 会绑定回真实文件与 chunk；证据不足或引用支撑不足时拒答。
 - 同步与流式聊天：保留 `/chat` JSON 合同，并提供 `/chat/stream` 的 progress、tool、安全答案增量和权威 final SSE 事件。
 - 可观测性：每次同步或流式聊天请求记录 `trace_id`、阶段耗时、状态、工具调用、引用数量和 LLM 调用次数。
@@ -135,7 +137,7 @@ flowchart TD
 | 引用绑定 | 将 `Reference N` 映射回真实文件、`chunk_id`、`snippet` 和分数 |
 | Agent Runtime | LangGraph 父图嵌入唯一的 LangChain `create_agent` 子图；框架负责模型—工具循环、参数校验、ToolMessage 和模型/工具调用上限 |
 | Agent 路由 | 父图 `route` 是唯一 Router 所有者；所有 Runtime 调用先路由再 initialize。正常请求输出 `agent`，`direct_answer` / `clarify` 在 initialize + compose 中安全短路 |
-| 工具发现 | `ToolProvider` 按请求权限过滤模型可见 ToolSpec，`RegistryToolsMiddleware` 对模型绑定和实际执行使用同一组请求级 StructuredTool；普通新工具无需修改核心编排 |
+| 工具发现 | 本地 `ToolProvider` 过滤 ToolSpec；可选 MCP Provider 过滤启动期 discovery cache。`RegistryToolsMiddleware` 对模型绑定和执行使用同一组请求级工具 |
 | Agent Guardrail | 工具错误总数、连续相同调用/错误、累计模型与工具耗时预算、同批 fail-closed、无悬空 ToolMessage |
 | 工具调用 | 默认 Registry 保持八个生产工具；显式启用只读 SQL 后额外注册 `list_sql_tables`、`describe_sql_table`、`query_sql_readonly`。模型可见集合始终由请求权限决定 |
 | 可观测性 | `trace_id`、请求耗时、阶段耗时、工具调用日志、metrics 汇总接口 |
@@ -239,7 +241,7 @@ Agent Runtime。
 
 新增普通本地工具只需创建合法 `ToolSpec` 并注册到 Registry，不需要修改 Router、父图、`create_agent` 或 Middleware。`LocalToolProvider` 复用精确、区分大小写的 `has_permission()`，仅当 Context 满足全部 `required_permissions` 时才向模型暴露工具；空权限要求始终可见。过滤保持 Registry 顺序，不执行完整 Policy、handler、Runtime 或审计，也不会因审批、风险等级或暂缺幂等键隐藏工具。
 
-模型伪造未绑定的隐藏名称时沿用框架未知工具路径，只返回 `unknown_tool`，不证明工具是否存在，也不泄漏 description、参数 Schema 或缺失权限。模型可见性不是授权替代：所有真实调用仍进入 `ToolRegistry.dispatch() → ToolRuntime.execute()` 做最终权限与执行期治理；绕过模型可见性直接分发无权工具仍返回 `permission_denied`。多 Provider 合并保持 Provider/注册顺序并拒绝重名；当前生产环境只有 `LocalToolProvider`。
+模型伪造未绑定的隐藏名称时沿用框架未知工具路径，只返回 `unknown_tool`，不证明工具是否存在，也不泄漏 description、参数 Schema 或缺失权限。模型可见性不是授权替代：本地真实调用仍进入 `ToolRegistry.dispatch() → ToolRuntime.execute()` 做最终权限与执行期治理；MCP 调用在官方 adapter interceptor 中再次检查 `mcp:<server>`。多工具源合并保持稳定顺序并拒绝重名。
 
 模型—工具循环由 `langchain.agents.create_agent` 构建；其内部使用 LangGraph 标准 model/tools 节点处理 Pydantic 校验、同轮调用和基础 ToolMessage。动态工具通过 Middleware 覆盖请求，而不是在父图节点中手工 `bind_tools()`。`ModelCallLimitMiddleware` 和 `ToolCallLimitMiddleware` 分别执行单次 run 的模型与工具调用上限，父图调用还设置 `recursion_limit` 作为最终图级兜底。
 
@@ -266,6 +268,20 @@ AST `LIMIT`、语句超时和有限输出之外，同时使用 SQLite `mode=ro` 
 使用数据库侧只读账号。数据库内容统一标记为不可信数据，不能当成系统或工具指令。
 该数据源不得指向项目 Session、Checkpoint、Chroma 或 Evaluation 持久化。完整配置、
 错误边界和手动冒烟命令见[只读 SQL 工具文档](docs/tools/sql-readonly.md)。
+
+## MCP Client 工具源
+
+MCP 默认关闭；关闭时不读取 Server 配置、不连接网络、不 discovery，默认本地工具与
+Evaluation 合同不变。启用后，FastAPI 启动期使用官方
+`langchain-mcp-adapters.MultiServerMCPClient` 从部署者静态配置的 Streamable HTTP
+Server 获取工具，只保留精确 `allowed_tools` 中的 read-only tool，并以
+`<server>_<tool>` 隔离名称。请求还必须具有 `mcp:<server>` 权限。
+
+MCP Tool 保持 adapter `StructuredTool`，不会反向转换成 `ToolSpec`；同步 `/chat` 使用
+MCP 专属最小 async-to-sync bridge，流式 `/chat/stream` 直接 await coroutine。输出被
+视为不可信外部数据并脱敏、限长，image/audio/resource 等第一版不进入模型上下文。
+所有调用继续经过现有 Agent Guardrail、ToolResult、审计和 SSE 白名单投影。配置、
+安全边界和冒烟命令见[受治理的 MCP Client 工具源](docs/tools/mcp-client.md)。
 
 ## Web Search
 
@@ -351,7 +367,7 @@ START → route → initialize
   └─ agent → framework_agent（create_agent 内部 model ↔ tools）
        → adapt_framework
        ├─ search_knowledge_base 成功 → RAG 子图 → finalize
-       ├─ web_search / web_fetch / web_pdf_fetch 等普通工具 → ToolMessage → Agent Model → compose → finalize
+       ├─ Web / SQL / MCP 等普通工具 → ToolMessage → Agent Model → compose → finalize
        ├─ 无工具最终回答 → compose → finalize
        └─ 治理或调用预算终止 → compose → finalize
 ```
@@ -556,7 +572,12 @@ Tool Runtime、Graph/Checkpointer 缓存；生产服务通常直接重启进程�
 | `SQL_MAX_CELL_CHARS` / `SQL_MAX_OUTPUT_CHARS` | 单元格与整体结构化输出字符上限，默认 `1000` / `50000` |
 | `SQL_STATEMENT_TIMEOUT_MS` | 数据库语句超时，默认 `5000` ms，必须小于工具总体超时 |
 | `SQL_TOOL_TIMEOUT_SECONDS` | ToolRuntime SQL 工具总体超时，默认 `10` 秒 |
-| `TOOL_DEFAULT_PERMISSIONS` | 默认服务主体权限；默认仅 `knowledge_base:read`，需显式加入 `web:search`、`web:fetch`、`database:read` 才暴露对应可选工具 |
+| `MCP_TOOLS_ENABLED` | 是否启用 MCP Client，默认 `false`；关闭时不读取配置或连接 Server |
+| `MCP_SERVERS_CONFIG_PATH` | MCP Server 静态 JSON 路径；启用时必填，建议使用 Git 忽略的 `config/mcp_servers.local.json` |
+| `MCP_DISCOVERY_TIMEOUT_SECONDS` / `MCP_TOOL_TIMEOUT_SECONDS` | 启动 discovery 与单次 MCP Tool 超时，默认 `5` / `15` 秒 |
+| `MCP_MAX_TOOLS_PER_SERVER` | 每 Server 精确 allowlist 上限，默认 `20` |
+| `MCP_MAX_TEXT_CHARS` / `MCP_MAX_STRUCTURED_CHARS` | MCP 文本与 structured content 的模型上下文上限，默认 `12000` / `20000` |
+| `TOOL_DEFAULT_PERMISSIONS` | 默认服务主体权限；默认仅 `knowledge_base:read`，需显式加入 `web:search`、`web:fetch`、`database:read` 或 `mcp:<server>` 才暴露对应可选工具 |
 | `USE_LLM_JUDGE` | 评测脚本是否启用 LLM Judge，默认 `false` |
 | `JUDGE_API_KEY` | 评测 Judge 模型 API Key；为空时可复用回答模型 Key |
 | `JUDGE_MODEL` | 评测 Judge 模型名称 |
@@ -785,7 +806,7 @@ GET /metrics-summary?limit=20
 
 如果 `/chat` 传入 `session_id`，Query Rewrite 会在 Agent Router 之前执行；Router 看到的是改写后的有效问题，响应中的 `data.question` 仍保留原始输入，改写细节记录在 `data.tool_trace` 的 `query_rewrite` step 中。
 
-Router 不调用独立模型，也不解析具体工具 action。普通问题进入 `create_agent` 后，Agent Model 根据 `RegistryToolsMiddleware` 注入的当前可见 StructuredTool/Pydantic Schema 选择 `search_knowledge_base`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text`、`web_search`、`web_fetch` 或 `web_pdf_fetch`；执行仍统一经过 `ToolRegistry` 和 `ToolRuntime`。
+Router 不调用独立模型，也不解析具体工具 action。普通问题进入 `create_agent` 后，Agent Model 根据 `RegistryToolsMiddleware` 注入的当前可见 StructuredTool/Pydantic Schema 选择本地 Registry 工具或获授权的 MCP 工具；本地执行仍统一经过 `ToolRegistry` 和 `ToolRuntime`，MCP 执行通过官方 adapter 和项目 bridge 后进入相同 Agent 治理。
 
 ## 索引构建与缓存
 
@@ -998,6 +1019,7 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   │   ├── web_download.py      # HTML/PDF 共用的 hardened 有限下载适配
 │   │   ├── web_fetch.py         # HTML/XHTML/纯文本的 Trafilatura 提取
 │   │   ├── web_pdf_fetch.py     # PDF magic、pypdf 页范围与元数据提取
+│   │   ├── mcp/                 # MCP 配置、discovery、bridge、Provider 与安全序列化
 │   │   ├── registry.py          # 工具注册和分发
 │   │   └── schemas.py           # 工具参数模型
 │   ├── services/
@@ -1025,6 +1047,7 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   ├── smoke_test_online_tools.py # Online Tool 真实连通性子命令
 │   ├── smoke_test_agent_tool_calling.py # 模型 Tool Calling 协议
 │   ├── smoke_test_chat_stream.py # /chat/stream 安全摘要冒烟客户端
+│   ├── smoke_test_mcp_tools.py  # 受治理 MCP list/invoke 冒烟入口
 │   ├── inspect_agent_runtime.py # CI 架构合同检查
 │   ├── summarize_logs.py        # metrics/bad_cases 日志汇总
 │   ├── cache_models.py          # 预下载 embedding/rerank 模型
@@ -1107,6 +1130,6 @@ docker run --rm -p 8000:8000 --env-file .env \
 - 多轮历史使用本地 SQLite 持久化，适合单实例运行；多实例部署时需要额外规划共享存储和并发策略。
 - SQLite Checkpointer 适合单进程本地开发；高并发、多进程共享、数据持续增长和敏感状态留存需要额外的容量、权限及清理策略。
 - Agent 已通过唯一的 `create_agent` 路径支持 Registry-driven 多轮工具观察、同轮多个工具调用和参数修正，并具备错误次数、重复调用/错误、总耗时和同批 fail-closed 防护。
-- 当前尚未实现 RAG JSON token streaming、Interrupt/Resume、SQL 写操作/自动迁移、MCP、写工具的跨请求人工审批恢复或多 Agent。
+- 当前尚未实现 RAG JSON token streaming、Interrupt/Resume、SQL/MCP 写工具、写工具的跨请求人工审批恢复或多 Agent；MCP 第一版也不支持 Server、stdio、OAuth、Resources 或 Prompts。
 - 当前 Checkpointer 面向单进程本地使用，不是生产级分布式 Checkpointer。
 - retrieval_confidence 和 answer_confidence 是启发式估计，不等同于严格概率。

@@ -21,11 +21,11 @@
 
 ```text
 LLM 不直接调用业务函数。
-所有工具必须注册到 ToolRegistry。
-所有工具必须通过 ToolRuntime 执行。
+本地工具必须注册到 ToolRegistry 并通过 ToolRuntime 执行。
+Adapter-native 外部工具必须经过项目权限、审计、超时和输出安全 bridge。
 ```
 
-后续工具的唯一合法执行链为：
+本地工具的合法执行链为：
 
 ```text
 Agent Model
@@ -36,6 +36,12 @@ Agent Model
 ```
 
 项目的 `dispatch_tool` 可以继续作为日志与兼容门面，但只能转发到上述 Registry/Runtime 链路，不能自行调用 handler。
+
+官方 adapter 已经提供的外部 `StructuredTool` 不反向转换成 `ToolSpec`。例如只读 MCP
+Client 工具保留 adapter Schema/coroutine，经本地 allowlist、per-server 权限、审计、
+超时和不可信输出归一化后，与本地工具一起进入同一个 `create_agent` 和
+`ProjectToolGovernanceMiddleware`。这是一条受治理的协议适配边界，不是直接绑定远端
+handler，也不能绕过调用数、错误数、重复调用、总耗时或 ToolMessage pairing。
 
 明确禁止：
 
@@ -84,7 +90,7 @@ MCP Tool
 
 ### 第三方工具接入原则
 
-第三方框架、MCP、GitHub、数据库、搜索引擎和浏览器工具必须：
+需要由项目直接拥有执行实现的第三方工具、GitHub、数据库、搜索引擎和浏览器工具必须：
 
 1. 转换为项目本地 `ToolSpec`。
 2. 使用 Pydantic 参数模型。
@@ -96,6 +102,11 @@ MCP Tool
 8. 通过统一审计。
 9. 对敏感输入和输出进行脱敏，并选择安全的输出摘要模式。
 10. 不允许工具重名被静默覆盖。
+
+如果正式协议 adapter 已经负责 Schema、coroutine 和协议调用（当前只读 MCP Client
+属于此类），不得为满足上述本地链路而重复实现 JSON Schema 到 Pydantic、同步 handler
+或协议 Client；应改用薄 bridge 达成等价的本地权限、审计、超时、脱敏和 Agent
+Guardrail 约束。
 
 ### 写操作原则
 

@@ -11,6 +11,7 @@ from app.graph.builder import reset_agent_graph_runtime
 from app.llm.factory import clear_model_factory_cache
 from app.tools.registry import clear_tool_registry_cache, get_tool_registry
 from app.tools.runtime import reset_tool_runtime
+from app.tools.mcp.client import reset_mcp_runtime
 from app.tools.sql_readonly.engine import clear_sql_engine_cache
 
 
@@ -99,6 +100,7 @@ def _clear_configuration_dependent_caches() -> None:
     clear_model_factory_cache()
     clear_tool_registry_cache()
     clear_sql_engine_cache()
+    reset_mcp_runtime()
     clear_settings_cache()
 
 

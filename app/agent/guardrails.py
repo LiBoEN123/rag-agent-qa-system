@@ -46,6 +46,9 @@ _RECOVERABLE = (
     ToolErrorCode.SQL_DANGEROUS_FUNCTION.value,
     ToolErrorCode.SQL_RESULT_TOO_WIDE.value,
     ToolErrorCode.SQL_EXECUTION_ERROR.value,
+    ToolErrorCode.MCP_EXECUTION_ERROR.value,
+    ToolErrorCode.MCP_UNSUPPORTED_CONTENT.value,
+    ToolErrorCode.MCP_OUTPUT_TOO_LARGE.value,
 )
 
 _TRANSIENT = (
@@ -54,6 +57,8 @@ _TRANSIENT = (
     ToolErrorCode.RATE_LIMITED.value,
     ToolErrorCode.SQL_TIMEOUT.value,
     ToolErrorCode.SQL_CONNECTION_ERROR.value,
+    ToolErrorCode.MCP_TOOL_TIMEOUT.value,
+    ToolErrorCode.MCP_TRANSPORT_ERROR.value,
 )
 
 _GOVERNANCE = (
@@ -63,6 +68,9 @@ _GOVERNANCE = (
     ToolErrorCode.AUDIT_WRITE_FAILED.value,
     ToolErrorCode.INVALID_INVOCATION_CONTEXT.value,
     ToolErrorCode.MISSING_IDEMPOTENCY_KEY.value,
+    ToolErrorCode.MCP_NOT_CONFIGURED.value,
+    ToolErrorCode.MCP_PERMISSION_DENIED.value,
+    ToolErrorCode.MCP_TOOL_NOT_ALLOWED.value,
 )
 
 

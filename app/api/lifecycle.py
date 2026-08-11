@@ -76,6 +76,13 @@ def initialize_agent_graph_runtime(settings: AppSettings) -> None:
     validate_agent_graph_configuration(settings)
 
 
+async def initialize_mcp_runtime(settings: AppSettings) -> None:
+    """在启动事件循环中完成 MCP 配置读取和 Tool discovery。"""
+    from app.tools.mcp.client import initialize_mcp_runtime as initialize
+
+    await initialize(settings)
+
+
 def close_agent_graph_runtime() -> None:
     """关闭 Agent Graph Runtime；关闭异常只记录日志，不阻塞其他清理。"""
     try:
@@ -99,6 +106,19 @@ async def aclose_agent_graph_runtime() -> None:
         logger.warning(
             "[shutdown] async_langgraph_runtime_close_failed error=%s",
             str(exc)[:200],
+        )
+
+
+async def close_mcp_runtime() -> None:
+    """清理 MCP client 引用和 Tool cache；失败不阻塞其他资源关闭。"""
+    try:
+        from app.tools.mcp.client import close_mcp_runtime as close_runtime
+
+        await close_runtime()
+    except Exception as exc:
+        logger.warning(
+            "[shutdown] mcp_runtime_close_failed error_type=%s",
+            type(exc).__name__,
         )
 
 

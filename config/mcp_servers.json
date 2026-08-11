@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "servers": {
+    "github": {
+      "transport": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "allowed_tools": [
+        "get_me",
+        "get_file_contents",
+        "pull_request_read"
+      ],
+      "headers_env": {
+        "Authorization": "MCP_GITHUB_AUTHORIZATION",
+        "X-MCP-Tools": "MCP_GITHUB_TOOLS",
+        "X-MCP-Readonly": "MCP_GITHUB_READONLY"
+      }
+    }
+  }
+}

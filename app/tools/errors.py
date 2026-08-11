@@ -43,6 +43,16 @@ class ToolErrorCode(str, Enum):
     SQL_CONNECTION_ERROR = "sql_connection_error"
     SQL_EXECUTION_ERROR = "sql_execution_error"
 
+    MCP_NOT_CONFIGURED = "mcp_not_configured"
+    MCP_PERMISSION_DENIED = "mcp_permission_denied"
+    MCP_DISCOVERY_FAILED = "mcp_discovery_failed"
+    MCP_TOOL_NOT_ALLOWED = "mcp_tool_not_allowed"
+    MCP_TOOL_TIMEOUT = "mcp_tool_timeout"
+    MCP_TRANSPORT_ERROR = "mcp_transport_error"
+    MCP_EXECUTION_ERROR = "mcp_execution_error"
+    MCP_UNSUPPORTED_CONTENT = "mcp_unsupported_content"
+    MCP_OUTPUT_TOO_LARGE = "mcp_output_too_large"
+
 
 class ToolExecutionError(Exception):
     """允许工具实现显式声明错误类别及其是否可重试。"""

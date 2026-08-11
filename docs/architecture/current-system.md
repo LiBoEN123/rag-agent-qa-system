@@ -13,7 +13,7 @@ FastAPI application
 → Query Rewrite
 → LangGraph Parent Graph
 → LangChain create_agent
-→ ToolRegistry / ToolRuntime
+→ Local ToolRegistry / ToolRuntime 或 governed MCP adapter tools
 → RAG Subgraph（仅本地知识库检索成功时）
 → AgentRunResult
 → ChatStatusPolicy
@@ -102,7 +102,7 @@ Graph State 和 Checkpoint 保存普通字典，不保存 Pydantic 实例。未�
 `/chat/stream`、ChatService 与 SSE projector 没有 SQL 分支；完整安全合同见
 [只读 SQL 工具](../tools/sql-readonly.md)。
 
-模型可见性由 Provider 根据请求权限过滤，执行期治理仍只有一条路径：
+模型可见性由 Provider 根据请求权限过滤。本地工具的执行期治理保持原路径：
 
 ```text
 StructuredTool
@@ -113,6 +113,24 @@ StructuredTool
 
 `ToolRuntime` 独占最终权限、策略、审批、幂等、审计、超时、有限重试、脱敏和输出
 校验。Provider 可见性与 Framework Middleware 都不能绕过或复制这条边界。
+
+可选 MCP Client 工具源默认关闭。显式启用后，FastAPI 启动期使用官方
+`langchain-mcp-adapters.MultiServerMCPClient` 从部署者静态配置的 Streamable HTTP
+Server discovery 工具，只缓存本地精确 allowlist 中的 read-only tool，并加
+`<server>_` 前缀。请求还必须拥有 `mcp:<server>` 权限。MCP adapter 已经提供
+`StructuredTool`，因此不会反向转换成 `ToolSpec`；项目 bridge 在调用前完成权限、
+超时、审计和有限不可信输出归一化，随后仍交给同一个
+`ProjectToolGovernanceMiddleware` 计算调用/错误/重复/耗时预算：
+
+```text
+Local ToolRegistry → ToolRuntime → StructuredTool ─┐
+                                                   ├→ create_agent
+MultiServerMCPClient → governed StructuredTool ────┘
+```
+
+MCP Tool 不设置 `pending_rag_result`，`/chat`、`/chat/stream`、ChatService 和 SSE
+projector 没有 MCP 分支。完整配置与安全边界见
+[受治理的 MCP Client 工具源](../tools/mcp-client.md)。
 
 ## RAG
 
@@ -138,7 +156,9 @@ configure_uvicorn_access_log()
 → validate_startup_environment()
 → initialize_rag()
 → initialize_agent_graph_runtime()
+→ initialize_mcp_runtime()（仅显式启用时读取配置并 discovery）
 → yield
+→ close_mcp_runtime()
 → close_tool_runtime()
 → close_sql_engine_runtime()
 → close_agent_graph_runtime()
@@ -185,7 +205,7 @@ python -m pip check
 git diff --check
 ```
 
-Runtime Inspection 检查父图、Framework Agent、默认八个 ToolSpec、可选 SQL 合同、单一 State/Result/
+Runtime Inspection 检查父图、Framework Agent、默认八个 ToolSpec、可选 SQL/MCP 合同、单一 State/Result/
 Status Policy、同步/流式聊天路由、共享 Service、Graph streaming Runtime、Settings
 边界、应用组合根和文档归档；Import Linter 负责完整 import graph。自动测试使用 fake
 隔离模型、网络、RAG 索引和生产持久化副作用。
@@ -203,7 +223,9 @@ Agent Result、工具、RAG、配置或持久化所有权。HTTP 性能测试、
 
 - RAG JSON 生成节点不提供 token streaming；完整结果由 SSE `final` 返回。
 - 无 Interrupt/Resume 和跨请求人工审批恢复。
-- 无 MCP、SQL 写操作/自动迁移和多 Agent 编排。
+- MCP 第一版仅为默认关闭的 Streamable HTTP read-only Client；无 MCP Server、stdio、
+  OAuth、Resources、Prompts 或写工具。
+- 无 SQL 写操作/自动迁移和多 Agent 编排。
 - 无生产级分布式 Checkpointer。
 - 无 OCR；扫描件 PDF 不能提取文本时不会自动识别图片内容。
 

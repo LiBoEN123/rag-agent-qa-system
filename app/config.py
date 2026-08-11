@@ -272,6 +272,29 @@ class AppSettings(BaseSettings):
     tool_audit_max_string_chars: int = Field(default=500, ge=1)
     tool_audit_max_serialized_chars: int = Field(default=5000, ge=1)
 
+    # 受治理的外部 MCP Client 工具源
+    mcp_tools_enabled: bool = False
+    mcp_servers_config_path: Path | None = None
+    mcp_discovery_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        le=60,
+        allow_inf_nan=False,
+    )
+    mcp_tool_timeout_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        le=300,
+        allow_inf_nan=False,
+    )
+    mcp_max_tools_per_server: int = Field(default=20, ge=1, le=100)
+    mcp_max_text_chars: int = Field(default=12_000, ge=128, le=1_000_000)
+    mcp_max_structured_chars: int = Field(
+        default=20_000,
+        ge=128,
+        le=2_000_000,
+    )
+
     # 受治理的只读 SQL 工具
     sql_tool_enabled: bool = False
     sql_database_url: SecretStr | None = None
@@ -358,6 +381,7 @@ class AppSettings(BaseSettings):
         return project_path(Path(value))
 
     @field_validator(
+        "mcp_servers_config_path",
         "model_cache_dir_override",
         "hf_hub_cache",
         "hf_home",
@@ -425,6 +449,11 @@ class AppSettings(BaseSettings):
         "tool_audit_max_items",
         "tool_audit_max_string_chars",
         "tool_audit_max_serialized_chars",
+        "mcp_discovery_timeout_seconds",
+        "mcp_tool_timeout_seconds",
+        "mcp_max_tools_per_server",
+        "mcp_max_text_chars",
+        "mcp_max_structured_chars",
         "sql_max_rows",
         "sql_max_columns",
         "sql_max_cell_chars",
@@ -543,6 +572,10 @@ class AppSettings(BaseSettings):
     @model_validator(mode="after")
     def _validate_configuration(self) -> AppSettings:
         """校验需要多个配置字段共同满足的约束。"""
+        if self.mcp_tools_enabled and self.mcp_servers_config_path is None:
+            raise ValueError(
+                "MCP_TOOLS_ENABLED=true 时必须配置 MCP_SERVERS_CONFIG_PATH"
+            )
         if self.tool_retry_max_delay_ms < self.tool_retry_base_delay_ms:
             raise ValueError(
                 "TOOL_RETRY_MAX_DELAY_MS 必须大于或等于 "

@@ -1,5 +1,6 @@
 """FastAPI 组合根、路由和生命周期隔离测试。"""
 
+import asyncio
 from dataclasses import replace
 
 from fastapi import Response
@@ -119,6 +120,62 @@ def test_create_app_does_not_run_lifespan_at_import_or_construction(monkeypatch)
 
     assert application
     assert calls == []
+
+
+def test_lifespan_awaits_mcp_startup_and_closes_it_before_other_runtimes(
+    monkeypatch,
+):
+    calls = []
+
+    async def initialize_mcp(settings):
+        assert settings is api_application.get_settings()
+        calls.append("mcp_start")
+
+    async def close_mcp():
+        calls.append("mcp_close")
+
+    async def close_graph():
+        calls.append("graph_close")
+
+    monkeypatch.setattr(api_application, "configure_uvicorn_access_log", lambda: None)
+    monkeypatch.setattr(
+        api_application,
+        "start_application_resources",
+        lambda: calls.append("application_start"),
+    )
+    monkeypatch.setattr(api_application, "initialize_mcp_runtime", initialize_mcp)
+    monkeypatch.setattr(api_application, "close_mcp_runtime", close_mcp)
+    monkeypatch.setattr(
+        api_application,
+        "close_tool_runtime",
+        lambda: calls.append("tool_close"),
+    )
+    monkeypatch.setattr(
+        api_application,
+        "close_sql_engine_runtime",
+        lambda: calls.append("sql_close"),
+    )
+    monkeypatch.setattr(
+        api_application,
+        "aclose_agent_graph_runtime",
+        close_graph,
+    )
+
+    async def run_lifespan():
+        async with api_application.lifespan(object()):
+            calls.append("serve")
+
+    asyncio.run(run_lifespan())
+
+    assert calls == [
+        "application_start",
+        "mcp_start",
+        "serve",
+        "mcp_close",
+        "tool_close",
+        "sql_close",
+        "graph_close",
+    ]
 
 
 def test_main_exposes_factory_created_app():

@@ -60,6 +60,7 @@ from app.tools.registry import register_default_tools  # noqa: E402
 PACKAGES = (
     "langchain",
     "langchain-core",
+    "langchain-mcp-adapters",
     "langchain-openai",
     "langgraph",
     "pydantic",
@@ -453,6 +454,30 @@ def inspect_runtime(
     config_source = (
         PROJECT_ROOT / "app/config.py"
     ).read_text(encoding="utf-8")
+    framework_agent_source = (
+        PROJECT_ROOT / "app/agent/framework_agent.py"
+    ).read_text(encoding="utf-8")
+    framework_tools_source = (
+        PROJECT_ROOT / "app/agent/framework_tools.py"
+    ).read_text(encoding="utf-8")
+    mcp_bridge_source = (
+        PROJECT_ROOT / "app/tools/mcp/bridge.py"
+    ).read_text(encoding="utf-8")
+    mcp_client_source = (
+        PROJECT_ROOT / "app/tools/mcp/client.py"
+    ).read_text(encoding="utf-8")
+    mcp_config_source = (
+        PROJECT_ROOT / "app/tools/mcp/config.py"
+    ).read_text(encoding="utf-8")
+    mcp_discovery_source = (
+        PROJECT_ROOT / "app/tools/mcp/discovery.py"
+    ).read_text(encoding="utf-8")
+    mcp_provider_source = (
+        PROJECT_ROOT / "app/tools/mcp/provider.py"
+    ).read_text(encoding="utf-8")
+    mcp_serialization_source = (
+        PROJECT_ROOT / "app/tools/mcp/serialization.py"
+    ).read_text(encoding="utf-8")
     immutable_settings = AppSettings.model_config.get("frozen") is True
     no_static_settings_class = re.search(
         r"^class\s+Settings\b",
@@ -709,6 +734,54 @@ def inspect_runtime(
     module_boundaries = _inspect_import_linter_config()
     expected_tool_count = 11 if resolved_settings.sql_tool_enabled else 8
     registered_tool_count_ok = len(registered_tools) == expected_tool_count
+    mcp_disabled_by_default = (
+        AppSettings.model_fields["mcp_tools_enabled"].default is False
+        and AppSettings.model_fields["mcp_servers_config_path"].default is None
+    )
+    mcp_uses_langchain_adapter = (
+        "langchain-mcp-adapters" not in missing_packages
+        and "from langchain_mcp_adapters.client import MultiServerMCPClient"
+        in mcp_client_source
+        and "MultiServerMCPClient(" in mcp_client_source
+    )
+    mcp_http_only_v1 = (
+        'version: Literal[1]' in mcp_config_source
+        and 'transport: Literal["http"]' in mcp_config_source
+        and '"transport": "http"' in mcp_config_source
+    )
+    mcp_tools_require_server_permission = (
+        'return f"mcp:{self.server_alias}"' in mcp_provider_source
+        and "has_permission(context.permissions, entry.required_permission)"
+        in mcp_provider_source
+        and 'f"mcp:{request.server_name}"' in mcp_bridge_source
+    )
+    mcp_tools_have_local_allowlist = (
+        "allowed_tools: tuple[str, ...]" in mcp_config_source
+        and "for remote_name in server.allowed_tools:" in mcp_discovery_source
+        and "by_exposed_name.get(exposed_name)" in mcp_discovery_source
+    )
+    mcp_tool_names_are_prefixed = (
+        "tool_name_prefix=True" in mcp_client_source
+        and 'exposed_name = f"{alias}_{remote_name}"' in mcp_discovery_source
+    )
+    mcp_outputs_are_untrusted = (
+        '"content_is_untrusted": True' in mcp_serialization_source
+        and "redact_sensitive_data(" in mcp_serialization_source
+        and "mcp_max_structured_chars" in mcp_serialization_source
+    )
+    mcp_local_registry_path_preserved = (
+        "tools = build_framework_tools(provider, context=context)"
+        in framework_tools_source
+        and "registry.dispatch(spec.name, tool_args, context=context)"
+        in framework_tools_source
+    )
+    mcp_governance_path_preserved = (
+        "RegistryToolsMiddleware()," in framework_agent_source
+        and "ProjectToolGovernanceMiddleware(settings=resolved),"
+        in framework_agent_source
+        and "build_agent_framework_tools(" in framework_tools_source
+        and "parse_tool_result(" in framework_tools_source
+    )
 
     disabled_sql_settings = resolved_settings.model_copy(
         update={"sql_tool_enabled": False}
@@ -1087,6 +1160,51 @@ def inspect_runtime(
             sql_tools_share_chat_paths,
             "chat and streaming modules must not contain SQL-specific branches",
         ),
+        _check(
+            "mcp_disabled_by_default",
+            mcp_disabled_by_default,
+            "MCP tools and config path must be disabled by default",
+        ),
+        _check(
+            "mcp_uses_langchain_adapter",
+            mcp_uses_langchain_adapter,
+            "MCP Client must use the official LangChain adapter",
+        ),
+        _check(
+            "mcp_http_only_v1",
+            mcp_http_only_v1,
+            "MCP config v1 must expose only Streamable HTTP transport",
+        ),
+        _check(
+            "mcp_tools_require_server_permission",
+            mcp_tools_require_server_permission,
+            "every MCP tool must require its mcp:<server_alias> permission",
+        ),
+        _check(
+            "mcp_tools_have_local_allowlist",
+            mcp_tools_have_local_allowlist,
+            "MCP discovery must intersect with a local exact allowlist",
+        ),
+        _check(
+            "mcp_tool_names_are_prefixed",
+            mcp_tool_names_are_prefixed,
+            "MCP tools must use server-prefixed exposed names",
+        ),
+        _check(
+            "mcp_outputs_are_untrusted",
+            mcp_outputs_are_untrusted,
+            "MCP output must be bounded, redacted, and marked untrusted",
+        ),
+        _check(
+            "mcp_local_registry_path_preserved",
+            mcp_local_registry_path_preserved,
+            "local tools must still use ToolRegistry dispatch",
+        ),
+        _check(
+            "mcp_governance_path_preserved",
+            mcp_governance_path_preserved,
+            "MCP tools must share existing agent governance and result parsing",
+        ),
         _check("source_file_budgets", not over_budget, "; ".join(over_budget)),
     ]
     return {
@@ -1128,6 +1246,12 @@ def inspect_runtime(
         "registered_tools": registered_tools,
         "default_visible_tools": default_visible_tools,
         "tool_visibility": tool_visibility,
+        "mcp_client": {
+            "enabled_by_default": False,
+            "config_version": 1,
+            "transport": "streamable_http",
+            "dependency": versions.get("langchain-mcp-adapters", ""),
+        },
         "source_files": source_files,
         "checks": checks,
     }
