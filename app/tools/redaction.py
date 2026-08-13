@@ -28,11 +28,28 @@ DEFAULT_SENSITIVE_KEYS = frozenset(
         "client_secret",
     }
 )
+_SENSITIVE_TEXT_PATTERN = re.compile(
+    r"(?i)\b(authorization|cookie|password|passwd|secret|token|"
+    r"access[_-]?token|refresh[_-]?token|api[_-]?key|client[_-]?secret)"
+    r"(\s*[:=]\s*)(?:bearer\s+)?[^\s,;]+"
+)
+_BEARER_TEXT_PATTERN = re.compile(r"(?i)\bbearer\s+[^\s,;]+")
+_OPENAI_STYLE_KEY_PATTERN = re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b")
 
 
 def normalize_sensitive_key(value: object) -> str:
     """把大小写、连字符和空格差异规整为统一敏感键。"""
     return re.sub(r"[-\s]+", "_", str(value).strip().lower())
+
+
+def redact_sensitive_text(value: str) -> str:
+    """从不可信自由文本中移除常见凭据形态。"""
+    redacted = _SENSITIVE_TEXT_PATTERN.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}{REDACTED}",
+        value,
+    )
+    redacted = _BEARER_TEXT_PATTERN.sub(REDACTED, redacted)
+    return _OPENAI_STYLE_KEY_PATTERN.sub(REDACTED, redacted)
 
 
 def _safe_key(value: object, max_string_chars: int) -> str:
@@ -67,9 +84,10 @@ def redact_sensitive_data(
         if item is None or isinstance(item, (bool, int, float)):
             return item
         if isinstance(item, str):
-            if len(item) <= max_string_chars:
-                return item
-            return item[:max_string_chars] + TRUNCATED
+            text = redact_sensitive_text(item)
+            if len(text) <= max_string_chars:
+                return text
+            return text[:max_string_chars] + TRUNCATED
         if isinstance(item, bytes):
             return f"<bytes length={len(item)}>"
         if isinstance(item, Enum):
@@ -135,4 +153,5 @@ __all__ = [
     "TRUNCATED",
     "normalize_sensitive_key",
     "redact_sensitive_data",
+    "redact_sensitive_text",
 ]

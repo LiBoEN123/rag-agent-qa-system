@@ -4,7 +4,7 @@
 """
 
 import json
-from typing import List
+from typing import Any, List
 
 from app.config import get_settings
 from app.llm.factory import get_answer_model
@@ -16,12 +16,16 @@ from app.rag.retrieval import clamp01, make_snippet, safe_float
 # =========================
 # 上下文构造
 # =========================
-def build_context(retrieved_chunks, max_chars: int | None=None):
-    """把检索结果整理成 LLM 提示词中的 evidence context。"""
+def build_context_with_selection(
+    retrieved_chunks: list[dict[str, Any]],
+    max_chars: int | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """构造 evidence context，并返回完整进入该 context 的 chunks。"""
     if max_chars is None:
         max_chars = get_settings().max_context_chars
 
     parts = []
+    selected_chunks = []
     total = 0
 
     for item in retrieved_chunks:
@@ -38,9 +42,19 @@ def build_context(retrieved_chunks, max_chars: int | None=None):
             break
 
         parts.append(block)
+        selected_chunks.append(item)
         total += len(block)
 
-    return "\n".join(parts)
+    return "\n".join(parts), selected_chunks
+
+
+def build_context(
+    retrieved_chunks: list[dict[str, Any]],
+    max_chars: int | None = None,
+) -> str:
+    """把检索结果整理成 LLM 提示词中的 evidence context。"""
+    context, _ = build_context_with_selection(retrieved_chunks, max_chars)
+    return context
 
 
 def _build_answer_messages(question: str, context: str) -> list[dict[str, str]]:

@@ -1,5 +1,6 @@
 """迭代式 Agent Loop 的消息、工具治理和预算回归测试。"""
 
+import asyncio
 import json
 
 import pytest
@@ -49,6 +50,21 @@ class FakeToolCallingModel:
         return response
 
 
+class AsyncFakeToolCallingModel(FakeToolCallingModel):
+    """只允许异步模型调用，用于证明 ``astream`` 不回退同步入口。"""
+
+    def invoke(self, messages):
+        del messages
+        raise AssertionError("astream must use the model async interface")
+
+    async def ainvoke(self, messages):
+        self.received_messages.append(list(messages))
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
 def _invoke_graph(
     monkeypatch,
     model,
@@ -83,6 +99,50 @@ def _invoke_graph(
             source="iterative_loop_test",
         ),
     )
+
+
+def _astream_graph(
+    monkeypatch,
+    model,
+    *,
+    max_iterations=6,
+    max_tool_calls=10,
+):
+    """用确定性异步模型执行真实父图，并返回最后一个 values 快照。"""
+    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    settings = graph_nodes.get_settings().model_copy(
+        update={
+            "agent_max_iterations": max_iterations,
+            "agent_max_tool_calls": max_tool_calls,
+        }
+    )
+    graph = build_agent_graph(settings).compile()
+    context = ToolInvocationContext(
+        trace_id="trace-async-loop",
+        session_id="session-async-loop",
+        principal_id="async-loop-test",
+        permissions=("knowledge_base:read",),
+        source="iterative_loop_test",
+    )
+
+    async def collect():
+        return [
+            value
+            async for value in graph.astream(
+                {
+                    "original_question": "请计算 1+2",
+                    "effective_question": "请计算 1+2",
+                    "top_k": 5,
+                    "decompose_top_k": 10,
+                    "trace_id": "trace-async-loop",
+                    "session_id": "session-async-loop",
+                },
+                context=context,
+                stream_mode="values",
+            )
+        ]
+
+    return asyncio.run(collect())[-1]
 
 
 def test_initialize_agent_loop_state_uses_effective_question():
@@ -123,6 +183,18 @@ def test_agent_loop_answers_without_calling_tools(monkeypatch):
     assert output["result"]["answer"] == "直接回答"
 
 
+def test_async_agent_loop_answers_without_calling_tools(monkeypatch):
+    """异步模型钩子允许 ``astream`` 完成无工具回答。"""
+    model = AsyncFakeToolCallingModel([AIMessage(content="异步直接回答")])
+
+    output = _astream_graph(monkeypatch, model)
+
+    assert len(model.received_messages) == 1
+    assert output["status"] == "ok"
+    assert output["result"]["status"] == "OK"
+    assert output["result"]["answer"] == "异步直接回答"
+
+
 def test_agent_loop_returns_single_tool_message_to_model(monkeypatch):
     """一次计算调用通过 Runtime 后，以关联 ToolMessage 进入第二轮。"""
     model = FakeToolCallingModel(
@@ -161,6 +233,36 @@ def test_agent_loop_returns_single_tool_message_to_model(monkeypatch):
     assert payload["tool_call_id"]
     assert output["tool_call_count"] == 1
     assert output["result"]["answer"] == "计算结果是 3。"
+
+
+def test_async_agent_loop_executes_tool_and_returns_to_model(monkeypatch):
+    """异步模型和工具 Middleware 保留完整工具治理循环。"""
+    model = AsyncFakeToolCallingModel(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "simple_calculator",
+                        "args": {"expression": "1+2"},
+                        "id": "async-calc-call",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="异步计算结果是 3。"),
+        ]
+    )
+
+    output = _astream_graph(monkeypatch, model)
+
+    assert len(model.received_messages) == 2
+    tool_message = model.received_messages[1][-1]
+    assert isinstance(tool_message, ToolMessage)
+    assert tool_message.tool_call_id == "async-calc-call"
+    assert json.loads(tool_message.content)["output"]["result"] == 3
+    assert output["tool_call_count"] == 1
+    assert output["result"]["answer"] == "异步计算结果是 3。"
 
 
 def test_agent_loop_runs_two_sequential_tool_calls(monkeypatch):
@@ -542,9 +644,14 @@ def test_agent_loop_model_failure_after_tool_does_not_replay_tool(monkeypatch):
     assert output["result"]["status"] == "MODEL_ERROR"
 
 
-def test_agent_selected_knowledge_search_keeps_rag_citation_path(monkeypatch):
-    """模型选择知识库检索后转入专用 RAG 子图并保留引用结果。"""
-    model = FakeToolCallingModel(
+@pytest.mark.parametrize("async_mode", [False, True])
+def test_agent_selected_knowledge_search_keeps_rag_citation_path(
+    monkeypatch,
+    async_mode,
+):
+    """同步与异步模型选择知识库检索后都保留 RAG 引用路径。"""
+    model_class = AsyncFakeToolCallingModel if async_mode else FakeToolCallingModel
+    model = model_class(
         [
             AIMessage(
                 content="",
@@ -606,9 +713,10 @@ def test_agent_selected_knowledge_search_keeps_rag_citation_path(monkeypatch):
     )
     monkeypatch.setattr(graph_nodes, "run_rag_subgraph", fake_rag_subgraph)
 
-    output = _invoke_graph(
-        monkeypatch,
-        model,
+    output = (
+        _astream_graph(monkeypatch, model)
+        if async_mode
+        else _invoke_graph(monkeypatch, model)
     )
 
     assert len(model.received_messages) == 1

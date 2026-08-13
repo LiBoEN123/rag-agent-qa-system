@@ -37,6 +37,23 @@ from app.tools.errors import ToolErrorCode
         ),
         (ToolErrorCode.APPROVAL_REQUIRED, AgentToolFailureKind.APPROVAL_REQUIRED),
         (ToolErrorCode.RUNTIME_UNAVAILABLE, AgentToolFailureKind.TERMINAL_RUNTIME),
+        (ToolErrorCode.SQL_NOT_CONFIGURED, AgentToolFailureKind.TERMINAL_RUNTIME),
+        (
+            ToolErrorCode.SQL_PERMISSION_DENIED,
+            AgentToolFailureKind.TERMINAL_GOVERNANCE,
+        ),
+        (ToolErrorCode.SQL_INVALID_STATEMENT, AgentToolFailureKind.RECOVERABLE),
+        (ToolErrorCode.SQL_MULTIPLE_STATEMENTS, AgentToolFailureKind.RECOVERABLE),
+        (ToolErrorCode.SQL_WRITE_FORBIDDEN, AgentToolFailureKind.RECOVERABLE),
+        (ToolErrorCode.SQL_TABLE_NOT_ALLOWED, AgentToolFailureKind.RECOVERABLE),
+        (ToolErrorCode.SQL_DANGEROUS_FUNCTION, AgentToolFailureKind.RECOVERABLE),
+        (ToolErrorCode.SQL_RESULT_TOO_WIDE, AgentToolFailureKind.RECOVERABLE),
+        (ToolErrorCode.SQL_TIMEOUT, AgentToolFailureKind.TRANSIENT_EXHAUSTED),
+        (
+            ToolErrorCode.SQL_CONNECTION_ERROR,
+            AgentToolFailureKind.TRANSIENT_EXHAUSTED,
+        ),
+        (ToolErrorCode.SQL_EXECUTION_ERROR, AgentToolFailureKind.RECOVERABLE),
     ],
 )
 def test_classify_all_tool_error_codes(error_code, expected):

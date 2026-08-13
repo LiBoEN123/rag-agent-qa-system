@@ -1,7 +1,13 @@
 .env
+config/mcp_servers.local.json
 .venv/
 .cache/
+# 知识库、索引和数据库保持本地；只版本化离线评测数据。
 data/
+!data/
+data/*
+!data/eval/
+!data/eval/**
 __pycache__/
 *.pyc
 .idea/

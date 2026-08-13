@@ -1,0 +1,582 @@
+{
+  "dataset_version": 2,
+  "name": "nmgut-agent-evaluation-baseline-v2",
+  "cases": [
+    {
+      "id": "D001",
+      "legacy_id": "D001",
+      "version": 2,
+      "suite": "core",
+      "category": "knowledge_base",
+      "question": "学生办理缓考或免考时，线上填报入口是什么？外网访问有什么要求？",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "search_knowledge_base",
+        "tools_contains": ["search_knowledge_base"],
+        "keywords": ["综合业务系统", "学生服务", "办理缓考免考", "校园网", "VPN"],
+        "min_keyword_hits": 3,
+        "sources": ["关于调整缓考、免考办理流程的通知.md"],
+        "source_match": "any"
+      },
+      "tags": ["rag", "citation", "migrated_v1"],
+      "notes": "保留 v1 问题与答案语义；实际工具按 tool_call trace 校验。"
+    },
+    {
+      "id": "D002",
+      "legacy_id": "D002",
+      "version": 2,
+      "suite": "core",
+      "category": "knowledge_base",
+      "question": "线上提交缓考或免考申请后，还需要到哪个学院办理审批？超过多久未提交会怎样？",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "search_knowledge_base",
+        "tools_contains": ["search_knowledge_base"],
+        "keywords": ["缓考", "学生所在学院", "免考", "开课学院", "10天", "自动撤销"],
+        "min_keyword_hits": 4,
+        "sources": ["关于调整缓考、免考办理流程的通知.md"],
+        "source_match": "any"
+      },
+      "tags": ["rag", "citation", "migrated_v1"]
+    },
+    {
+      "id": "D003",
+      "legacy_id": "D003",
+      "version": 2,
+      "suite": "core",
+      "category": "knowledge_base",
+      "question": "普通本科四年制、五年制和休学创业学生的最长学习年限分别是多少？应征入伍服役阶段是否计入学习年限？",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "search_knowledge_base",
+        "tools_contains": ["search_knowledge_base"],
+        "keywords": ["四年制", "3～6年", "五年制", "4～7年", "休学创业", "8年", "服役阶段不计入"],
+        "min_keyword_hits": 5,
+        "sources": ["内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知.md"],
+        "source_match": "any"
+      },
+      "tags": ["rag", "citation", "migrated_v1"]
+    },
+    {
+      "id": "D004",
+      "legacy_id": "D004",
+      "version": 2,
+      "suite": "core",
+      "category": "knowledge_base",
+      "question": "调整后的成绩记载方式中，学生怎样才能获得课程学分？不合格成绩如何记载？",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "search_knowledge_base",
+        "tools_contains": ["search_knowledge_base"],
+        "keywords": ["百分制", "60分", "五级分制", "及格", "二级分制", "合格", "0分计"],
+        "min_keyword_hits": 5,
+        "sources": ["内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知.md"],
+        "source_match": "any"
+      },
+      "tags": ["rag", "citation", "migrated_v1"]
+    },
+    {
+      "id": "D005",
+      "legacy_id": "D005",
+      "version": 2,
+      "suite": "core",
+      "category": "knowledge_base",
+      "question": "《内蒙古工业大学学生管理规定》适用于哪些学生？",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "search_knowledge_base",
+        "tools_contains": ["search_knowledge_base"],
+        "keywords": ["普通高等学历教育", "研究生", "本科", "专科", "高职"],
+        "min_keyword_hits": 3,
+        "sources": ["内蒙古工业大学学生管理规定.md"],
+        "source_match": "any"
+      },
+      "tags": ["rag", "citation", "migrated_v1"]
+    },
+    {
+      "id": "D006",
+      "legacy_id": "D006",
+      "version": 2,
+      "suite": "core",
+      "category": "knowledge_base",
+      "question": "学生纪律处分的种类有哪些？除开除学籍外，处分期限通常是多久？",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "search_knowledge_base",
+        "tools_contains": ["search_knowledge_base"],
+        "keywords": ["警告", "严重警告", "记过", "留校察看", "开除学籍", "6到12个月"],
+        "min_keyword_hits": 4,
+        "sources": ["内蒙古工业大学学生纪律处分实施办法.md"],
+        "source_match": "any"
+      },
+      "tags": ["rag", "citation", "migrated_v1"]
+    },
+    {
+      "id": "D007",
+      "legacy_id": "D007",
+      "version": 2,
+      "suite": "core",
+      "category": "knowledge_base",
+      "question": "学生对纪律处分决定有异议时，应在多长时间内提出书面申诉？",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "search_knowledge_base",
+        "tools_contains": ["search_knowledge_base"],
+        "keywords": ["送达之日起", "10日内", "书面申诉", "学生违纪处分申诉处理委员会", "逾期"],
+        "min_keyword_hits": 3,
+        "sources": ["内蒙古工业大学学生纪律处分实施办法.md"],
+        "source_match": "any"
+      },
+      "tags": ["rag", "citation", "migrated_v1"]
+    },
+    {
+      "id": "D008",
+      "legacy_id": "D008",
+      "version": 2,
+      "suite": "core",
+      "category": "knowledge_base",
+      "question": "本科生注册分为哪几类？暂缓注册的有效期限截止到什么时候？",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "search_knowledge_base",
+        "tools_contains": ["search_knowledge_base"],
+        "keywords": ["正常注册", "暂缓注册", "不予注册", "倒数第2周周一", "正常注册"],
+        "min_keyword_hits": 3,
+        "sources": ["内蒙古工业大学学籍管理办法（2018年修订）.md"],
+        "source_match": "any"
+      },
+      "tags": ["rag", "citation", "migrated_v1"]
+    },
+    {
+      "id": "D009",
+      "legacy_id": "D009",
+      "version": 2,
+      "suite": "core",
+      "category": "knowledge_base",
+      "question": "本科生请假审批权限如何按请假时长划分？",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "search_knowledge_base",
+        "tools_contains": ["search_knowledge_base"],
+        "keywords": ["三日以内", "班主任", "三至七日", "学工办", "八至十五日", "学生工作副院长", "学院院长"],
+        "min_keyword_hits": 5,
+        "sources": [
+          "内蒙古工业大学学籍管理办法（2018年修订）.md",
+          "内蒙古工业大学学生手册.md"
+        ],
+        "source_match": "any"
+      },
+      "tags": ["rag", "citation", "migrated_v1"]
+    },
+    {
+      "id": "D010",
+      "legacy_id": "D010",
+      "version": 2,
+      "suite": "core",
+      "category": "knowledge_base",
+      "question": "普通全日制本科学生转专业申请一般应在什么时候提出？",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "search_knowledge_base",
+        "tools_contains": ["search_knowledge_base"],
+        "keywords": ["转专业", "第一学年", "第二学期", "规定时间", "申请"],
+        "min_keyword_hits": 3,
+        "sources": ["内蒙古工业大学普通全日制本科学生转专业管理办法（2025年修订）.md"],
+        "source_match": "any"
+      },
+      "tags": ["rag", "citation", "migrated_v1"]
+    },
+    {
+      "id": "D011",
+      "legacy_id": "D011",
+      "version": 2,
+      "suite": "core",
+      "category": "knowledge_base",
+      "question": "本、专科学生学业警示分为哪几个等级？分别对应什么处理或通知方式？",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "search_knowledge_base",
+        "tools_contains": ["search_knowledge_base"],
+        "keywords": ["黄色警示", "橙色警示", "红色警示", "学生本人", "家长"],
+        "min_keyword_hits": 3,
+        "sources": ["内蒙古工业大学本、专科学生学业警示工作管理办法.md"],
+        "source_match": "any"
+      },
+      "tags": ["rag", "citation", "migrated_v1"]
+    },
+    {
+      "id": "D012",
+      "legacy_id": "D012",
+      "version": 2,
+      "suite": "core",
+      "category": "knowledge_base",
+      "question": "研究生学位论文复制比检测中，答辩前检测结果如何分类处理？",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "search_knowledge_base",
+        "tools_contains": ["search_knowledge_base"],
+        "keywords": ["复制比", "答辩前", "检测", "修改", "复检", "延期"],
+        "min_keyword_hits": 4,
+        "sources": ["内蒙古工业大学研究生学位论文复制比检测实施办法.md"],
+        "source_match": "any"
+      },
+      "tags": ["rag", "citation", "migrated_v1"]
+    },
+    {
+      "id": "D013",
+      "legacy_id": "D013",
+      "version": 2,
+      "suite": "core",
+      "category": "knowledge_base",
+      "question": "研究生学位论文评审一般采用什么评审方式？评审结果如何用于答辩资格判断？",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "search_knowledge_base",
+        "tools_contains": ["search_knowledge_base"],
+        "keywords": ["学位论文评审", "盲审", "评阅", "答辩", "修改"],
+        "min_keyword_hits": 3,
+        "sources": ["内蒙古工业大学研究生学位论文评审办法.md"],
+        "source_match": "any"
+      },
+      "tags": ["rag", "citation", "migrated_v1"]
+    },
+    {
+      "id": "T001",
+      "legacy_id": "T001",
+      "version": 2,
+      "suite": "core",
+      "category": "tool_use",
+      "question": "当前知识库里有多少个文档？",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "list_documents",
+        "tools_contains": ["list_documents"],
+        "keywords": ["文档", "14"],
+        "min_keyword_hits": 2,
+        "tool_output_keys": ["count", "documents"]
+      },
+      "tags": ["tool", "migrated_v1"]
+    },
+    {
+      "id": "T002",
+      "legacy_id": "T002",
+      "version": 2,
+      "suite": "core",
+      "category": "tool_use",
+      "question": "当前知识库有哪些文档？",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "list_documents",
+        "tools_contains": ["list_documents"],
+        "keywords": ["文档包括", "关于调整缓考", "内蒙古工业大学", "学生手册", "学籍管理"],
+        "min_keyword_hits": 3,
+        "tool_output_keys": ["count", "documents"]
+      },
+      "tags": ["tool", "migrated_v1"]
+    },
+    {
+      "id": "T003",
+      "legacy_id": "T003",
+      "version": 2,
+      "suite": "core",
+      "category": "tool_use",
+      "question": "请查看第 2 个 chunk 的内容",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "get_chunk_text",
+        "tools_contains": ["get_chunk_text"],
+        "keywords": ["chunk_2", "综合业务系统", "办理缓考免考", "10天"],
+        "min_keyword_hits": 3,
+        "tool_output_keys": ["chunk_id", "chunk"]
+      },
+      "tags": ["tool", "migrated_v1"]
+    },
+    {
+      "id": "T004",
+      "legacy_id": "T004",
+      "version": 2,
+      "suite": "core",
+      "category": "tool_use",
+      "question": "请帮我算一下 1 + 2 * 3",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "simple_calculator",
+        "tools_contains": ["simple_calculator"],
+        "keywords": ["7"],
+        "min_keyword_hits": 1,
+        "tool_output_keys": ["expression", "result"]
+      },
+      "tags": ["tool", "migrated_v1"]
+    },
+    {
+      "id": "compare_documents_explicit_001",
+      "legacy_id": "compare_documents_explicit_001",
+      "version": 2,
+      "suite": "core",
+      "category": "compare_documents",
+      "question": "请对比《内蒙古工业大学学生手册》和《内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知》中关于普通本科四年制最长学习年限的规定差异。",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "compare_documents",
+        "tools_contains": ["compare_documents"],
+        "keywords": ["最长学习年限", "差异"],
+        "min_keyword_hits": 2,
+        "tool_output_keys": ["doc_a_evidence", "doc_b_evidence", "comparison", "conflict_detected"]
+      },
+      "tags": ["tool", "document_compare", "migrated_v1"]
+    },
+    {
+      "id": "N001",
+      "legacy_id": "N001",
+      "version": 2,
+      "suite": "core",
+      "category": "no_evidence",
+      "question": "今天呼和浩特天气怎么样？",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "NO_RELEVANT_INFO",
+        "first_tool": "search_knowledge_base",
+        "tools_contains": ["search_knowledge_base"],
+        "keywords": ["无法根据提供的文档确定答案"],
+        "min_keyword_hits": 1
+      },
+      "tags": ["rag", "no_evidence", "migrated_v1"]
+    },
+    {
+      "id": "N002",
+      "legacy_id": "N002",
+      "version": 2,
+      "suite": "core",
+      "category": "no_evidence",
+      "question": "现在买哪只股票比较好？",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "NO_RELEVANT_INFO",
+        "first_tool": "search_knowledge_base",
+        "tools_contains": ["search_knowledge_base"],
+        "keywords": ["无法根据提供的文档确定答案"],
+        "min_keyword_hits": 1,
+        "forbidden_keywords": ["建议买入", "推荐购买"]
+      },
+      "tags": ["rag", "no_evidence", "migrated_v1"]
+    },
+    {
+      "id": "F001",
+      "legacy_id": "F001",
+      "version": 2,
+      "suite": "core",
+      "category": "clarify",
+      "question": "这个怎么配置",
+      "expected": {
+        "decision": "clarify",
+        "action": "clarify",
+        "status": "NEED_CLARIFICATION",
+        "keywords": ["具体指哪个", "请补充"],
+        "min_keyword_hits": 2
+      },
+      "tags": ["router", "clarify", "migrated_v1"]
+    },
+    {
+      "id": "F002",
+      "legacy_id": "F002",
+      "version": 2,
+      "suite": "core",
+      "category": "no_evidence",
+      "question": "学校食堂今天午餐菜单有哪些？",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "NO_RELEVANT_INFO",
+        "first_tool": "search_knowledge_base",
+        "tools_contains": ["search_knowledge_base"],
+        "keywords": ["无法根据提供的文档确定答案"],
+        "min_keyword_hits": 1
+      },
+      "tags": ["rag", "no_evidence", "migrated_v1"]
+    },
+    {
+      "id": "agent-direct-answer-001",
+      "version": 2,
+      "suite": "core",
+      "category": "direct_answer",
+      "question": "你能做什么？",
+      "expected": {
+        "decision": "direct_answer",
+        "action": "direct_answer",
+        "status": "OK",
+        "keywords": ["知识库", "工具"],
+        "min_keyword_hits": 1
+      },
+      "tags": ["router", "direct_answer"],
+      "notes": "由当前确定性 Router 的系统能力问句规则提供 ground truth。"
+    },
+    {
+      "id": "agent-followup-001",
+      "version": 2,
+      "suite": "core",
+      "category": "multi_turn",
+      "session_id": "eval-followup-001",
+      "turns": [
+        {
+          "question": "休学创业学生的最长学习年限是多少？",
+          "expected": {
+            "decision": "use_agent",
+            "action": "agent",
+            "status": "OK",
+            "first_tool": "search_knowledge_base",
+            "tools_contains": ["search_knowledge_base"],
+            "keywords": ["休学创业", "8年"],
+            "min_keyword_hits": 2,
+            "sources": ["内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知.md"],
+            "source_match": "any"
+          }
+        },
+        {
+          "question": "那应征入伍期间算吗？",
+          "expected": {
+            "decision": "use_agent",
+            "action": "agent",
+            "status": "OK",
+            "first_tool": "search_knowledge_base",
+            "tools_contains": ["search_knowledge_base"],
+            "keywords": ["服役阶段不计入"],
+            "min_keyword_hits": 1,
+            "sources": ["内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知.md"],
+            "source_match": "any",
+            "rewrite_keywords": ["应征入伍", "学习年限"],
+            "min_rewrite_keyword_hits": 1,
+            "rewritten": true
+          }
+        }
+      ],
+      "tags": ["query_rewrite", "rag", "citation"],
+      "notes": "问题与答案均来自最长学习年限通知；第二轮用于检查真实 ChatService 历史改写。"
+    },
+    {
+      "id": "agent-multi-tool-001",
+      "version": 2,
+      "suite": "core",
+      "category": "multi_tool",
+      "question": "请先列出当前知识库文档，再读取 chunk_id=2 的原文，并告诉我该片段提到的线上办理入口。",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "list_documents",
+        "tools_contains": ["list_documents", "get_chunk_text"],
+        "tool_sequence": ["list_documents", "get_chunk_text"],
+        "keywords": ["综合业务系统", "学生服务", "办理缓考免考"],
+        "min_keyword_hits": 2
+      },
+      "tags": ["multi_tool", "tool_sequence"],
+      "notes": "工具顺序由用户显式指定；整数 chunk_id=2 的内容已由 v1 T003 验证。"
+    },
+    {
+      "id": "agent-tool-recovery-001",
+      "version": 2,
+      "suite": "core",
+      "category": "tool_recovery",
+      "question": "先尝试读取 chunk_id=999999；如果不存在，请纠正参数改为读取 chunk_id=2，并告诉我其中的线上入口。",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "get_chunk_text",
+        "tools_contains": ["get_chunk_text"],
+        "tool_sequence": ["get_chunk_text", "get_chunk_text"],
+        "tool_status_sequence": ["error", "success"],
+        "keywords": ["综合业务系统", "学生服务", "办理缓考免考"],
+        "min_keyword_hits": 2,
+        "tool_output_keys": ["chunk_id", "chunk"]
+      },
+      "tags": ["tool_recovery", "argument_correction", "tool_sequence"],
+      "notes": "首个 chunk_id 明确不存在，第二个 chunk_id 与 v1 T003 的本地索引 ground truth 相同。"
+    },
+    {
+      "id": "online-web-search-001",
+      "version": 2,
+      "suite": "online",
+      "category": "web_search",
+      "question": "请搜索 OpenAI 官方网站当前的 API 文档入口，并列出实际使用的标题和 URL。",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "web_search",
+        "tools_contains": ["web_search"]
+      },
+      "tags": ["online", "web_search"],
+      "notes": "仅在 --include-online 时运行；外部结果不进入 Core pass rate。"
+    },
+    {
+      "id": "online-web-fetch-001",
+      "version": 2,
+      "suite": "online",
+      "category": "web_fetch",
+      "question": "请使用网页读取工具读取 https://example.com/ ，并概括页面标题。",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "web_fetch",
+        "tools_contains": ["web_fetch"]
+      },
+      "tags": ["online", "web_fetch"],
+      "notes": "显式 URL 只用于 Online suite；页面和网络状态可能变化。"
+    },
+    {
+      "id": "online-web-pdf-fetch-001",
+      "version": 2,
+      "suite": "online",
+      "category": "web_pdf_fetch",
+      "question": "请使用 PDF 读取工具读取 https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf 的第 1 页并概括内容。",
+      "expected": {
+        "decision": "use_agent",
+        "action": "agent",
+        "status": "OK",
+        "first_tool": "web_pdf_fetch",
+        "tools_contains": ["web_pdf_fetch"]
+      },
+      "tags": ["online", "web_pdf_fetch"],
+      "notes": "显式 PDF URL 只用于 Online suite；不作为稳定 CI 门禁。"
+    }
+  ]
+}

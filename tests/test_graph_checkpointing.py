@@ -1,5 +1,6 @@
 """LangGraph Checkpointer 配置、工厂、持久化与线程标识测试。"""
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from typing import TypedDict
 
@@ -7,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 
 from app.config import (
@@ -153,6 +155,52 @@ def test_sqlite_saver_creates_parent_and_survives_reopen(
     saved = second.get_tuple(config)
     assert saved is not None
     assert saved.checkpoint["channel_values"]["value"] == "sqlite-done"
+
+
+def test_async_sqlite_saver_astream_survives_reopen(
+    settings_factory,
+    tmp_path,
+):
+    """流式 Graph 使用异步 Saver，并在关闭重开后保留 Checkpoint。"""
+    db_path = tmp_path / "async" / "checkpoint.sqlite3"
+    settings = settings_factory(
+        langgraph_checkpointer="sqlite",
+        langgraph_checkpoint_db_path=db_path,
+    )
+    config = {"configurable": {"thread_id": "async-sqlite-thread"}}
+
+    async def exercise():
+        first = await checkpointing.get_async_checkpointer(settings)
+        graph = _build_checkpoint_graph(first)
+        values = [
+            value
+            async for value in graph.astream(
+                {"value": "async-sqlite"},
+                config=config,
+                stream_mode="values",
+            )
+        ]
+        saved_before_close = await first.aget_tuple(config)
+        await graph_builder.areset_agent_graph_runtime()
+
+        second = await checkpointing.get_async_checkpointer(settings)
+        saved_after_reopen = await second.aget_tuple(config)
+        await graph_builder.areset_agent_graph_runtime()
+        return first, second, values, saved_before_close, saved_after_reopen
+
+    first, second, values, saved_before_close, saved_after_reopen = (
+        asyncio.run(exercise())
+    )
+
+    assert isinstance(first, AsyncSqliteSaver)
+    assert isinstance(second, AsyncSqliteSaver)
+    assert second is not first
+    assert values[-1]["value"] == "async-sqlite-done"
+    assert saved_before_close is not None
+    assert saved_after_reopen is not None
+    assert saved_after_reopen.checkpoint["channel_values"]["value"] == (
+        "async-sqlite-done"
+    )
 
 
 def test_sqlite_saver_handles_parallel_distinct_threads(

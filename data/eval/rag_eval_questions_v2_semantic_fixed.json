@@ -1,0 +1,5533 @@
+{
+  "version": "rag_eval_v2_chunk_level",
+  "created_at": "2026-06-30",
+  "language": "zh-CN",
+  "source_chunks_file": "chunks.json",
+  "description": "Semantic-fixed chunk-level evaluation set for the NMGUT RAG project. It follows the rag_eval_v2_semantic_fixed template and is aligned to the user-provided 423-chunk metadata.",
+  "schema": {
+    "qid": "stable question id",
+    "question": "user-facing evaluation question",
+    "category": "single_doc | cross_doc | partial_answer | not_in_doc | trap",
+    "skill_type": "main capability being tested",
+    "difficulty": "easy | medium | hard",
+    "expected_behavior": "answer | partial_answer | abstain",
+    "gold_answer": "reference answer",
+    "gold_doc_ids": "source document names derived from gold chunks",
+    "gold_chunk_ids": "chunk_id values expected to support the answer",
+    "gold_evidence": "short evidence snippets with chunk_id",
+    "gold_key_points": "weighted concepts; aliases are acceptable surface forms",
+    "forbidden_points": "concepts that should not appear, especially hallucinated details",
+    "distractor_chunk_ids": "nearby or confusable chunks useful for retrieval-error analysis",
+    "notes": "human-readable scoring notes"
+  },
+  "stats": {
+    "num_questions": 65,
+    "category_counts": {
+      "single_doc": 40,
+      "cross_doc": 10,
+      "partial_answer": 6,
+      "not_in_doc": 5,
+      "trap": 4
+    },
+    "expected_behavior_counts": {
+      "answer": 54,
+      "partial_answer": 6,
+      "abstain": 5
+    },
+    "difficulty_counts": {
+      "easy": 15,
+      "medium": 36,
+      "hard": 14
+    },
+    "source_doc_counts": {
+      "关于调整缓考、免考办理流程的通知.md": 6,
+      "内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知.md": 4,
+      "内蒙古工业大学学生管理规定.md": 3,
+      "内蒙古工业大学学生纪律处分实施办法.md": 5,
+      "内蒙古工业大学学籍管理办法（2018年修订）.md": 11,
+      "内蒙古工业大学教务处你问我答栏目整理.md": 14,
+      "内蒙古工业大学普通全日制本科学生转专业管理办法（2025年修订）.md": 6,
+      "内蒙古工业大学本、专科学生学业警示工作管理办法.md": 5,
+      "内蒙古工业大学本、专科学生学生证及校徽管理办法.md": 3,
+      "内蒙古工业大学本科生毕业设计（论文）学术不端行为检测及处理办法.md": 3,
+      "内蒙古工业大学研究生学位论文复制比检测实施办法.md": 6,
+      "内蒙古工业大学研究生学位论文评审办法.md": 4,
+      "内蒙古工业大学研究生学籍管理细则（2023年修订）.pdf": 3
+    }
+  },
+  "items": [
+    {
+      "qid": "q001",
+      "question": "学生办理缓考或免考时，线上填报入口是什么？外网访问有什么要求？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "gold_answer": "学生登录教务处首页“综合业务系统”，在“学生服务”栏目下进入“办理缓考免考”模块选择申请类型及原因并填表。该系统限校园网内使用，外网登录需先下载安装 VPN 后再访问。",
+      "gold_doc_ids": [
+        "关于调整缓考、免考办理流程的通知.md"
+      ],
+      "gold_chunk_ids": [
+        2
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 2,
+          "text": "学生登录教务处首页“综合业务系统”，点击“学生服务”栏目下的“办理缓考免考”模块"
+        },
+        {
+          "chunk_id": 2,
+          "text": "本系统限校园网内使用，外网登录系统需先下载安装VPN"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "综合业务系统",
+          "aliases": [
+            "综合业务系统"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "学生服务/办理缓考免考",
+          "aliases": [
+            "学生服务/办理缓考免考"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "办理缓考免考",
+              "学生服务",
+              "缓考"
+            ],
+            [
+              "学生服务",
+              "办理缓考免考"
+            ]
+          ]
+        },
+        {
+          "point": "校园网内使用",
+          "aliases": [
+            "校园网内使用"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "外网需VPN",
+          "aliases": [
+            "外网需VPN"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "VPN",
+              "外网"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q002",
+      "question": "线上提交缓考或免考申请后，学生还需要到哪个学院办理线下审批？超过多久未提交会怎样？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "线上提交后，学生需打印申请表并携带证明材料到相关学院办理审批：申请缓考到学生所在学院，申请免考到开课学院。线上填报后 10 天内未到学院提交申请并获批，线上申请会自动撤销、申请无效。",
+      "gold_doc_ids": [
+        "关于调整缓考、免考办理流程的通知.md"
+      ],
+      "gold_chunk_ids": [
+        2
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 2,
+          "text": "学生线上提交申请后，需在线打印申请表并携带证明材料到相关学院"
+        },
+        {
+          "chunk_id": 2,
+          "text": "申请缓考学生到学生所在学院审批；申请免考学生到开课学院审批"
+        },
+        {
+          "chunk_id": 2,
+          "text": "线上填报后10天内未到学院提交申请并获批，则线上申请自动撤销，申请无效"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "缓考到学生所在学院",
+          "aliases": [
+            "缓考到学生所在学院"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "学生所在学院",
+              "缓考"
+            ]
+          ]
+        },
+        {
+          "point": "免考到开课学院",
+          "aliases": [
+            "免考到开课学院"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "10天内提交并获批",
+          "aliases": [
+            "10天内提交并获批"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "逾期自动撤销",
+          "aliases": [
+            "逾期自动撤销"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "自动撤销",
+              "逾期"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q003",
+      "question": "因生病、参赛或校内考试时间冲突申请缓考，分别需要提供哪些证明材料？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "因生病缓考需提供二级乙等及以上医院或校医院证明；因参赛缓考需提供赛事主办方文件及指导教师或教练签字的参赛人员名单；因校内考试时间冲突缓考需提供考试安排通知。",
+      "gold_doc_ids": [
+        "关于调整缓考、免考办理流程的通知.md"
+      ],
+      "gold_chunk_ids": [
+        4
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 4,
+          "text": "因“生病”缓考，需附二级乙等及以上医院或校医院证明"
+        },
+        {
+          "chunk_id": 4,
+          "text": "因“事假-参赛”缓考，需附赛事主办方文件及指导教师（教练）签字的参赛人员名单"
+        },
+        {
+          "chunk_id": 4,
+          "text": "因“冲突-校内考试时间冲突”缓考，需附考试安排通知"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "生病需医院或校医院证明",
+          "aliases": [
+            "生病需医院或校医院证明"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "校医院",
+              "医院"
+            ]
+          ]
+        },
+        {
+          "point": "参赛需主办方文件和名单",
+          "aliases": [
+            "参赛需主办方文件和名单"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "主办方文件",
+              "参赛",
+              "名单"
+            ]
+          ]
+        },
+        {
+          "point": "校内考试冲突需考试安排通知",
+          "aliases": [
+            "校内考试冲突需考试安排通知"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "考试安排通知",
+              "考试"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q004",
+      "question": "退役士兵大学生、双学位学生和中断学业重新考入学生申请免考时分别需要什么材料？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "退役士兵大学生申请公共体育、军事技能和军事理论课程免考需提供退伍证复印件；双学位学生申请免考需提供对应已修课程成绩单；中断学业重新考入学生申请免考需提供中断学业前已修课程成绩单。",
+      "gold_doc_ids": [
+        "关于调整缓考、免考办理流程的通知.md"
+      ],
+      "gold_chunk_ids": [
+        5
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 5,
+          "text": "退役士兵大学生公共体育、军事技能和军事理论课程可以免考”条件的学生，申请免考需提供退伍证复印件"
+        },
+        {
+          "chunk_id": 5,
+          "text": "双学位学生申请免考，需提供对应已修课程成绩单"
+        },
+        {
+          "chunk_id": 5,
+          "text": "中断学业重新考入学生申请免考，需提供中断学业前已修课程成绩单"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "退伍证复印件",
+          "aliases": [
+            "退伍证复印件"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "退伍证",
+              "复印件"
+            ]
+          ]
+        },
+        {
+          "point": "双学位已修课程成绩单",
+          "aliases": [
+            "双学位已修课程成绩单"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "成绩单",
+              "双学位"
+            ]
+          ]
+        },
+        {
+          "point": "中断学业前已修课程成绩单",
+          "aliases": [
+            "中断学业前已修课程成绩单"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q005",
+      "question": "从 2023 年入学学生起，普通本科四年制、五年制和休学创业学生的学习年限分别调整为什么？应征入伍服役阶段是否计入学习年限？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "gold_answer": "自 2023 年入学学生起，普通本科四年制专业学习年限为 3～6 年，普通本科五年制专业为 4～7 年，休学创业学生最长学习年限为 8 年；应征入伍学生服役阶段不计入学习年限。",
+      "gold_doc_ids": [
+        "内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知.md"
+      ],
+      "gold_chunk_ids": [
+        7,
+        8,
+        9
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 7,
+          "text": "普通本科四年制专业学生学习年限调整为3～6年；普通本科五年制专业学生学习年限调整为4～7年；休学创业学生最长学习年限调整为8年"
+        },
+        {
+          "chunk_id": 8,
+          "text": "应征入伍学生服役阶段不计入学习年限"
+        },
+        {
+          "chunk_id": 9,
+          "text": "本通知调整内容自2023年入学学生起执行"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "四年制3～6年",
+          "aliases": [
+            "四年制3～6年",
+            "3~6",
+            "3–6",
+            "3-6",
+            "3至6",
+            "3到6",
+            "3 — 6"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "四年制",
+              "3～6",
+              "6年"
+            ]
+          ],
+          "regex": "((3\\s*[～~\\-—–至到]\\s*6|三\\s*[至到]\\s*六))"
+        },
+        {
+          "point": "五年制4～7年",
+          "aliases": [
+            "五年制4～7年",
+            "4到7",
+            "4-7",
+            "4至7",
+            "4~7",
+            "4–7",
+            "4 — 7"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "五年制",
+              "4～7",
+              "7年"
+            ]
+          ],
+          "regex": "((4\\s*[～~\\-—–至到]\\s*7|四\\s*[至到]\\s*七))"
+        },
+        {
+          "point": "休学创业最长8年",
+          "aliases": [
+            "休学创业最长8年"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "休学创业",
+              "最长8年",
+              "休学",
+              "8年"
+            ]
+          ]
+        },
+        {
+          "point": "服役阶段不计入",
+          "aliases": [
+            "服役阶段不计入"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "不计入",
+              "服役"
+            ]
+          ]
+        },
+        {
+          "point": "2023年入学起",
+          "aliases": [
+            "2023年入学起"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "2023",
+              "2023年"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q006",
+      "question": "调整后的成绩记载方式中，学生怎样才能获得课程学分？不合格成绩如何记载？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "考核分为考试和考查。考试采用百分制，考查可采用百分制、五级分制或二级分制。百分制 60 分及以上、五级分制及格及以上或二级分制合格即可获得课程学分并记载成绩；低于 60 分、不及格或不合格也记载成绩，但课程学分按 0 分计。",
+      "gold_doc_ids": [
+        "内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知.md"
+      ],
+      "gold_chunk_ids": [
+        8
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 8,
+          "text": "考核分为考试和考查两种。考试采用百分制记分，考查可采用百分制或五级分制"
+        },
+        {
+          "chunk_id": 8,
+          "text": "学生课程考核成绩在百分制≥60分、五级分制及格（含）以上或二级分制合格，即可获得该课程规定的学分"
+        },
+        {
+          "chunk_id": 8,
+          "text": "成绩<60分、不及格或不合格，记载成绩，该课程学分以0分计"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "考试和考查",
+          "aliases": [
+            "考试和考查"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "考试",
+              "考查"
+            ]
+          ]
+        },
+        {
+          "point": "百分制/五级/二级",
+          "aliases": [
+            "百分制/五级/二级"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "百分制",
+              "五级",
+              "二级"
+            ]
+          ]
+        },
+        {
+          "point": "60分或及格/合格获学分",
+          "aliases": [
+            "60分或及格/合格获学分"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "60分",
+              "及格",
+              "合格",
+              "学分"
+            ],
+            [
+              "60分或及格",
+              "合格获学分"
+            ]
+          ]
+        },
+        {
+          "point": "不合格记载成绩但0学分",
+          "aliases": [
+            "不合格记载成绩但0学分"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "不合格",
+              "0学分",
+              "合格",
+              "学分"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q007",
+      "question": "《内蒙古工业大学学生管理规定》适用于哪些学生？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "gold_answer": "该规定适用于在内蒙古工业大学接受普通高等学历教育的研究生、本科和专科（高职）学生的管理。",
+      "gold_doc_ids": [
+        "内蒙古工业大学学生管理规定.md"
+      ],
+      "gold_chunk_ids": [
+        274
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 274,
+          "text": "本规定适用于在我校接受普通高等学历教育的研究生、本科和专科（高职）学生的管理"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "研究生",
+          "aliases": [
+            "研究生"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "本科",
+          "aliases": [
+            "本科"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "专科（高职）",
+          "aliases": [
+            "专科（高职）",
+            "专科(高职)"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "专科",
+              "高职"
+            ]
+          ]
+        },
+        {
+          "point": "普通高等学历教育",
+          "aliases": [
+            "普通高等学历教育"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q008",
+      "question": "学生管理规定中，学生在校园秩序方面不得有哪些违法或不当行为？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "学生不得酗酒、打架斗殴、赌博、吸毒，传播、复制、贩卖非法书刊和音像制品；不得参与非法传销和邪教、封建迷信活动；不得从事或参与有损大学生形象、有悖社会公序良俗的活动。",
+      "gold_doc_ids": [
+        "内蒙古工业大学学生管理规定.md"
+      ],
+      "gold_chunk_ids": [
+        277
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 277,
+          "text": "学生不得有酗酒、打架斗殴、赌博、吸毒，传播、复制、贩卖非法书刊和音像制品等违法行为"
+        },
+        {
+          "chunk_id": 277,
+          "text": "不得参与非法传销和进行邪教、封建迷信活动"
+        },
+        {
+          "chunk_id": 277,
+          "text": "不得从事或者参与有损大学生形象、有悖社会公序良俗的活动"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "酗酒打架赌博吸毒",
+          "aliases": [
+            "酗酒打架赌博吸毒"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "酗酒",
+              "打架",
+              "赌博",
+              "吸毒"
+            ]
+          ]
+        },
+        {
+          "point": "非法书刊和音像制品",
+          "aliases": [
+            "非法书刊和音像制品"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "非法书刊",
+              "音像制品"
+            ]
+          ]
+        },
+        {
+          "point": "非法传销/邪教/迷信",
+          "aliases": [
+            "非法传销/邪教/迷信"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "非法传销",
+              "邪教",
+              "迷信"
+            ]
+          ]
+        },
+        {
+          "point": "有损大学生形象",
+          "aliases": [
+            "有损大学生形象"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q009",
+      "question": "学生纪律处分的种类有哪些？除开除学籍外，处分期限通常是多久？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "gold_answer": "纪律处分包括警告、严重警告、记过、留校察看和开除学籍。除开除学籍外，警告和严重警告期限一般为 6 个月，记过和留校察看期限一般为 12 个月。",
+      "gold_doc_ids": [
+        "内蒙古工业大学学生纪律处分实施办法.md"
+      ],
+      "gold_chunk_ids": [
+        284
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 284,
+          "text": "对学生的纪律处分种类："
+        },
+        {
+          "chunk_id": 284,
+          "text": "（一）警告"
+        },
+        {
+          "chunk_id": 284,
+          "text": "（二）严重警告"
+        },
+        {
+          "chunk_id": 284,
+          "text": "（三）记过"
+        },
+        {
+          "chunk_id": 284,
+          "text": "（四）留校察看"
+        },
+        {
+          "chunk_id": 284,
+          "text": "（五）开除学籍"
+        },
+        {
+          "chunk_id": 284,
+          "text": "警告处分期限一般为6个月"
+        },
+        {
+          "chunk_id": 284,
+          "text": "严重警告处分期限一般为6个月"
+        },
+        {
+          "chunk_id": 284,
+          "text": "记过处分期限一般为12个月"
+        },
+        {
+          "chunk_id": 284,
+          "text": "留校察看处分期限一般为12个月"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "警告",
+          "aliases": [
+            "警告"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "严重警告",
+          "aliases": [
+            "严重警告"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "严重警告",
+              "警告"
+            ]
+          ]
+        },
+        {
+          "point": "记过",
+          "aliases": [
+            "记过"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "留校察看",
+          "aliases": [
+            "留校察看"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "开除学籍",
+          "aliases": [
+            "开除学籍"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "6个月",
+          "aliases": [
+            "6个月"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "12个月",
+          "aliases": [
+            "12个月"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q010",
+      "question": "学生纪律处分程序一般包括哪些环节？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "纪律处分程序一般包括调查核实、作出处分建议、举行听证、作出处分决定、进行合法性审查、学校发文、送达学生违纪处分决定通知书以及处分解除。",
+      "gold_doc_ids": [
+        "内蒙古工业大学学生纪律处分实施办法.md"
+      ],
+      "gold_chunk_ids": [
+        285
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 285,
+          "text": "学生纪律处分程序一般包括："
+        },
+        {
+          "chunk_id": 285,
+          "text": "（一）调查核实"
+        },
+        {
+          "chunk_id": 285,
+          "text": "（二）作出处分建议"
+        },
+        {
+          "chunk_id": 285,
+          "text": "（三）举行听证"
+        },
+        {
+          "chunk_id": 285,
+          "text": "（四）作出处分决定"
+        },
+        {
+          "chunk_id": 285,
+          "text": "（五）进行合法性审查"
+        },
+        {
+          "chunk_id": 285,
+          "text": "（六）学校发文"
+        },
+        {
+          "chunk_id": 285,
+          "text": "（七）送达学生违纪处分决定通知书"
+        },
+        {
+          "chunk_id": 285,
+          "text": "（八）处分解除"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "调查核实",
+          "aliases": [
+            "调查核实"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "处分建议",
+          "aliases": [
+            "处分建议"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "听证",
+          "aliases": [
+            "听证"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "处分决定",
+          "aliases": [
+            "处分决定"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "合法性审查",
+          "aliases": [
+            "合法性审查"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "学校发文",
+          "aliases": [
+            "学校发文"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "送达通知书",
+          "aliases": [
+            "送达通知书"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "通知书",
+              "送达"
+            ]
+          ]
+        },
+        {
+          "point": "处分解除",
+          "aliases": [
+            "处分解除"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q011",
+      "question": "学生对纪律处分决定有异议时，应在多长时间内提出书面申诉？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "gold_answer": "学生对学校处分决定有异议的，可以在处分决定通知书送达之日起 10 日内，向学校学生违纪处分申诉处理委员会提出书面申诉；逾期未提出的，学校不再受理。",
+      "gold_doc_ids": [
+        "内蒙古工业大学学生纪律处分实施办法.md"
+      ],
+      "gold_chunk_ids": [
+        289
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 289,
+          "text": "学生对学校的处分决定有异议的，可以在学校处分决定通知书送达之日起10日内向学校学生违纪处分申诉处理委员会提出书面申诉"
+        },
+        {
+          "chunk_id": 289,
+          "text": "学生在规定时间内未提出书面申诉的，学校不再受理其提出的申诉"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "送达之日起10日内",
+          "aliases": [
+            "送达之日起10日内"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "10日",
+              "送达"
+            ]
+          ],
+          "regex": "(10\\s*日|十\\s*日)"
+        },
+        {
+          "point": "书面申诉",
+          "aliases": [
+            "书面申诉"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "学生违纪处分申诉处理委员会",
+          "aliases": [
+            "学生违纪处分申诉处理委员会"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "逾期不再受理",
+          "aliases": [
+            "逾期不再受理"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "不再受理",
+              "逾期"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q012",
+      "question": "处分期限未到期前能否申请提前解除处分？提前解除的期限有什么限制？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "可以申请。处分期限未到期前，被处分学生可向所在学院提出提前解除处分的书面申请；学院同意后报违纪处理委员会研究决定。提前解除的，其处分期限不得少于所受处分规定期限的一半。",
+      "gold_doc_ids": [
+        "内蒙古工业大学学生纪律处分实施办法.md"
+      ],
+      "gold_chunk_ids": [
+        289
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 289,
+          "text": "在处分期限未到期前申请解除处分的，由被处分学生向所在学院提出提前解除处分的书面申请"
+        },
+        {
+          "chunk_id": 289,
+          "text": "报违纪处理委员会研究后作出决定"
+        },
+        {
+          "chunk_id": 289,
+          "text": "提前解除的，其处分期限不得少于所受处分规定期限的一半"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "可申请提前解除",
+          "aliases": [
+            "可申请提前解除"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "书面申请",
+          "aliases": [
+            "书面申请"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "违纪处理委员会决定",
+          "aliases": [
+            "违纪处理委员会决定"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "不得少于规定期限一半",
+          "aliases": [
+            "不得少于规定期限一半"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q013",
+      "question": "本科生注册分为哪几类？暂缓注册的有效期限截止到什么时候？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "注册分为正常注册、暂缓注册和不予注册三类。暂缓注册有效期限截止到当学期倒数第 2 周的周一，学生应在此时间前将暂缓注册转为正常注册。",
+      "gold_doc_ids": [
+        "内蒙古工业大学学籍管理办法（2018年修订）.md"
+      ],
+      "gold_chunk_ids": [
+        308,
+        309
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 308,
+          "text": "学生注册分为正常注册、暂缓注册和不予注册三种"
+        },
+        {
+          "chunk_id": 309,
+          "text": "暂缓注册有效期限的截止时间为当学期倒数第2周的周一"
+        },
+        {
+          "chunk_id": 309,
+          "text": "学生应在此时间前，将暂缓注册转为正常注册"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "正常注册",
+          "aliases": [
+            "正常注册"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "暂缓注册",
+          "aliases": [
+            "暂缓注册"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "不予注册",
+          "aliases": [
+            "不予注册"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "倒数第2周周一",
+          "aliases": [
+            "倒数第2周周一"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "倒数第2周周一",
+              "2周"
+            ]
+          ]
+        },
+        {
+          "point": "转为正常注册",
+          "aliases": [
+            "转为正常注册"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "转为正常注册",
+              "正常注册"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q014",
+      "question": "本科生请假审批权限如何按请假时长划分？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "hard",
+      "expected_behavior": "answer",
+      "gold_answer": "请假三日以内由班主任批准；三至七日以内由学院学生工作办公室负责人批准；八至十五日以内由学院学生工作副院长批准；四周以内由学院院长批准。请假原则上不得超过两个月，超过者应办理休学。",
+      "gold_doc_ids": [
+        "内蒙古工业大学学籍管理办法（2018年修订）.md",
+        "内蒙古工业大学学生手册.md"
+      ],
+      "gold_chunk_ids": [
+        229,
+        311
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 311,
+          "text": "请假三日以内，由学生班主任批准；请假三至七日以内，由学院学生工作办公室负责人批准；请假八至十五日以内，由学院学生工作副院长批准；请假四周以内，由学院院长批准"
+        },
+        {
+          "chunk_id": 311,
+          "text": "学生请假原则上不得超过两个月，超过者应办理休学"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "三日以内班主任",
+          "aliases": [
+            "三日以内班主任"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "三日以内",
+              "班主任"
+            ]
+          ]
+        },
+        {
+          "point": "三至七日学工办负责人",
+          "aliases": [
+            "三至七日学工办负责人"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "三至七日",
+              "学工办"
+            ]
+          ]
+        },
+        {
+          "point": "八至十五日学生工作副院长",
+          "aliases": [
+            "八至十五日学生工作副院长"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "学生工作副院长",
+              "八至十五日"
+            ]
+          ]
+        },
+        {
+          "point": "四周以内学院院长",
+          "aliases": [
+            "四周以内学院院长"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "四周以内",
+              "学院院长"
+            ]
+          ]
+        },
+        {
+          "point": "原则不超过两个月",
+          "aliases": [
+            "原则不超过两个月"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q015",
+      "question": "本科哪些课程或教学环节不设缓考？缓考课程是否设补考？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "独立设置的实验课、课程设计、学年论文、各类实习实训、毕业设计（论文）等实践环节以及通识教育任选课程不设缓考；缓考课程不设补考。",
+      "gold_doc_ids": [
+        "内蒙古工业大学学籍管理办法（2018年修订）.md"
+      ],
+      "gold_chunk_ids": [
+        315,
+        316
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 315,
+          "text": "独立设置的实验课、课程设计、学年论文、各类实习实训和毕业设计（论文）等实践环节及通识教育任选课程不设缓考"
+        },
+        {
+          "chunk_id": 316,
+          "text": "缓考课程不设补考"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "实验课/课程设计/学年论文",
+          "aliases": [
+            "实验课/课程设计/学年论文"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "课程设计",
+              "学年论文",
+              "实验课"
+            ],
+            [
+              "实验课",
+              "课程设计",
+              "学年论文"
+            ]
+          ]
+        },
+        {
+          "point": "实习实训",
+          "aliases": [
+            "实习实训"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "毕业设计论文",
+          "aliases": [
+            "毕业设计论文"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "通识教育任选课",
+          "aliases": [
+            "通识教育任选课"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "缓考课程不设补考",
+          "aliases": [
+            "缓考课程不设补考"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "缓考",
+              "补考"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q016",
+      "question": "本科课程不及格后补考和重修规则是什么？考试作弊能否参加补考？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "必修课及专业选修课不及格者可参加学校安排的一次补考；补考未参加视为自动放弃。课程不及格可申请重修，一般在后续学年相应学期报名。违反考试纪律或考试作弊者，该课程成绩无效，记 0 分或无成绩，且不得参加该课程补考。",
+      "gold_doc_ids": [
+        "内蒙古工业大学学籍管理办法（2018年修订）.md"
+      ],
+      "gold_chunk_ids": [
+        316
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 316,
+          "text": "必修课及专业选修课考核不及格者，可参加学校安排的一次补考"
+        },
+        {
+          "chunk_id": 316,
+          "text": "学生课程（不含通识教育任选课）成绩不及格，可以申请重修该门课程"
+        },
+        {
+          "chunk_id": 316,
+          "text": "学生违反考试纪律或者考试作弊的，该课程成绩无效，记为0分（或无成绩），且不得参加该课程的补考"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "一次补考",
+          "aliases": [
+            "一次补考"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "不及格可重修",
+          "aliases": [
+            "不及格可重修"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "及格",
+              "重修"
+            ]
+          ]
+        },
+        {
+          "point": "作弊成绩无效",
+          "aliases": [
+            "作弊成绩无效"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "成绩无效",
+              "作弊"
+            ]
+          ]
+        },
+        {
+          "point": "作弊不得补考",
+          "aliases": [
+            "作弊不得补考"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "不得补考",
+              "补考",
+              "作弊"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q017",
+      "question": "本科免考中，退役士兵大学生和创新创业竞赛获奖学生的成绩及学分如何认定？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "hard",
+      "expected_behavior": "answer",
+      "gold_answer": "退役士兵大学生公共体育、军事技能和军事理论课程可申请免考，成绩以 95 分或优秀记载。学生参加创新创业项目、学科专业竞赛获得省（自治区）及以上奖励的，可申请免考部分专业选修课学分，成绩以及格记载，免考学分不超过应修专业选修课程总学分的 15%。",
+      "gold_doc_ids": [
+        "内蒙古工业大学学籍管理办法（2018年修订）.md"
+      ],
+      "gold_chunk_ids": [
+        317
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 317,
+          "text": "退役士兵大学生公共体育、军事技能和军事理论课程可以申请免考，免考课程成绩以95分（或优秀）记载"
+        },
+        {
+          "chunk_id": 317,
+          "text": "学生参加创新创业项目、学科专业竞赛获得省（自治区）及以上奖励的，可申请免考部分专业选修课学分"
+        },
+        {
+          "chunk_id": 317,
+          "text": "成绩以及格记载。免考学分不能超过应修专业选修课程总学分的15%"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "退役士兵公共体育/军事技能/军事理论",
+          "aliases": [
+            "退役士兵公共体育/军事技能/军事理论"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "退役士兵公共体育",
+              "军事技能",
+              "军事理论"
+            ]
+          ]
+        },
+        {
+          "point": "95分或优秀",
+          "aliases": [
+            "95分或优秀"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "95分",
+              "优秀"
+            ]
+          ]
+        },
+        {
+          "point": "省自治区及以上奖励",
+          "aliases": [
+            "省自治区及以上奖励"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "省自治区",
+              "奖励"
+            ]
+          ]
+        },
+        {
+          "point": "专业选修课",
+          "aliases": [
+            "专业选修课"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "不超过15%",
+          "aliases": [
+            "不超过15%",
+            "百分之15",
+            "15％"
+          ],
+          "weight": 1.0,
+          "regex": "(15\\s*[%％])"
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q018",
+      "question": "本科生有哪些情形不得申请转学？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "不得申请转学的情形包括：入学未满一学期或处于毕业前一年；高考成绩低于拟转入学校相关专业同一生源地相应年份录取成绩；由低学历层次转为高学历层次；以定向就业招生录取；以及其他无正当理由。",
+      "gold_doc_ids": [
+        "内蒙古工业大学学籍管理办法（2018年修订）.md"
+      ],
+      "gold_chunk_ids": [
+        319
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 319,
+          "text": "学生有下列情况之一，不得申请转学："
+        },
+        {
+          "chunk_id": 319,
+          "text": "入学未满一学期或者处于毕业前一年的"
+        },
+        {
+          "chunk_id": 319,
+          "text": "高考成绩低于拟转入学校相关专业同一生源地相应年份录取成绩的"
+        },
+        {
+          "chunk_id": 319,
+          "text": "由低学历层次转为高学历层次的"
+        },
+        {
+          "chunk_id": 319,
+          "text": "以定向就业招生录取的"
+        },
+        {
+          "chunk_id": 319,
+          "text": "其他无正当理由的"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "入学未满一学期或毕业前一年",
+          "aliases": [
+            "入学未满一学期或毕业前一年"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "入学未满一学期",
+              "毕业前一年"
+            ]
+          ]
+        },
+        {
+          "point": "高考成绩低于拟转入学校",
+          "aliases": [
+            "高考成绩低于拟转入学校"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "低学历转高学历",
+          "aliases": [
+            "低学历转高学历"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "低学历",
+              "高学历"
+            ]
+          ]
+        },
+        {
+          "point": "定向就业",
+          "aliases": [
+            "定向就业"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "无正当理由",
+          "aliases": [
+            "无正当理由"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q019",
+      "question": "本科生休学期满后如何办理复学？复学后一般随哪个年级就读？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "休学或保留学籍期满，应在期满之日起两周内向所在学院提出复学申请。因病休学需提交二级乙等及以上医院开具的“可以正常学习”证明；其他原因休学或保留学籍需提供必要证明，经学院审核、教务处批准后复学。复学后随后续年级相同专业就读，后续年级无相同专业时安排在相近专业学习。",
+      "gold_doc_ids": [
+        "内蒙古工业大学学籍管理办法（2018年修订）.md"
+      ],
+      "gold_chunk_ids": [
+        321
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 321,
+          "text": "学生休学或保留学籍期满，应在期满之日起两周内向所在学院提出复学申请"
+        },
+        {
+          "chunk_id": 321,
+          "text": "因病休学的学生，康复后，应当提交二级乙等及以上医院开具的“可以正常学习”的证明"
+        },
+        {
+          "chunk_id": 321,
+          "text": "复学的学生随后续年级相同专业就读，后续年级无相同专业时，安排在相近专业学习"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "两周内提出复学",
+          "aliases": [
+            "两周内提出复学"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "两周内",
+              "复学"
+            ]
+          ]
+        },
+        {
+          "point": "因病需医院可以正常学习证明",
+          "aliases": [
+            "因病需医院可以正常学习证明"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "正常学习证明",
+              "医院"
+            ]
+          ]
+        },
+        {
+          "point": "学院审核教务处批准",
+          "aliases": [
+            "学院审核教务处批准"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "随相同专业后续年级",
+          "aliases": [
+            "随相同专业后续年级"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "无相同专业安排相近专业",
+          "aliases": [
+            "无相同专业安排相近专业"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q020",
+      "question": "本科毕业设计（论文）准入制度要求学生一般达到什么条件后才能进入毕业设计（论文）环节？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "gold_answer": "原则上学生应修完专业主干课程并获得相应学分，且已获学分达到毕业最低学分要求 85% 以上，经学院审核批准后，方可进入毕业设计（论文）环节。",
+      "gold_doc_ids": [
+        "内蒙古工业大学学籍管理办法（2018年修订）.md"
+      ],
+      "gold_chunk_ids": [
+        317
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 317,
+          "text": "学校实行毕业设计（论文）准入制度"
+        },
+        {
+          "chunk_id": 317,
+          "text": "学生应在修完专业主干课程并获得相应学分的前提下，已获学分达到毕业最低学分要求85%以上，经学院审核批准后，方可进入毕业设计（论文）环节"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "修完专业主干课程",
+          "aliases": [
+            "修完专业主干课程"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "获得相应学分",
+          "aliases": [
+            "获得相应学分"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "达到毕业最低学分85%以上",
+          "aliases": [
+            "达到毕业最低学分85%以上",
+            "百分之85",
+            "85％"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "85%",
+              "学分"
+            ]
+          ],
+          "regex": "(85\\s*[%％])"
+        },
+        {
+          "point": "学院审核批准",
+          "aliases": [
+            "学院审核批准"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q021",
+      "question": "在教务系统查询空闲教室时，红色圆点、绿色圆点和无标识分别表示什么？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "gold_answer": "红色圆点表示上课或考试占用，绿色圆点表示其他占用，无标识表示教室空闲。",
+      "gold_doc_ids": [
+        "内蒙古工业大学教务处你问我答栏目整理.md"
+      ],
+      "gold_chunk_ids": [
+        334
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 334,
+          "text": "红色圆点：上课、考试占用"
+        },
+        {
+          "chunk_id": 334,
+          "text": "绿色圆点：其他占用"
+        },
+        {
+          "chunk_id": 334,
+          "text": "无标识：教室空闲"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "红色圆点上课考试占用",
+          "aliases": [
+            "红色圆点上课考试占用"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "红色圆点",
+              "考试占用",
+              "考试",
+              "上课"
+            ]
+          ]
+        },
+        {
+          "point": "绿色圆点其他占用",
+          "aliases": [
+            "绿色圆点其他占用"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "绿色圆点",
+              "其他占用"
+            ]
+          ]
+        },
+        {
+          "point": "无标识空闲",
+          "aliases": [
+            "无标识空闲"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "无标识",
+              "空闲"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q022",
+      "question": "手机或校园网外访问综合业务信息系统需要安装什么软件？服务器地址和登录账号是什么？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "gold_answer": "手机或校园网外访问需要下载 EasyConnect APP 或软件，服务器地址为 https://vpns.imut.edu.cn，登录账号和密码与学校统一身份认证账号和密码相同。",
+      "gold_doc_ids": [
+        "内蒙古工业大学教务处你问我答栏目整理.md"
+      ],
+      "gold_chunk_ids": [
+        338
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 338,
+          "text": "手机或校园网外访问需要下载 EasyConnect 这个 APP 或软件"
+        },
+        {
+          "chunk_id": 338,
+          "text": "服务器地址：https://vpns.imut.edu.cn"
+        },
+        {
+          "chunk_id": 338,
+          "text": "登录账号和密码与学校统一身份认证账号和密码相同"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "EasyConnect",
+          "aliases": [
+            "EasyConnect"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "vpns.imut.edu.cn",
+          "aliases": [
+            "vpns.imut.edu.cn"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "统一身份认证账号密码",
+          "aliases": [
+            "统一身份认证账号密码"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q023",
+      "question": "申请推荐免试攻读硕士学位研究生的基本条件有哪些？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "hard",
+      "expected_behavior": "answer",
+      "gold_answer": "推免基本条件包括：申请人为纳入国家普通本科招生计划录取的应届毕业生，不含专升本和留级学生；取得创新系列实践学分 1 学分及以上；综合测评成绩在同年级本专业前 1/3；不处于处分期且不存在不授予学士学位情节；除通识教育任选课外，截止申请上一学期末最多只允许 1 门课程首次结课考试未通过且补考或重修后合格；外语四级须在内蒙古工业大学考点获得且成绩不低于 425。",
+      "gold_doc_ids": [
+        "内蒙古工业大学教务处你问我答栏目整理.md"
+      ],
+      "gold_chunk_ids": [
+        344
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 344,
+          "text": "学生必须为纳入国家普通本科招生计划录取的应届毕业生（不含专升本和留级学生）"
+        },
+        {
+          "chunk_id": 344,
+          "text": "取得创新系列实践学分 1 学分及以上"
+        },
+        {
+          "chunk_id": 344,
+          "text": "综合测评成绩在同年级本专业前 1/3 之内"
+        },
+        {
+          "chunk_id": 344,
+          "text": "不能处于处分期，不存在不授予学士学位情节"
+        },
+        {
+          "chunk_id": 344,
+          "text": "只允许有 1 门课程首次结课考试未通过、且补考或重修后成绩合格"
+        },
+        {
+          "chunk_id": 344,
+          "text": "外语四级成绩需在内蒙古工业大学考点获得，成绩 ≥425"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "应届本科毕业生不含专升本留级",
+          "aliases": [
+            "应届本科毕业生不含专升本留级"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "应届本科毕业生",
+              "专升本",
+              "本科",
+              "留级"
+            ]
+          ]
+        },
+        {
+          "point": "创新实践学分1分以上",
+          "aliases": [
+            "创新实践学分1分以上"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "创新实践学分",
+              "学分",
+              "1分"
+            ]
+          ]
+        },
+        {
+          "point": "综合测评前1/3",
+          "aliases": [
+            "综合测评前1/3"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "综合测评",
+              "前1/3"
+            ]
+          ]
+        },
+        {
+          "point": "不在处分期",
+          "aliases": [
+            "不在处分期"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "最多1门首次未通过且后续合格",
+          "aliases": [
+            "最多1门首次未通过且后续合格"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "合格",
+              "首次"
+            ]
+          ]
+        },
+        {
+          "point": "四级425且本校考点",
+          "aliases": [
+            "四级425且本校考点"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "四级425",
+              "本校考点"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q024",
+      "question": "已通过课程但想提高分数，可以怎么做？重学有什么限制和风险？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "已通过课程想提高分数可报名重学。每学期只能报名一门课程重学；学分绩按该课程最高分计算，但重学的考试系数为 0.9，因此需要谨慎选择。",
+      "gold_doc_ids": [
+        "内蒙古工业大学教务处你问我答栏目整理.md"
+      ],
+      "gold_chunk_ids": [
+        357
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 357,
+          "text": "已通过课程想要提高分数的，可以报名重学"
+        },
+        {
+          "chunk_id": 357,
+          "text": "每学期只能报名一门课程的重学"
+        },
+        {
+          "chunk_id": 357,
+          "text": "学分绩按该门课程最高分进行计算，但是重学的考试系数为 0.9"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "可以报名重学",
+          "aliases": [
+            "可以报名重学"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "每学期一门",
+          "aliases": [
+            "每学期一门"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "最高分计算",
+          "aliases": [
+            "最高分计算"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "考试系数0.9",
+          "aliases": [
+            "考试系数0.9"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "考试系数0.9",
+              "考试"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q025",
+      "question": "课程未通过后重修报名的一般流程是什么？重修课程有没有补考机会？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "重修报名一般流程是预报名、正式报名、交费、补交费。只有完成报名和交费才算报名成功，报名成功后按教务处发布的重修班上课通知上课。重修课程没有补考机会。",
+      "gold_doc_ids": [
+        "内蒙古工业大学教务处你问我答栏目整理.md"
+      ],
+      "gold_chunk_ids": [
+        359,
+        360
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 359,
+          "text": "重修报名一般流程为：预报名 → 正式报名 → 交费 → 补交费"
+        },
+        {
+          "chunk_id": 359,
+          "text": "只有完成报名、交费的学生才算报名成功"
+        },
+        {
+          "chunk_id": 360,
+          "text": "重修课程没有补考机会"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "预报名",
+          "aliases": [
+            "预报名"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "正式报名",
+          "aliases": [
+            "正式报名"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "交费/补交费",
+          "aliases": [
+            "交费/补交费"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "交费",
+              "补交费"
+            ]
+          ]
+        },
+        {
+          "point": "完成报名交费才成功",
+          "aliases": [
+            "完成报名交费才成功"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "重修无补考",
+          "aliases": [
+            "重修无补考"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "无补考",
+              "补考",
+              "重修"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q026",
+      "question": "2025 年修订的本科转专业办法适用于哪些学生？转专业工作遵循什么原则？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "gold_answer": "该办法适用于具有学校学籍的在校注册普通全日制本科学生，但不包括专升本、其他特殊招生形式录取、国家有相关规定或录取前与学校有明确约定的学生。转专业工作兼顾专业培养规模和学术要求，遵循公平、公正、公开和“双向选择、考核转入”的原则。",
+      "gold_doc_ids": [
+        "内蒙古工业大学普通全日制本科学生转专业管理办法（2025年修订）.md"
+      ],
+      "gold_chunk_ids": [
+        373,
+        374
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 373,
+          "text": "本办法适用于具有我校学籍的在校注册普通全日制本科学生（不含专升本、其他以特殊招生形式录取的学生、国家有相关规定或者录取前与学校有明确约定的学生）"
+        },
+        {
+          "chunk_id": 374,
+          "text": "遵循“公平、公正、公开”和“双向选择、考核转入”的原则"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "在校注册普通全日制本科",
+          "aliases": [
+            "在校注册普通全日制本科"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "普通全日制本科",
+              "本科"
+            ]
+          ]
+        },
+        {
+          "point": "不含专升本/特殊招生/明确约定",
+          "aliases": [
+            "不含专升本/特殊招生/明确约定"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "特殊招生",
+              "明确约定",
+              "专升本"
+            ],
+            [
+              "不含专升本",
+              "特殊招生",
+              "明确约定"
+            ]
+          ]
+        },
+        {
+          "point": "公平公正公开",
+          "aliases": [
+            "公平公正公开"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "公平",
+              "公正",
+              "公开"
+            ]
+          ]
+        },
+        {
+          "point": "双向选择考核转入",
+          "aliases": [
+            "双向选择考核转入"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "双向选择",
+              "考核转入"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q027",
+      "question": "2025 年修订转专业办法中，学生符合哪些情况可以申请转专业？哪些情形不得申请？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "可申请转专业的情形包括：对拟转入专业有兴趣、专长或特殊潜质；因疾病、意外导致身体情况变化，经三级甲等以上医院诊断不适合在原专业继续学习；保留入学资格、学籍或休学期满复学时复学年级原专业已停招；已办理复学的退役大学生士兵。不得申请的情形包括处于保留入学资格、保留学籍或休学期间；截至申请时尚处处分期，或因涉嫌违法违纪正处调查处理期间。",
+      "gold_doc_ids": [
+        "内蒙古工业大学普通全日制本科学生转专业管理办法（2025年修订）.md"
+      ],
+      "gold_chunk_ids": [
+        374
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 374,
+          "text": "对拟转入专业有兴趣、专长或特殊潜质"
+        },
+        {
+          "chunk_id": 374,
+          "text": "经三级甲等以上医院诊断不适合在原专业继续学习"
+        },
+        {
+          "chunk_id": 374,
+          "text": "保留入学资格、学籍或休学期满复学，复学年级原专业已停招"
+        },
+        {
+          "chunk_id": 374,
+          "text": "已办理复学的退役大学生士兵"
+        },
+        {
+          "chunk_id": 374,
+          "text": "处于保留入学资格、保留学籍或休学期间"
+        },
+        {
+          "chunk_id": 374,
+          "text": "截至申请时尚处处分期内，或因涉嫌触犯法律法规、违反校规校纪正处调查处理期间"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "兴趣专长特殊潜质",
+          "aliases": [
+            "兴趣专长特殊潜质"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "兴趣专长",
+              "特殊潜质"
+            ]
+          ]
+        },
+        {
+          "point": "疾病意外且三甲诊断",
+          "aliases": [
+            "疾病意外且三甲诊断"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "复学年级原专业停招",
+          "aliases": [
+            "复学年级原专业停招"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "原专业停招",
+              "复学"
+            ]
+          ]
+        },
+        {
+          "point": "退役大学生士兵",
+          "aliases": [
+            "退役大学生士兵"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "保留资格/学籍/休学不得申请",
+          "aliases": [
+            "保留资格/学籍/休学不得申请"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "保留资格",
+              "休学"
+            ],
+            [
+              "保留资格",
+              "学籍",
+              "休学不得申请"
+            ]
+          ]
+        },
+        {
+          "point": "处分期或调查期间不得申请",
+          "aliases": [
+            "处分期或调查期间不得申请"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "调查期间",
+              "处分期"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q028",
+      "question": "2025 年转专业办法中，符合兴趣、专长或特殊潜质情形的学生在什么时候申请？可以填几个志愿？综合成绩如何计算？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "这类学生的转专业申请在大一第二学期进行。每名学生可以填报三个专业志愿。通过资格审核后，拟转入学院组织考核评价，综合成绩 = 平均学分绩 × 30% + 学院考核成绩 × 70%；平均学分绩使用截至第一学期末的必修和限选课程平均学分绩。",
+      "gold_doc_ids": [
+        "内蒙古工业大学普通全日制本科学生转专业管理办法（2025年修订）.md"
+      ],
+      "gold_chunk_ids": [
+        375,
+        376
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 375,
+          "text": "转专业申请于大一第二学期进行"
+        },
+        {
+          "chunk_id": 376,
+          "text": "每个学生可以填报三个专业志愿"
+        },
+        {
+          "chunk_id": 376,
+          "text": "综合成绩=平均学分绩×30%+学院考核成绩×70%"
+        },
+        {
+          "chunk_id": 376,
+          "text": "平均学分绩使用截至第一学期末的必修和限选课程平均学分绩"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "大一第二学期",
+          "aliases": [
+            "大一第二学期"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "三个专业志愿",
+          "aliases": [
+            "三个专业志愿"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "平均学分绩30%",
+          "aliases": [
+            "平均学分绩30%",
+            "百分之30",
+            "30％"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "平均学分绩",
+              "30%",
+              "学分"
+            ]
+          ],
+          "regex": "(30\\s*[%％])"
+        },
+        {
+          "point": "学院考核70%",
+          "aliases": [
+            "学院考核70%",
+            "70％",
+            "百分之70"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "学院考核",
+              "70%"
+            ]
+          ],
+          "regex": "(70\\s*[%％])"
+        },
+        {
+          "point": "第一学期末必修和限选",
+          "aliases": [
+            "第一学期末必修和限选"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "第一学期末",
+              "必修",
+              "限选"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q029",
+      "question": "2025 年转专业办法对复学后的退役大学生士兵申请转专业有什么时限和特殊政策？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "已办理复学的退役大学生士兵，复学后一周内可在符合学校及专业申请条件且有转入名额的专业范围内申请转专业；一周内未提交申请的，不再享受该政策。服役期间荣立三等功及以上奖励且符合转专业申请条件的，经拟转入学院考核通过，可不受转入名额限制。",
+      "gold_doc_ids": [
+        "内蒙古工业大学普通全日制本科学生转专业管理办法（2025年修订）.md"
+      ],
+      "gold_chunk_ids": [
+        378
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 378,
+          "text": "复学后一周内，可在符合学校及专业申请条件且有转入名额的专业范围内申请转专业"
+        },
+        {
+          "chunk_id": 378,
+          "text": "一周内未提交转专业申请的退役大学生士兵，不再享受本条所列政策"
+        },
+        {
+          "chunk_id": 378,
+          "text": "退役大学生士兵在服役期间荣立三等功及以上奖励、且符合转专业申请条件的，经拟转入学院考核通过，可不受转入名额限制"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "复学后一周内",
+          "aliases": [
+            "复学后一周内"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "复学后一周内",
+              "复学"
+            ]
+          ]
+        },
+        {
+          "point": "逾期不享受政策",
+          "aliases": [
+            "逾期不享受政策"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "三等功及以上",
+          "aliases": [
+            "三等功及以上"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "考核通过不受名额限制",
+          "aliases": [
+            "考核通过不受名额限制"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q030",
+      "question": "什么是学业警示？学业警示分为哪几个等级？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "gold_answer": "学业警示是学校依据学籍管理规定和专业培养方案要求，每学期统计分析学生课程学习情况，对可能或已经出现学业问题的学生进行警示，并告知学生及家长可能后果、采取干预措施。学业警示分为黄色、橙色、红色三个等级，分别对应一般、严重和特别严重的学业问题。",
+      "gold_doc_ids": [
+        "内蒙古工业大学本、专科学生学业警示工作管理办法.md"
+      ],
+      "gold_chunk_ids": [
+        381
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 381,
+          "text": "学业警示是指学校依据学籍管理的有关规定和各专业培养方案的要求，每学期进行学生课程学习情况统计分析"
+        },
+        {
+          "chunk_id": 381,
+          "text": "将可能产生的不良后果告知学生本人及家长，并有针对性地采取干预措施"
+        },
+        {
+          "chunk_id": 381,
+          "text": "学业警示分为黄色警示、橙色警示、红色警示三个等级"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "课程学习情况统计分析",
+          "aliases": [
+            "课程学习情况统计分析"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "告知学生和家长",
+          "aliases": [
+            "告知学生和家长"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "干预措施",
+          "aliases": [
+            "干预措施"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "黄色橙色红色",
+          "aliases": [
+            "黄色橙色红色"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "黄色",
+              "橙色",
+              "红色"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q031",
+      "question": "学业警示的黄色、橙色、红色等级分别有哪些学分阈值？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "hard",
+      "expected_behavior": "answer",
+      "gold_answer": "黄色警示包括大一第一学期补考后未通过审核课程总学分不少于 5 学分，或开学补考后未通过审核课程总学分不少于 10 学分。橙色警示包括开学补考后未通过审核课程总学分不少于 20 学分，或处于黄色警示一年后仍有不少于 10 学分未通过。红色警示包括开学补考后未通过审核课程总学分不少于 40 学分，或处于橙色警示一年后仍有不少于 20 学分未通过。",
+      "gold_doc_ids": [
+        "内蒙古工业大学本、专科学生学业警示工作管理办法.md"
+      ],
+      "gold_chunk_ids": [
+        382
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 382,
+          "text": "大一第一学期，补考后未通过考核的审核课程总学分≥5学分"
+        },
+        {
+          "chunk_id": 382,
+          "text": "开学补考后，未通过考核的审核课程总学分≥10学分"
+        },
+        {
+          "chunk_id": 382,
+          "text": "开学补考后，未通过考核的审核课程总学分≥20学分"
+        },
+        {
+          "chunk_id": 382,
+          "text": "处于黄色警示状态的学生，自受警示之日起一年后，开学补考后未通过考核的审核课程总学分≥10学分"
+        },
+        {
+          "chunk_id": 382,
+          "text": "开学补考后，未通过考核的审核课程总学分≥40学分"
+        },
+        {
+          "chunk_id": 382,
+          "text": "处于橙色警示状态的学生，自受警示之日起一年后，开学补考后未通过考核的审核课程总学分≥20学分"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "黄色5或10学分",
+          "aliases": [
+            "黄色5或10学分"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "10学分",
+              "0学分",
+              "学分",
+              "黄色"
+            ]
+          ]
+        },
+        {
+          "point": "橙色20学分或黄色后10学分",
+          "aliases": [
+            "橙色20学分或黄色后10学分"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "10学分",
+              "20学分",
+              "0学分",
+              "学分"
+            ]
+          ]
+        },
+        {
+          "point": "红色40学分或橙色后20学分",
+          "aliases": [
+            "红色40学分或橙色后20学分"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "20学分",
+              "40学分",
+              "0学分",
+              "学分"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q032",
+      "question": "受到红色学业警示的学生是否必须降级？未提交年级选择申请会怎样？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "受到红色警示的学生须降级学习。学生可以选择降入年级，但如果警示发布后 2 周内没有提交年级选择申请，则降入下一年级。",
+      "gold_doc_ids": [
+        "内蒙古工业大学本、专科学生学业警示工作管理办法.md"
+      ],
+      "gold_chunk_ids": [
+        383
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 383,
+          "text": "受到红色警示学生，须降级学习"
+        },
+        {
+          "chunk_id": 383,
+          "text": "学生可选择降入年级，警示发布后2周内没有提交年级选择申请的，降入下一年级"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "红色警示须降级",
+          "aliases": [
+            "红色警示须降级"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "红色警示",
+              "红色",
+              "降级"
+            ]
+          ]
+        },
+        {
+          "point": "可选择降入年级",
+          "aliases": [
+            "可选择降入年级"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "2周内未申请降入下一年级",
+          "aliases": [
+            "2周内未申请降入下一年级"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "2周内",
+              "2周"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q033",
+      "question": "学生证和校徽管理中，学生证补办或变更时间是什么时候？校徽丢失是否补发？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "gold_answer": "学生证补办、变更时间为每学期第十四周，其他时间不予办理；校徽只限本人佩戴，学生应妥善保管，校徽丢失一般不予补发。",
+      "gold_doc_ids": [
+        "内蒙古工业大学本、专科学生学生证及校徽管理办法.md"
+      ],
+      "gold_chunk_ids": [
+        387
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 387,
+          "text": "学生证补办、变更时间为每学期第十四周，其它时间不予办理"
+        },
+        {
+          "chunk_id": 387,
+          "text": "校徽丢失，一般不予补发"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "第十四周",
+          "aliases": [
+            "第十四周"
+          ],
+          "weight": 1.0,
+          "regex": "(第\\s*(十四|14)\\s*周)"
+        },
+        {
+          "point": "其他时间不予办理",
+          "aliases": [
+            "其他时间不予办理"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "其他时间",
+              "不予办理"
+            ]
+          ]
+        },
+        {
+          "point": "校徽丢失一般不补发",
+          "aliases": [
+            "校徽丢失一般不补发"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "不补发",
+              "校徽"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q034",
+      "question": "本科毕业设计（论文）检测范围、上传文件格式和命名要求是什么？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "检测范围包括拟参加毕业答辩的本科生（含双学位）毕业设计说明书和毕业论文答辩稿，以及已通过毕业答辩并修改完善后的终稿。学生应上传电子版毕业设计（论文）答辩稿或终稿，文档应为 Word 格式，并以“学号+姓名”命名。",
+      "gold_doc_ids": [
+        "内蒙古工业大学本科生毕业设计（论文）学术不端行为检测及处理办法.md"
+      ],
+      "gold_chunk_ids": [
+        391,
+        392
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 391,
+          "text": "拟参加毕业答辩的本科生（含双学位）毕业设计说明书和毕业论文的答辩稿"
+        },
+        {
+          "chunk_id": 391,
+          "text": "已通过毕业答辩并修改完善的本科生（含双学位）毕业设计说明书和毕业论文的终稿"
+        },
+        {
+          "chunk_id": 392,
+          "text": "上传文档应为word文档，以“学号+姓名”的方式命名"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "答辩稿",
+          "aliases": [
+            "答辩稿"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "终稿",
+          "aliases": [
+            "终稿"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "含双学位",
+          "aliases": [
+            "含双学位"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "Word文档",
+          "aliases": [
+            "Word文档"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "学号+姓名命名",
+          "aliases": [
+            "学号+姓名命名"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "学号",
+              "姓名",
+              "命名"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q035",
+      "question": "本科毕业论文和毕业设计说明书的文字复制比分档阈值有什么不同？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "hard",
+      "expected_behavior": "answer",
+      "gold_answer": "毕业论文中，经济类、管理类、法学类专业 A 档为 R≤25%，理工类、艺术类、外语类专业 A 档为 R≤30%，全部专业 C 档为 R＞50%。不含计算书且正文字数不低于 6000 字的毕业设计说明书，A 档为 R≤30%，B 档为 30%＜R≤50%，C 档为 R＞50%。含计算书且正文字数不低于 20000 字的毕业设计说明书，A 档为 R≤50%，B 档为 50%＜R≤70%，C 档为 R＞70%。",
+      "gold_doc_ids": [
+        "内蒙古工业大学本科生毕业设计（论文）学术不端行为检测及处理办法.md"
+      ],
+      "gold_chunk_ids": [
+        393,
+        394,
+        395
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 393,
+          "text": "A档 | R≤25% | 经济类、管理类、法学类专业"
+        },
+        {
+          "chunk_id": 393,
+          "text": "A档 | R≤30% | 理工类、艺术类、外语类专业"
+        },
+        {
+          "chunk_id": 393,
+          "text": "C档 | R＞50﹪ | 全部专业"
+        },
+        {
+          "chunk_id": 393,
+          "text": "毕业设计说明书（不含计算书，正文字数不低于6000字）"
+        },
+        {
+          "chunk_id": 394,
+          "text": "A档 | R≤30% | 理工类专业"
+        },
+        {
+          "chunk_id": 394,
+          "text": "毕业设计说明书（含计算书，正文字数不低于20000字）"
+        },
+        {
+          "chunk_id": 394,
+          "text": "A档 | R≤50% | 理工类专业"
+        },
+        {
+          "chunk_id": 395,
+          "text": "C档 | R＞70﹪ | 理工类专业"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "毕业论文经济管理法学25%",
+          "aliases": [
+            "毕业论文经济管理法学25%",
+            "25％",
+            "百分之25"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "毕业论文经济管理法学",
+              "毕业论文",
+              "25%"
+            ]
+          ],
+          "regex": "(25\\s*[%％])"
+        },
+        {
+          "point": "毕业论文理工艺术外语30%",
+          "aliases": [
+            "毕业论文理工艺术外语30%",
+            "百分之30",
+            "30％"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "理工艺术外语",
+              "毕业论文",
+              "30%"
+            ]
+          ],
+          "regex": "(30\\s*[%％])"
+        },
+        {
+          "point": "不含计算书设计说明书30/50",
+          "aliases": [
+            "不含计算书设计说明书30/50"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "设计说明书",
+              "计算书"
+            ],
+            [
+              "不含计算书设计说明书30",
+              "50"
+            ]
+          ]
+        },
+        {
+          "point": "含计算书设计说明书50/70",
+          "aliases": [
+            "含计算书设计说明书50/70"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "设计说明书",
+              "计算书"
+            ],
+            [
+              "含计算书设计说明书50",
+              "70"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q036",
+      "question": "本科毕业设计（论文）答辩稿检测为 B 档或 C 档时如何处理？优秀成绩对首次检测有什么要求？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "答辩稿为 B 档的，毕业设计（论文）须在指导教师指导下修改，三周后再次检测；若降至 A 档且经学院学术分委员会认定无学术不端行为，可参加答辩，否则取消答辩资格。答辩稿为 C 档的，原则上取消答辩资格；如学院学术分委员会有异议，需说明并提交教务处审议，提交人数不得超过学院 C 档学生人数的 1/2。毕业设计（论文）综合成绩为优秀的学生，答辩稿首次检测文字复制比须为 A 档。",
+      "gold_doc_ids": [
+        "内蒙古工业大学本科生毕业设计（论文）学术不端行为检测及处理办法.md"
+      ],
+      "gold_chunk_ids": [
+        395
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 395,
+          "text": "答辩稿文字复制比为B档的，毕业设计（论文）须在指导教师指导下进行修改，三周后再次参加检测"
+        },
+        {
+          "chunk_id": 395,
+          "text": "否则，取消毕业设计（论文）答辩资格"
+        },
+        {
+          "chunk_id": 395,
+          "text": "答辩稿文字复制比为C档的，原则上取消毕业设计（论文）答辩资格"
+        },
+        {
+          "chunk_id": 395,
+          "text": "提交审议的学生人数不得超过学院C档学生人数的1/2"
+        },
+        {
+          "chunk_id": 395,
+          "text": "毕业设计（论文）综合成绩为“优秀”的学生，答辩稿首次检测文字复制比须为A档"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "B档三周后复检",
+          "aliases": [
+            "B档三周后复检"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "三周后复检",
+              "B档"
+            ]
+          ]
+        },
+        {
+          "point": "未达A或认定不通过取消答辩",
+          "aliases": [
+            "未达A或认定不通过取消答辩"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "C档原则取消答辩",
+          "aliases": [
+            "C档原则取消答辩"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "取消答辩",
+              "C档"
+            ]
+          ]
+        },
+        {
+          "point": "C档审议不超过1/2",
+          "aliases": [
+            "C档审议不超过1/2"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "优秀首次须A档",
+          "aliases": [
+            "优秀首次须A档"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "优秀",
+              "首次",
+              "A档"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q037",
+      "question": "研究生学位论文复制比检测程序中，学生、导师、学院分别做什么？检测论文格式和检测内容是什么？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "研究生本人填写复制比检测申请及检测结果备案表；导师同意签字后将材料提交学院；学院负责检测，被检测学位论文为 PDF 格式，且必须与评审学位论文内容一致；检测完毕后学院相关负责人填写检测结果并报研究生院备案。检测内容包括摘要、目录和学位论文正文部分。",
+      "gold_doc_ids": [
+        "内蒙古工业大学研究生学位论文复制比检测实施办法.md"
+      ],
+      "gold_chunk_ids": [
+        400,
+        401
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 400,
+          "text": "研究生本人填写《内蒙古工业大学研究生学位论文复制比检测申请及检测结果备案表》"
+        },
+        {
+          "chunk_id": 400,
+          "text": "导师同意签字后，将相关材料提交所在学院"
+        },
+        {
+          "chunk_id": 400,
+          "text": "学院负责学位论文的复制比检测工作，被检测的学位论文为pdf格式，必须与评审学位论文内容一致"
+        },
+        {
+          "chunk_id": 400,
+          "text": "学院相关负责人将复制比检测结果报研究生院备案"
+        },
+        {
+          "chunk_id": 401,
+          "text": "检测内容包括摘要、目录和学位论文正文部分"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "本人填备案表",
+          "aliases": [
+            "本人填备案表"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "导师签字",
+          "aliases": [
+            "导师签字"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "学院检测",
+          "aliases": [
+            "学院检测"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "PDF格式且与评审论文一致",
+          "aliases": [
+            "PDF格式且与评审论文一致"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "评审论文一致",
+              "PDF格式"
+            ]
+          ]
+        },
+        {
+          "point": "报研究生院备案",
+          "aliases": [
+            "报研究生院备案"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "研究生院备案",
+              "研究生"
+            ]
+          ]
+        },
+        {
+          "point": "摘要目录正文",
+          "aliases": [
+            "摘要目录正文"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "摘要",
+              "目录",
+              "正文"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q038",
+      "question": "研究生学位论文评审版复制比检测结果在 30% 以下、30%（含）到 50% 以下、50%（含）以上时分别如何处理？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "hard",
+      "expected_behavior": "answer",
+      "gold_answer": "评审版复制比在 30% 以下视为通过，可进入学位论文答辩评审。复制比超出 30%（含 30%）但不足 50% 的，先修改不少于两周后第二次检测；若仍超出 30%（含 30%），须修改不少于三个月；第三次仍超出 30%（含 30%）则取消申请学位资格且后续不再接收申请。复制比超出 50%（含 50%）的，须重大修改不少于六个月，再次检测低于 30% 方可进入评审，否则取消申请学位资格且后续不再接收申请。",
+      "gold_doc_ids": [
+        "内蒙古工业大学研究生学位论文复制比检测实施办法.md"
+      ],
+      "gold_chunk_ids": [
+        401
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 401,
+          "text": "学位论文（评审版）的复制比检测结果在30%以下者视为通过"
+        },
+        {
+          "chunk_id": 401,
+          "text": "学位论文（评审版）的复制比检测结果超出30%（含30%）但不足50%者"
+        },
+        {
+          "chunk_id": 401,
+          "text": "申请人须对学位论文进行不少于两周的修改"
+        },
+        {
+          "chunk_id": 401,
+          "text": "须对学位论文进行不少于三个月的修改"
+        },
+        {
+          "chunk_id": 401,
+          "text": "取消其申请学位资格，后续不再接收其申请"
+        },
+        {
+          "chunk_id": 401,
+          "text": "学位论文（评审版）的复制比检测结果超出50%（含50%）者，申请人须对学位论文进行不少于六个月的重大修改"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "30%以下通过",
+          "aliases": [
+            "30%以下通过",
+            "百分之30",
+            "30％"
+          ],
+          "weight": 1.0,
+          "regex": "(30\\s*[%％])"
+        },
+        {
+          "point": "30含至50以下两周后复检",
+          "aliases": [
+            "30含至50以下两周后复检"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "仍超30修改三个月",
+          "aliases": [
+            "仍超30修改三个月"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "第三次仍超30取消资格",
+          "aliases": [
+            "第三次仍超30取消资格"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "50含以上重大修改六个月",
+          "aliases": [
+            "50含以上重大修改六个月"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "重大修改",
+              "六个月"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q039",
+      "question": "研究生学位论文最终版复制比检测在答辩后哪个环节进行？30% 以下、30%（含）到 50% 以下、50%（含）以上分别如何处理？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "hard",
+      "expected_behavior": "answer",
+      "gold_answer": "最终版复制比检测在答辩完、报请校学位评定委员会审议前进行。最终版复制比 30% 以下视为通过，校学位评定委员会办公室可报请审议学位授予建议；30%（含）到 50% 以下须修改不少于三个月后第二次检测，低于 30% 才可报请审议，否则取消学位申请资格；50%（含）以上须重大修改不少于六个月，第二次检测低于 30% 后可向学院学位评定分委员会递交答辩评审申请，否则取消学位申请资格。",
+      "gold_doc_ids": [
+        "内蒙古工业大学研究生学位论文复制比检测实施办法.md"
+      ],
+      "gold_chunk_ids": [
+        402
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 402,
+          "text": "研究生学位论文在答辩完报请校学位评定委员会审议前，须进行学位论文（最终版）的复制比检测"
+        },
+        {
+          "chunk_id": 402,
+          "text": "学位论文（最终版）复制比检测结果在30%以下者视为通过"
+        },
+        {
+          "chunk_id": 402,
+          "text": "最终版）复制比检测结果超出30%（含30%）但不足50%者，申请人须对学位论文进行不少于三个月的修改"
+        },
+        {
+          "chunk_id": 402,
+          "text": "学位论文（最终版）复制比检测结果超50%（含50%）以上者，申请人须对学位论文进行不少于六个月的重大修改"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "答辩后学位会审议前",
+          "aliases": [
+            "答辩后学位会审议前"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "学位会审议前",
+              "答辩后"
+            ]
+          ]
+        },
+        {
+          "point": "30%以下通过",
+          "aliases": [
+            "30%以下通过",
+            "百分之30",
+            "30％"
+          ],
+          "weight": 1.0,
+          "regex": "(30\\s*[%％])"
+        },
+        {
+          "point": "30含至50以下三个月修改",
+          "aliases": [
+            "30含至50以下三个月修改"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "50含以上六个月重大修改",
+          "aliases": [
+            "50含以上六个月重大修改"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "重大修改",
+              "六个月"
+            ]
+          ]
+        },
+        {
+          "point": "不达标取消学位申请资格",
+          "aliases": [
+            "不达标取消学位申请资格"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q040",
+      "question": "研究生学位论文评审的基本要求、专家人数和匿名评审范围是什么？",
+      "category": "single_doc",
+      "skill_type": "single_doc",
+      "difficulty": "hard",
+      "expected_behavior": "answer",
+      "gold_answer": "所有学位论文答辩前必须经过校内外同行专家评审。每篇学位论文送 3 位同行专家评审。学校统一组织匿名评审的范围包括全部博士研究生学位论文、抽检不低于 15% 的硕士研究生学位论文、新设学科或专业学位类别首届毕业生论文、新聘硕士导师首届毕业生论文、申请提前毕业研究生论文以及答辩未通过再次申请答辩的论文。",
+      "gold_doc_ids": [
+        "内蒙古工业大学研究生学位论文评审办法.md"
+      ],
+      "gold_chunk_ids": [
+        407,
+        408
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 407,
+          "text": "所有学位论文，在答辩前必须经过校内外同行专家评审"
+        },
+        {
+          "chunk_id": 407,
+          "text": "每篇学位论文送3位同行专家进行评审"
+        },
+        {
+          "chunk_id": 408,
+          "text": "学校统一组织匿名评审的学位论文范围为申请答辩的全部博士研究生学位论文、抽检不低于15%硕士研究生学位论文"
+        },
+        {
+          "chunk_id": 408,
+          "text": "新设学科（专业学位类别）首届毕业生的学位论文、新聘硕士导师首届毕业生的学位论文、申请提前毕业研究生的学位论文及答辩未通过再次申请答辩的学位论文"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "答辩前校内外同行专家评审",
+          "aliases": [
+            "答辩前校内外同行专家评审"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "3位同行专家",
+          "aliases": [
+            "3位同行专家"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "全部博士",
+          "aliases": [
+            "全部博士"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "硕士抽检不低于15%",
+          "aliases": [
+            "硕士抽检不低于15%",
+            "百分之15",
+            "15％"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "硕士抽检",
+              "15%"
+            ]
+          ],
+          "regex": "(15\\s*[%％])"
+        },
+        {
+          "point": "新设学科/新聘导师首届/提前毕业/再次申请",
+          "aliases": [
+            "新设学科/新聘导师首届/提前毕业/再次申请"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "新设学科",
+              "新聘导师",
+              "提前毕业",
+              "再次申请"
+            ],
+            [
+              "新设学科",
+              "新聘导师首届",
+              "提前毕业",
+              "再次申请"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q041",
+      "question": "综合来看，学生因事或因病不能参加考试时，如何办理缓考？哪些课程不能办理缓考？",
+      "category": "cross_doc",
+      "skill_type": "cross_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "材料显示，缓考需通过教务处首页“综合业务系统”的“办理缓考免考”模块线上填报并打印申请表，再按要求携带证明材料到学院办理审核。教务问答还明确，申请应在考试前向课程开设学院办理，实践类课程、毕业设计（论文）和通识类任选课程不能办理缓考，补考课程也不能办理缓考；不能参加补考时只能在开课学期报名重修。",
+      "gold_doc_ids": [
+        "关于调整缓考、免考办理流程的通知.md",
+        "内蒙古工业大学教务处你问我答栏目整理.md"
+      ],
+      "gold_chunk_ids": [
+        2,
+        361
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 2,
+          "text": "学生登录教务处首页“综合业务系统”，点击“学生服务”栏目下的“办理缓考免考”模块"
+        },
+        {
+          "chunk_id": 2,
+          "text": "学生线上提交申请后，需在线打印申请表并携带证明材料到相关学院"
+        },
+        {
+          "chunk_id": 361,
+          "text": "在考试前向课程开设学院申请办理。其中，实践类课程、毕业设计（论文）和通识类任选课程不能办理缓考"
+        },
+        {
+          "chunk_id": 361,
+          "text": "补考课程不能办理缓考。如果不能参加课程补考，只能开课学期报名重修"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "综合业务系统办理缓考免考",
+          "aliases": [
+            "综合业务系统办理缓考免考"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "综合业务系统",
+              "办理缓考免考",
+              "缓考"
+            ]
+          ]
+        },
+        {
+          "point": "打印申请表并带证明材料",
+          "aliases": [
+            "打印申请表并带证明材料"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "打印申请表",
+              "证明材料"
+            ]
+          ]
+        },
+        {
+          "point": "考试前办理",
+          "aliases": [
+            "考试前办理"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "考试前",
+              "考试"
+            ]
+          ]
+        },
+        {
+          "point": "实践类/毕业设计论文/通识任选不能缓考",
+          "aliases": [
+            "实践类/毕业设计论文/通识任选不能缓考"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "通识任选",
+              "毕业设计",
+              "缓考"
+            ],
+            [
+              "实践类",
+              "毕业设计论文",
+              "通识任选不能缓考"
+            ]
+          ]
+        },
+        {
+          "point": "补考不能缓考",
+          "aliases": [
+            "补考不能缓考"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "缓考",
+              "补考"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q042",
+      "question": "关于普通本科学生学习年限，2023 年调整通知和教务问答给出的现行口径是什么？它与 2018 年学籍管理办法中的旧口径有什么不同？",
+      "category": "cross_doc",
+      "skill_type": "cross_doc",
+      "difficulty": "hard",
+      "expected_behavior": "answer",
+      "gold_answer": "2023 年调整通知和教务问答均给出现行口径：从 2023 年入学学生起，普通本科四年制专业学习年限为 3～6 年，五年制专业为 4～7 年，休学创业学生最长学习年限为 8 年，应征入伍学生服役阶段不计入学习年限。2018 年学籍管理办法中的旧口径是四年制 3～8 年、五年制 4～10 年、高职高专 2～6 年，且应征入伍学生修业年限为学制×2+服役年数、休学创业最长 10 年。评测时应以 2023 年调整通知对 2023 年入学学生的规定为准。",
+      "gold_doc_ids": [
+        "内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知.md",
+        "内蒙古工业大学教务处你问我答栏目整理.md",
+        "内蒙古工业大学学籍管理办法（2018年修订）.md"
+      ],
+      "gold_chunk_ids": [
+        7,
+        9,
+        371,
+        310
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 7,
+          "text": "普通本科四年制专业学生学习年限调整为3～6年；普通本科五年制专业学生学习年限调整为4～7年；休学创业学生最长学习年限调整为8年"
+        },
+        {
+          "chunk_id": 9,
+          "text": "本通知调整内容自2023年入学学生起执行"
+        },
+        {
+          "chunk_id": 371,
+          "text": "从 2023 年入学的学生开始，普通本科四年制专业学生学习年限为 3～6 年；普通本科五年制专业学生学习年限为 4～7 年；休学创业学生最长学习年限为 8 年"
+        },
+        {
+          "chunk_id": 310,
+          "text": "一般普通本科四年制专业学生修业年限为3～8年；普通本科五年制专业学生修业年限为4～10年；高职高专学生修业年限为2～6年"
+        },
+        {
+          "chunk_id": 310,
+          "text": "休学创业学生最长修业年限为10年"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "2023起四年制3～6",
+          "aliases": [
+            "2023起四年制3～6",
+            "3~6",
+            "3–6",
+            "3-6",
+            "3至6",
+            "3到6",
+            "3 — 6"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "2023",
+              "四年制",
+              "3～6"
+            ]
+          ],
+          "regex": "((3\\s*[～~\\-—–至到]\\s*6|三\\s*[至到]\\s*六))"
+        },
+        {
+          "point": "2023起五年制4～7",
+          "aliases": [
+            "2023起五年制4～7",
+            "4到7",
+            "4-7",
+            "4至7",
+            "4~7",
+            "4–7",
+            "4 — 7"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "2023",
+              "五年制",
+              "4～7"
+            ]
+          ],
+          "regex": "((4\\s*[～~\\-—–至到]\\s*7|四\\s*[至到]\\s*七))"
+        },
+        {
+          "point": "休学创业8年",
+          "aliases": [
+            "休学创业8年"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "休学创业",
+              "休学",
+              "8年"
+            ]
+          ]
+        },
+        {
+          "point": "服役阶段不计入",
+          "aliases": [
+            "服役阶段不计入"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "不计入",
+              "服役"
+            ]
+          ]
+        },
+        {
+          "point": "旧口径四年制3～8/五年制4～10",
+          "aliases": [
+            "旧口径四年制3～8/五年制4～10",
+            "4至10",
+            "3~8",
+            "4-10",
+            "4 — 10",
+            "3到8",
+            "3 — 8",
+            "3至8",
+            "4到10",
+            "3-8",
+            "3–8",
+            "4~10",
+            "4–10"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "4～10",
+              "四年制",
+              "五年制",
+              "3～8"
+            ],
+            [
+              "旧口径四年制3～8",
+              "五年制4～10"
+            ]
+          ],
+          "regex": "((3\\s*[～~\\-—–至到]\\s*8|三\\s*[至到]\\s*八)|(4\\s*[～~\\-—–至到]\\s*10|四\\s*[至到]\\s*十))"
+        },
+        {
+          "point": "以新通知为准",
+          "aliases": [
+            "以新通知为准"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": "跨文档比较新旧规则，避免使用旧学籍管理办法回答 2023 级后的学习年限。"
+    },
+    {
+      "qid": "q043",
+      "question": "学业警示办法和教务问答对“学业警示”的定义与等级说明是否一致？核心依据是什么？",
+      "category": "cross_doc",
+      "skill_type": "cross_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "两份材料的口径一致：学业警示是根据学籍管理规定和专业培养方案，对学生课程学习情况进行统计分析，对可能或已经出现学业问题的学生进行警示，并告知学生本人及家长、采取干预措施。学业警示分为黄色、橙色、红色三个等级，主要依据未通过考核的必修课程或审核课程学分情况确定。",
+      "gold_doc_ids": [
+        "内蒙古工业大学本、专科学生学业警示工作管理办法.md",
+        "内蒙古工业大学教务处你问我答栏目整理.md"
+      ],
+      "gold_chunk_ids": [
+        381,
+        346
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 381,
+          "text": "学业警示是指学校依据学籍管理的有关规定和各专业培养方案的要求，每学期进行学生课程学习情况统计分析"
+        },
+        {
+          "chunk_id": 381,
+          "text": "学业警示分为黄色警示、橙色警示、红色警示三个等级"
+        },
+        {
+          "chunk_id": 346,
+          "text": "学业警示是指学校依据学籍管理有关规定和各专业培养方案要求，每学期对学生课程学习情况进行统计分析"
+        },
+        {
+          "chunk_id": 346,
+          "text": "学业警示一般分为黄色警示、橙色警示、红色警示三个等级，主要依据学生未通过考核的必修课程学分情况确定"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "定义一致",
+          "aliases": [
+            "定义一致"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "课程学习情况统计分析",
+          "aliases": [
+            "课程学习情况统计分析"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "告知本人及家长并干预",
+          "aliases": [
+            "告知本人及家长并干预"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "黄色橙色红色",
+          "aliases": [
+            "黄色橙色红色"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "黄色",
+              "橙色",
+              "红色"
+            ]
+          ]
+        },
+        {
+          "point": "依据未通过必修/审核课程学分",
+          "aliases": [
+            "依据未通过必修/审核课程学分"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "学分",
+              "必修"
+            ],
+            [
+              "依据未通过必修",
+              "审核课程学分"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q044",
+      "question": "学生处分设置期限和解除处分后权益恢复，在学生管理规定和纪律处分实施办法中如何相互印证？",
+      "category": "cross_doc",
+      "skill_type": "cross_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "学生管理规定指出，除开除学籍外，处分一般设置 6 到 12 个月期限，到期按程序解除；解除后，学生获得表彰、奖励及其他权益不再受原处分影响。纪律处分实施办法进一步细化：警告、严重警告一般 6 个月，记过、留校察看一般 12 个月；警告、严重警告、记过处分到期且无新违纪行为自动解除，留校察看处分到期后需学院提出建议并经违纪处理委员会讨论通过后由学校发文生效。",
+      "gold_doc_ids": [
+        "内蒙古工业大学学生管理规定.md",
+        "内蒙古工业大学学生纪律处分实施办法.md"
+      ],
+      "gold_chunk_ids": [
+        280,
+        284,
+        289
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 280,
+          "text": "除开除学籍处分以外，给予学生处分一般应当设置6到12个月期限，到期按学校规定程序予以解除"
+        },
+        {
+          "chunk_id": 280,
+          "text": "解除处分后，学生获得表彰、奖励及其他权益，不再受原处分的影响"
+        },
+        {
+          "chunk_id": 284,
+          "text": "警告处分期限一般为6个月"
+        },
+        {
+          "chunk_id": 284,
+          "text": "记过处分期限一般为12个月"
+        },
+        {
+          "chunk_id": 289,
+          "text": "受到警告、严重警告、记过处分的学生，如在处分期内对所犯错误有深刻认识并积极改正错误，无新的违纪行为，处分到期后自动解除"
+        },
+        {
+          "chunk_id": 289,
+          "text": "受到留校察看处分的，处分到期后，由被处分学生所在学院根据学生的改过态度、现实表现"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "处分6到12个月",
+          "aliases": [
+            "处分6到12个月"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "解除后权益不受影响",
+          "aliases": [
+            "解除后权益不受影响"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "警告/严重警告6个月",
+          "aliases": [
+            "警告/严重警告6个月"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "严重警告",
+              "6个月",
+              "警告"
+            ],
+            [
+              "警告",
+              "严重警告6个月"
+            ]
+          ]
+        },
+        {
+          "point": "记过/留校察看12个月",
+          "aliases": [
+            "记过/留校察看12个月"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "留校察看",
+              "12个月",
+              "记过"
+            ],
+            [
+              "记过",
+              "留校察看12个月"
+            ]
+          ]
+        },
+        {
+          "point": "前三类到期自动解除",
+          "aliases": [
+            "前三类到期自动解除"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "留校察看需程序解除",
+          "aliases": [
+            "留校察看需程序解除"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q045",
+      "question": "学生证丢失后如何补办？管理办法和教务问答分别提供了哪些信息？",
+      "category": "cross_doc",
+      "skill_type": "cross_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "学生证管理办法规定，学生证补办、变更时间为每学期第十四周，其他时间不予办理；补办、变更需填写申请表，经班主任和学院教务中心审核批准后，到教务处学籍管理科申请办理。教务问答补充了线上入口：每学期第 14 周通过教务处首页“综合业务系统”中的“补办学生证”模块申请，其他时间无法补办。",
+      "gold_doc_ids": [
+        "内蒙古工业大学本、专科学生学生证及校徽管理办法.md",
+        "内蒙古工业大学教务处你问我答栏目整理.md"
+      ],
+      "gold_chunk_ids": [
+        387,
+        388,
+        365
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 387,
+          "text": "学生证补办、变更时间为每学期第十四周，其它时间不予办理"
+        },
+        {
+          "chunk_id": 388,
+          "text": "学生补办、变更学生证，需填写《内蒙古工业大学本、专科学生补办学生证申请表》，经班主任和学院教务中心审核批准后，于规定时间到教务处学籍管理科申请办理"
+        },
+        {
+          "chunk_id": 365,
+          "text": "需要补办学生证的同学，于每学期第 14 周通过教务处首页“综合业务系统”中的“补办学生证”模块进行申请，其它时间无法补办"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "每学期第14周",
+          "aliases": [
+            "每学期第14周"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "其他时间不能补办",
+          "aliases": [
+            "其他时间不能补办"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "申请表/班主任/学院审核",
+          "aliases": [
+            "申请表/班主任/学院审核"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "申请表",
+              "班主任",
+              "学院审核"
+            ]
+          ]
+        },
+        {
+          "point": "教务处学籍管理科办理",
+          "aliases": [
+            "教务处学籍管理科办理"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "综合业务系统补办学生证模块",
+          "aliases": [
+            "综合业务系统补办学生证模块"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "综合业务系统补办学生证模块",
+              "综合业务系统"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q046",
+      "question": "研究生学位论文从复制比检测到论文评审，大体需要满足哪些前置要求？",
+      "category": "cross_doc",
+      "skill_type": "cross_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "复制比检测办法要求研究生在答辩评审前进行学位论文复制比检测，评审版复制比 30% 以下才视为通过并可进入学位论文答辩评审环节。学位论文评审办法则规定，所有学位论文在答辩前必须经过校内外同行专家评审，每篇论文送 3 位同行专家评审。也就是说，论文进入答辩前至少要先通过复制比检测，并完成规定的同行专家评审。",
+      "gold_doc_ids": [
+        "内蒙古工业大学研究生学位论文复制比检测实施办法.md",
+        "内蒙古工业大学研究生学位论文评审办法.md"
+      ],
+      "gold_chunk_ids": [
+        398,
+        401,
+        407
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 398,
+          "text": "我校在学位论文答辩评审前和学位论文答辩后两个环节均需进行复制比检测"
+        },
+        {
+          "chunk_id": 401,
+          "text": "学位论文（评审版）的复制比检测结果在30%以下者视为通过，可进入学位论文答辩评审环节"
+        },
+        {
+          "chunk_id": 407,
+          "text": "所有学位论文，在答辩前必须经过校内外同行专家评审"
+        },
+        {
+          "chunk_id": 407,
+          "text": "每篇学位论文送3位同行专家进行评审"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "答辩评审前复制比检测",
+          "aliases": [
+            "答辩评审前复制比检测"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "评审版30%以下通过",
+          "aliases": [
+            "评审版30%以下通过",
+            "百分之30",
+            "30％"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "30%",
+              "评审版"
+            ]
+          ],
+          "regex": "(30\\s*[%％])"
+        },
+        {
+          "point": "答辩前专家评审",
+          "aliases": [
+            "答辩前专家评审"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "3位同行专家",
+          "aliases": [
+            "3位同行专家"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q047",
+      "question": "研究生如果未完成注册，对培养和学位论文相关环节有什么影响？这与学位论文评审要求有什么关系？",
+      "category": "cross_doc",
+      "skill_type": "cross_doc",
+      "difficulty": "hard",
+      "expected_behavior": "answer",
+      "gold_answer": "研究生学籍管理细则规定，未完成注册的研究生暂停选课、学位论文开题、中期考核、预审、预答辩、申请学位论文答辩等培养环节，并不享受在校研究生待遇。学位论文评审办法又要求所有学位论文在答辩前必须经过校内外同行专家评审。因此，未完成注册会直接影响开题、预答辩和申请答辩等前置环节，也会间接影响后续论文评审与答辩流程。",
+      "gold_doc_ids": [
+        "内蒙古工业大学研究生学籍管理细则（2023年修订）.pdf",
+        "内蒙古工业大学研究生学位论文评审办法.md"
+      ],
+      "gold_chunk_ids": [
+        416,
+        407
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 416,
+          "text": "未完成注册的研究生，暂停选课、学位论文开题、中期考核、预审、预答辩、申请学位论文答辩等培养环节，不享受在校研究生的待遇"
+        },
+        {
+          "chunk_id": 407,
+          "text": "所有学位论文，在答辩前必须经过校内外同行专家评审"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "未注册暂停选课",
+          "aliases": [
+            "未注册暂停选课"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "暂停选课",
+              "未注册"
+            ]
+          ]
+        },
+        {
+          "point": "暂停开题/中期/预审/预答辩/申请答辩",
+          "aliases": [
+            "暂停开题/中期/预审/预答辩/申请答辩"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "申请答辩",
+              "预答辩",
+              "开题",
+              "中期"
+            ],
+            [
+              "暂停开题",
+              "中期",
+              "预审",
+              "预答辩",
+              "申请答辩"
+            ]
+          ]
+        },
+        {
+          "point": "不享受待遇",
+          "aliases": [
+            "不享受待遇"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "答辩前必须专家评审",
+          "aliases": [
+            "答辩前必须专家评审"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "影响后续评审答辩流程",
+          "aliases": [
+            "影响后续评审答辩流程"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q048",
+      "question": "本科课程首次考试未通过时，学籍管理办法和教务问答对补考、重修、通识任选课分别怎么说？",
+      "category": "cross_doc",
+      "skill_type": "cross_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "学籍管理办法规定，必修课及专业选修课考核不及格者可参加一次补考；补考未参加视为自动放弃；课程不及格可申请重修；通识教育任选课考核不合格须改选其他通识教育任选课程。教务问答的口径相同：必修和限选类理论课程首次未通过可参加补考，补考仍未通过可后续报名重修；通识教育任选课不合格通常须改选其他通识教育任选课程。",
+      "gold_doc_ids": [
+        "内蒙古工业大学学籍管理办法（2018年修订）.md",
+        "内蒙古工业大学教务处你问我答栏目整理.md"
+      ],
+      "gold_chunk_ids": [
+        316,
+        369
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 316,
+          "text": "必修课及专业选修课考核不及格者，可参加学校安排的一次补考"
+        },
+        {
+          "chunk_id": 316,
+          "text": "学生课程（不含通识教育任选课）成绩不及格，可以申请重修该门课程"
+        },
+        {
+          "chunk_id": 316,
+          "text": "通识教育任选课考核不合格，须改选其他通识教育任选课程"
+        },
+        {
+          "chunk_id": 369,
+          "text": "必修和限选类理论课程首次考试未通过，可以参加补考；如补考仍未通过，可以在后续开课学期报名重修"
+        },
+        {
+          "chunk_id": 369,
+          "text": "通识教育任选课考核不合格的，通常须改选其他通识教育任选课程"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "必修/专业选修可补考一次",
+          "aliases": [
+            "必修/专业选修可补考一次"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "必修",
+              "补考"
+            ],
+            [
+              "必修",
+              "专业选修可补考一次"
+            ]
+          ]
+        },
+        {
+          "point": "未通过可重修",
+          "aliases": [
+            "未通过可重修"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "通识任选须改选",
+          "aliases": [
+            "通识任选须改选"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "教务问答口径一致",
+          "aliases": [
+            "教务问答口径一致"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q049",
+      "question": "关于本科转专业，2025 年修订办法与教务问答中的旧口径有什么差异？回答 2025 级学生时应注意什么？",
+      "category": "cross_doc",
+      "skill_type": "cross_doc",
+      "difficulty": "hard",
+      "expected_behavior": "answer",
+      "gold_answer": "教务问答中的旧口径提到学习成绩优秀者可在大二上学期初申请，平均学分绩排名前 10% 可全校范围申请，10%—20% 可本学院申请，且在校期间只能转一次。2025 年修订办法则规定自 2025 级学生起施行，并对符合兴趣、专长或特殊潜质的学生安排在大一第二学期申请，每名学生可填报三个专业志愿，综合成绩按平均学分绩 30% 加学院考核成绩 70% 计算。回答 2025 级学生问题时，应优先依据 2025 年修订办法，而不能直接套用旧问答口径。",
+      "gold_doc_ids": [
+        "内蒙古工业大学教务处你问我答栏目整理.md",
+        "内蒙古工业大学普通全日制本科学生转专业管理办法（2025年修订）.md"
+      ],
+      "gold_chunk_ids": [
+        360,
+        380,
+        375,
+        376
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 360,
+          "text": "学习成绩优秀的学生，可以在大二上学期初申请转专业"
+        },
+        {
+          "chunk_id": 360,
+          "text": "平均学分绩专业排名前 10% 可在全校范围申请，排名 10%-20% 可在本学院内申请"
+        },
+        {
+          "chunk_id": 380,
+          "text": "本办法自2025级学生起施行"
+        },
+        {
+          "chunk_id": 375,
+          "text": "转专业申请于大一第二学期进行"
+        },
+        {
+          "chunk_id": 376,
+          "text": "每个学生可以填报三个专业志愿"
+        },
+        {
+          "chunk_id": 376,
+          "text": "综合成绩=平均学分绩×30%+学院考核成绩×70%"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "旧口径大二上",
+          "aliases": [
+            "旧口径大二上"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "旧口径排名10%/20%",
+          "aliases": [
+            "旧口径排名10%/20%",
+            "20％",
+            "百分之10",
+            "百分之20",
+            "10％"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "旧口径",
+              "10%",
+              "20%"
+            ],
+            [
+              "旧口径排名10%",
+              "20%"
+            ]
+          ]
+        },
+        {
+          "point": "新办法2025级起",
+          "aliases": [
+            "新办法2025级起"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "2025级",
+              "2025"
+            ]
+          ]
+        },
+        {
+          "point": "新办法大一第二学期",
+          "aliases": [
+            "新办法大一第二学期"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "三个志愿",
+          "aliases": [
+            "三个志愿"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "综合成绩30%+70%",
+          "aliases": [
+            "综合成绩30%+70%",
+            "百分之30",
+            "30％",
+            "70％",
+            "百分之70"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "30%",
+              "70%"
+            ]
+          ],
+          "regex": "(30\\s*[%％]|70\\s*[%％])"
+        },
+        {
+          "point": "2025级优先新办法",
+          "aliases": [
+            "2025级优先新办法"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "2025级",
+              "2025"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": "跨文档新旧规则对照。"
+    },
+    {
+      "qid": "q050",
+      "question": "学历证书或学位证书遗失后，本科教务问答和研究生学籍细则分别说明可以如何处理？",
+      "category": "cross_doc",
+      "skill_type": "cross_doc",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "本科教务问答说明，毕业证、学位证丢失可以申请补办毕业证明书和学位证明书，并列出本人申请、证书复印件或在线验证材料、身份证、单位介绍信、蓝底二寸照片等材料，到教务处学籍管理科办理，周期为 10 个工作日。研究生学籍管理细则说明，学历证书和学位证书遗失或损坏，经研究生申请、学校核实后，可出具相应证明书，证明书与原证书具有同等效力。两者都不是补发原证书，而是办理相应证明书。",
+      "gold_doc_ids": [
+        "内蒙古工业大学教务处你问我答栏目整理.md",
+        "内蒙古工业大学研究生学籍管理细则（2023年修订）.pdf"
+      ],
+      "gold_chunk_ids": [
+        355,
+        423
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 355,
+          "text": "毕业证、学位证丢失可以申请补办毕业证明书和学位证明书"
+        },
+        {
+          "chunk_id": 355,
+          "text": "材料准备好后到教务处学籍管理科办理，办理周期为 10 个工作日"
+        },
+        {
+          "chunk_id": 423,
+          "text": "学历证书和学位证书遗失或者损坏，经研究生申请，学校核实后，可出具相应的证明书，证明书与原证书具有同等效力"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "本科办理毕业证明书/学位证明书",
+          "aliases": [
+            "本科办理毕业证明书/学位证明书"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "证明书",
+              "本科"
+            ],
+            [
+              "本科办理毕业证明书",
+              "学位证明书"
+            ]
+          ]
+        },
+        {
+          "point": "本科到学籍管理科办理",
+          "aliases": [
+            "本科到学籍管理科办理"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "学籍管理科",
+              "本科"
+            ]
+          ]
+        },
+        {
+          "point": "办理周期10个工作日",
+          "aliases": [
+            "办理周期10个工作日"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "研究生可出具证明书",
+          "aliases": [
+            "研究生可出具证明书"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "研究生",
+              "证明书"
+            ]
+          ]
+        },
+        {
+          "point": "证明书与原证书同等效力",
+          "aliases": [
+            "证明书与原证书同等效力"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "同等效力",
+              "证明书"
+            ]
+          ]
+        },
+        {
+          "point": "不是补发原证",
+          "aliases": [
+            "不是补发原证"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q051",
+      "question": "缓考申请是否必须由任课教师审批同意？",
+      "category": "partial_answer",
+      "skill_type": "partial_answer",
+      "difficulty": "medium",
+      "expected_behavior": "partial_answer",
+      "gold_answer": "知识库可以回答一部分：缓考申请需要线上填报，打印申请表并携带证明材料到学生所在学院办理分管院长、教学科研服务中心审批；申请表一联由教学科研服务中心留存，一联由申请人交任课教师。但文档没有明确说“任课教师必须审批同意”才可缓考，因此不能推断任课教师是审批主体。",
+      "gold_doc_ids": [
+        "关于调整缓考、免考办理流程的通知.md"
+      ],
+      "gold_chunk_ids": [
+        2,
+        3
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 2,
+          "text": "学生线上提交申请后，需在线打印申请表并携带证明材料到相关学院，依次办理分管院长、教学科研服务中心审批"
+        },
+        {
+          "chunk_id": 2,
+          "text": "申请缓考学生到学生所在学院审批"
+        },
+        {
+          "chunk_id": 3,
+          "text": "申请表上下两联，一联同证明材料一并由教学科研服务中心留存，一联由申请人交任课教师"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "学院审批",
+          "aliases": [
+            "学院审批"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "分管院长和教学科研服务中心",
+          "aliases": [
+            "分管院长和教学科研服务中心"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "教学科研服务中心",
+              "分管院长"
+            ]
+          ]
+        },
+        {
+          "point": "一联交任课教师",
+          "aliases": [
+            "一联交任课教师"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "未说明任课教师审批",
+          "aliases": [
+            "未说明任课教师审批"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "任课教师",
+              "未说明"
+            ],
+            [
+              "未提供",
+              "任课教师"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [
+        "任课教师必须审批同意",
+        "任课教师是最终审批人"
+      ],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q052",
+      "question": "2025 年转专业专业复试的具体面试题目和评分细则是什么？",
+      "category": "partial_answer",
+      "skill_type": "partial_answer",
+      "difficulty": "hard",
+      "expected_behavior": "partial_answer",
+      "gold_answer": "知识库只能给出部分规则：2025 年转专业办法要求学院制定实施细则，明确程序、名额分配、申请条件、考核内容形式和录取规则，考核可采用面试、实操或笔试；对兴趣、专长或特殊潜质类学生，综合成绩 = 平均学分绩×30% + 学院考核成绩×70%。但知识库未提供各学院具体面试题目、评分表或复试细则。",
+      "gold_doc_ids": [
+        "内蒙古工业大学普通全日制本科学生转专业管理办法（2025年修订）.md"
+      ],
+      "gold_chunk_ids": [
+        375,
+        376
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 375,
+          "text": "各学院成立转专业工作小组，制定本学院转专业实施细则"
+        },
+        {
+          "chunk_id": 375,
+          "text": "实施细则须明确工作程序、各专业名额分配规则、各类学生申请条件、各类学生考核内容及形式、录取规则等内容，考核可采用面试、实操或笔试等形式"
+        },
+        {
+          "chunk_id": 376,
+          "text": "综合成绩=平均学分绩×30%+学院考核成绩×70%"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "学院制定实施细则",
+          "aliases": [
+            "学院制定实施细则"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "可面试/实操/笔试",
+          "aliases": [
+            "可面试/实操/笔试"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "可面试",
+              "实操",
+              "笔试"
+            ]
+          ]
+        },
+        {
+          "point": "综合成绩30%+70%",
+          "aliases": [
+            "综合成绩30%+70%",
+            "百分之30",
+            "30％",
+            "70％",
+            "百分之70"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "30%",
+              "70%"
+            ]
+          ],
+          "regex": "(30\\s*[%％]|70\\s*[%％])"
+        },
+        {
+          "point": "未提供具体题目和评分细则",
+          "aliases": [
+            "未提供具体题目和评分细则"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "具体题目",
+              "评分细则",
+              "未提供"
+            ],
+            [
+              "未提供",
+              "具体题目",
+              "评分细则"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [
+        "具体面试题目",
+        "详细评分表"
+      ],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q053",
+      "question": "研究生延期毕业每次最多可以延期几个月？",
+      "category": "partial_answer",
+      "skill_type": "partial_answer",
+      "difficulty": "medium",
+      "expected_behavior": "partial_answer",
+      "gold_answer": "知识库能说明延期毕业的办理原则：因特殊原因不能按期毕业的，由研究生本人提出延期申请，填写研究生延期毕业申请表，经导师同意、学院批准并报研究生院审核，延期不得超过学校规定的最长学习年限。但文档没有给出“每次最多延期几个月”的具体期限。",
+      "gold_doc_ids": [
+        "内蒙古工业大学研究生学籍管理细则（2023年修订）.pdf"
+      ],
+      "gold_chunk_ids": [
+        422
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 422,
+          "text": "因特殊原因不能按期毕业的，由研究生本人提出延期申请，填写《内蒙古工业大学研究生延期毕业申请表》"
+        },
+        {
+          "chunk_id": 422,
+          "text": "经导师同意、学院批准，报研究生院审核，延期不得超过学校规定的最长学习年限"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "本人提出延期申请",
+          "aliases": [
+            "本人提出延期申请"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "导师同意学院批准研究生院审核",
+          "aliases": [
+            "导师同意学院批准研究生院审核"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "不得超过最长学习年限",
+          "aliases": [
+            "不得超过最长学习年限"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "未说明每次延期月份",
+          "aliases": [
+            "未说明每次延期月份"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "未提供",
+              "每次延期月份"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [
+        "每次延期6个月",
+        "每次延期1年"
+      ],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q054",
+      "question": "学业警示《通知书》或《告知书》的具体模板内容是什么？",
+      "category": "partial_answer",
+      "skill_type": "partial_answer",
+      "difficulty": "medium",
+      "expected_behavior": "partial_answer",
+      "gold_answer": "知识库能说明学院会发放《内蒙古工业大学学生学业警示通知书》和《内蒙古工业大学学生学业情况告知书》，并规定送达、家长反馈和档案材料要求。但当前材料没有提供通知书或告知书的完整模板正文，因此不能生成“原文模板”。",
+      "gold_doc_ids": [
+        "内蒙古工业大学本、专科学生学业警示工作管理办法.md"
+      ],
+      "gold_chunk_ids": [
+        383,
+        386
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 383,
+          "text": "学院发放《内蒙古工业大学学生学业警示通知书》（见附件1，以下简称《通知书》）和《内蒙古工业大学学生学业情况告知书》（见附件2，以下简称《告知书》）"
+        },
+        {
+          "chunk_id": 386,
+          "text": "学院须建立学生学业警示档案。学业警示档案应包括《通知书》存根、《告知书》邮寄证明和家长反馈材料"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "有通知书和告知书",
+          "aliases": [
+            "有通知书和告知书"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "有送达和归档要求",
+          "aliases": [
+            "有送达和归档要求"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "未提供完整模板正文",
+          "aliases": [
+            "未提供完整模板正文"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "模板正文",
+              "未提供",
+              "正文"
+            ],
+            [
+              "未提供",
+              "模板正文",
+              "正文"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [
+        "完整模板原文"
+      ],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q055",
+      "question": "毕业证明书或学位证明书能否全程线上办理或邮寄办理？",
+      "category": "partial_answer",
+      "skill_type": "partial_answer",
+      "difficulty": "medium",
+      "expected_behavior": "partial_answer",
+      "gold_answer": "知识库只说明毕业证、学位证丢失可以申请办理相应证明书，并列出了办理材料，要求材料准备好后到教务处学籍管理科办理，办理周期为 10 个工作日；如委托他人代办还需被委托人身份证原件及复印件。文档没有说明可以全程线上办理或邮寄办理。",
+      "gold_doc_ids": [
+        "内蒙古工业大学教务处你问我答栏目整理.md"
+      ],
+      "gold_chunk_ids": [
+        355
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 355,
+          "text": "毕业证、学位证丢失可以申请补办毕业证明书和学位证明书"
+        },
+        {
+          "chunk_id": 355,
+          "text": "以上证明书办理如需委托他人代办，还需被委托人的身份证原件及复印件"
+        },
+        {
+          "chunk_id": 355,
+          "text": "材料准备好后到教务处学籍管理科办理，办理周期为 10 个工作日"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "可办理证明书",
+          "aliases": [
+            "可办理证明书"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "可委托代办需材料",
+          "aliases": [
+            "可委托代办需材料"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "到学籍管理科办理",
+          "aliases": [
+            "到学籍管理科办理"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "未说明线上或邮寄办理",
+          "aliases": [
+            "未说明线上或邮寄办理"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "未说明",
+              "线上",
+              "邮寄"
+            ],
+            [
+              "未提供",
+              "线上",
+              "邮寄"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [
+        "可以全程线上办理",
+        "可以邮寄办理"
+      ],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q056",
+      "question": "研究生复制比检测系统的网址、学生账号和登录步骤是什么？",
+      "category": "partial_answer",
+      "skill_type": "partial_answer",
+      "difficulty": "hard",
+      "expected_behavior": "partial_answer",
+      "gold_answer": "知识库只说明学位论文复制比检测通过“学位论文相似度检测系统”进行，研究生院为学院分配子账号，学院子账号需在固定 IP 机器上运行且只限检测本学院拟申请学位研究生论文。文档未提供系统网址、学生账号或具体登录步骤。",
+      "gold_doc_ids": [
+        "内蒙古工业大学研究生学位论文复制比检测实施办法.md"
+      ],
+      "gold_chunk_ids": [
+        399
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 399,
+          "text": "学位论文复制比检测，通过“学位论文相似度检测系统”进行"
+        },
+        {
+          "chunk_id": 399,
+          "text": "研究生院具有账号管理权限，为有关学院分配子账号及学位论文复制比检测篇数"
+        },
+        {
+          "chunk_id": 399,
+          "text": "各学院的子账号需在固定IP机器上运行"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "学位论文相似度检测系统",
+          "aliases": [
+            "学位论文相似度检测系统"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "研究生院分配学院子账号",
+          "aliases": [
+            "研究生院分配学院子账号"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "固定IP机器运行",
+          "aliases": [
+            "固定IP机器运行"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "未提供网址/学生账号/登录步骤",
+          "aliases": [
+            "未提供网址/学生账号/登录步骤"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "学生账号",
+              "登录步骤",
+              "未提供",
+              "网址"
+            ],
+            [
+              "未提供网址",
+              "学生账号",
+              "登录步骤"
+            ],
+            [
+              "未提供",
+              "学生账号",
+              "登录步骤",
+              "网址"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [
+        "检测系统网址是",
+        "学生自行登录账号"
+      ],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q057",
+      "question": "2026 年内蒙古工业大学研究生各专业学费标准是多少？",
+      "category": "not_in_doc",
+      "skill_type": "not_in_doc",
+      "difficulty": "medium",
+      "expected_behavior": "abstain",
+      "gold_answer": "知识库中没有提供 2026 年研究生各专业学费标准，不能据此回答具体金额。",
+      "gold_doc_ids": [],
+      "gold_chunk_ids": [],
+      "gold_evidence": [],
+      "gold_key_points": [
+        {
+          "point": "未提供2026研究生学费标准",
+          "aliases": [
+            "未提供2026研究生学费标准"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "学费标准",
+              "研究生",
+              "未提供"
+            ],
+            [
+              "未提供",
+              "学费标准",
+              "研究生"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [
+        "具体学费金额",
+        "每年8000元",
+        "每年12000元"
+      ],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q058",
+      "question": "研究生宿舍如何分配，床位费是多少？",
+      "category": "not_in_doc",
+      "skill_type": "not_in_doc",
+      "difficulty": "medium",
+      "expected_behavior": "abstain",
+      "gold_answer": "知识库中没有提供研究生宿舍分配规则或床位费标准，不能据此回答。",
+      "gold_doc_ids": [],
+      "gold_chunk_ids": [],
+      "gold_evidence": [],
+      "gold_key_points": [
+        {
+          "point": "未提供宿舍分配",
+          "aliases": [
+            "未提供宿舍分配"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "未提供",
+              "宿舍"
+            ]
+          ]
+        },
+        {
+          "point": "未提供床位费",
+          "aliases": [
+            "未提供床位费"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "未提供",
+              "床位费"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [
+        "宿舍按学院分配",
+        "床位费具体金额"
+      ],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q059",
+      "question": "2026—2027 学年校历和寒暑假时间安排是什么？",
+      "category": "not_in_doc",
+      "skill_type": "not_in_doc",
+      "difficulty": "easy",
+      "expected_behavior": "abstain",
+      "gold_answer": "知识库中没有提供 2026—2027 学年校历或寒暑假时间安排，不能据此回答具体日期。",
+      "gold_doc_ids": [],
+      "gold_chunk_ids": [],
+      "gold_evidence": [],
+      "gold_key_points": [
+        {
+          "point": "未提供校历",
+          "aliases": [
+            "未提供校历"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "未提供",
+              "校历"
+            ]
+          ]
+        },
+        {
+          "point": "未提供寒暑假日期",
+          "aliases": [
+            "未提供寒暑假日期"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "未提供",
+              "寒暑假"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [
+        "具体放假日期",
+        "2026年寒假"
+      ],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q060",
+      "question": "内蒙古工业大学图书馆每天开放时间是什么？",
+      "category": "not_in_doc",
+      "skill_type": "not_in_doc",
+      "difficulty": "easy",
+      "expected_behavior": "abstain",
+      "gold_answer": "知识库中没有提供图书馆每日开放时间，不能据此回答。",
+      "gold_doc_ids": [],
+      "gold_chunk_ids": [],
+      "gold_evidence": [],
+      "gold_key_points": [
+        {
+          "point": "未提供图书馆开放时间",
+          "aliases": [
+            "未提供图书馆开放时间"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "开放时间",
+              "未提供",
+              "图书馆"
+            ],
+            [
+              "未提供",
+              "开放时间",
+              "图书馆"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [
+        "早8点到晚10点",
+        "具体开放时间"
+      ],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q061",
+      "question": "学校研究生奖助学金的具体等级、金额和评定比例是什么？",
+      "category": "not_in_doc",
+      "skill_type": "not_in_doc",
+      "difficulty": "medium",
+      "expected_behavior": "abstain",
+      "gold_answer": "知识库中没有提供研究生奖助学金具体等级、金额或评定比例，不能据此回答具体奖助标准。",
+      "gold_doc_ids": [],
+      "gold_chunk_ids": [],
+      "gold_evidence": [],
+      "gold_key_points": [
+        {
+          "point": "未提供研究生奖助学金等级",
+          "aliases": [
+            "未提供研究生奖助学金等级"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "奖助学金",
+              "研究生",
+              "未提供",
+              "等级"
+            ],
+            [
+              "未提供",
+              "奖助学金",
+              "研究生",
+              "等级"
+            ]
+          ]
+        },
+        {
+          "point": "未提供金额",
+          "aliases": [
+            "未提供金额"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "未提供",
+              "金额"
+            ]
+          ]
+        },
+        {
+          "point": "未提供评定比例",
+          "aliases": [
+            "未提供评定比例"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "评定比例",
+              "未提供"
+            ],
+            [
+              "未提供",
+              "评定比例"
+            ]
+          ]
+        }
+      ],
+      "forbidden_points": [
+        "一等奖金额",
+        "二等奖比例",
+        "具体奖助金额"
+      ],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q062",
+      "question": "普通本科四年制专业学生现在最长学习年限是不是 8 年？",
+      "category": "trap",
+      "skill_type": "trap",
+      "difficulty": "hard",
+      "expected_behavior": "answer",
+      "gold_answer": "不能简单回答“是”。2018 年学籍管理办法曾规定普通本科四年制专业学生修业年限为 3～8 年，但 2023 年调整通知明确从 2023 年入学学生起，普通本科四年制专业学习年限调整为 3～6 年。因此如果问题指 2023 年及以后入学学生，最长学习年限是 6 年；“8 年”属于旧口径，不应直接套用。",
+      "gold_doc_ids": [
+        "内蒙古工业大学学籍管理办法（2018年修订）.md",
+        "内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知.md"
+      ],
+      "gold_chunk_ids": [
+        310,
+        7,
+        9
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 310,
+          "text": "一般普通本科四年制专业学生修业年限为3～8年"
+        },
+        {
+          "chunk_id": 7,
+          "text": "普通本科四年制专业学生学习年限调整为3～6年"
+        },
+        {
+          "chunk_id": 9,
+          "text": "本通知调整内容自2023年入学学生起执行"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "不能简单回答8年",
+          "aliases": [
+            "不能简单回答8年"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "不能简单回答",
+              "8年"
+            ]
+          ]
+        },
+        {
+          "point": "旧口径3～8",
+          "aliases": [
+            "旧口径3～8",
+            "3~8",
+            "3到8",
+            "3 — 8",
+            "3至8",
+            "3-8",
+            "3–8"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "3～8",
+              "旧口径"
+            ]
+          ],
+          "regex": "((3\\s*[～~\\-—–至到]\\s*8|三\\s*[至到]\\s*八))"
+        },
+        {
+          "point": "2023起3～6",
+          "aliases": [
+            "2023起3～6",
+            "3~6",
+            "3–6",
+            "3-6",
+            "3至6",
+            "3到6",
+            "3 — 6"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "2023",
+              "3～6"
+            ]
+          ],
+          "regex": "((3\\s*[～~\\-—–至到]\\s*6|三\\s*[至到]\\s*六))"
+        },
+        {
+          "point": "以2023调整通知为准",
+          "aliases": [
+            "以2023调整通知为准"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "forbidden_points": [
+        "现在最长学习年限是8年",
+        "四年制一律8年"
+      ],
+      "distractor_chunk_ids": [],
+      "notes": "过时规则陷阱。"
+    },
+    {
+      "qid": "q063",
+      "question": "研究生学位论文复制比检测结果正好 30% 能直接通过吗？",
+      "category": "trap",
+      "skill_type": "trap",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "不能。办法写的是复制比检测结果在 30% 以下者视为通过；超出 30%（含 30%）但不足 50% 者要按修改和复检程序处理。因此正好 30% 不属于“30% 以下”，不能直接通过。",
+      "gold_doc_ids": [
+        "内蒙古工业大学研究生学位论文复制比检测实施办法.md"
+      ],
+      "gold_chunk_ids": [
+        401
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 401,
+          "text": "复制比检测结果在30%以下者视为通过"
+        },
+        {
+          "chunk_id": 401,
+          "text": "复制比检测结果超出30%（含30%）但不足50%者"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "30%以下才通过",
+          "aliases": [
+            "30%以下才通过",
+            "百分之30",
+            "30％"
+          ],
+          "weight": 1.0,
+          "regex": "(30\\s*[%％])"
+        },
+        {
+          "point": "30%含在处理区间",
+          "aliases": [
+            "30%含在处理区间",
+            "百分之30",
+            "30％"
+          ],
+          "weight": 1.0,
+          "regex": "(30\\s*[%％])"
+        },
+        {
+          "point": "正好30%不直接通过",
+          "aliases": [
+            "正好30%不直接通过",
+            "百分之30",
+            "30％"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "不直接通过",
+              "30%"
+            ]
+          ],
+          "regex": "(30\\s*[%％])"
+        }
+      ],
+      "forbidden_points": [
+        "30%可以通过",
+        "小于等于30%通过"
+      ],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q064",
+      "question": "研究生学位论文评审是不是每篇只送 2 位同行专家？",
+      "category": "trap",
+      "skill_type": "trap",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "gold_answer": "不是。研究生学位论文评审办法规定，每篇学位论文送 3 位同行专家进行评审。",
+      "gold_doc_ids": [
+        "内蒙古工业大学研究生学位论文评审办法.md"
+      ],
+      "gold_chunk_ids": [
+        407
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 407,
+          "text": "每篇学位论文送3位同行专家进行评审"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "不是2位",
+          "aliases": [
+            "不是2位"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "3位同行专家",
+          "aliases": [
+            "3位同行专家"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "forbidden_points": [
+        "2位专家",
+        "两位同行专家"
+      ],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    },
+    {
+      "qid": "q065",
+      "question": "学生证丢失后是不是任何时候都可以补办？",
+      "category": "trap",
+      "skill_type": "trap",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "gold_answer": "不是。学生证补办、变更时间为每学期第十四周，其他时间不予办理；教务问答也说明应在每学期第 14 周通过综合业务系统中的“补办学生证”模块申请，其他时间无法补办。",
+      "gold_doc_ids": [
+        "内蒙古工业大学本、专科学生学生证及校徽管理办法.md",
+        "内蒙古工业大学教务处你问我答栏目整理.md"
+      ],
+      "gold_chunk_ids": [
+        387,
+        365
+      ],
+      "gold_evidence": [
+        {
+          "chunk_id": 387,
+          "text": "学生证补办、变更时间为每学期第十四周，其它时间不予办理"
+        },
+        {
+          "chunk_id": 365,
+          "text": "于每学期第 14 周通过教务处首页“综合业务系统”中的“补办学生证”模块进行申请，其它时间无法补办"
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "不是随时补办",
+          "aliases": [
+            "不是随时补办"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "每学期第14周",
+          "aliases": [
+            "每学期第14周"
+          ],
+          "weight": 1.0
+        },
+        {
+          "point": "综合业务系统补办学生证模块",
+          "aliases": [
+            "综合业务系统补办学生证模块"
+          ],
+          "weight": 1.0,
+          "match_any": [
+            [
+              "综合业务系统补办学生证模块",
+              "综合业务系统"
+            ]
+          ]
+        },
+        {
+          "point": "其他时间无法补办",
+          "aliases": [
+            "其他时间无法补办"
+          ],
+          "weight": 1.0
+        }
+      ],
+      "forbidden_points": [
+        "随时可以补办",
+        "任何时间都能补办"
+      ],
+      "distractor_chunk_ids": [],
+      "notes": ""
+    }
+  ]
+}

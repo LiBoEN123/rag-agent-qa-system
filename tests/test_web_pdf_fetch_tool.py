@@ -24,7 +24,7 @@ from app.tools.registry import ToolRegistry, get_tool_registry
 from app.tools.result import tool_success
 from app.tools.runtime import ToolRuntime
 from app.tools.schemas import WebPdfFetchArgs, WebPdfFetchOutput
-from scripts.generate_web_pdf_fixture import build_text_pdf
+from tests.support.pdf_fixture import build_text_pdf
 
 
 web_download_module = import_module("app.tools.web_download")

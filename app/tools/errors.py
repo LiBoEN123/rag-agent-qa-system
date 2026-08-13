@@ -31,6 +31,28 @@ class ToolErrorCode(str, Enum):
     POLICY_DENIED = "policy_denied"
     AUDIT_WRITE_FAILED = "audit_write_failed"
 
+    SQL_NOT_CONFIGURED = "sql_not_configured"
+    SQL_PERMISSION_DENIED = "sql_permission_denied"
+    SQL_INVALID_STATEMENT = "sql_invalid_statement"
+    SQL_MULTIPLE_STATEMENTS = "sql_multiple_statements"
+    SQL_WRITE_FORBIDDEN = "sql_write_forbidden"
+    SQL_TABLE_NOT_ALLOWED = "sql_table_not_allowed"
+    SQL_DANGEROUS_FUNCTION = "sql_dangerous_function"
+    SQL_RESULT_TOO_WIDE = "sql_result_too_wide"
+    SQL_TIMEOUT = "sql_timeout"
+    SQL_CONNECTION_ERROR = "sql_connection_error"
+    SQL_EXECUTION_ERROR = "sql_execution_error"
+
+    MCP_NOT_CONFIGURED = "mcp_not_configured"
+    MCP_PERMISSION_DENIED = "mcp_permission_denied"
+    MCP_DISCOVERY_FAILED = "mcp_discovery_failed"
+    MCP_TOOL_NOT_ALLOWED = "mcp_tool_not_allowed"
+    MCP_TOOL_TIMEOUT = "mcp_tool_timeout"
+    MCP_TRANSPORT_ERROR = "mcp_transport_error"
+    MCP_EXECUTION_ERROR = "mcp_execution_error"
+    MCP_UNSUPPORTED_CONTENT = "mcp_unsupported_content"
+    MCP_OUTPUT_TOO_LARGE = "mcp_output_too_large"
+
 
 class ToolExecutionError(Exception):
     """允许工具实现显式声明错误类别及其是否可重试。"""

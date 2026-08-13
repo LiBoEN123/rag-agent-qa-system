@@ -68,6 +68,11 @@ def test_runtime_report_preserves_graph_contract(
         "chat_router_isolated",
         "chat_service_orchestration_boundary",
         "chat_telemetry_extracted",
+        "chat_stream_route_present",
+        "chat_stream_uses_same_service",
+        "graph_streaming_runtime_present",
+        "stream_event_contract_present",
+        "sync_chat_route_preserved",
         "current_architecture_documented",
         "history_archived",
         "pydantic_settings_model",
@@ -82,6 +87,22 @@ def test_runtime_report_preserves_graph_contract(
         "http_framework_boundary",
         "settings_framework_boundary",
         "zero_import_ignores",
+        "sql_tools_disabled_by_default",
+        "sql_tools_require_database_read",
+        "sql_tools_are_read_only",
+        "sql_tools_use_registry_runtime",
+        "sql_tools_have_pydantic_contracts",
+        "sql_tools_do_not_require_approval",
+        "sql_tools_share_chat_paths",
+        "mcp_disabled_by_default",
+        "mcp_uses_langchain_adapter",
+        "mcp_http_only_v1",
+        "mcp_tools_require_server_permission",
+        "mcp_tools_have_local_allowlist",
+        "mcp_tool_names_are_prefixed",
+        "mcp_outputs_are_untrusted",
+        "mcp_local_registry_path_preserved",
+        "mcp_governance_path_preserved",
     } <= {item["name"] for item in report["checks"]}
     assert report["module_boundaries"] == {
         "import_linter_configured": True,
@@ -93,6 +114,12 @@ def test_runtime_report_preserves_graph_contract(
     }
     assert report["agent_result_contract"]["model"] == "AgentRunResult"
     assert report["agent_result_contract"]["extra"] == "forbid"
+    assert report["mcp_client"] == {
+        "enabled_by_default": False,
+        "config_version": 1,
+        "transport": "streamable_http",
+        "dependency": "0.3.2",
+    }
     assert {
         item["result_status"] for item in report["chat_status_policy"]
     } == {

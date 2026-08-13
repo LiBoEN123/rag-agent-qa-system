@@ -1,7 +1,9 @@
 """LangGraph Agent Runtime 公共入口。"""
 
 from app.graph.builder import (
+    areset_agent_graph_runtime,
     build_agent_graph,
+    get_async_compiled_agent_graph,
     get_compiled_agent_graph,
     reset_agent_graph_runtime,
 )
@@ -10,7 +12,9 @@ from app.graph.runtime import run_agent_langgraph
 
 
 __all__ = [
+    "areset_agent_graph_runtime",
     "build_agent_graph",
+    "get_async_compiled_agent_graph",
     "get_compiled_agent_graph",
     "reset_agent_graph_runtime",
     "build_checkpoint_thread_id",

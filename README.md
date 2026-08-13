@@ -4,8 +4,12 @@
 
 当前实现的职责、调用链和持久化边界见
 [当前系统架构](docs/architecture/current-system.md)。
+受治理的业务数据库接入见
+[只读 SQL 工具](docs/tools/sql-readonly.md)。
+外部只读工具接入见
+[受治理的 MCP Client 工具源](docs/tools/mcp-client.md)。
 
-本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。`/chat` 唯一使用 LangGraph 父图中的 LangChain `create_agent` 执行模型—工具循环；传入 `session_id` 时还会结合 SQLite 中最近的会话历史对短追问做 Query Rewrite。
+本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。同步 `/chat` 与 SSE `/chat/stream` 复用 LangGraph 父图中的 LangChain `create_agent` 模型—工具循环；传入 `session_id` 时还会结合 SQLite 中最近的会话历史对短追问做 Query Rewrite。
 
 ## 项目亮点
 
@@ -15,12 +19,13 @@
 - ChromaDB 持久化：chunk 文本、metadata 和 embedding 持久化保存，服务重启可复用索引缓存。
 - 图内确定性入口 Router：由 LangGraph 父图在每次 Runtime 调用时执行一次，只处理空问题、少量稳定直答和明确澄清；其他自然语言请求统一进入 `agent`，具体工具由 Agent Model 根据当前请求可见的动态 Tool Schema 选择。
 - 框架原生 Agent Runtime：LangGraph 父图嵌入 LangChain `create_agent` 子图，由框架管理模型—工具循环、参数校验、ToolMessage 和调用上限。
-- 权限感知的 Registry-driven 工具发现：Provider 按请求权限只暴露满足 `required_permissions` 的工具，Middleware 将其注入模型和执行层；工具仍经 `StructuredTool → ToolRegistry → ToolRuntime` 执行。
+- 权限感知的动态工具发现：本地 Provider 按 `required_permissions` 过滤 Registry tools；可选 MCP Provider 通过 Server 默认可见性或显式 `mcp:<server>` 授权过滤启动期缓存的 adapter tools，两者由同一 Middleware 注入模型和执行层。
 - Agent 循环防护：工具错误总数、连续相同调用、连续相同错误和模型/工具累计耗时均有独立预算；终止错误对同批后续调用 fail-closed，并补齐关联 ToolMessage。
 - 多轮追问改写：同一 `session_id` 下通过 SQLite 保留最近会话历史，短追问和指代问题会先改写成独立检索问题。
-- 工具调用：支持知识库检索、公开网页搜索与受治理的单页正文提取、双文档内容对比、简单四则运算、列出知识库文档和查看指定 chunk 原文。
+- 工具调用：支持知识库检索、公开网页搜索与受治理的正文提取、文档工具、计算，以及默认关闭的 allowlist 只读 SQL 与 Streamable HTTP MCP Client 工具源。
 - 引用绑定和拒答机制：模型输出的 `Reference N` 会绑定回真实文件与 chunk；证据不足或引用支撑不足时拒答。
-- 可观测性：每次 `/chat` 请求记录 `trace_id`、阶段耗时、状态、工具调用、引用数量和 LLM 调用次数。
+- 同步与流式聊天：保留 `/chat` JSON 合同，并提供 `/chat/stream` 的 progress、tool、安全答案增量和权威 final SSE 事件。
+- 可观测性：每次同步或流式聊天请求记录 `trace_id`、阶段耗时、状态、工具调用、引用数量和 LLM 调用次数。
 - bad case 日志：对模型格式异常、引用异常、工具异常、索引未就绪等失败样例做结构化记录。
 - 离线评测闭环：支持批量生成预测结果，并从答案质量、检索命中、行为约束和可选 LLM Judge 语义判断等维度评测。
 
@@ -28,7 +33,7 @@
 
 ```mermaid
 flowchart TD
-    User[用户问题] --> API[FastAPI /chat]
+    User[用户问题] --> API[FastAPI /chat 或 /chat/stream]
     API --> Service[ChatService]
     Service --> History[(SQLite Session History)]
     History --> Rewrite[Query Rewrite]
@@ -132,9 +137,9 @@ flowchart TD
 | 引用绑定 | 将 `Reference N` 映射回真实文件、`chunk_id`、`snippet` 和分数 |
 | Agent Runtime | LangGraph 父图嵌入唯一的 LangChain `create_agent` 子图；框架负责模型—工具循环、参数校验、ToolMessage 和模型/工具调用上限 |
 | Agent 路由 | 父图 `route` 是唯一 Router 所有者；所有 Runtime 调用先路由再 initialize。正常请求输出 `agent`，`direct_answer` / `clarify` 在 initialize + compose 中安全短路 |
-| 工具发现 | `ToolProvider` 按请求权限过滤模型可见 ToolSpec，`RegistryToolsMiddleware` 对模型绑定和实际执行使用同一组请求级 StructuredTool；普通新工具无需修改核心编排 |
+| 工具发现 | 本地 `ToolProvider` 过滤 ToolSpec；可选 MCP Provider 过滤启动期 discovery cache。`RegistryToolsMiddleware` 对模型绑定和执行使用同一组请求级工具 |
 | Agent Guardrail | 工具错误总数、连续相同调用/错误、累计模型与工具耗时预算、同批 fail-closed、无悬空 ToolMessage |
-| 工具调用 | Registry 注册八个生产工具：`search_knowledge_base`、`web_search`、`web_fetch`、`web_pdf_fetch`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text`；默认可见数量由请求权限决定 |
+| 工具调用 | 默认 Registry 保持八个生产工具；显式启用只读 SQL 后额外注册 `list_sql_tables`、`describe_sql_table`、`query_sql_readonly`。模型可见集合始终由请求权限决定 |
 | 可观测性 | `trace_id`、请求耗时、阶段耗时、工具调用日志、metrics 汇总接口 |
 | 失败分析 | `logs/bad_cases.jsonl` 记录值得分析的失败样例 |
 | 评测 | 支持规则评测、Chroma/chunks 索引取证和可选 LLM Judge 语义评估 |
@@ -156,7 +161,12 @@ flowchart TD
 12. 引用绑定：解析模型返回的 references，并绑定到真实文件、chunk、snippet、score。
 13. 置信度与拒答：结合召回分数、引用数量和证据阈值估算置信度；证据不足、检索为空或引用支撑不足时返回拒答状态。
 
-## 评测结果
+## 历史 RAG 单项评测结果
+
+下表是 Evaluation Baseline v2 引入前记录的 65 题 RAG 单项结果，仅用于历史对照；
+它不包含 Agent Core、Online tools、多轮会话或统一 manifest，也不代表当前代码与
+当前模型配置下的最新成绩。当前统一评测入口、复现约束和结果比较方式见
+[Evaluation Baseline v2](docs/evaluation/baseline-v2.md)。
 
 | Metric              |  Score |
 | ------------------- | -----: |
@@ -169,7 +179,9 @@ flowchart TD
 | Behavior Score      | 0.9846 |
 | Forbidden Hit       |      0 |
 
-评测集覆盖 `single_doc`、`cross_doc`、`partial_answer`、`not_in_doc`、`trap` 五类问题。系统在普通单文档问答、跨文档问答和无答案拒答场景中表现稳定；当前主要优化方向是 `partial_answer` 场景和新旧政策冲突类 `trap` 问题。
+该历史评测集覆盖 `single_doc`、`cross_doc`、`partial_answer`、`not_in_doc`、
+`trap` 五类问题；当时的主要优化方向是 `partial_answer` 场景和新旧政策冲突类
+`trap` 问题。
 
 ## 工程化设计
 
@@ -182,7 +194,7 @@ flowchart TD
 - 启动时基于 manifest 判断是否需要重建索引；知识库文件、chunk 参数、embedding/rerank 模型或 pipeline 版本变化会触发重建。
 - 多轮会话历史保存在 `SQLITE_DB_PATH` 指定的 SQLite 数据库中，每个 `session_id` 默认读取最近 6 条 user/assistant 消息，服务重启后仍可继续使用。
 - 设置 `ENABLE_AGENT_TRACE_STORE=true` 后，Agent 的运行摘要和步骤明细会写入同一 SQLite 数据库的 `agent_runs`、`agent_steps` 表。
-- `/chat` 请求支持继承或生成 `trace_id`，响应头返回 `X-Trace-Id` 和 `X-Total-Cost-Ms`。
+- `/chat` 请求支持继承或生成 `trace_id`，响应头返回 `X-Trace-Id` 和 `X-Total-Cost-Ms`；`/chat/stream` 只在响应头返回 `X-Trace-Id`，真实总耗时位于 `final.data.total_cost_ms`。
 - metrics 记录 Query Rewrite、路由、Agent、检索、问题拆分、重排、上下文构造、LLM 调用、JSON 解析等阶段耗时和 LLM 调用次数。
 - bad case 日志用于定位失败样例，包括模型 JSON 解析失败、引用异常、工具异常、内部异常和索引未就绪。
 
@@ -198,7 +210,7 @@ flowchart TD
 父图的 `route_node` 唯一持有，因此聊天业务可脱离 FastAPI 测试且不会形成第二个
 路由入口。
 
-API 请求与响应 Schema、HTTP 状态语义和 trace 响应头保持不变；ChatService 固定调用 LangGraph 主图，知识库回答统一进入 RAG 子图。
+同步 API 请求/响应 Schema、HTTP 状态和 trace/total-cost 响应头保持不变；流式入口复用同一个 ChatService，完整 SSE 合同见 [聊天流式 API](docs/api/chat-streaming.md)。
 
 FastAPI middleware 与 Uvicorn access-log 适配分别位于
 `app/api/middleware.py` 和 `app/api/http_logging.py`。Uvicorn filter 只在
@@ -229,11 +241,62 @@ Agent Runtime。
 
 新增普通本地工具只需创建合法 `ToolSpec` 并注册到 Registry，不需要修改 Router、父图、`create_agent` 或 Middleware。`LocalToolProvider` 复用精确、区分大小写的 `has_permission()`，仅当 Context 满足全部 `required_permissions` 时才向模型暴露工具；空权限要求始终可见。过滤保持 Registry 顺序，不执行完整 Policy、handler、Runtime 或审计，也不会因审批、风险等级或暂缺幂等键隐藏工具。
 
-模型伪造未绑定的隐藏名称时沿用框架未知工具路径，只返回 `unknown_tool`，不证明工具是否存在，也不泄漏 description、参数 Schema 或缺失权限。模型可见性不是授权替代：所有真实调用仍进入 `ToolRegistry.dispatch() → ToolRuntime.execute()` 做最终权限与执行期治理；绕过模型可见性直接分发无权工具仍返回 `permission_denied`。多 Provider 合并保持 Provider/注册顺序并拒绝重名；当前生产环境只有 `LocalToolProvider`。
+模型伪造未绑定的隐藏名称时沿用框架未知工具路径，只返回 `unknown_tool`，不证明工具是否存在，也不泄漏 description、参数 Schema 或缺失权限。模型可见性不是授权替代：本地真实调用仍进入 `ToolRegistry.dispatch() → ToolRuntime.execute()` 做最终权限与执行期治理；MCP Provider 和官方 adapter interceptor 复用同一个 Server Access Policy。多工具源合并保持稳定顺序并拒绝重名。
 
 模型—工具循环由 `langchain.agents.create_agent` 构建；其内部使用 LangGraph 标准 model/tools 节点处理 Pydantic 校验、同轮调用和基础 ToolMessage。动态工具通过 Middleware 覆盖请求，而不是在父图节点中手工 `bind_tools()`。`ModelCallLimitMiddleware` 和 `ToolCallLimitMiddleware` 分别执行单次 run 的模型与工具调用上限，父图调用还设置 `recursion_limit` 作为最终图级兜底。
 
 `ProjectToolGovernanceMiddleware` 只保留框架无法决定的项目语义：错误码分类、累计错误、连续相同调用/错误、协作式总耗时预算以及 terminal error 同批 fail-closed。已注册工具的调用指纹复用 `app.tools.policy.build_tool_args_fingerprint()`；未知模型 JSON 只做小型 JSON-compatible fallback。它不执行 handler、不复制 ToolRuntime 重试，也不自行实现参数校验或工具循环。
+
+两个项目 Middleware 同时实现同步 `wrap_model_call` / `wrap_tool_call` 和异步 `awrap_model_call` / `awrap_tool_call`；`/chat` 与 `/chat/stream` 因此共享完全相同的动态工具可见性、模型事件、工具治理、停止条件和 RAG handoff，而不是由异步路径绕过治理。
+
+## 只读 SQL 工具
+
+只读 SQL 能力默认关闭；关闭时不创建 Engine、不连接数据库、不注册工具，默认八个
+工具和 Evaluation Baseline 合同保持不变。显式启用时还必须配置非空表 allowlist，
+并把 `database:read` 加入目标请求主体权限：
+
+```env
+SQL_TOOL_ENABLED=true
+SQL_DATABASE_URL=sqlite:////srv/rag-agent/business.sqlite3
+SQL_ALLOWED_TABLES=students,courses
+TOOL_DEFAULT_PERMISSIONS=knowledge_base:read,database:read
+```
+
+第一版正式验证 SQLite，并在 sqlglot 单语句只读 AST、物理表 allowlist、危险函数、
+AST `LIMIT`、语句超时和有限输出之外，同时使用 SQLite `mode=ro` 与
+`PRAGMA query_only=ON`。AST 不是数据库权限替代品；其他数据库未来安装驱动后仍必须
+使用数据库侧只读账号。数据库内容统一标记为不可信数据，不能当成系统或工具指令。
+该数据源不得指向项目 Session、Checkpoint、Chroma 或 Evaluation 持久化。完整配置、
+错误边界和手动冒烟命令见[只读 SQL 工具文档](docs/tools/sql-readonly.md)。
+
+## MCP Client 工具源
+
+MCP 默认关闭；关闭时不读取 Server 配置、不连接网络、不 discovery，默认本地工具与
+Evaluation 合同不变。启用后，FastAPI 启动期使用官方
+`langchain-mcp-adapters.MultiServerMCPClient` 从部署者静态配置的 Streamable HTTP
+Server 获取工具，只保留精确 `allowed_tools` 中的 read-only tool，并以
+`<server>_<tool>` 隔离名称。`enabled_for_default_principal=true` 可授权当前默认
+SERVICE 主体；其他主体继续使用精确的请求级 `mcp:<server>` 权限。
+
+MCP Server 定义不放进 `.env`：`.env` 只保存 MCP 全局开关和限制；全部 Server URL、
+认证 Header、`allowed_tools`、启停与默认可见性位于 gitignored 的
+`config/mcp_servers.local.json`。本地 `headers` 使用 `SecretStr`，生产还可通过
+`headers_env` 引用 Secret Manager 注入的环境变量。初始化方式如下：
+
+```bash
+cp config/mcp_servers.example.json config/mcp_servers.local.json
+```
+
+编辑 local JSON 后，只需在 `.env` 设置 `MCP_TOOLS_ENABLED=true` 并重启。以后新增普通
+Server 只编辑这一个 local JSON，不需要修改 Python、`AppSettings`、`.env`、
+`.env.example` 或 `TOOL_DEFAULT_PERMISSIONS`。`enabled=false` 的 Server 不进入 adapter
+connections、不 discovery，也不会建立网络连接。
+
+MCP Tool 保持 adapter `StructuredTool`，不会反向转换成 `ToolSpec`；同步 `/chat` 使用
+MCP 专属最小 async-to-sync bridge，流式 `/chat/stream` 直接 await coroutine。输出被
+视为不可信外部数据并脱敏、限长，image/audio/resource 等第一版不进入模型上下文。
+所有调用继续经过现有 Agent Guardrail、ToolResult、审计和 SSE 白名单投影。配置、
+安全边界和冒烟命令见[受治理的 MCP Client 工具源](docs/tools/mcp-client.md)。
 
 ## Web Search
 
@@ -250,7 +313,7 @@ TOOL_DEFAULT_PERMISSIONS=knowledge_base:read,web:search
 真实网络验证只通过维护者手动运行，不进入 Pytest/CI：
 
 ```bash
-python scripts/smoke_test_web_search.py \
+python scripts/smoke_test_online_tools.py search \
   --query "LangGraph latest release" \
   --max-results 3
 ```
@@ -276,7 +339,7 @@ TOOL_DEFAULT_PERMISSIONS=knowledge_base:read,web:search,web:fetch
 真实网络验证仅由维护者手动执行，不进入 Pytest/CI：
 
 ```bash
-python scripts/smoke_test_web_fetch.py \
+python scripts/smoke_test_online_tools.py fetch \
   --url "https://example.com/" \
   --max-chars 4000
 ```
@@ -296,7 +359,7 @@ PDF 文本和元数据固定标记 `content_is_untrusted=true`，只能作为回
 真实网络验证仅由维护者手动执行，不进入 Pytest/CI：
 
 ```bash
-python scripts/smoke_test_web_pdf_fetch.py \
+python scripts/smoke_test_online_tools.py pdf \
   --url "https://example.com/document.pdf" \
   --start-page 1 \
   --max-pages 3 \
@@ -309,7 +372,7 @@ python scripts/smoke_test_web_pdf_fetch.py \
 
 项目当前唯一 Agent Runtime 是 LangGraph 父图中的 LangChain `create_agent` 子图。旧 `agent_model`、`governed_tools` 和 `limit_handler` 自定义循环已经删除，不提供双实现或运行时回滚开关；需要回滚版本时使用 Git commit、tag 或 release。
 
-当前请求链路为 `FastAPI application → Chat Router → ChatService → Session History / Query Rewrite → run_agent_langgraph → route → initialize → framework_agent / compose → Finalize → Session / Metrics → API Response`。ChatService 不调用 Router，也不生成或传入 decision；正常 `/chat`、离线评测和其他 Runtime 调用方都共享父图入口的同一个 Router。Router 不枚举工具意图，也不调用模型；它把普通请求交给能看到动态工具 Schema 的 Agent Model。
+同步请求链路为 `FastAPI application → Chat Router → ChatService → Session History / Query Rewrite → run_agent_langgraph → route → initialize → framework_agent / compose → Finalize → Session / Metrics → API Response`。流式入口把 Runtime 门面替换为 `stream_agent_langgraph → graph.astream → 安全事件投影 → SSE`，最终结果仍回到同一状态策略和 Response mapper。ChatService 不调用 Router，也不生成或传入 decision；正常 `/chat`、`/chat/stream`、离线评测和其他 Runtime 调用方都共享父图入口的同一个 Router。Router 不枚举工具意图，也不调用模型；它把普通请求交给能看到动态工具 Schema 的 Agent Model。
 
 主图的核心结构为：
 
@@ -319,7 +382,7 @@ START → route → initialize
   └─ agent → framework_agent（create_agent 内部 model ↔ tools）
        → adapt_framework
        ├─ search_knowledge_base 成功 → RAG 子图 → finalize
-       ├─ web_search / web_fetch / web_pdf_fetch 等普通工具 → ToolMessage → Agent Model → compose → finalize
+       ├─ Web / SQL / MCP 等普通工具 → ToolMessage → Agent Model → compose → finalize
        ├─ 无工具最终回答 → compose → finalize
        └─ 治理或调用预算终止 → compose → finalize
 ```
@@ -330,7 +393,7 @@ START → route → initialize
 
 ### LangGraph RAG 子图
 
-知识库问答由独立子图依次执行问题歧义判断、Query Decompose、检索与重排、Evidence Gate、Context Build、回答生成、JSON 解析、引用绑定与验证。子图复用现有检索、Rerank、ChromaDB、模型网关、引用和置信度算法，API Schema 没有变化。`search_knowledge_base` 成功时工具返回 `Command.PARENT` 更新 ToolMessage 与 `pending_rag_result`；父图薄适配节点据此进入 RAG 子图，避免 Agent Model 直接基于原始 chunks 生成无引用答案。`scripts/agent_eval.py` 也固定使用 LangGraph Runtime；Streaming 和 Interrupt 仍未实现。
+知识库问答由独立子图依次执行问题歧义判断、Query Decompose、检索与重排、Evidence Gate、Context Build、回答生成、JSON 解析、引用绑定与验证。子图复用现有检索、Rerank、ChromaDB、模型网关、引用和置信度算法，API Schema 没有变化。`search_knowledge_base` 成功时工具返回 `Command.PARENT` 更新 ToolMessage 与 `pending_rag_result`；父图薄适配节点据此进入 RAG 子图，避免 Agent Model 直接基于原始 chunks 生成无引用答案。Evaluation Baseline v2 也固定使用同一 LangGraph Runtime。SSE 会流出 RAG 进度和安全工具状态，但不会流出 RAG JSON token；完整回答位于 `final`。Interrupt 仍未实现。
 
 ### LangGraph Checkpointer
 
@@ -343,11 +406,11 @@ LANGGRAPH_CHECKPOINTER=sqlite
 LANGGRAPH_CHECKPOINT_DB_PATH=./data/langgraph_checkpoints.sqlite3
 ```
 
-`memory` 仅适合测试和本地实验，进程退出后状态会丢失；`sqlite` 适合本地运行和开发。当前每次 `/chat` 请求都会根据该请求的 `trace_id` 生成独立且经过摘要处理的 Graph thread，因此同一 `session_id` 的不同请求也不会累积上一轮的 `decision`、业务结果字段或 `result`。Checkpoint 的 channel payload 直接对应平铺的 `AgentGraphState`，其中 observation 是普通字典；SQLite Saver 的表结构没有变化。
+`memory` 仅适合测试和本地实验，进程退出后状态会丢失；`sqlite` 适合本地运行和开发。同步 `/chat` 使用 `SqliteSaver`，流式 `/chat/stream` 使用 `AsyncSqliteSaver` 与独立异步连接，两者保持相同数据库路径、表结构和 thread ID 规则。当前每次请求都会根据该请求的 `trace_id` 生成独立且经过摘要处理的 Graph thread，因此同一 `session_id` 的不同请求也不会累积上一轮的 `decision`、业务结果字段或 `result`。Checkpoint 的 channel payload 直接对应平铺的 `AgentGraphState`，其中 observation 是普通字典；SQLite Saver 的表结构没有变化。
 
 Checkpointer 只保存 Graph 节点执行快照，不替代应用级聊天历史。Query Rewrite 仍从 `SQLITE_DB_PATH` 指定的 session 数据库读取最近消息，用户和助手消息也仍写入该数据库。Checkpoint 文件可能包含用户问题、工具结果、模型回答、引用信息和 Graph 中间状态，不能提交到 Git 仓库，并应按敏感业务数据保护。
 
-当前尚未实现 Checkpoint 自动恢复、Replay、Time Travel、Interrupt、人工审批、Streaming、Checkpoint 管理 API 或生产级分布式 Checkpointer。
+当前尚未实现 Checkpoint 自动恢复、Replay、Time Travel、Interrupt、人工审批、RAG JSON token streaming、Checkpoint 管理 API 或生产级分布式 Checkpointer。
 
 ### Tool Calling 自动测试与真实模型冒烟
 
@@ -359,7 +422,7 @@ Fake Model 自动测试验证 Graph 编排、错误分类、治理链、预算�
 python scripts/smoke_test_agent_tool_calling.py
 ```
 
-脚本会显示实际绑定的工具名、`search_knowledge_base` 与 `simple_calculator` 参数 Schema，以及两种强制工具场景返回的 AIMessage 类型、`tool_calls`、工具名、参数、`tool_call_id` 和 `additional_kwargs`。脚本不打印 API Key，不属于默认 Pytest/CI；本次 PR3 自动回归不会运行它。
+脚本会显示实际绑定的工具名、`search_knowledge_base` 与 `simple_calculator` 参数 Schema，以及两种强制工具场景返回的 AIMessage 类型、`tool_calls`、工具名、参数、`tool_call_id` 和 `additional_kwargs`。脚本不打印 API Key，不属于默认 Pytest/CI；自动回归不会运行它。
 
 ## Agent Runtime 检查
 
@@ -380,6 +443,7 @@ lint-imports
 - [当前系统架构](docs/architecture/current-system.md)
 - [Agent Runtime 维护指南](docs/agent-runtime-maintenance.md)
 - [模块依赖边界](docs/architecture/module-boundaries.md)
+- [Evaluation Baseline v2](docs/evaluation/baseline-v2.md)
 - [2026 年 Agent 演进归档](docs/history/agent-evolution-2026.md)
 - [ADR 0001：开源 Agent 技术栈](docs/adr/0001-open-source-agent-stack.md)
 - [ADR 0002：迭代式 Agent Loop](docs/adr/0002-iterative-agent-loop.md)
@@ -451,7 +515,10 @@ uvicorn app.main:app --reload
 streamlit run demo/streamlit_app.py
 ```
 
-页面默认连接 `http://127.0.0.1:8000`，也可以在侧边栏修改后端地址。
+页面默认连接 `http://127.0.0.1:8000`，也可以在侧边栏修改后端地址。聊天面板默认
+调用 `/chat/stream`，实时展示安全的处理阶段、工具状态和直接回答文本增量，并只把
+`final.data.response` 写入本轮完整消息；RAG 请求没有 `answer_delta` 时会继续显示进度
+并等待 `final`。侧边栏可显式切换到同步 `/chat`，流建立后不会自动重发同步请求。
 
 ## 环境变量
 
@@ -512,7 +579,20 @@ Tool Runtime、Graph/Checkpointer 缓存；生产服务通常直接重启进程�
 | `WEB_PDF_MAX_RESPONSE_BYTES` | Web PDF 解压后响应上限，默认 `10000000` bytes |
 | `WEB_PDF_MAX_DOCUMENT_PAGES` | Web PDF 允许的文档总页数上限，默认 `1000` |
 | `WEB_PDF_TOOL_TIMEOUT_SECONDS` | Web PDF ToolRuntime 总体超时，默认 `45` 秒，必须大于连接与读取超时之和 |
-| `TOOL_DEFAULT_PERMISSIONS` | 默认服务主体权限；默认仅 `knowledge_base:read`，需分别显式加入 `web:search`、`web:fetch` 才暴露相应 Web 工具 |
+| `SQL_TOOL_ENABLED` | 是否注册只读 SQL 工具，默认 `false`；关闭时不创建 Engine 或连接数据库 |
+| `SQL_DATABASE_URL` | `SecretStr` 业务数据库 URL；启用时必填，禁止指向项目内部持久化 |
+| `SQL_ALLOWED_TABLES` | 逗号分隔的 `table` / `schema.table` 硬 allowlist；启用时必填 |
+| `SQL_DEFAULT_SCHEMA` | 可选默认 Schema；模型只能请求它或 allowlist 明示 Schema |
+| `SQL_MAX_ROWS` / `SQL_MAX_COLUMNS` | 查询最大返回行数和列数，默认 `50` / `50` |
+| `SQL_MAX_CELL_CHARS` / `SQL_MAX_OUTPUT_CHARS` | 单元格与整体结构化输出字符上限，默认 `1000` / `50000` |
+| `SQL_STATEMENT_TIMEOUT_MS` | 数据库语句超时，默认 `5000` ms，必须小于工具总体超时 |
+| `SQL_TOOL_TIMEOUT_SECONDS` | ToolRuntime SQL 工具总体超时，默认 `10` 秒 |
+| `MCP_TOOLS_ENABLED` | 是否启用 MCP Client，默认 `false`；关闭时不读取配置或连接 Server |
+| `MCP_SERVERS_CONFIG_PATH` | MCP Server 静态 JSON 路径；默认是 Git 忽略的 `config/mcp_servers.local.json`，可用项目内相对路径或绝对路径覆盖 |
+| `MCP_DISCOVERY_TIMEOUT_SECONDS` / `MCP_TOOL_TIMEOUT_SECONDS` | 启动 discovery 与单次 MCP Tool 超时，默认 `5` / `15` 秒 |
+| `MCP_MAX_TOOLS_PER_SERVER` | 每 Server 精确 allowlist 上限，默认 `20` |
+| `MCP_MAX_TEXT_CHARS` / `MCP_MAX_STRUCTURED_CHARS` | MCP 文本与 structured content 的模型上下文上限，默认 `12000` / `20000` |
+| `TOOL_DEFAULT_PERMISSIONS` | 默认服务主体通用权限；默认仅 `knowledge_base:read`，Web/SQL 仍需显式权限；MCP 默认主体可见性由每个 Server 的 `enabled_for_default_principal` 配置 |
 | `USE_LLM_JUDGE` | 评测脚本是否启用 LLM Judge，默认 `false` |
 | `JUDGE_API_KEY` | 评测 Judge 模型 API Key；为空时可复用回答模型 Key |
 | `JUDGE_MODEL` | 评测 Judge 模型名称 |
@@ -622,10 +702,11 @@ DECOMPOSE_API_URL=http://127.0.0.1:11434/v1/chat/completions
 | `/docs-preview` | GET | 查看已加载文档列表 |
 | `/chunks-preview` | GET | 查看 chunk 预览，支持 `max_len`、`limit`、`file_name` |
 | `/chat` | POST | 完整 Agent + RAG 问答入口 |
+| `/chat/stream` | POST | 复用同一业务链的 SSE 聊天入口；`final` 是权威结果 |
 | `/search` | POST | 只执行检索和 rerank，不调用回答模型 |
 | `/decide` | POST | 只返回 Agent 路由决策，不执行工具或 RAG |
 | `/kb_summary` | POST | 返回知识库 ready 状态、文档数、chunk 数和 `index_source` |
-| `/metrics-summary` | GET | 汇总最近 N 条 `/chat` 请求指标 |
+| `/metrics-summary` | GET | 汇总最近 N 条同步/流式聊天请求指标 |
 
 ### `/chat` 请求示例
 
@@ -640,6 +721,21 @@ curl -X POST "http://127.0.0.1:8000/chat" \
     "session_id": "demo_session_001"
   }'
 ```
+
+### `/chat/stream` SSE 示例
+
+```bash
+curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{"question":"缓考应该如何办理？","top_k":5}'
+```
+
+合法非空问题返回 `HTTP 200 text/event-stream`，事件边界为
+`start → progress/tool/answer_delta... → final → done`。空问题在建流前保持
+`HTTP 400 application/json`；业务错误通过标准 `final.data.response` 表达。部分 RAG
+请求可能没有 `answer_delta`，完整答案始终在 `final`。事件字段、安全过滤、断开语义
+和 Python 冒烟命令见 [聊天流式 API 文档](docs/api/chat-streaming.md)。
 
 核心响应字段：
 
@@ -725,7 +821,7 @@ GET /metrics-summary?limit=20
 
 如果 `/chat` 传入 `session_id`，Query Rewrite 会在 Agent Router 之前执行；Router 看到的是改写后的有效问题，响应中的 `data.question` 仍保留原始输入，改写细节记录在 `data.tool_trace` 的 `query_rewrite` step 中。
 
-Router 不调用独立模型，也不解析具体工具 action。普通问题进入 `create_agent` 后，Agent Model 根据 `RegistryToolsMiddleware` 注入的当前可见 StructuredTool/Pydantic Schema 选择 `search_knowledge_base`、`compare_documents`、`simple_calculator`、`list_documents`、`get_chunk_text`、`web_search`、`web_fetch` 或 `web_pdf_fetch`；执行仍统一经过 `ToolRegistry` 和 `ToolRuntime`。
+Router 不调用独立模型，也不解析具体工具 action。普通问题进入 `create_agent` 后，Agent Model 根据 `RegistryToolsMiddleware` 注入的当前可见 StructuredTool/Pydantic Schema 选择本地 Registry 工具或获授权的 MCP 工具；本地执行仍统一经过 `ToolRegistry` 和 `ToolRuntime`，MCP 执行通过官方 adapter 和项目 bridge 后进入相同 Agent 治理。
 
 ## 索引构建与缓存
 
@@ -757,17 +853,17 @@ python scripts/cache_models.py
 
 ## 日志与可观测性
 
-`/chat` 会为每次请求生成或继承 `trace_id`：
+`/chat` 与 `/chat/stream` 会为每次请求生成或继承 `trace_id`：
 
 - 请求头可传入 `X-Trace-Id`。
-- 响应头会返回 `X-Trace-Id` 和 `X-Total-Cost-Ms`。
-- 响应体也包含 `trace_id`。
+- 两个入口都在响应头返回 `X-Trace-Id`；只有同步 `/chat` 返回准确的 `X-Total-Cost-Ms`。
+- 同步响应体和每个 SSE 信封都包含 `trace_id`；流式真实总耗时位于 `final`。
 
 日志文件：
 
 | 文件 | 说明 |
 | --- | --- |
-| `logs/metrics.jsonl` | 每次 `/chat` 的耗时、状态、action、引用数、工具信息、Query Rewrite 和 LLM 调用统计 |
+| `logs/metrics.jsonl` | 每次同步/流式聊天的耗时、状态、action、引用数、工具信息、Query Rewrite、LLM 与流事件统计 |
 | `logs/tool_calls.jsonl` | 每次工具调用的输入、输出、耗时和是否成功 |
 | `logs/bad_cases.jsonl` | 模型 JSON 解析失败、引用异常、工具异常、内部异常、索引未就绪等失败样例 |
 
@@ -784,55 +880,81 @@ python scripts/summarize_logs.py
 执行与 CI 一致的静态检查和测试：
 
 ```bash
-python -m compileall -q app scripts
+python -m compileall -q app scripts tests
 ruff check app tests scripts
 lint-imports
 python scripts/inspect_agent_runtime.py --check
 python -m pytest -q
 ```
 
-生成 RAG 预测结果：
+Evaluation Baseline v2 首先支持不调用模型、RAG 或网络的数据校验：
 
 ```bash
-python scripts/predictions.py \
-  --eval-file data/eval/rag_eval_questions_nmgut_graduate_v1.json \
-  --out-file outputs/predictions.csv
+python scripts/run_evaluation_baseline.py --validate-only
 ```
 
-评测预测结果：
+默认真实运行 Core Agent 和本地 RAG；Online 工具与 LLM Judge 必须显式启用：
 
 ```bash
-python scripts/evaluate_rag_results_semantic_fixed.py \
-  --eval-file data/eval/rag_eval_questions_v2_semantic_fixed.json \
-  --pred-file outputs/predictions.csv \
-  --out-dir outputs/rag_baseline1 \
-  --k 10
+python scripts/run_evaluation_baseline.py \
+  --agent-cases data/eval/agent_eval_cases_v2.json \
+  --rag-eval-file data/eval/rag_eval_questions_v2_semantic_fixed.json \
+  --output-dir outputs/evaluation_baseline_v2/initial-core \
+  --top-k 5 \
+  --decompose-top-k 5
 ```
 
-评测脚本默认会优先从 ChromaDB 加载 chunk 文本和 metadata，用于计算文档命中、gold chunk 命中和证据匹配。需要语义级关键点评分时，可以通过参数或环境变量启用 LLM Judge：
+每次运行会生成 commit/数据/索引/模型/Prompt/工具合同 manifest、请求/有效 RAG
+参数证据、Agent/RAG 指标、覆盖矩阵、多原因失败报告和 Markdown 摘要。RAG 报告
+分别展示 Final-ranked Recall@k、Prompt Context Recall 和 Final Reference Recall；
+后两者是诊断指标，不改变 v2 Final Score。工作区不干净时默认拒绝正式
+运行；实验运行必须显式使用 `--allow-dirty` 并会被标记。两轮结果可比较：
 
 ```bash
-python scripts/evaluate_rag_results_semantic_fixed.py \
-  --eval-file data/eval/rag_eval_questions_v2_semantic_fixed.json \
-  --pred-file outputs/predictions.csv \
-  --out-dir outputs/rag_llm_judge \
-  --k 10 \
+python scripts/compare_evaluation_runs.py \
+  --baseline outputs/evaluation_baseline_v2/run-a \
+  --candidate outputs/evaluation_baseline_v2/run-b
+```
+
+完整说明见 [Evaluation Baseline v2](docs/evaluation/baseline-v2.md)。RAG prediction、
+Judge、检索打分和报告实现都属于 `scripts/evaluation/` 内部包，不提供独立兼容
+CLI。需要语义级关键点评分时，由统一 Runner 显式启用 LLM Judge：
+
+```bash
+python scripts/run_evaluation_baseline.py \
+  --output-dir outputs/evaluation_baseline_v2/rag-llm-judge \
+  --rag-only \
   --use-llm-judge \
   --judge-model deepseek-chat
 ```
 
-评测输出包括 `per_question_report.csv`、`summary_report.csv`、`summary_report.json` 和 `llm_judge_details.jsonl`。如果已经有上一轮 `per_question_report.csv`，可以用 `--judge-cache-report` 复用 Judge 结果，避免重复调用评测模型。
+RAG 输出包括 `predictions.csv`、`per_question_report.csv`、`summary_report.csv`、
+`summary_report.json` 和 `llm_judge_details.jsonl`。Prediction v2 分别保存 Final、
+Context 和 Reference chunk IDs 及安全计数，不保存完整 Context/chunk 正文；旧 v1
+文件仍可读取，缺失的新指标显示 unavailable。Judge Prompt 和 Final Score 公式不变。
 
-Agent 路由评测、压测和本地模型接口检查：
+Core 不评测真实联网能力；Judge 关闭时不具备完整语义答案质量判断；Online 结果受
+外部服务和内容变化影响，不适合作为稳定 CI 门禁。
+
+HTTP 性能测试是独立入口；`concurrency=1` 即串行基线，问题只从 cases 文件读取：
 
 ```bash
-python scripts/agent_eval.py --output-dir outputs/agent_eval/langgraph
-python scripts/perf_test.py
-python scripts/concurrent_perf_test.py
-python scripts/test_local_llm.py
+python scripts/benchmark_chat_api.py \
+  --base-url http://127.0.0.1:8000 \
+  --cases data/eval/performance_cases.json \
+  --concurrency 1,2,3,5 \
+  --repeats 5 \
+  --warmup 1 \
+  --timeout 120 \
+  --output-dir outputs/performance/run-001
 ```
 
-Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测会使用真实本地索引，并可能调用已配置的 Router、拆分和回答模型；没有可用模型/API Key 时应只运行 mock 回归测试，不应把失败或空结果当作正式评测数据。
+它只生成 `requests.jsonl`、`summary.json` 和 `summary.md`。真实外部工具连通性使用
+`smoke_test_online_tools.py` 的 `search`、`fetch`、`pdf` 子命令；模型供应商 Tool
+Calling 协议单独使用 `smoke_test_agent_tool_calling.py`。两者用途不同，且都不进入
+Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行日志由
+`summarize_logs.py` 汇总。没有可用模型、网络或 API Key 时只运行离线验证与 mock
+回归测试，不把环境失败或空结果当作正式质量数据。
 
 ## 适合面试讲解的设计取舍
 
@@ -852,7 +974,8 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   ├── main.py                  # 正式 ASGI 入口：app.main:app
 │   ├── api/
 │   │   ├── application.py       # FastAPI 组合根、lifespan 和 Router 注册
-│   │   ├── chat.py              # /chat HTTP Router
+│   │   ├── chat.py              # /chat 与 /chat/stream HTTP Router
+│   │   ├── streaming.py         # SSE 信封、白名单投影与编码
 │   │   ├── health.py            # 轻量进程存活检查
 │   │   ├── middleware.py        # HTTP trace 和端到端耗时
 │   │   ├── http_logging.py      # 显式 Uvicorn access-log 适配
@@ -882,7 +1005,8 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   │   ├── conditions.py        # Router 条件入口
 │   │   ├── checkpointing.py      # Checkpointer 配置、缓存和 thread_id
 │   │   ├── builder.py           # StateGraph 构建、连接与缓存编译
-│   │   └── runtime.py           # LangGraph 兼容 Runtime 门面
+│   │   ├── runtime.py           # 共享调用准备与同步 Runtime 门面
+│   │   └── streaming.py         # 异步 astream 与安全 Graph 事件投影
 │   ├── rag/
 │   │   ├── __init__.py          # RAG 公共门面和依赖注入
 │   │   ├── pipeline.py          # 索引状态、生命周期与检索门面
@@ -910,11 +1034,13 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   │   ├── web_download.py      # HTML/PDF 共用的 hardened 有限下载适配
 │   │   ├── web_fetch.py         # HTML/XHTML/纯文本的 Trafilatura 提取
 │   │   ├── web_pdf_fetch.py     # PDF magic、pypdf 页范围与元数据提取
+│   │   ├── mcp/                 # MCP 配置、discovery、bridge、Provider 与安全序列化
 │   │   ├── registry.py          # 工具注册和分发
 │   │   └── schemas.py           # 工具参数模型
 │   ├── services/
 │   │   ├── chat_models.py       # 框架无关请求、结果和内部上下文
-│   │   ├── chat_service.py      # Query Rewrite、Runtime、状态策略和会话编排
+│   │   ├── chat_stream_models.py # 框架无关流事件合同
+│   │   ├── chat_service.py      # 同步/流式 Query Rewrite、Runtime、状态策略和会话编排
 │   │   └── chat_telemetry.py    # metrics、bad case 和 tool_call_chain 收尾
 │   ├── llm/                     # 统一模型工厂、调用网关、Schema 和错误类型
 │   ├── storage/                 # SQLite、session 和 Agent trace 存储
@@ -926,34 +1052,37 @@ Agent 评测应固定 cases 文件、`top_k` 和模型/索引配置。该评测�
 │   └── config.py                # 环境变量配置
 ├── data/
 │   ├── kb/                      # 默认知识库文档目录
-│   ├── eval/                    # 评测数据
+│   ├── eval/                    # v1/v2 Agent 与 RAG 评测数据、示例阈值
 │   ├── chroma/                  # ChromaDB 持久化目录
 │   └── manifest/                # 索引构建 manifest
 ├── scripts/
-│   ├── predictions.py           # 批量生成 RAG 预测结果
-│   ├── evaluate_rag_results_semantic_fixed.py
-│   ├── rag_eval/                # 评测指标、Judge、检索打分和报告生成
-│   ├── agent_eval.py            # Agent 路由评测
+│   ├── run_evaluation_baseline.py # Evaluation Baseline v2 统一入口
+│   ├── compare_evaluation_runs.py # 两轮 v2 结果比较
+│   ├── benchmark_chat_api.py    # /chat 串行与并发性能测试
+│   ├── smoke_test_online_tools.py # Online Tool 真实连通性子命令
+│   ├── smoke_test_agent_tool_calling.py # 模型 Tool Calling 协议
+│   ├── smoke_test_chat_stream.py # /chat/stream 安全摘要冒烟客户端
+│   ├── smoke_test_mcp_tools.py  # 受治理 MCP list/invoke 冒烟入口
+│   ├── inspect_agent_runtime.py # CI 架构合同检查
 │   ├── summarize_logs.py        # metrics/bad_cases 日志汇总
 │   ├── cache_models.py          # 预下载 embedding/rerank 模型
-│   ├── perf_test.py             # 简单串行压测
-│   ├── concurrent_perf_test.py  # 简单并发压测
-│   ├── smoke_test_web_search.py # 手动真实 DDGS Registry/Runtime 冒烟
-│   ├── smoke_test_web_fetch.py  # 手动安全 Web Fetch Registry/Runtime 冒烟
-│   ├── smoke_test_web_pdf_fetch.py # 手动安全 Web PDF Registry/Runtime 冒烟
-│   └── test_local_llm.py        # 本地模型接口测试
+│   └── evaluation/              # Runner、Agent/RAG evaluator、Judge 与报告内部包
 ├── demo/
 │   └── streamlit_app.py         # Streamlit Demo 页面
 ├── docs/
 │   ├── architecture/
 │   │   ├── current-system.md    # 当前实现的主要架构入口
 │   │   └── module-boundaries.md # 可执行模块依赖方向
+│   ├── evaluation/
+│   │   └── baseline-v2.md       # v2 数据、运行、输出与比较合同
+│   ├── api/
+│   │   └── chat-streaming.md     # SSE HTTP、事件、安全与断开合同
 │   └── history/
 │       └── agent-evolution-2026.md # PR0～PR16 历史演进归档
 ├── tests/                       # 单元测试和接口测试
 ├── logs/                        # metrics、bad_cases、tool_calls
 ├── outputs/                     # 评测和日志汇总输出
-├── .github/workflows/tests.yml  # 编译、Ruff、Import Linter、inspection 和 pytest CI
+├── .github/workflows/tests.yml  # 静态检查、评测数据校验和 pytest CI
 ├── .importlinter                # 可执行模块依赖合同
 ├── .env.example
 ├── Dockerfile
@@ -1004,7 +1133,8 @@ docker run --rm -p 8000:8000 --env-file .env \
 - 优化 `partial_answer` 场景的 prompt，让模型在只能回答部分问题时更清晰地说明已回答和未覆盖部分。
 - 强化新旧政策冲突判断，提升 `trap` 类问题中对时间、版本和政策优先级的识别能力。
 - 继续优化 Query Rewrite 对跨轮限定、复杂指代和历史冲突的处理能力。
-- 继续扩展现有 CI，在编译、Ruff 和 pytest 之外增加 Docker 构建检查与关键评测脚本。
+- 在现有编译、Ruff、Import Linter、Runtime inspection、评测数据校验和 pytest
+  基础上增加 Docker 构建检查；真实基线经过人工审查后再决定是否加入回退阈值门禁。
 - 为 Streamlit Demo 增加更多调试视图，例如 Query Rewrite、Router 决策和检索命中对比。
 
 ## 已知限制
@@ -1015,6 +1145,6 @@ docker run --rm -p 8000:8000 --env-file .env \
 - 多轮历史使用本地 SQLite 持久化，适合单实例运行；多实例部署时需要额外规划共享存储和并发策略。
 - SQLite Checkpointer 适合单进程本地开发；高并发、多进程共享、数据持续增长和敏感状态留存需要额外的容量、权限及清理策略。
 - Agent 已通过唯一的 `create_agent` 路径支持 Registry-driven 多轮工具观察、同轮多个工具调用和参数修正，并具备错误次数、重复调用/错误、总耗时和同批 fail-closed 防护。
-- 当前尚未实现 Streaming、Interrupt/Resume、SQL、MCP、写工具的跨请求人工审批恢复或多 Agent。
+- 当前尚未实现 RAG JSON token streaming、Interrupt/Resume、SQL/MCP 写工具、写工具的跨请求人工审批恢复或多 Agent；MCP 第一版也不支持 Server、stdio、OAuth、Resources 或 Prompts。
 - 当前 Checkpointer 面向单进程本地使用，不是生产级分布式 Checkpointer。
 - retrieval_confidence 和 answer_confidence 是启发式估计，不等同于严格概率。

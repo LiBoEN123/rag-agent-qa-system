@@ -1,0 +1,4 @@
+{
+  "core_agent_pass_rate_drop": 0.05,
+  "p95_latency_increase_ratio": 0.25
+}

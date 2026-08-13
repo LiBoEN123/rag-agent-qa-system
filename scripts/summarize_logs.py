@@ -1,3 +1,11 @@
+"""RAG/Agent 运行日志的离线汇总程序。
+
+用途：统计请求状态、延迟、工具调用、LLM 调用和失败类型，并列出慢请求与失败案例。
+输入：``metrics.jsonl``、``bad_cases.jsonl``、展示条数和可选输出路径。
+输出：终端中的 Markdown 报告，并可写入指定报告文件。
+边界：只读取现有日志，不调用模型、RAG、工具或网络，也不会修改原始日志。
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -9,13 +17,11 @@ from statistics import mean
 from typing import Any
 
 
-SUCCESS_STATUSES = {"success", "ok", "answered"}
+SUCCESS_STATUSES = {"success"}
 
 REFUSE_STATUSES = {
+    "clarify",
     "no_relevant_info",
-    "refused",
-    "reject",
-    "insufficient",
 }
 
 
@@ -92,41 +98,15 @@ def is_refused(row: dict[str, Any]) -> bool:
     """
     判断是否属于拒答/未答。
 
-    这里采用广义口径：
-    - 没有检索到资料
-    - 超出知识库范围
-    - 问题为空
-    - 问题需要澄清
-    - 系统明确说无法根据文档回答
+    当前 metrics Schema 中 clarify/no_relevant_info 都表示未形成正常回答。
     """
     status = str(row.get("status", "") or "").strip().lower()
-    action = str(row.get("action", "") or "").strip().lower()
-    reason = str(row.get("reason", "") or "").strip()
-
-    if status in REFUSE_STATUSES:
-        return True
-
-    if action in {"refuse", "clarify"}:
-        return True
-
-    if "无法根据提供的文档确定答案" in reason:
-        return True
-
-    if "问题主题超出当前知识库范围" in reason:
-        return True
-
-    if "问题存在明显指代不明" in reason:
-        return True
-
-    if "用户未输入问题" in reason:
-        return True
-
-    return False
+    return status in REFUSE_STATUSES
 
 
 def infer_error_type_from_metric(row: dict[str, Any]) -> str:
     """
-    如果 metrics.jsonl 里没有 error_type，就根据 status/action/reason 推断失败类型。
+    如果 metrics.jsonl 里没有 error_type，就根据当前稳定 status 推断失败类型。
 
     这个主要是兜底用。
     现在你有 bad_cases.jsonl 后，失败类型排行优先从 bad_cases.jsonl 统计。
@@ -136,15 +116,13 @@ def infer_error_type_from_metric(row: dict[str, Any]) -> str:
         return error_type
 
     status = str(row.get("status", "") or "").strip().lower()
-    action = str(row.get("action", "") or "").strip().lower()
-    reason = str(row.get("reason", "") or "").strip()
     tool_name = str(row.get("tool_name", "") or "").strip()
     question_len = row.get("question_len")
 
     if status in SUCCESS_STATUSES:
         return ""
 
-    if question_len == 0 or "用户未输入问题" in reason:
+    if question_len == 0:
         return "empty_question"
 
     if status == "tool_error":
@@ -155,21 +133,14 @@ def infer_error_type_from_metric(row: dict[str, Any]) -> str:
     if status == "internal_error":
         return "internal_error"
 
-    if action == "clarify" or "指代不明" in reason or "缺少关键限定" in reason:
-        return "ambiguous_error"
+    if status == "model_error":
+        return "model_error"
 
-    if action == "refuse" or "超出当前知识库范围" in reason:
-        return "out_of_scope_error"
+    if status == "clarify":
+        return "clarification"
 
-    if (
-        "检索结果为空" in reason
-        or "top1 分数低于阈值" in reason
-        or "证据分数低于阈值" in reason
-    ):
-        return "retrieval_error"
-
-    if "引用" in reason or "支撑" in reason:
-        return "bad_reference_error"
+    if status == "no_relevant_info":
+        return "no_relevant_info"
 
     if status:
         return status
@@ -239,6 +210,17 @@ def build_summary(
         if to_bool(row.get("tool_called")) and not to_bool(row.get("tool_success"))
     )
 
+    reference_values = [
+        value
+        for row in metric_rows
+        if (value := to_number(row.get("reference_count"))) is not None
+    ]
+    llm_call_values = [
+        value
+        for row in metric_rows
+        if (value := to_number(row.get("llm_call_count"))) is not None
+    ]
+
     status_counter = Counter(
         str(row.get("status", "") or "unknown")
         for row in metric_rows
@@ -294,6 +276,22 @@ def build_summary(
         "tool_call_count": tool_call_count,
         "tool_success_count": tool_success_count,
         "tool_failure_count": tool_failure_count,
+        "avg_reference_count": mean(reference_values)
+        if reference_values
+        else 0.0,
+        "router_llm_used_count": sum(
+            to_bool(row.get("router_llm_used")) for row in metric_rows
+        ),
+        "decompose_llm_used_count": sum(
+            to_bool(row.get("decompose_llm_used")) for row in metric_rows
+        ),
+        "answer_llm_used_count": sum(
+            to_bool(row.get("answer_llm_used")) for row in metric_rows
+        ),
+        "total_llm_call_count": int(sum(llm_call_values)),
+        "avg_llm_call_count": mean(llm_call_values)
+        if llm_call_values
+        else 0.0,
         "status_counter": status_counter,
         "action_counter": action_counter,
         "tool_counter": tool_counter,
@@ -339,6 +337,12 @@ def render_report(
     lines.append(f"- 工具调用次数：{summary['tool_call_count']}")
     lines.append(f"- 工具调用成功次数：{summary['tool_success_count']}")
     lines.append(f"- 工具调用失败次数：{summary['tool_failure_count']}")
+    lines.append(f"- 平均引用数：{summary['avg_reference_count']:.2f}")
+    lines.append(f"- Router LLM 使用次数：{summary['router_llm_used_count']}")
+    lines.append(f"- Decompose LLM 使用次数：{summary['decompose_llm_used_count']}")
+    lines.append(f"- Answer LLM 使用次数：{summary['answer_llm_used_count']}")
+    lines.append(f"- LLM 调用总数：{summary['total_llm_call_count']}")
+    lines.append(f"- 平均 LLM 调用数：{summary['avg_llm_call_count']:.2f}")
     lines.append("")
 
     lines.append("## 2. status 分布")
@@ -466,7 +470,7 @@ def render_report(
     lines.append("")
     lines.append("- `请求总数`、`成功次数`、`失败次数`、`平均耗时`、`工具调用次数` 主要来自 `metrics.jsonl`。")
     lines.append("- `error_type 失败类型排行` 优先来自 `bad_cases.jsonl`。")
-    lines.append("- 如果没有 `bad_cases.jsonl`，脚本会退回到 `metrics.jsonl` 中根据 `status/action/reason` 推断失败类型。")
+    lines.append("- 如果没有 `bad_cases.jsonl`，脚本只按当前 metrics `status` 合同推断失败类型，不复原旧 Router/Planner/Executor 状态。")
     lines.append("- `失败案例` 直接展示 `bad_cases.jsonl` 中记录的问题、答案、路由、错误类型和备注。")
 
     return "\n".join(lines)

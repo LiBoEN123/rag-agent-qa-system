@@ -53,21 +53,44 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
         try:
             response = handler(request)
         except Exception as exc:
-            event = {
-                "kind": "model",
-                "ok": False,
-                "cost_ms": max(0, _now_ms() - started),
-                "error_type": type(exc).__name__,
-            }
-            return ExtendedModelResponse(
-                ModelResponse(result=[AIMessage(content="Agent model unavailable")]),
-                Command(
-                    update={
-                        "governance_events": [event],
-                        "stop_reason": "agent_model_call_failed",
-                    }
-                ),
-            )
+            return self._model_failure(started, exc)
+        return self._finish_model_call(request, response, started)
+
+    async def awrap_model_call(self, request: ModelRequest, handler):
+        """异步调用模型，并保持与同步入口相同的治理事件。"""
+        started = _now_ms()
+        try:
+            response = await handler(request)
+        except Exception as exc:
+            return self._model_failure(started, exc)
+        return self._finish_model_call(request, response, started)
+
+    @staticmethod
+    def _model_failure(started: int, exc: Exception) -> ExtendedModelResponse:
+        """把同步或异步模型异常转换成统一的安全终止结果。"""
+        event = {
+            "kind": "model",
+            "ok": False,
+            "cost_ms": max(0, _now_ms() - started),
+            "error_type": type(exc).__name__,
+        }
+        return ExtendedModelResponse(
+            ModelResponse(result=[AIMessage(content="Agent model unavailable")]),
+            Command(
+                update={
+                    "governance_events": [event],
+                    "stop_reason": "agent_model_call_failed",
+                }
+            ),
+        )
+
+    @staticmethod
+    def _finish_model_call(
+        request: ModelRequest,
+        response: ModelResponse,
+        started: int,
+    ) -> ExtendedModelResponse:
+        """为同步或异步模型响应追加相同的可观测事件。"""
         ai_message = find_last_ai_message(response.result)
         event = {
             "kind": "model",
@@ -108,6 +131,10 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
             updates["jump_to"] = "end"
         return updates
 
+    async def abefore_model(self, state, runtime):
+        """异步图复用同一停止、预算与 RAG 交接判断。"""
+        return self.before_model(state, runtime)
+
     def _batch_key(self, request: ToolCallRequest) -> tuple[str, tuple[str, ...]]:
         """使用 trace 和模型调用 ID 标识同一批工具调用。"""
         ai_message = find_last_ai_message(request.state.get("messages", []))
@@ -123,8 +150,8 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
             if len(events) >= batch_size:
                 self._batch_events.pop(key, None)
 
-    def wrap_tool_call(self, request: ToolCallRequest, handler):
-        """在框架工具执行前后应用项目特有治理规则。"""
+    def _prepare_tool_call(self, request: ToolCallRequest):
+        """计算同步与异步工具调用共用的治理上下文和前置拦截。"""
         args = request.tool_call.get("args") or {}
         key = self._batch_key(request)
         with self._lock:
@@ -168,16 +195,29 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
                 aborted=bool(terminal),
             )
             self._remember(key, event, len(key[1]))
-            return Command(
+            blocked = Command(
                 update={
                     "messages": [message],
                     "governance_events": [event],
                     "stop_reason": reason,
                 }
             )
+            return args, key, prior, fingerprint, blocked
 
-        started = _now_ms()
-        output = handler(request)
+        return args, key, prior, fingerprint, None
+
+    def _complete_tool_call(
+        self,
+        request: ToolCallRequest,
+        output: object,
+        *,
+        args: dict[str, Any],
+        key: tuple[str, tuple[str, ...]],
+        prior: list[dict],
+        fingerprint: str,
+        started: int,
+    ) -> Command:
+        """把同步或异步工具输出归一化为相同治理事件和 Command。"""
         message = resolve_tool_message(output, request.tool_call["id"])
         result = parse_tool_result(
             message,
@@ -195,6 +235,42 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
             settings=self._settings,
         )
         return self._finish_tool_call(request, output, message, result, event, key)
+
+    def wrap_tool_call(self, request: ToolCallRequest, handler):
+        """在框架工具同步执行前后应用项目特有治理规则。"""
+        args, key, prior, fingerprint, blocked = self._prepare_tool_call(request)
+        if blocked is not None:
+            return blocked
+
+        started = _now_ms()
+        output = handler(request)
+        return self._complete_tool_call(
+            request,
+            output,
+            args=args,
+            key=key,
+            prior=prior,
+            fingerprint=fingerprint,
+            started=started,
+        )
+
+    async def awrap_tool_call(self, request: ToolCallRequest, handler):
+        """在框架工具异步执行前后应用与同步入口相同的治理规则。"""
+        args, key, prior, fingerprint, blocked = self._prepare_tool_call(request)
+        if blocked is not None:
+            return blocked
+
+        started = _now_ms()
+        output = await handler(request)
+        return self._complete_tool_call(
+            request,
+            output,
+            args=args,
+            key=key,
+            prior=prior,
+            fingerprint=fingerprint,
+            started=started,
+        )
 
     def _finish_tool_call(
         self, request, output, message, result, event, key
@@ -251,3 +327,7 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
             "agent_elapsed_ms": sum_governance_event_costs(events),
             "stop_reason": reason,
         }
+
+    async def aafter_agent(self, state, runtime):
+        """异步图复用同一最终停止原因与累计耗时归一化。"""
+        return self.after_agent(state, runtime)

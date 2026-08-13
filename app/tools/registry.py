@@ -32,6 +32,7 @@ from app.tools.schemas import (
     WebSearchArgs,
     WebSearchOutput,
 )
+from app.tools.sql_readonly.tools import build_sql_readonly_tool_specs
 from app.tools.web_fetch import web_fetch
 from app.tools.web_pdf_fetch import web_pdf_fetch
 from app.tools.web_search import web_search
@@ -378,6 +379,9 @@ def register_default_tools(
             audit_output_mode=ToolAuditOutputMode.NONE,
         )
     )
+    if settings.sql_tool_enabled:
+        for spec in build_sql_readonly_tool_specs(settings):
+            registry.register(spec)
 
 
 @lru_cache(maxsize=1)

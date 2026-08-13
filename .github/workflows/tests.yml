@@ -36,7 +36,7 @@ jobs:
           python -m pip install -r requirements.lock
 
       - name: Compile Python sources
-        run: python -m compileall -q app scripts
+        run: python -m compileall -q app scripts tests
 
       - name: Run Ruff
         run: ruff check app tests scripts
@@ -46,6 +46,9 @@ jobs:
 
       - name: Check Agent Runtime architecture
         run: python scripts/inspect_agent_runtime.py --check
+
+      - name: Validate evaluation datasets
+        run: python scripts/run_evaluation_baseline.py --validate-only
 
       - name: Run tests
         env:

@@ -39,20 +39,38 @@ _RECOVERABLE = (
     ToolErrorCode.EXECUTION_ERROR.value,
     ToolErrorCode.INVALID_RESULT.value,
     ToolErrorCode.OUTPUT_VALIDATION_ERROR.value,
+    ToolErrorCode.SQL_INVALID_STATEMENT.value,
+    ToolErrorCode.SQL_MULTIPLE_STATEMENTS.value,
+    ToolErrorCode.SQL_WRITE_FORBIDDEN.value,
+    ToolErrorCode.SQL_TABLE_NOT_ALLOWED.value,
+    ToolErrorCode.SQL_DANGEROUS_FUNCTION.value,
+    ToolErrorCode.SQL_RESULT_TOO_WIDE.value,
+    ToolErrorCode.SQL_EXECUTION_ERROR.value,
+    ToolErrorCode.MCP_EXECUTION_ERROR.value,
+    ToolErrorCode.MCP_UNSUPPORTED_CONTENT.value,
+    ToolErrorCode.MCP_OUTPUT_TOO_LARGE.value,
 )
 
 _TRANSIENT = (
     ToolErrorCode.TIMEOUT.value,
     ToolErrorCode.DEPENDENCY_UNAVAILABLE.value,
     ToolErrorCode.RATE_LIMITED.value,
+    ToolErrorCode.SQL_TIMEOUT.value,
+    ToolErrorCode.SQL_CONNECTION_ERROR.value,
+    ToolErrorCode.MCP_TOOL_TIMEOUT.value,
+    ToolErrorCode.MCP_TRANSPORT_ERROR.value,
 )
 
 _GOVERNANCE = (
     ToolErrorCode.PERMISSION_DENIED.value,
+    ToolErrorCode.SQL_PERMISSION_DENIED.value,
     ToolErrorCode.POLICY_DENIED.value,
     ToolErrorCode.AUDIT_WRITE_FAILED.value,
     ToolErrorCode.INVALID_INVOCATION_CONTEXT.value,
     ToolErrorCode.MISSING_IDEMPOTENCY_KEY.value,
+    ToolErrorCode.MCP_NOT_CONFIGURED.value,
+    ToolErrorCode.MCP_PERMISSION_DENIED.value,
+    ToolErrorCode.MCP_TOOL_NOT_ALLOWED.value,
 )
 
 

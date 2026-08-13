@@ -17,6 +17,7 @@ from app.agent.model import get_agent_tool_provider
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from app.tools.errors import ToolErrorCode
+from app.tools.mcp.provider import list_mcp_tools_for_context
 from app.tools.policy import build_tool_args_fingerprint
 from app.tools.providers import ToolProvider
 from app.tools.registry import ToolRegistry
@@ -128,6 +129,22 @@ def build_framework_tools(
     return tools
 
 
+def build_agent_framework_tools(
+    provider: ToolProvider,
+    *,
+    context: ToolInvocationContext,
+) -> list[BaseTool]:
+    """合并本地 Registry tools 与启动期缓存的受治理 MCP tools。"""
+    tools = build_framework_tools(provider, context=context)
+    seen = {tool.name for tool in tools}
+    for tool in list_mcp_tools_for_context(context):
+        if tool.name in seen:
+            raise ValueError(f"tool {tool.name!r} 在本地与 MCP 工具源中重复")
+        seen.add(tool.name)
+        tools.append(tool)
+    return tools
+
+
 def resolve_tool_message(output: object, call_id: str) -> ToolMessage:
     """读取 ToolNode 已生成且与调用 ID 匹配的消息。"""
     if isinstance(output, ToolMessage):
@@ -229,13 +246,29 @@ class RegistryToolsMiddleware(AgentMiddleware):
     @staticmethod
     def _tools(context: ToolInvocationContext):
         """按当前请求上下文解析动态工具列表。"""
-        return build_framework_tools(get_agent_tool_provider(), context=context)
+        return build_agent_framework_tools(
+            get_agent_tool_provider(),
+            context=context,
+        )
 
     def wrap_model_call(self, request, handler):
         """向本次模型调用注入 Provider 提供的动态工具。"""
         return handler(request.override(tools=self._tools(request.runtime.context)))
 
+    async def awrap_model_call(self, request, handler):
+        """在异步模型调用中注入同一组请求级动态工具。"""
+        return await handler(
+            request.override(tools=self._tools(request.runtime.context))
+        )
+
     def wrap_tool_call(self, request, handler):
         """以同一 Provider 语义解析模型实际请求的工具。"""
         tools = {tool.name: tool for tool in self._tools(request.runtime.context)}
         return handler(request.override(tool=tools.get(request.tool_call["name"])))
+
+    async def awrap_tool_call(self, request, handler):
+        """在异步工具调用中保持与模型可见工具相同的解析语义。"""
+        tools = {tool.name: tool for tool in self._tools(request.runtime.context)}
+        return await handler(
+            request.override(tool=tools.get(request.tool_call["name"]))
+        )

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "undergraduate_study_duration",
+      "question": "从 2023 年入学学生起，普通本科四年制、五年制和休学创业学生的学习年限分别是多少？"
+    },
+    {
+      "id": "student_card_replacement",
+      "question": "学生证补办时间和办理入口是什么？"
+    },
+    {
+      "id": "thesis_review_requirements",
+      "question": "研究生学位论文评审的专家人数和匿名评审范围是什么？"
+    }
+  ]
+}

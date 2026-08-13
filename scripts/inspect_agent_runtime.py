@@ -1,8 +1,15 @@
-"""在不调用模型、工具或持久化能力的前提下检查 Agent 运行时。"""
+"""Agent 运行时与架构合同的离线检查程序。
+
+用途：检查 LangGraph 结构、工具可见性、数据合同、依赖版本、模块边界和文件规模预算。
+输入：当前源码、Settings 默认合同、工具注册信息和 ``.importlinter`` 配置。
+输出：文本、JSON 或 Mermaid 视图；``--check`` 通过退出码表达架构门禁结果。
+边界：不会调用模型、执行工具、访问网络或写持久化数据；Mermaid 仅构建而不运行图。
+"""
 
 from __future__ import annotations
 
 import argparse
+import ast
 import configparser
 import json
 import re
@@ -12,7 +19,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, get_origin
 
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 from pydantic_settings import BaseSettings
 
 
@@ -33,6 +40,9 @@ from app.contracts.chat import (  # noqa: E402
 from app.config import AppSettings  # noqa: E402
 from app.graph.builder import build_agent_graph  # noqa: E402
 from app.graph.state import AgentGraphState  # noqa: E402
+from app.services.chat_stream_models import (  # noqa: E402
+    CHAT_STREAM_EVENT_NAMES,
+)
 from app.tools.context import (  # noqa: E402
     ToolInvocationContext,
     build_default_tool_context,
@@ -50,13 +60,21 @@ from app.tools.registry import register_default_tools  # noqa: E402
 PACKAGES = (
     "langchain",
     "langchain-core",
+    "langchain-mcp-adapters",
     "langchain-openai",
     "langgraph",
     "pydantic",
     "pydantic-settings",
     "pypdf",
     "requests-hardened",
+    "SQLAlchemy",
+    "sqlglot",
 )
+SQL_TOOL_NAMES = {
+    "list_sql_tables",
+    "describe_sql_table",
+    "query_sql_readonly",
+}
 EXPECTED_PARENT_NODES = {
     "route", "initialize", "framework_agent", "adapt_framework",
     "rag_subgraph", "compose", "finalize",
@@ -275,6 +293,7 @@ def _tool_data(
 
 
 def _check(name: str, passed: bool, detail: str) -> dict[str, Any]:
+    """把一项架构断言规范化为统一检查结果。"""
     return {"name": name, "passed": passed, "detail": detail}
 
 
@@ -414,6 +433,12 @@ def inspect_runtime(
     chat_router_source = (
         PROJECT_ROOT / "app/api/chat.py"
     ).read_text(encoding="utf-8")
+    graph_runtime_source = (
+        PROJECT_ROOT / "app/graph/runtime.py"
+    ).read_text(encoding="utf-8")
+    graph_streaming_source = (
+        PROJECT_ROOT / "app/graph/streaming.py"
+    ).read_text(encoding="utf-8")
     application_source = (
         PROJECT_ROOT / "app/api/application.py"
     ).read_text(encoding="utf-8")
@@ -428,6 +453,33 @@ def inspect_runtime(
     ).read_text(encoding="utf-8")
     config_source = (
         PROJECT_ROOT / "app/config.py"
+    ).read_text(encoding="utf-8")
+    framework_agent_source = (
+        PROJECT_ROOT / "app/agent/framework_agent.py"
+    ).read_text(encoding="utf-8")
+    framework_tools_source = (
+        PROJECT_ROOT / "app/agent/framework_tools.py"
+    ).read_text(encoding="utf-8")
+    mcp_access_source = (
+        PROJECT_ROOT / "app/tools/mcp/access.py"
+    ).read_text(encoding="utf-8")
+    mcp_bridge_source = (
+        PROJECT_ROOT / "app/tools/mcp/bridge.py"
+    ).read_text(encoding="utf-8")
+    mcp_client_source = (
+        PROJECT_ROOT / "app/tools/mcp/client.py"
+    ).read_text(encoding="utf-8")
+    mcp_config_source = (
+        PROJECT_ROOT / "app/tools/mcp/config.py"
+    ).read_text(encoding="utf-8")
+    mcp_discovery_source = (
+        PROJECT_ROOT / "app/tools/mcp/discovery.py"
+    ).read_text(encoding="utf-8")
+    mcp_provider_source = (
+        PROJECT_ROOT / "app/tools/mcp/provider.py"
+    ).read_text(encoding="utf-8")
+    mcp_serialization_source = (
+        PROJECT_ROOT / "app/tools/mcp/serialization.py"
     ).read_text(encoding="utf-8")
     immutable_settings = AppSettings.model_config.get("frozen") is True
     no_static_settings_class = re.search(
@@ -505,6 +557,67 @@ def inspect_runtime(
             "def apply_result_metrics(",
             "def finalize_chat_telemetry(",
         )
+    )
+    chat_router_tree = ast.parse(chat_router_source)
+    graph_streaming_tree = ast.parse(graph_streaming_source)
+    route_paths = {
+        decorator.args[0].value
+        for node in ast.walk(chat_router_tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for decorator in node.decorator_list
+        if isinstance(decorator, ast.Call)
+        and isinstance(decorator.func, ast.Attribute)
+        and decorator.func.attr == "post"
+        and decorator.args
+        and isinstance(decorator.args[0], ast.Constant)
+        and isinstance(decorator.args[0].value, str)
+    }
+    chat_service_calls = {
+        node.func.attr
+        for node in ast.walk(chat_router_tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "chat_service"
+    }
+    graph_stream_functions = {
+        node.name
+        for node in ast.walk(graph_streaming_tree)
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+    graph_stream_calls = {
+        node.func.attr
+        for node in ast.walk(graph_streaming_tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+    }
+    chat_stream_route_present = "/chat/stream" in route_paths
+    chat_stream_uses_same_service = {
+        "handle",
+        "stream",
+    } <= chat_service_calls
+    graph_streaming_runtime_present = (
+        "stream_agent_langgraph" in graph_stream_functions
+        and "astream" in graph_stream_calls
+        and "prepare_async_agent_runtime_invocation"
+        in graph_streaming_source
+        and "prepare_async_agent_runtime_invocation" in graph_runtime_source
+        and "prepare_agent_runtime_invocation" in graph_runtime_source
+        and "_prepare_agent_runtime_fields" in graph_runtime_source
+    )
+    stream_event_contract_present = CHAT_STREAM_EVENT_NAMES == {
+        "start",
+        "progress",
+        "tool",
+        "answer_delta",
+        "final",
+        "error",
+        "done",
+    }
+    sync_chat_route_preserved = (
+        "/chat" in route_paths
+        and "handle" in chat_service_calls
+        and "build_chat_response_from_outcome" in chat_router_source
     )
     current_architecture_documented = (
         PROJECT_ROOT / "docs/architecture/current-system.md"
@@ -622,7 +735,132 @@ def inspect_runtime(
     )
     pdf_authorized_visibility_ok = True
     module_boundaries = _inspect_import_linter_config()
-    registered_tool_count_ok = len(registered_tools) == 8
+    expected_tool_count = 11 if resolved_settings.sql_tool_enabled else 8
+    registered_tool_count_ok = len(registered_tools) == expected_tool_count
+    mcp_disabled_by_default = (
+        AppSettings.model_fields["mcp_tools_enabled"].default is False
+        and AppSettings.model_fields["mcp_servers_config_path"].default
+        == PROJECT_ROOT / "config" / "mcp_servers.local.json"
+    )
+    mcp_uses_langchain_adapter = (
+        "langchain-mcp-adapters" not in missing_packages
+        and "from langchain_mcp_adapters.client import MultiServerMCPClient"
+        in mcp_client_source
+        and "MultiServerMCPClient(" in mcp_client_source
+    )
+    mcp_http_only_v1 = (
+        'version: Literal[1]' in mcp_config_source
+        and 'transport: Literal["http"]' in mcp_config_source
+        and '"transport": "http"' in mcp_config_source
+    )
+    mcp_tools_require_server_permission = (
+        'return f"mcp:{self.server_alias}"' in mcp_provider_source
+        and "def can_use_mcp_server(" in mcp_access_source
+        and "if not server_config.enabled:" in mcp_access_source
+        and "server_config.enabled_for_default_principal" in mcp_access_source
+        and "can_use_mcp_server(" in mcp_provider_source
+        and "can_use_mcp_server(" in mcp_bridge_source
+    )
+    mcp_tools_have_local_allowlist = (
+        "allowed_tools: tuple[str, ...]" in mcp_config_source
+        and "for remote_name in server.allowed_tools:" in mcp_discovery_source
+        and "by_exposed_name.get(exposed_name)" in mcp_discovery_source
+    )
+    mcp_tool_names_are_prefixed = (
+        "tool_name_prefix=True" in mcp_client_source
+        and 'exposed_name = f"{alias}_{remote_name}"' in mcp_discovery_source
+    )
+    mcp_outputs_are_untrusted = (
+        '"content_is_untrusted": True' in mcp_serialization_source
+        and "redact_sensitive_data(" in mcp_serialization_source
+        and "mcp_max_structured_chars" in mcp_serialization_source
+    )
+    mcp_local_registry_path_preserved = (
+        "tools = build_framework_tools(provider, context=context)"
+        in framework_tools_source
+        and "registry.dispatch(spec.name, tool_args, context=context)"
+        in framework_tools_source
+    )
+    mcp_governance_path_preserved = (
+        "RegistryToolsMiddleware()," in framework_agent_source
+        and "ProjectToolGovernanceMiddleware(settings=resolved),"
+        in framework_agent_source
+        and "build_agent_framework_tools(" in framework_tools_source
+        and "parse_tool_result(" in framework_tools_source
+    )
+
+    disabled_sql_settings = resolved_settings.model_copy(
+        update={"sql_tool_enabled": False}
+    )
+    disabled_sql_registry = ToolRegistry()
+    register_default_tools(
+        disabled_sql_registry,
+        settings=disabled_sql_settings,
+    )
+    enabled_sql_settings = resolved_settings.model_copy(
+        update={
+            "sql_tool_enabled": True,
+            "sql_database_url": SecretStr(
+                "sqlite:////tmp/agent-runtime-inspection-business.sqlite3"
+            ),
+            "sql_allowed_tables": ("inspection_table",),
+        }
+    )
+    enabled_sql_registry = ToolRegistry()
+    register_default_tools(enabled_sql_registry, settings=enabled_sql_settings)
+    enabled_sql_specs = [
+        enabled_sql_registry.get(name) for name in sorted(SQL_TOOL_NAMES)
+    ]
+    sql_tools_disabled_by_default = (
+        AppSettings.model_fields["sql_tool_enabled"].default is False
+        and not (SQL_TOOL_NAMES & set(disabled_sql_registry.names()))
+    )
+    sql_tools_require_database_read = all(
+        isinstance(spec, ToolSpec)
+        and spec.required_permissions == ("database:read",)
+        for spec in enabled_sql_specs
+    )
+    sql_tools_are_read_only = all(
+        isinstance(spec, ToolSpec)
+        and spec.risk_level.value == "read_only"
+        and spec.max_retries == 0
+        and spec.idempotent
+        for spec in enabled_sql_specs
+    )
+    sql_tools_have_pydantic_contracts = all(
+        isinstance(spec, ToolSpec)
+        and isinstance(spec.args_model, type)
+        and issubclass(spec.args_model, BaseModel)
+        and isinstance(spec.output_model, type)
+        and issubclass(spec.output_model, BaseModel)
+        for spec in enabled_sql_specs
+    )
+    sql_tools_do_not_require_approval = all(
+        isinstance(spec, ToolSpec) and not spec.requires_approval
+        for spec in enabled_sql_specs
+    )
+    sql_context = ToolInvocationContext(
+        principal_id="agent_runtime_inspection",
+        permissions=("database:read",),
+        source="agent_runtime_inspection",
+    )
+    sql_framework_names = {
+        tool.name
+        for tool in build_framework_tools(
+            LocalToolProvider(enabled_sql_registry),
+            context=sql_context,
+        )
+    }
+    sql_tools_use_registry_runtime = SQL_TOOL_NAMES <= sql_framework_names
+    sql_tools_share_chat_paths = not any(
+        name in source
+        for name in SQL_TOOL_NAMES
+        for source in (
+            chat_router_source,
+            service_source,
+            graph_streaming_source,
+        )
+    )
     if enforce_default_registry:
         default_context = build_default_tool_context(
             source="agent_runtime_inspection",
@@ -769,6 +1007,32 @@ def inspect_runtime(
             "chat telemetry helpers must live in the services telemetry module",
         ),
         _check(
+            "chat_stream_route_present",
+            chat_stream_route_present,
+            "chat router must register POST /chat/stream",
+        ),
+        _check(
+            "chat_stream_uses_same_service",
+            chat_stream_uses_same_service,
+            "sync and streaming routes must close over the same ChatService",
+        ),
+        _check(
+            "graph_streaming_runtime_present",
+            graph_streaming_runtime_present,
+            "streaming Runtime must use graph.astream, async Graph prep, "
+            "and shared invocation fields",
+        ),
+        _check(
+            "stream_event_contract_present",
+            stream_event_contract_present,
+            "stream event contract must contain the seven public event names",
+        ),
+        _check(
+            "sync_chat_route_preserved",
+            sync_chat_route_preserved,
+            "POST /chat and its response adapter must remain present",
+        ),
+        _check(
             "current_architecture_documented",
             current_architecture_documented,
             "current-system architecture document must exist",
@@ -799,7 +1063,7 @@ def inspect_runtime(
         _check(
             "registered_tool_count",
             not enforce_default_registry or registered_tool_count_ok,
-            "default registry must contain exactly eight production tools",
+            "registry count must be eight by default and eleven when SQL is enabled",
         ),
         _check(
             "default_tool_visibility",
@@ -867,6 +1131,86 @@ def inspect_runtime(
             not enforce_default_registry or pdf_authorized_visibility_ok,
             "web_pdf_fetch is hidden despite web:fetch permission",
         ),
+        _check(
+            "sql_tools_disabled_by_default",
+            sql_tools_disabled_by_default,
+            "SQL tools must be absent from the default disabled registry",
+        ),
+        _check(
+            "sql_tools_require_database_read",
+            sql_tools_require_database_read,
+            "all SQL tools must require exactly database:read",
+        ),
+        _check(
+            "sql_tools_are_read_only",
+            sql_tools_are_read_only,
+            "SQL tools must be read-only, idempotent, and non-retrying",
+        ),
+        _check(
+            "sql_tools_use_registry_runtime",
+            sql_tools_use_registry_runtime,
+            "enabled SQL tools must be projected from ToolRegistry",
+        ),
+        _check(
+            "sql_tools_have_pydantic_contracts",
+            sql_tools_have_pydantic_contracts,
+            "SQL tools must declare Pydantic input and output models",
+        ),
+        _check(
+            "sql_tools_do_not_require_approval",
+            sql_tools_do_not_require_approval,
+            "read-only SQL tools must not require approval",
+        ),
+        _check(
+            "sql_tools_share_chat_paths",
+            sql_tools_share_chat_paths,
+            "chat and streaming modules must not contain SQL-specific branches",
+        ),
+        _check(
+            "mcp_disabled_by_default",
+            mcp_disabled_by_default,
+            "MCP tools must default off and use the gitignored local config path",
+        ),
+        _check(
+            "mcp_uses_langchain_adapter",
+            mcp_uses_langchain_adapter,
+            "MCP Client must use the official LangChain adapter",
+        ),
+        _check(
+            "mcp_http_only_v1",
+            mcp_http_only_v1,
+            "MCP config v1 must expose only Streamable HTTP transport",
+        ),
+        _check(
+            "mcp_tools_require_server_permission",
+            mcp_tools_require_server_permission,
+            "MCP visibility and execution must share one server access policy",
+        ),
+        _check(
+            "mcp_tools_have_local_allowlist",
+            mcp_tools_have_local_allowlist,
+            "MCP discovery must intersect with a local exact allowlist",
+        ),
+        _check(
+            "mcp_tool_names_are_prefixed",
+            mcp_tool_names_are_prefixed,
+            "MCP tools must use server-prefixed exposed names",
+        ),
+        _check(
+            "mcp_outputs_are_untrusted",
+            mcp_outputs_are_untrusted,
+            "MCP output must be bounded, redacted, and marked untrusted",
+        ),
+        _check(
+            "mcp_local_registry_path_preserved",
+            mcp_local_registry_path_preserved,
+            "local tools must still use ToolRegistry dispatch",
+        ),
+        _check(
+            "mcp_governance_path_preserved",
+            mcp_governance_path_preserved,
+            "MCP tools must share existing agent governance and result parsing",
+        ),
         _check("source_file_budgets", not over_budget, "; ".join(over_budget)),
     ]
     return {
@@ -894,6 +1238,12 @@ def inspect_runtime(
             }
             for status in AgentResultStatus
         ],
+        "chat_streaming_contract": {
+            "events": sorted(CHAT_STREAM_EVENT_NAMES),
+            "route": "/chat/stream",
+            "uses_graph_astream": graph_streaming_runtime_present,
+            "sync_route": "/chat",
+        },
         "parent_graph": {**parent_data, "xray_nodes": xray_nodes},
         "framework_agent": framework_data,
         "middleware_nodes": sorted(
@@ -902,6 +1252,12 @@ def inspect_runtime(
         "registered_tools": registered_tools,
         "default_visible_tools": default_visible_tools,
         "tool_visibility": tool_visibility,
+        "mcp_client": {
+            "enabled_by_default": False,
+            "config_version": 1,
+            "transport": "streamable_http",
+            "dependency": versions.get("langchain-mcp-adapters", ""),
+        },
         "source_files": source_files,
         "checks": checks,
     }
@@ -956,6 +1312,7 @@ def render_mermaid() -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """解析输出模式，执行离线检查并返回稳定退出码。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--format", choices=("text", "json", "mermaid"), default="text")
     parser.add_argument("--check", action="store_true", help="run architecture checks")

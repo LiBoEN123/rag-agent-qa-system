@@ -74,6 +74,9 @@ def test_uvicorn_access_configuration_is_explicit_and_idempotent():
 def test_fastapi_lifespan_explicitly_configures_uvicorn_access(monkeypatch):
     calls = []
 
+    async def close_graph():
+        calls.append("close_graph")
+
     monkeypatch.setattr(
         api_application,
         "configure_uvicorn_access_log",
@@ -91,8 +94,13 @@ def test_fastapi_lifespan_explicitly_configures_uvicorn_access(monkeypatch):
     )
     monkeypatch.setattr(
         api_application,
-        "close_agent_graph_runtime",
-        lambda: calls.append("close_graph"),
+        "close_sql_engine_runtime",
+        lambda: calls.append("close_sql_engines"),
+    )
+    monkeypatch.setattr(
+        api_application,
+        "aclose_agent_graph_runtime",
+        close_graph,
     )
 
     async def run_lifespan():
@@ -106,5 +114,6 @@ def test_fastapi_lifespan_explicitly_configures_uvicorn_access(monkeypatch):
         "configure_http_logging",
         "start",
         "close_tools",
+        "close_sql_engines",
         "close_graph",
     ]

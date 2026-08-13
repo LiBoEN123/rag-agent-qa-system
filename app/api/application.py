@@ -15,9 +15,12 @@ from app.api.health import create_health_router
 from app.api.http_logging import configure_uvicorn_access_log
 from app.api.lifecycle import (
     StartupDependencies,
-    close_agent_graph_runtime,
+    aclose_agent_graph_runtime,
+    close_mcp_runtime,
+    close_sql_engine_runtime,
     close_tool_runtime,
     initialize_agent_graph_runtime,
+    initialize_mcp_runtime,
     initialize_rag,
 )
 from app.api.middleware import trace_and_timing_middleware
@@ -84,10 +87,13 @@ async def lifespan(_app: FastAPI):
     try:
         configure_uvicorn_access_log()
         start_application_resources()
+        await initialize_mcp_runtime(get_settings())
         yield
     finally:
+        await close_mcp_runtime()
         close_tool_runtime()
-        close_agent_graph_runtime()
+        close_sql_engine_runtime()
+        await aclose_agent_graph_runtime()
 
 
 def create_app(

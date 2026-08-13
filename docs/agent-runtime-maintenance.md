@@ -1,6 +1,6 @@
 # Agent Runtime 维护指南
 
-本文面向需要定位或维护 Agent Runtime、但不需要逐行阅读全部实现的开发者。当前唯一主实现是 LangGraph 父图嵌入 LangChain `create_agent` 子图；脚本输出是图结构和工具 Schema 的维护入口。
+本文面向需要定位或维护 Agent Runtime、但不需要逐行阅读全部实现的开发者。当前唯一主实现是 LangGraph 父图嵌入 LangChain `create_agent` 子图；`inspect_agent_runtime.py` 是图结构和工具 Schema 的维护入口，Evaluation Baseline 的可导入实现统一位于 `scripts/evaluation/`。
 
 ## 十分钟阅读路径
 
@@ -8,8 +8,8 @@
 
 | 顺序 | 文件 | 只需要理解 |
 | --- | --- | --- |
-| 1 | `app/api/application.py`、`app/api/chat.py` | FastAPI 如何组装，以及 HTTP 如何进入 ChatService |
-| 2 | `app/services/chat_service.py`、`chat_models.py`、`chat_telemetry.py` | 应用流程、数据模型和 telemetry 如何分工 |
+| 1 | `app/api/application.py`、`app/api/chat.py`、`app/api/streaming.py` | FastAPI 如何组装，以及同步 JSON/SSE 如何进入 ChatService |
+| 2 | `app/services/chat_service.py`、`chat_models.py`、`chat_stream_models.py`、`chat_telemetry.py` | 同步/流式流程、事件模型和 telemetry 如何分工 |
 | 3 | `app/contracts/chat.py` | Result status 如何唯一决定 HTTP、API 和 metrics 状态 |
 | 4 | `app/graph/builder.py` | 父图固定入口、节点、边和条件出口 |
 | 5 | `app/graph/state.py` | 唯一完整请求状态及 reducer |
@@ -22,6 +22,7 @@
 | 12 | `app/agent/framework_middleware.py` | 项目错误分类、预算、循环防护和同批 fail-closed |
 | 13 | `app/agent/framework_tools.py` | 动态 StructuredTool、Registry dispatch 和 RAG handoff |
 | 14 | `app/tools/runtime.py` | 单次工具调用的策略、审计、超时、重试和输出校验 |
+| 15 | `app/tools/mcp/` | 可选 MCP 配置、启动 discovery、权限 Provider、同步/异步 bridge 和安全输出 |
 
 ## 主调用链
 
@@ -34,14 +35,35 @@ FastAPI application
 → LangGraph Parent Graph: route → initialize
 → LangChain create_agent
 → RegistryToolsMiddleware / ProjectToolGovernanceMiddleware
-→ StructuredTool
-→ ToolRegistry.dispatch
-→ ToolRuntime.execute
-→ ToolSpec.handler
+→ 本地 StructuredTool → ToolRegistry.dispatch → ToolRuntime.execute → ToolSpec.handler
+  或 governed MCP StructuredTool → 官方 adapter coroutine
 → ToolMessage / Command.PARENT
 → RAG Subgraph 或 Compose
 → Finalize
 ```
+
+流式入口复用同一条业务链，只把执行门面和 HTTP 适配替换为：
+
+```text
+POST /chat/stream
+→ ChatService.stream
+→ stream_agent_langgraph
+→ graph.astream(updates/messages, subgraphs=True, version=v2)
+→ project_graph_stream_part 安全投影
+→ ChatStreamSSEEncoder
+→ SSE final / done
+```
+
+`app.graph.runtime` 是同步 `invoke` 与异步 `astream` 共享的参数校验、graph input、
+ToolInvocationContext、Checkpointer thread ID、recursion limit 和 max concurrency
+所有者；同步与流式入口分别取得匹配的同步/异步 compiled Graph。流式 projector 不把 State update、
+ToolMessage、工具参数/原始结果、reasoning 或 RAG JSON 交给 API；最终结果仍经过唯一
+`ChatStatusPolicy` 和 `build_chat_response_from_outcome()`。完整接口合同见
+[聊天流式 API](api/chat-streaming.md)。
+
+`RegistryToolsMiddleware` 与 `ProjectToolGovernanceMiddleware` 的 model/tool wrap hook
+必须成对提供同步和异步实现。同步入口调用 `wrap_*`，流式入口调用 `awrap_*`；两套入口
+复用同一纯治理逻辑。只实现同步 hook 会让 `graph.astream()` 在首次模型或工具调用前失败。
 
 ChatService 不调用 Router，也不生成或注入 decision。`route_node` 是生产代码中确定性 Router 的唯一所有者；正常 `/chat`、评测脚本和其他 `run_agent_langgraph()` 调用都会先经过它一次。Router 只决定 `agent`、`direct_answer` 或 `clarify`，具体工具始终由 `create_agent` 根据请求可见 Schema 选择。
 
@@ -52,6 +74,23 @@ ChatService 不调用 Router，也不生成或注入 decision。`route_node` 是
 `web_fetch` 与 `web_search` 一样走普通 ToolMessage 路径：Agent 可先搜索，再从搜索结果选择一个公开 URL 抓取正文。HTML 正文通过 Trafilatura 提取；它不进入 RAG、不持久化网页，也不生成本地 references。
 
 `web_pdf_fetch` 同样是普通 ToolMessage 路径，负责已知公开 PDF 的有限页范围。HTML 与 PDF 共用 `app/tools/web_download.py` 中的 requests-hardened 下载入口；PDF 使用已有 pypdf 提取带 `[Page N]` 边界的文本。它不进入本地 RAG、不持久化 PDF，也不生成本地 references。模型误用 `web_fetch` 读取 PDF 时，可根据内容类型错误 ToolMessage 在同一 `create_agent` 循环中改用 `web_pdf_fetch`，不需要 Router 或父图特判。
+
+`list_sql_tables`、`describe_sql_table` 和 `query_sql_readonly` 是默认关闭的普通
+ToolMessage 路径，只在 SQL 配置启用时注册，并统一要求 `database:read`。Registry
+handler 只调用 `app/tools/sql_readonly/` Service；sqlglot AST、SQLAlchemy Engine/
+Inspector、SQLite 数据库层只读和输出截断不进入 Router、父图、ChatService 或 SSE
+projector。数据库内容始终是不可信数据。详见[只读 SQL 工具](tools/sql-readonly.md)。
+
+MCP Client 也是默认关闭的动态工具源，但不把 adapter `StructuredTool` 反向转换为
+`ToolSpec`。应用启动期只对 local JSON 中 `enabled=true` 的 Server 完成一次
+discovery/cache；模型与执行 hook 共用同一个 MCP Access Policy，接受默认 SERVICE
+主体的配置级授权或请求级 `mcp:<server>` 权限，不在每轮模型调用时连接 Server。
+MCP 结果先被 bridge
+转换为现有 `tool_success()` / `tool_error()`，随后仍由
+`ProjectToolGovernanceMiddleware` 处理调用数、错误数、重复调用、累计耗时和
+ToolMessage pairing。同步工具入口只在无 event loop 的 ToolNode 线程中建立短生命周期
+loop，异步入口直接 await adapter coroutine；不要在 ChatService、父图或 SSE 增加 MCP
+分支。详见[受治理的 MCP Client 工具源](tools/mcp-client.md)。
 
 ## 配置快照与生命周期
 
@@ -74,7 +113,9 @@ inspection 使用 `AppSettings(_env_file=None, ...)`，不会读取维护者 `.e
 | 角色模型 | 首次对应 Model Factory getter | `clear_model_factory_cache()` |
 | 默认 Tool Registry | 首次 `get_tool_registry()` | `clear_tool_registry_cache()` |
 | Tool Runtime | 首次 dispatch / `get_tool_runtime()` | `reset_tool_runtime()` |
-| Graph / Checkpointer | lifespan 预编译或首次请求 | `reset_agent_graph_runtime()` / `close_agent_graph_runtime()` |
+| SQL Engine | 第一次实际 SQL 工具调用 | `clear_sql_engine_cache()`；lifespan shutdown 自动 dispose |
+| MCP Client / Tool cache | 显式启用时由 lifespan 启动 discovery | `close_mcp_runtime()`；配置变更需重启，不热加载 |
+| Graph / Checkpointer | 同步 Graph 在 lifespan 预编译，流式 Graph 首次请求创建 | 同步上下文使用 `reset_agent_graph_runtime()`，应用异步关闭使用 `areset_agent_graph_runtime()` |
 
 `.env` 不是动态热更新接口。若测试要切换进程级配置，应先关闭 Runtime 和
 Graph/Checkpointer，再依次失效 Model、Registry、Settings 缓存；生产环境优先重启
@@ -211,6 +252,8 @@ graph TD;
 | `app/graph/state.py` | 声明唯一完整 `AgentGraphState` 及 reducer |
 | `app/graph/conditions.py` | 声明父图无副作用分支条件 |
 | `app/graph/nodes.py` | 独占 Router 调用/计时；组合各节点的显式字段更新 |
+| `app/graph/runtime.py` | 共享调用准备与同步 `graph.invoke` 门面 |
+| `app/graph/streaming.py` | 异步 `graph.astream`、消息缓冲和安全事件投影 |
 | `app/contracts/chat.py` | 声明唯一 Result-to-HTTP/API/metrics 状态策略 |
 | `app/agent/router.py` | 只产生 agent/direct_answer/clarify 的确定性决策 |
 | `app/agent/results.py` | 校验完整 AgentRunResult；集中内部和 RAG 状态转换 |
@@ -222,19 +265,32 @@ graph TD;
 | `app/tools/providers/local.py` | 按请求 `required_permissions` 过滤模型可见工具 |
 | `app/tools/registry.py` | 注册 ToolSpec；统一分发工具 |
 | `app/tools/runtime.py` | 治理并执行单次工具调用 |
+| `app/tools/mcp/config.py` | MCP JSON Schema、URL、`SecretStr` Header、可选环境引用与 connection 组装 |
+| `app/tools/mcp/access.py` | 集中 MCP Server 启停、默认服务主体与请求级权限策略 |
+| `app/tools/mcp/client.py` | `MultiServerMCPClient` 与启动/关闭 cache 生命周期 |
+| `app/tools/mcp/discovery.py` | allowlist、annotation、prefix、数量与冲突校验 |
+| `app/tools/mcp/bridge.py` | adapter interceptor、同步/异步兼容、ToolResult 与审计归一化 |
+| `app/tools/mcp/provider.py` | 按统一 Server Access Policy 提供 cached MCP tools |
+| `app/tools/mcp/serialization.py` | 不可信 MCP 文本/structured content 的脱敏与体量限制 |
 | `app/tools/web_search.py` | 调用 DDGS；映射参数、规范化结果和转换公开异常 |
 | `app/tools/web_download.py` | 为 HTML/PDF 提供共用 hardened 有限下载适配 |
 | `app/tools/web_fetch.py` | 处理 HTML/XHTML/纯文本并调用 Trafilatura |
 | `app/tools/web_pdf_fetch.py` | 校验 PDF magic；通过 pypdf 提取页范围和有限元数据 |
+| `app/tools/sql_readonly/engine.py` | 惰性 SQLAlchemy Engine、SQLite 只读连接、语句超时和 dispose |
+| `app/tools/sql_readonly/policy.py` | sqlglot 单语句只读 AST、物理表 allowlist、危险函数和 LIMIT |
+| `app/tools/sql_readonly/service.py` | Inspector、查询事务边界、安全错误和结果转换 |
+| `app/tools/sql_readonly/serialization.py` | 列名/值规范化与单元格、行、总输出限制 |
 | `app/agent/runtime.py` | 构造兼容 decide/LLM trace；保存 trace |
 | `app/services/chat_models.py` | 声明框架无关 Chat 请求、结果和内部上下文 |
-| `app/services/chat_service.py` | 编排 Settings、Query Rewrite、Runtime、状态策略和 session |
+| `app/services/chat_stream_models.py` | 声明七种框架无关 Chat stream 事件 |
+| `app/services/chat_service.py` | 编排同步/流式 Query Rewrite、Runtime、状态策略和 session |
 | `app/services/chat_telemetry.py` | 初始化/合并/finalize metrics，安全写 bad case，格式化工具调用链 |
 | `app/api/application.py` | 创建 FastAPI；组装 lifespan、middleware 和全部 Router |
-| `app/api/chat.py` | 把 `/chat` HTTP 上下文适配为 ChatServiceRequest |
+| `app/api/chat.py` | 把 `/chat` 与 `/chat/stream` HTTP 上下文适配为同一 Service |
+| `app/api/streaming.py` | 严格公开字段投影、sequence/timestamp 与 SSE wire 编码 |
 | `app/api/health.py` | 提供无外部依赖的进程存活检查 |
 | `app/api/lifecycle.py` | 校验并初始化 RAG/Graph；关闭 Graph/Tool Runtime |
-| `app/api/middleware.py` | 适配 FastAPI Request；维护 `/chat` trace 与端到端响应头 |
+| `app/api/middleware.py` | 维护两个聊天入口的 trace；只为同步 `/chat` 写总耗时响应头 |
 | `app/api/http_logging.py` | 显式、幂等配置 Uvicorn access-log URL 展示 |
 | `app/api/responses.py` | 沿单一具体函数规范化 confidence/LLM usage 并构造 ChatResponse |
 | `app/common/logging.py` | 构造框架无关的应用 logger，不修改 Uvicorn 全局状态 |
@@ -262,6 +318,9 @@ Provider 的模型可见性层只复用 `has_permission()` 检查全部 `ToolSpe
 | 某 Result status 的 HTTP/code/message 是什么 | `app/contracts/chat.py` |
 | metrics 状态为什么这样记录 | `ChatStatusPolicy.metric_status` |
 | API 字段如何构造 | `app/api/responses.py` |
+| SSE sequence/信封为什么这样构造 | `app/api/streaming.py` |
+| 为什么某个 token 没有流出 | `app/graph/streaming.py` 的消息类型/block/namespace/metadata 白名单 |
+| 客户端断开为何不保存部分回答 | `app/api/chat.py`、`ChatService.stream()` 的 generator close/finalize |
 | RAG 状态如何进入 Agent | `app/agent/results.py::map_rag_status_to_agent_status` |
 | 工具事件如何进入状态 | `app/agent/framework_agent.py`、`app/agent/tool_events.py` |
 | RAG 结果如何写回 | `app/agent/answer.py`、`rag_subgraph_node` |
@@ -275,6 +334,7 @@ Provider 的模型可见性层只复用 `has_permission()` 检查全部 `ToolSpe
 | 工具为什么失败 | `app/tools/runtime.py`、Policy 和对应 ToolSpec handler |
 | 模型为什么看不到某个工具 | `app/tools/providers/local.py`、`ToolSpec.required_permissions` |
 | Web Search 为什么模型看不到 | `TOOL_DEFAULT_PERMISSIONS`、`app/tools/providers/local.py` |
+| SQL 工具为什么模型看不到 | `SQL_TOOL_ENABLED`、`SQL_ALLOWED_TABLES`、`database:read` 与 Provider 可见性 |
 | Web Search 为什么执行失败 | `app/tools/web_search.py`、`app/tools/runtime.py` |
 | 搜索结果为什么为空 | DDGS region、`backend="auto"`、网络条件 |
 | Web Search 为什么没有进入 RAG | 它是普通 Agent 工具；只有本地知识库检索进入 RAG |
@@ -339,6 +399,11 @@ lint-imports
 lint-imports --verbose
 ```
 
-脚本只使用普通 `build_agent_graph().compile()`，不会调用带 Checkpointer 的缓存入口；也不会初始化模型、DDGS、requests-hardened Manager、Trafilatura、PdfReader、执行 handler、访问网络或读取/重建 RAG 索引。报告验证 `AgentGraphState` 没有嵌套状态且包含全部业务字段，`AgentRunResult` 字段完整并拒绝 extra，所有 Result status 恰好有一项 policy，Graph result 仍是普通字典，API response adapter 没有 Runtime/Graph 反向依赖，并检查 application factory、独立 Chat Router、ChatService/telemetry 分工、当前架构文档和历史归档。报告还分别列出 Registry 的八个 `registered_tools` 和默认 Context 的 `default_visible_tools`，验证默认可见集合、权限及 Web 工具契约。它只读取 `.importlinter` 的公开配置结构，报告 `import_linter_configured`、四项关键合同和 `zero_import_ignores`；不分析或复制 import graph。版本来自 `importlib.metadata`，图来自 `get_graph()`/`get_graph(xray=True)`，Mermaid 来自 `draw_mermaid()`，工具参数来自模型可见的 Pydantic JSON Schema。实际模块方向必须由官方 `lint-imports` 全量检查。
+脚本只使用普通 `build_agent_graph().compile()`，不会调用带 Checkpointer 的缓存入口；也不会初始化模型、DDGS、requests-hardened Manager、Trafilatura、PdfReader、执行 handler、访问网络或读取/重建 RAG 索引。报告验证 `AgentGraphState` 没有嵌套状态且包含全部业务字段，`AgentRunResult` 字段完整并拒绝 extra，所有 Result status 恰好有一项 policy，Graph result 仍是普通字典，API response adapter 没有 Runtime/Graph 反向依赖，并检查 application factory、同步/流式 Chat Router、共享 Service、`graph.astream` Runtime、事件合同、ChatService/telemetry 分工、当前架构文档和历史归档。报告还分别列出 Registry 的八个 `registered_tools` 和默认 Context 的 `default_visible_tools`，验证默认可见集合、权限及 Web 工具契约。它只读取 `.importlinter` 的公开配置结构，报告 `import_linter_configured`、四项关键合同和 `zero_import_ignores`；不分析或复制 import graph。版本来自 `importlib.metadata`，图来自 `get_graph()`/`get_graph(xray=True)`，Mermaid 来自 `draw_mermaid()`，工具参数来自模型可见的 Pydantic JSON Schema。实际模块方向必须由官方 `lint-imports` 全量检查。
 
 升级 LangChain、LangGraph、Pydantic 或调整 package 时，先运行 `lint-imports`、契约测试和 `--check`。重点确认父图节点未改变、xray 仍能展开 `framework_agent`、model/tools 和调用限制节点仍存在、`ToolRuntime` 注入字段未暴露给模型，并重新生成本页 Mermaid。
+
+真实 Online Tool 连通性统一使用 `python scripts/smoke_test_online_tools.py`
+的 `search`、`fetch`、`pdf` 子命令，三者都通过
+`ToolRegistry.dispatch → ToolRuntime.execute`。模型供应商 Tool Calling 协议仍由
+`smoke_test_agent_tool_calling.py` 单独检查；两类冒烟不得合并，也不进入 Pytest。

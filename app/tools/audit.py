@@ -62,11 +62,14 @@ class ToolAuditEvent:
 
     sanitized_input: Any
     sanitized_output_summary: Any
+    server_alias: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """返回可直接写入 JSON 的事件字典。"""
         value = asdict(self)
         value["event_type"] = self.event_type.value
+        if not value["server_alias"]:
+            value.pop("server_alias")
         return value
 
 
