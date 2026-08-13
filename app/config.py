@@ -274,7 +274,7 @@ class AppSettings(BaseSettings):
 
     # 受治理的外部 MCP Client 工具源
     mcp_tools_enabled: bool = False
-    mcp_servers_config_path: Path | None = None
+    mcp_servers_config_path: Path = BASE_DIR / "config" / "mcp_servers.local.json"
     mcp_discovery_timeout_seconds: float = Field(
         default=5.0,
         gt=0,
@@ -381,7 +381,6 @@ class AppSettings(BaseSettings):
         return project_path(Path(value))
 
     @field_validator(
-        "mcp_servers_config_path",
         "model_cache_dir_override",
         "hf_hub_cache",
         "hf_home",
@@ -396,6 +395,14 @@ class AppSettings(BaseSettings):
         """将空路径视为未配置，否则展开并解析到项目根目录。"""
         if value is None or (isinstance(value, str) and not value.strip()):
             return None
+        return project_path(Path(value))
+
+    @field_validator("mcp_servers_config_path", mode="before")
+    @classmethod
+    def _normalize_mcp_config_path(cls, value: str | Path | None) -> Path:
+        """允许覆盖 MCP 配置路径；空值回退到 gitignored local JSON。"""
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return BASE_DIR / "config" / "mcp_servers.local.json"
         return project_path(Path(value))
 
     @field_validator(
@@ -572,10 +579,6 @@ class AppSettings(BaseSettings):
     @model_validator(mode="after")
     def _validate_configuration(self) -> AppSettings:
         """校验需要多个配置字段共同满足的约束。"""
-        if self.mcp_tools_enabled and self.mcp_servers_config_path is None:
-            raise ValueError(
-                "MCP_TOOLS_ENABLED=true 时必须配置 MCP_SERVERS_CONFIG_PATH"
-            )
         if self.tool_retry_max_delay_ms < self.tool_retry_base_delay_ms:
             raise ValueError(
                 "TOOL_RETRY_MAX_DELAY_MS 必须大于或等于 "

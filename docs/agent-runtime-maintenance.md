@@ -82,8 +82,10 @@ Inspector、SQLite 数据库层只读和输出截断不进入 Router、父图、
 projector。数据库内容始终是不可信数据。详见[只读 SQL 工具](tools/sql-readonly.md)。
 
 MCP Client 也是默认关闭的动态工具源，但不把 adapter `StructuredTool` 反向转换为
-`ToolSpec`。应用启动期完成一次 discovery/cache，模型与执行 hook 只按
-`mcp:<server>` 权限读取 cache，不在每轮模型调用时连接 Server。MCP 结果先被 bridge
+`ToolSpec`。应用启动期只对 local JSON 中 `enabled=true` 的 Server 完成一次
+discovery/cache；模型与执行 hook 共用同一个 MCP Access Policy，接受默认 SERVICE
+主体的配置级授权或请求级 `mcp:<server>` 权限，不在每轮模型调用时连接 Server。
+MCP 结果先被 bridge
 转换为现有 `tool_success()` / `tool_error()`，随后仍由
 `ProjectToolGovernanceMiddleware` 处理调用数、错误数、重复调用、累计耗时和
 ToolMessage pairing。同步工具入口只在无 event loop 的 ToolNode 线程中建立短生命周期
@@ -263,11 +265,12 @@ graph TD;
 | `app/tools/providers/local.py` | 按请求 `required_permissions` 过滤模型可见工具 |
 | `app/tools/registry.py` | 注册 ToolSpec；统一分发工具 |
 | `app/tools/runtime.py` | 治理并执行单次工具调用 |
-| `app/tools/mcp/config.py` | MCP JSON Schema、URL 和 Header 环境引用校验 |
+| `app/tools/mcp/config.py` | MCP JSON Schema、URL、`SecretStr` Header、可选环境引用与 connection 组装 |
+| `app/tools/mcp/access.py` | 集中 MCP Server 启停、默认服务主体与请求级权限策略 |
 | `app/tools/mcp/client.py` | `MultiServerMCPClient` 与启动/关闭 cache 生命周期 |
 | `app/tools/mcp/discovery.py` | allowlist、annotation、prefix、数量与冲突校验 |
 | `app/tools/mcp/bridge.py` | adapter interceptor、同步/异步兼容、ToolResult 与审计归一化 |
-| `app/tools/mcp/provider.py` | 按 `mcp:<server>` 权限提供 cached MCP tools |
+| `app/tools/mcp/provider.py` | 按统一 Server Access Policy 提供 cached MCP tools |
 | `app/tools/mcp/serialization.py` | 不可信 MCP 文本/structured content 的脱敏与体量限制 |
 | `app/tools/web_search.py` | 调用 DDGS；映射参数、规范化结果和转换公开异常 |
 | `app/tools/web_download.py` | 为 HTML/PDF 提供共用 hardened 有限下载适配 |

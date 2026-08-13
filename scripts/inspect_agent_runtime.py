@@ -460,6 +460,9 @@ def inspect_runtime(
     framework_tools_source = (
         PROJECT_ROOT / "app/agent/framework_tools.py"
     ).read_text(encoding="utf-8")
+    mcp_access_source = (
+        PROJECT_ROOT / "app/tools/mcp/access.py"
+    ).read_text(encoding="utf-8")
     mcp_bridge_source = (
         PROJECT_ROOT / "app/tools/mcp/bridge.py"
     ).read_text(encoding="utf-8")
@@ -736,7 +739,8 @@ def inspect_runtime(
     registered_tool_count_ok = len(registered_tools) == expected_tool_count
     mcp_disabled_by_default = (
         AppSettings.model_fields["mcp_tools_enabled"].default is False
-        and AppSettings.model_fields["mcp_servers_config_path"].default is None
+        and AppSettings.model_fields["mcp_servers_config_path"].default
+        == PROJECT_ROOT / "config" / "mcp_servers.local.json"
     )
     mcp_uses_langchain_adapter = (
         "langchain-mcp-adapters" not in missing_packages
@@ -751,9 +755,11 @@ def inspect_runtime(
     )
     mcp_tools_require_server_permission = (
         'return f"mcp:{self.server_alias}"' in mcp_provider_source
-        and "has_permission(context.permissions, entry.required_permission)"
-        in mcp_provider_source
-        and 'f"mcp:{request.server_name}"' in mcp_bridge_source
+        and "def can_use_mcp_server(" in mcp_access_source
+        and "if not server_config.enabled:" in mcp_access_source
+        and "server_config.enabled_for_default_principal" in mcp_access_source
+        and "can_use_mcp_server(" in mcp_provider_source
+        and "can_use_mcp_server(" in mcp_bridge_source
     )
     mcp_tools_have_local_allowlist = (
         "allowed_tools: tuple[str, ...]" in mcp_config_source
@@ -1163,7 +1169,7 @@ def inspect_runtime(
         _check(
             "mcp_disabled_by_default",
             mcp_disabled_by_default,
-            "MCP tools and config path must be disabled by default",
+            "MCP tools must default off and use the gitignored local config path",
         ),
         _check(
             "mcp_uses_langchain_adapter",
@@ -1178,7 +1184,7 @@ def inspect_runtime(
         _check(
             "mcp_tools_require_server_permission",
             mcp_tools_require_server_permission,
-            "every MCP tool must require its mcp:<server_alias> permission",
+            "MCP visibility and execution must share one server access policy",
         ),
         _check(
             "mcp_tools_have_local_allowlist",

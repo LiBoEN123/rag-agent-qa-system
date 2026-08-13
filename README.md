@@ -19,7 +19,7 @@
 - ChromaDB 持久化：chunk 文本、metadata 和 embedding 持久化保存，服务重启可复用索引缓存。
 - 图内确定性入口 Router：由 LangGraph 父图在每次 Runtime 调用时执行一次，只处理空问题、少量稳定直答和明确澄清；其他自然语言请求统一进入 `agent`，具体工具由 Agent Model 根据当前请求可见的动态 Tool Schema 选择。
 - 框架原生 Agent Runtime：LangGraph 父图嵌入 LangChain `create_agent` 子图，由框架管理模型—工具循环、参数校验、ToolMessage 和调用上限。
-- 权限感知的动态工具发现：本地 Provider 按 `required_permissions` 过滤 Registry tools；可选 MCP Provider 按 `mcp:<server>` 过滤启动期缓存的 adapter tools，两者由同一 Middleware 注入模型和执行层。
+- 权限感知的动态工具发现：本地 Provider 按 `required_permissions` 过滤 Registry tools；可选 MCP Provider 通过 Server 默认可见性或显式 `mcp:<server>` 授权过滤启动期缓存的 adapter tools，两者由同一 Middleware 注入模型和执行层。
 - Agent 循环防护：工具错误总数、连续相同调用、连续相同错误和模型/工具累计耗时均有独立预算；终止错误对同批后续调用 fail-closed，并补齐关联 ToolMessage。
 - 多轮追问改写：同一 `session_id` 下通过 SQLite 保留最近会话历史，短追问和指代问题会先改写成独立检索问题。
 - 工具调用：支持知识库检索、公开网页搜索与受治理的正文提取、文档工具、计算，以及默认关闭的 allowlist 只读 SQL 与 Streamable HTTP MCP Client 工具源。
@@ -241,7 +241,7 @@ Agent Runtime。
 
 新增普通本地工具只需创建合法 `ToolSpec` 并注册到 Registry，不需要修改 Router、父图、`create_agent` 或 Middleware。`LocalToolProvider` 复用精确、区分大小写的 `has_permission()`，仅当 Context 满足全部 `required_permissions` 时才向模型暴露工具；空权限要求始终可见。过滤保持 Registry 顺序，不执行完整 Policy、handler、Runtime 或审计，也不会因审批、风险等级或暂缺幂等键隐藏工具。
 
-模型伪造未绑定的隐藏名称时沿用框架未知工具路径，只返回 `unknown_tool`，不证明工具是否存在，也不泄漏 description、参数 Schema 或缺失权限。模型可见性不是授权替代：本地真实调用仍进入 `ToolRegistry.dispatch() → ToolRuntime.execute()` 做最终权限与执行期治理；MCP 调用在官方 adapter interceptor 中再次检查 `mcp:<server>`。多工具源合并保持稳定顺序并拒绝重名。
+模型伪造未绑定的隐藏名称时沿用框架未知工具路径，只返回 `unknown_tool`，不证明工具是否存在，也不泄漏 description、参数 Schema 或缺失权限。模型可见性不是授权替代：本地真实调用仍进入 `ToolRegistry.dispatch() → ToolRuntime.execute()` 做最终权限与执行期治理；MCP Provider 和官方 adapter interceptor 复用同一个 Server Access Policy。多工具源合并保持稳定顺序并拒绝重名。
 
 模型—工具循环由 `langchain.agents.create_agent` 构建；其内部使用 LangGraph 标准 model/tools 节点处理 Pydantic 校验、同轮调用和基础 ToolMessage。动态工具通过 Middleware 覆盖请求，而不是在父图节点中手工 `bind_tools()`。`ModelCallLimitMiddleware` 和 `ToolCallLimitMiddleware` 分别执行单次 run 的模型与工具调用上限，父图调用还设置 `recursion_limit` 作为最终图级兜底。
 
@@ -275,7 +275,22 @@ MCP 默认关闭；关闭时不读取 Server 配置、不连接网络、不 disc
 Evaluation 合同不变。启用后，FastAPI 启动期使用官方
 `langchain-mcp-adapters.MultiServerMCPClient` 从部署者静态配置的 Streamable HTTP
 Server 获取工具，只保留精确 `allowed_tools` 中的 read-only tool，并以
-`<server>_<tool>` 隔离名称。请求还必须具有 `mcp:<server>` 权限。
+`<server>_<tool>` 隔离名称。`enabled_for_default_principal=true` 可授权当前默认
+SERVICE 主体；其他主体继续使用精确的请求级 `mcp:<server>` 权限。
+
+MCP Server 定义不放进 `.env`：`.env` 只保存 MCP 全局开关和限制；全部 Server URL、
+认证 Header、`allowed_tools`、启停与默认可见性位于 gitignored 的
+`config/mcp_servers.local.json`。本地 `headers` 使用 `SecretStr`，生产还可通过
+`headers_env` 引用 Secret Manager 注入的环境变量。初始化方式如下：
+
+```bash
+cp config/mcp_servers.example.json config/mcp_servers.local.json
+```
+
+编辑 local JSON 后，只需在 `.env` 设置 `MCP_TOOLS_ENABLED=true` 并重启。以后新增普通
+Server 只编辑这一个 local JSON，不需要修改 Python、`AppSettings`、`.env`、
+`.env.example` 或 `TOOL_DEFAULT_PERMISSIONS`。`enabled=false` 的 Server 不进入 adapter
+connections、不 discovery，也不会建立网络连接。
 
 MCP Tool 保持 adapter `StructuredTool`，不会反向转换成 `ToolSpec`；同步 `/chat` 使用
 MCP 专属最小 async-to-sync bridge，流式 `/chat/stream` 直接 await coroutine。输出被
@@ -573,11 +588,11 @@ Tool Runtime、Graph/Checkpointer 缓存；生产服务通常直接重启进程�
 | `SQL_STATEMENT_TIMEOUT_MS` | 数据库语句超时，默认 `5000` ms，必须小于工具总体超时 |
 | `SQL_TOOL_TIMEOUT_SECONDS` | ToolRuntime SQL 工具总体超时，默认 `10` 秒 |
 | `MCP_TOOLS_ENABLED` | 是否启用 MCP Client，默认 `false`；关闭时不读取配置或连接 Server |
-| `MCP_SERVERS_CONFIG_PATH` | MCP Server 静态 JSON 路径；启用时必填，建议使用 Git 忽略的 `config/mcp_servers.local.json` |
+| `MCP_SERVERS_CONFIG_PATH` | MCP Server 静态 JSON 路径；默认是 Git 忽略的 `config/mcp_servers.local.json`，可用项目内相对路径或绝对路径覆盖 |
 | `MCP_DISCOVERY_TIMEOUT_SECONDS` / `MCP_TOOL_TIMEOUT_SECONDS` | 启动 discovery 与单次 MCP Tool 超时，默认 `5` / `15` 秒 |
 | `MCP_MAX_TOOLS_PER_SERVER` | 每 Server 精确 allowlist 上限，默认 `20` |
 | `MCP_MAX_TEXT_CHARS` / `MCP_MAX_STRUCTURED_CHARS` | MCP 文本与 structured content 的模型上下文上限，默认 `12000` / `20000` |
-| `TOOL_DEFAULT_PERMISSIONS` | 默认服务主体权限；默认仅 `knowledge_base:read`，需显式加入 `web:search`、`web:fetch`、`database:read` 或 `mcp:<server>` 才暴露对应可选工具 |
+| `TOOL_DEFAULT_PERMISSIONS` | 默认服务主体通用权限；默认仅 `knowledge_base:read`，Web/SQL 仍需显式权限；MCP 默认主体可见性由每个 Server 的 `enabled_for_default_principal` 配置 |
 | `USE_LLM_JUDGE` | 评测脚本是否启用 LLM Judge，默认 `false` |
 | `JUDGE_API_KEY` | 评测 Judge 模型 API Key；为空时可复用回答模型 Key |
 | `JUDGE_MODEL` | 评测 Judge 模型名称 |

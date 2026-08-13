@@ -12,11 +12,12 @@ from pydantic import BaseModel
 
 from app.agent.framework_tools import parse_tool_result
 from app.tools.audit import ToolAuditEvent
-from app.tools.context import ToolInvocationContext
+from app.tools.context import PrincipalType, ToolInvocationContext
 from app.tools.mcp.bridge import (
     McpToolCallInterceptor,
     build_governed_mcp_tool,
 )
+from app.tools.mcp.config import McpServerConfig
 
 
 class WeatherArgs(BaseModel):
@@ -62,12 +63,23 @@ def _request(runtime, **args):
     )
 
 
+def _server_configs(**overrides):
+    payload = {
+        "transport": "http",
+        "url": "https://weather.example.com/mcp",
+        "allowed_tools": ["get_weather"],
+    }
+    payload.update(overrides)
+    return {"weather": McpServerConfig.model_validate(payload)}
+
+
 def test_async_success_is_standard_untrusted_redacted_and_audited(
     settings_factory,
 ):
     sink = RecordingSink()
     interceptor = McpToolCallInterceptor(
         settings_factory(),
+        server_configs=_server_configs(),
         audit_sink=sink,
     )
 
@@ -125,7 +137,11 @@ def test_async_success_is_standard_untrusted_redacted_and_audited(
 
 def test_permission_denial_does_not_call_remote_handler(settings_factory):
     sink = RecordingSink()
-    interceptor = McpToolCallInterceptor(settings_factory(), audit_sink=sink)
+    interceptor = McpToolCallInterceptor(
+        settings_factory(),
+        server_configs=_server_configs(),
+        audit_sink=sink,
+    )
     calls = 0
 
     async def handler(request):
@@ -146,6 +162,67 @@ def test_permission_denial_does_not_call_remote_handler(settings_factory):
     ]
 
 
+def test_default_service_principal_is_authorized_at_execution_boundary(
+    settings_factory,
+):
+    settings = settings_factory(tool_default_principal_id="chat_api")
+    interceptor = McpToolCallInterceptor(
+        settings,
+        server_configs=_server_configs(enabled_for_default_principal=True),
+        audit_sink=RecordingSink(),
+    )
+    runtime = Runtime(
+        ToolInvocationContext(
+            principal_id="chat_api",
+            principal_type=PrincipalType.SERVICE,
+            permissions=("knowledge_base:read",),
+        )
+    )
+    calls = 0
+
+    async def handler(request):
+        nonlocal calls
+        del request
+        calls += 1
+        return CallToolResult(
+            content=[TextContent(type="text", text="Sunny")]
+        )
+
+    payload = _payload(asyncio.run(interceptor(_request(runtime), handler)))
+
+    assert payload["ok"] is True
+    assert calls == 1
+
+
+def test_non_default_user_cannot_bypass_execution_with_default_visibility(
+    settings_factory,
+):
+    settings = settings_factory(tool_default_principal_id="chat_api")
+    interceptor = McpToolCallInterceptor(
+        settings,
+        server_configs=_server_configs(enabled_for_default_principal=True),
+        audit_sink=RecordingSink(),
+    )
+    runtime = Runtime(
+        ToolInvocationContext(
+            principal_id="chat_api",
+            principal_type=PrincipalType.USER,
+        )
+    )
+    calls = 0
+
+    async def handler(request):
+        nonlocal calls
+        del request
+        calls += 1
+        return CallToolResult(content=[])
+
+    payload = _payload(asyncio.run(interceptor(_request(runtime), handler)))
+
+    assert payload["error_code"] == "mcp_permission_denied"
+    assert calls == 0
+
+
 def test_timeout_transport_and_remote_errors_are_safe(settings_factory):
     settings = settings_factory(mcp_tool_timeout_seconds=0.001)
     runtime = _runtime("mcp:weather")
@@ -159,6 +236,7 @@ def test_timeout_transport_and_remote_errors_are_safe(settings_factory):
         asyncio.run(
             McpToolCallInterceptor(
                 settings,
+                server_configs=_server_configs(),
                 audit_sink=RecordingSink(),
             )(_request(runtime), slow)
         )
@@ -174,6 +252,7 @@ def test_timeout_transport_and_remote_errors_are_safe(settings_factory):
         asyncio.run(
             McpToolCallInterceptor(
                 settings_factory(),
+                server_configs=_server_configs(),
                 audit_sink=RecordingSink(),
             )(_request(runtime), transport_failure)
         )
@@ -192,6 +271,7 @@ def test_timeout_transport_and_remote_errors_are_safe(settings_factory):
         asyncio.run(
             McpToolCallInterceptor(
                 settings_factory(),
+                server_configs=_server_configs(),
                 audit_sink=RecordingSink(),
             )(_request(runtime), remote_failure)
         )
@@ -218,6 +298,7 @@ def test_plain_text_credentials_are_redacted(settings_factory):
     message = asyncio.run(
         McpToolCallInterceptor(
             settings_factory(),
+            server_configs=_server_configs(),
             audit_sink=RecordingSink(),
         )(_request(_runtime("mcp:weather")), handler)
     )
@@ -247,6 +328,7 @@ def test_unsupported_binary_and_large_outputs_are_bounded(settings_factory):
         asyncio.run(
             McpToolCallInterceptor(
                 settings_factory(),
+                server_configs=_server_configs(),
                 audit_sink=RecordingSink(),
             )(_request(runtime), image_handler)
         )
@@ -274,6 +356,7 @@ def test_unsupported_binary_and_large_outputs_are_bounded(settings_factory):
         asyncio.run(
             McpToolCallInterceptor(
                 settings,
+                server_configs=_server_configs(),
                 audit_sink=RecordingSink(),
             )(_request(runtime), large_handler)
         )
@@ -294,6 +377,7 @@ def test_unsupported_binary_and_large_outputs_are_bounded(settings_factory):
 def _governed_tool(settings):
     interceptor = McpToolCallInterceptor(
         settings,
+        server_configs=_server_configs(),
         audit_sink=RecordingSink(),
     )
 

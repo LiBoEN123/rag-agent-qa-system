@@ -17,6 +17,7 @@ from app.tools.mcp.bridge import (
     McpToolCallInterceptor,
     build_governed_mcp_tool,
 )
+from app.tools.mcp.config import McpServerConfig
 from app.tools.mcp.provider import (
     CachedMcpTool,
     McpToolProvider,
@@ -46,9 +47,20 @@ class FakeAgentModel:
         return self.invoke(messages, **kwargs)
 
 
-def _mcp_tool(settings, calls):
+def _server_config(**overrides):
+    payload = {
+        "transport": "http",
+        "url": "https://weather.example.com/mcp",
+        "allowed_tools": ["get_weather"],
+    }
+    payload.update(overrides)
+    return McpServerConfig.model_validate(payload)
+
+
+def _mcp_tool(settings, calls, server_config):
     interceptor = McpToolCallInterceptor(
         settings,
+        server_configs={"weather": server_config},
         audit_sink=NullToolAuditSink(),
     )
 
@@ -88,8 +100,9 @@ def _mcp_tool(settings, calls):
     )
 
 
-def _setup(monkeypatch, settings, model, calls):
-    tool = _mcp_tool(settings, calls)
+def _setup(monkeypatch, settings, model, calls, *, server_config=None):
+    resolved_server_config = server_config or _server_config()
+    tool = _mcp_tool(settings, calls, resolved_server_config)
     install_mcp_tool_provider(
         McpToolProvider(
             [
@@ -97,8 +110,10 @@ def _setup(monkeypatch, settings, model, calls):
                     server_alias="weather",
                     remote_tool_name="get_weather",
                     tool=tool,
+                    server_config=resolved_server_config,
                 )
-            ]
+            ],
+            settings=settings,
         )
     )
     monkeypatch.setattr(
@@ -206,6 +221,36 @@ def test_mcp_tool_runs_through_sync_agent_and_native_async_bridge(
             if isinstance(message, ToolMessage)
         ).content
     )["output"]
+
+
+def test_default_service_principal_sees_and_executes_config_authorized_server(
+    monkeypatch,
+    settings_factory,
+):
+    settings = settings_factory(
+        tool_default_principal_id="chat_api",
+        tool_default_permissions=("knowledge_base:read",),
+    )
+    calls = []
+    model = FakeAgentModel(_responses())
+    graph, _ = _setup(
+        monkeypatch,
+        settings,
+        model,
+        calls,
+        server_config=_server_config(enabled_for_default_principal=True),
+    )
+    context = ToolInvocationContext(
+        trace_id="trace-mcp-agent",
+        session_id="session-mcp-agent",
+        principal_id="chat_api",
+        permissions=("knowledge_base:read",),
+        source="mcp_agent_test",
+    )
+
+    output = graph.invoke(_input(), context=context)
+
+    _assert_success(output, model, calls)
 
 
 def test_mcp_native_async_result_projects_to_safe_stream_event(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -24,8 +25,10 @@ from app.tools.audit import (
     get_default_tool_audit_sink,
     utc_timestamp,
 )
-from app.tools.context import ToolInvocationContext, has_permission
+from app.tools.context import ToolInvocationContext
 from app.tools.errors import ToolErrorCode
+from app.tools.mcp.access import can_use_mcp_server
+from app.tools.mcp.config import McpServerConfig
 from app.tools.policy import build_tool_args_fingerprint
 from app.tools.result import tool_error, tool_success
 from app.tools.mcp.serialization import (
@@ -175,10 +178,12 @@ class McpToolCallInterceptor:
         self,
         settings: AppSettings,
         *,
+        server_configs: Mapping[str, McpServerConfig],
         audit_sink: ToolAuditSink | None = None,
     ) -> None:
         """保存 MCP 治理设置，并选用注入或项目默认审计接收器。"""
         self._settings = settings
+        self._server_configs = dict(server_configs)
         self._audit_sink = audit_sink or get_default_tool_audit_sink(settings)
 
     def _audit(
@@ -253,9 +258,16 @@ class McpToolCallInterceptor:
         except (TypeError, ValueError):
             args_fingerprint = ""
 
-        if context is None or not has_permission(
-            context.permissions,
-            f"mcp:{request.server_name}",
+        server_config = self._server_configs.get(request.server_name)
+        if (
+            context is None
+            or server_config is None
+            or not can_use_mcp_server(
+                context=context,
+                server_alias=request.server_name,
+                server_config=server_config,
+                settings=self._settings,
+            )
         ):
             result = _standard_result(
                 exposed_tool_name=exposed_name,

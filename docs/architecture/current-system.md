@@ -117,7 +117,9 @@ StructuredTool
 可选 MCP Client 工具源默认关闭。显式启用后，FastAPI 启动期使用官方
 `langchain-mcp-adapters.MultiServerMCPClient` 从部署者静态配置的 Streamable HTTP
 Server discovery 工具，只缓存本地精确 allowlist 中的 read-only tool，并加
-`<server>_` 前缀。请求还必须拥有 `mcp:<server>` 权限。MCP adapter 已经提供
+`<server>_` 前缀。默认 SERVICE 主体可由 Server 的
+`enabled_for_default_principal` 授权，其他主体继续使用请求级 `mcp:<server>` 权限；
+Provider 与执行期 bridge 复用统一 Access Policy。MCP adapter 已经提供
 `StructuredTool`，因此不会反向转换成 `ToolSpec`；项目 bridge 在调用前完成权限、
 超时、审计和有限不可信输出归一化，随后仍交给同一个
 `ProjectToolGovernanceMiddleware` 计算调用/错误/重复/耗时预算：
@@ -131,6 +133,11 @@ MultiServerMCPClient → governed StructuredTool ────┘
 MCP Tool 不设置 `pending_rag_result`，`/chat`、`/chat/stream`、ChatService 和 SSE
 projector 没有 MCP 分支。完整配置与安全边界见
 [受治理的 MCP Client 工具源](../tools/mcp-client.md)。
+
+`.env` 只保存 MCP 全局开关和限制。gitignored 的
+`config/mcp_servers.local.json` 保存 Server URL、直接 `SecretStr` Header 或可选
+`headers_env`、allowlist、启停和默认可见性；新增普通 Server 不修改 Python 或
+`TOOL_DEFAULT_PERMISSIONS`。`enabled=false` 在构造 adapter connections 前即被过滤。
 
 ## RAG
 

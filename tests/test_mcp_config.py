@@ -2,14 +2,17 @@
 
 import asyncio
 import json
+import re
 
 import pytest
 from pydantic import ValidationError
 
-from app.config import AppSettings
+from app.config import AppSettings, BASE_DIR
 from app.tools.mcp import client as mcp_client
 from app.tools.mcp.config import (
+    McpConfig,
     McpConfigurationError,
+    McpServerConfig,
     build_mcp_connections,
     load_mcp_config,
 )
@@ -26,22 +29,40 @@ def _valid_payload(**server_overrides):
         "transport": "http",
         "url": "https://mcp.example.com/mcp",
         "allowed_tools": ["get_weather"],
-        "headers_env": {"Authorization": "MCP_WEATHER_AUTHORIZATION"},
     }
     server.update(server_overrides)
     return {"version": 1, "servers": {"weather": server}}
+
+
+def _server(**overrides):
+    return McpServerConfig.model_validate(
+        _valid_payload(**overrides)["servers"]["weather"]
+    )
 
 
 def test_mcp_settings_are_disabled_and_bounded_by_default():
     settings = AppSettings(_env_file=None)
 
     assert settings.mcp_tools_enabled is False
-    assert settings.mcp_servers_config_path is None
+    assert settings.mcp_servers_config_path == (
+        BASE_DIR / "config" / "mcp_servers.local.json"
+    )
     assert settings.mcp_discovery_timeout_seconds == 5.0
     assert settings.mcp_tool_timeout_seconds == 15.0
     assert settings.mcp_max_tools_per_server == 20
     assert settings.mcp_max_text_chars == 12_000
     assert settings.mcp_max_structured_chars == 20_000
+
+
+def test_mcp_config_path_allows_project_relative_and_absolute_overrides(tmp_path):
+    relative = AppSettings(
+        _env_file=None,
+        mcp_servers_config_path="config/custom-mcp.json",
+    )
+    absolute = AppSettings(_env_file=None, mcp_servers_config_path=tmp_path / "mcp.json")
+
+    assert relative.mcp_servers_config_path == BASE_DIR / "config" / "custom-mcp.json"
+    assert absolute.mcp_servers_config_path == tmp_path / "mcp.json"
 
 
 def test_server_specific_header_values_are_not_app_settings_fields():
@@ -50,45 +71,125 @@ def test_server_specific_header_values_are_not_app_settings_fields():
     assert "mcp_github_readonly" not in AppSettings.model_fields
 
 
-def test_server_header_values_are_resolved_from_dotenv(tmp_path):
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "\n".join(
-            (
-                "MCP_GITHUB_AUTHORIZATION=Bearer deployment-secret",
-                "MCP_GITHUB_TOOLS=get_me,get_file_contents,pull_request_read",
-                "MCP_GITHUB_READONLY=true",
-            )
-        ),
-        encoding="utf-8",
+def test_direct_headers_are_secret_and_reach_only_connection_boundary(tmp_path, caplog):
+    secret = "Bearer local-test-value"
+    config = load_mcp_config(
+        _write_config(
+            tmp_path,
+            _valid_payload(headers={"Authorization": secret}),
+        )
     )
-    payload = _valid_payload(
-        headers_env={
-            "Authorization": "MCP_GITHUB_AUTHORIZATION",
-            "X-MCP-Tools": "MCP_GITHUB_TOOLS",
-            "X-MCP-Readonly": "MCP_GITHUB_READONLY",
-        }
-    )
-    config = load_mcp_config(_write_config(tmp_path, payload))
 
     connections = build_mcp_connections(
         config,
         tool_timeout_seconds=9,
         environ={},
-        dotenv_path=env_file,
+    )
+
+    assert connections["weather"]["headers"] == {"Authorization": secret}
+    assert secret not in repr(config.servers["weather"])
+    assert secret not in str(config.servers["weather"])
+    assert secret not in repr(config)
+    assert secret not in config.model_dump_json()
+    assert secret not in caplog.text
+
+
+def test_headers_env_is_resolved_from_process_environment(tmp_path):
+    config = load_mcp_config(
+        _write_config(
+            tmp_path,
+            _valid_payload(
+                headers_env={"Authorization": "DEPLOYMENT_AUTHORIZATION"}
+            ),
+        )
+    )
+
+    connections = build_mcp_connections(
+        config,
+        tool_timeout_seconds=9,
+        environ={"DEPLOYMENT_AUTHORIZATION": "Bearer deployment-test-value"},
     )
 
     assert connections["weather"]["headers"] == {
-        "Authorization": "Bearer deployment-secret",
-        "X-MCP-Tools": "get_me,get_file_contents,pull_request_read",
-        "X-MCP-Readonly": "true",
+        "Authorization": "Bearer deployment-test-value"
     }
-    assert "deployment-secret" not in config.model_dump_json()
 
 
-def test_enabled_mcp_requires_config_path():
-    with pytest.raises(ValidationError, match="MCP_SERVERS_CONFIG_PATH"):
-        AppSettings(_env_file=None, mcp_tools_enabled=True)
+def test_direct_and_env_headers_merge_when_names_differ(tmp_path):
+    config = load_mcp_config(
+        _write_config(
+            tmp_path,
+            _valid_payload(
+                headers={"X-Api-Key": "local-test-key"},
+                headers_env={"Authorization": "DEPLOYMENT_AUTHORIZATION"},
+            ),
+        )
+    )
+
+    connections = build_mcp_connections(
+        config,
+        tool_timeout_seconds=15,
+        environ={"DEPLOYMENT_AUTHORIZATION": "Bearer deployment-test-value"},
+    )
+
+    assert connections["weather"]["headers"] == {
+        "X-Api-Key": "local-test-key",
+        "Authorization": "Bearer deployment-test-value",
+    }
+
+
+@pytest.mark.parametrize(
+    ("direct_name", "env_name"),
+    [
+        ("Authorization", "Authorization"),
+        ("Authorization", "authorization"),
+    ],
+)
+def test_direct_and_env_headers_reject_case_insensitive_conflicts(
+    direct_name,
+    env_name,
+):
+    secret = "local-conflict-test-value"
+
+    with pytest.raises(ValidationError) as captured:
+        _server(
+            headers={direct_name: secret},
+            headers_env={env_name: "DEPLOYMENT_AUTHORIZATION"},
+        )
+
+    assert secret not in str(captured.value)
+
+
+@pytest.mark.parametrize("value", ["", "   ", "abc\rdef", "abc\ndef", "abc\0def", "abc\tdef"])
+def test_direct_header_rejects_empty_or_control_character_values(value):
+    with pytest.raises(ValidationError) as captured:
+        _server(headers={"Authorization": value})
+
+    if value.strip():
+        assert value not in str(captured.value)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        {"headers": {"Bad Header": "local-test-value"}},
+        {"headers_env": {"Bad Header": "DEPLOYMENT_AUTHORIZATION"}},
+        {"headers": {"Host": "mcp.example.com"}},
+        {"headers": {"content-length": "10"}},
+        {"headers_env": {"Transfer-Encoding": "DEPLOYMENT_ENCODING"}},
+        {"headers_env": {"Proxy-Authorization": "DEPLOYMENT_PROXY"}},
+    ],
+)
+def test_invalid_or_transport_controlled_header_names_are_rejected(field):
+    with pytest.raises(ValidationError):
+        _server(**field)
+
+
+def test_server_enablement_defaults_are_safe():
+    server = _server()
+
+    assert server.enabled is True
+    assert server.enabled_for_default_principal is False
 
 
 def test_disabled_mcp_does_not_read_config_or_construct_client(
@@ -109,6 +210,16 @@ def test_disabled_mcp_does_not_read_config_or_construct_client(
     assert asyncio.run(mcp_client.initialize_mcp_runtime(settings)) is None
 
 
+def test_enabled_mcp_requires_existing_config_file(settings_factory, tmp_path):
+    settings = settings_factory(
+        mcp_tools_enabled=True,
+        mcp_servers_config_path=tmp_path / "missing-mcp.json",
+    )
+
+    with pytest.raises(McpConfigurationError, match="不存在"):
+        asyncio.run(mcp_client.initialize_mcp_runtime(settings))
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -124,7 +235,6 @@ def test_disabled_mcp_does_not_read_config_or_construct_client(
         _valid_payload(allowed_tools=[]),
         _valid_payload(allowed_tools=["get_weather", "get_weather"]),
         _valid_payload(allowed_tools=["*"]),
-        _valid_payload(headers_env={"Bad Header": "MCP_TOKEN"}),
         _valid_payload(headers_env={"Authorization": "lowercase_name"}),
     ],
 )
@@ -161,34 +271,77 @@ def test_invalid_json_missing_file_and_missing_header_env_are_safe(tmp_path):
     with pytest.raises(McpConfigurationError, match="不存在"):
         load_mcp_config(tmp_path / "missing.json")
 
-    config = load_mcp_config(_write_config(tmp_path, _valid_payload()))
+    config = load_mcp_config(
+        _write_config(
+            tmp_path,
+            _valid_payload(
+                headers_env={"Authorization": "DEPLOYMENT_AUTHORIZATION"}
+            ),
+        )
+    )
     with pytest.raises(McpConfigurationError) as captured:
         build_mcp_connections(
             config,
             tool_timeout_seconds=15,
             environ={},
         )
-    assert "Bearer deployment-secret" not in str(captured.value)
+    assert "local-test-value" not in str(captured.value)
 
 
-def test_process_environment_takes_precedence_over_dotenv(tmp_path):
-    env_file = tmp_path / ".env"
-    env_file.write_text(
-        "MCP_WEATHER_AUTHORIZATION=Bearer dotenv-secret\n",
-        encoding="utf-8",
+def test_headers_env_connection_keeps_transport_and_timeout(tmp_path):
+    config = load_mcp_config(
+        _write_config(
+            tmp_path,
+            _valid_payload(
+                headers_env={"Authorization": "DEPLOYMENT_AUTHORIZATION"}
+            ),
+        )
     )
-    config = load_mcp_config(_write_config(tmp_path, _valid_payload()))
 
     connections = build_mcp_connections(
         config,
         tool_timeout_seconds=9,
-        environ={"MCP_WEATHER_AUTHORIZATION": "Bearer deployment-secret"},
-        dotenv_path=env_file,
+        environ={"DEPLOYMENT_AUTHORIZATION": "Bearer process-test-value"},
     )
 
     assert connections["weather"]["transport"] == "http"
     assert connections["weather"]["timeout"] == 9
     assert connections["weather"]["headers"] == {
-        "Authorization": "Bearer deployment-secret"
+        "Authorization": "Bearer process-test-value"
     }
-    assert "deployment-secret" not in config.model_dump_json()
+
+
+def test_disabled_server_does_not_resolve_headers_or_enter_connections():
+    config = McpConfig.model_validate(
+        _valid_payload(
+            enabled=False,
+            headers_env={"Authorization": "MISSING_DEPLOYMENT_AUTHORIZATION"},
+        )
+    )
+
+    assert build_mcp_connections(
+        config,
+        tool_timeout_seconds=15,
+        environ={},
+    ) == {}
+
+
+def test_env_example_contains_only_global_mcp_variables():
+    content = (BASE_DIR / ".env.example").read_text(encoding="utf-8")
+    forbidden = re.compile(
+        r"^MCP_[A-Z0-9]+_(?:AUTHORIZATION|TOKEN|TOOLS|READONLY)=",
+        re.MULTILINE,
+    )
+
+    assert forbidden.search(content) is None
+
+
+def test_repository_uses_example_and_gitignored_local_config_layout():
+    example = BASE_DIR / "config" / "mcp_servers.example.json"
+    ignore_rules = (BASE_DIR / ".gitignore").read_text(encoding="utf-8").splitlines()
+
+    assert example.is_file()
+    assert not (BASE_DIR / "config" / "mcp_servers.json").exists()
+    assert "config/mcp_servers.local.json" in ignore_rules
+    config = load_mcp_config(example)
+    assert set(config.servers) == {"github", "production_example"}

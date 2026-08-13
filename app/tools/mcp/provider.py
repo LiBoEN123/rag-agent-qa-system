@@ -1,4 +1,4 @@
-"""按请求权限提供启动期缓存的 MCP StructuredTool。"""
+"""按统一 MCP Access Policy 提供启动期缓存的 StructuredTool。"""
 
 from __future__ import annotations
 
@@ -7,8 +7,10 @@ from dataclasses import dataclass
 
 from langchain_core.tools import BaseTool
 
-from app.config import get_settings
-from app.tools.context import ToolInvocationContext, has_permission
+from app.config import AppSettings, get_settings
+from app.tools.context import ToolInvocationContext
+from app.tools.mcp.access import can_use_mcp_server
+from app.tools.mcp.config import McpServerConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +20,7 @@ class CachedMcpTool:
     server_alias: str
     remote_tool_name: str
     tool: BaseTool
+    server_config: McpServerConfig
 
     @property
     def required_permission(self) -> str:
@@ -26,11 +29,17 @@ class CachedMcpTool:
 
 
 class McpToolProvider:
-    """只从不可变 cache 中按 server permission 选择工具。"""
+    """只从不可变 cache 中按统一 Server Access Policy 选择工具。"""
 
-    def __init__(self, entries: list[CachedMcpTool]) -> None:
+    def __init__(
+        self,
+        entries: list[CachedMcpTool],
+        *,
+        settings: AppSettings,
+    ) -> None:
         """固化 discovery 结果，并拒绝缓存中的重复工具名称。"""
         self._entries = tuple(entries)
+        self._settings = settings
         names = [entry.tool.name for entry in self._entries]
         if len(names) != len(set(names)):
             raise ValueError("MCP Tool cache 包含重复名称")
@@ -40,16 +49,25 @@ class McpToolProvider:
         return [
             entry.tool
             for entry in self._entries
-            if has_permission(context.permissions, entry.required_permission)
+            if can_use_mcp_server(
+                context=context,
+                server_alias=entry.server_alias,
+                server_config=entry.server_config,
+                settings=self._settings,
+            )
         ]
 
-    def catalog(self) -> list[dict[str, str]]:
+    def catalog(self) -> list[dict[str, str | bool]]:
         """返回不含 URL、Header 或 Client 对象的安全工具目录。"""
         return [
             {
-                "server_alias": entry.server_alias,
+                "server": entry.server_alias,
+                "enabled": entry.server_config.enabled,
+                "enabled_for_default_principal": (
+                    entry.server_config.enabled_for_default_principal
+                ),
                 "tool_name": entry.tool.name,
-                "remote_tool_name": entry.remote_tool_name,
+                "remote_tool": entry.remote_tool_name,
                 "description": " ".join(entry.tool.description.split())[:240],
             }
             for entry in self._entries
@@ -92,7 +110,7 @@ def list_mcp_tools_for_context(
     return []
 
 
-def get_mcp_tool_catalog() -> list[dict[str, str]]:
+def get_mcp_tool_catalog() -> list[dict[str, str | bool]]:
     """返回当前缓存的安全工具目录；未初始化时返回空列表。"""
     provider = get_mcp_tool_provider()
     return provider.catalog() if provider is not None else []

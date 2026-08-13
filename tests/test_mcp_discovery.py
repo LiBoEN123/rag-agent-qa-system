@@ -7,7 +7,7 @@ import pytest
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
 
-from app.tools.context import ToolInvocationContext
+from app.tools.context import PrincipalType, ToolInvocationContext
 from app.tools.mcp import client as mcp_client
 from app.tools.mcp import provider as mcp_provider
 from app.tools.mcp.config import McpConfig
@@ -40,7 +40,7 @@ def _raw_tool(
     )
 
 
-def _config(*, allowed=("get_weather",), second=False):
+def _config(*, allowed=("get_weather",), second=False, **server_overrides):
     servers = {
         "weather": {
             "transport": "http",
@@ -54,6 +54,7 @@ def _config(*, allowed=("get_weather",), second=False):
             "url": "https://finance.example.com/mcp",
             "allowed_tools": ["get_quote"],
         }
+    servers["weather"].update(server_overrides)
     return McpConfig.model_validate({"version": 1, "servers": servers})
 
 
@@ -302,6 +303,7 @@ def test_allowlist_limit_timeout_and_connection_error_fail_closed(
 
 
 def test_provider_permissions_are_isolated_per_server(settings_factory):
+    settings = settings_factory()
     client = FakeClient(
         {
             "weather": [_raw_tool("weather", "get_weather")],
@@ -312,11 +314,11 @@ def test_provider_permissions_are_isolated_per_server(settings_factory):
         discover_mcp_tools(
             client,
             config=_config(second=True),
-            settings=settings_factory(),
+            settings=settings,
             local_tool_names=set(),
         )
     )
-    provider = McpToolProvider(entries)
+    provider = McpToolProvider(entries, settings=settings)
 
     assert provider.list_tools(context=ToolInvocationContext()) == []
     assert [
@@ -331,6 +333,95 @@ def test_provider_permissions_are_isolated_per_server(settings_factory):
             context=ToolInvocationContext(permissions=("mcp:finance",))
         )
     ] == ["finance_get_quote"]
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        ToolInvocationContext(
+            principal_id="other-service",
+            principal_type=PrincipalType.SERVICE,
+        ),
+        ToolInvocationContext(
+            principal_id="chat_api",
+            principal_type=PrincipalType.USER,
+        ),
+        ToolInvocationContext(
+            principal_id="chat_api",
+            principal_type=PrincipalType.ANONYMOUS,
+        ),
+    ],
+)
+def test_default_visibility_does_not_authorize_other_principals(
+    settings_factory,
+    context,
+):
+    settings = settings_factory(tool_default_principal_id="chat_api")
+    config = _config(enabled_for_default_principal=True)
+    entries = asyncio.run(
+        discover_mcp_tools(
+            FakeClient({"weather": [_raw_tool("weather", "get_weather")]}),
+            config=config,
+            settings=settings,
+            local_tool_names=set(),
+        )
+    )
+    provider = McpToolProvider(entries, settings=settings)
+
+    assert provider.list_tools(context=context) == []
+
+
+def test_default_service_principal_visibility_and_explicit_permission(
+    settings_factory,
+):
+    settings = settings_factory(
+        tool_default_principal_id="chat_api",
+        tool_default_permissions=("knowledge_base:read",),
+    )
+    config = _config(enabled_for_default_principal=True)
+    entries = asyncio.run(
+        discover_mcp_tools(
+            FakeClient({"weather": [_raw_tool("weather", "get_weather")]}),
+            config=config,
+            settings=settings,
+            local_tool_names=set(),
+        )
+    )
+    provider = McpToolProvider(entries, settings=settings)
+
+    default_context = ToolInvocationContext(
+        principal_id="chat_api",
+        principal_type=PrincipalType.SERVICE,
+        permissions=("knowledge_base:read",),
+    )
+    explicit_context = ToolInvocationContext(
+        principal_id="other-user",
+        principal_type=PrincipalType.USER,
+        permissions=("mcp:weather",),
+    )
+
+    assert [tool.name for tool in provider.list_tools(context=default_context)] == [
+        "weather_get_weather"
+    ]
+    assert [tool.name for tool in provider.list_tools(context=explicit_context)] == [
+        "weather_get_weather"
+    ]
+
+
+def test_disabled_server_is_not_discovered_or_cached(settings_factory):
+    client = FakeClient({})
+
+    entries = asyncio.run(
+        discover_mcp_tools(
+            client,
+            config=_config(enabled=False),
+            settings=settings_factory(),
+            local_tool_names=set(),
+        )
+    )
+
+    assert entries == []
+    assert client.calls == []
 
 
 def test_disabled_mcp_is_invisible_even_with_server_permission(
@@ -351,6 +442,7 @@ def test_initialize_uses_official_client_options_and_caches_discovery(
     monkeypatch,
     settings_factory,
     tmp_path,
+    caplog,
 ):
     path = tmp_path / "mcp.json"
     path.write_text(
@@ -359,13 +451,15 @@ def test_initialize_uses_official_client_options_and_caches_discovery(
                 "version": 1,
                 "servers": {
                     "weather": {
+                        "enabled": True,
+                        "enabled_for_default_principal": True,
                         "transport": "http",
                         "url": "https://weather.example.com/mcp",
                         "allowed_tools": ["get_weather"],
-                        "headers_env": {
-                            "Authorization": "MCP_GITHUB_AUTHORIZATION",
-                            "X-MCP-Tools": "MCP_GITHUB_TOOLS",
-                            "X-MCP-Readonly": "MCP_GITHUB_READONLY",
+                        "headers": {
+                            "Authorization": "Bearer local-test-value",
+                            "X-MCP-Tools": "get_weather",
+                            "X-MCP-Readonly": "true",
                         },
                     }
                 },
@@ -387,9 +481,6 @@ def test_initialize_uses_official_client_options_and_caches_discovery(
             return [_raw_tool(server_name, "get_weather")]
 
     monkeypatch.setattr(mcp_client, "MultiServerMCPClient", RecordingClient)
-    monkeypatch.setenv("MCP_GITHUB_AUTHORIZATION", "Bearer test-secret")
-    monkeypatch.setenv("MCP_GITHUB_TOOLS", "get_weather")
-    monkeypatch.setenv("MCP_GITHUB_READONLY", "true")
     settings = settings_factory(
         mcp_tools_enabled=True,
         mcp_servers_config_path=path,
@@ -403,10 +494,111 @@ def test_initialize_uses_official_client_options_and_caches_discovery(
     assert instances[0].calls == 1
     assert instances[0].connections["weather"]["transport"] == "http"
     assert instances[0].connections["weather"]["headers"] == {
-        "Authorization": "Bearer test-secret",
+        "Authorization": "Bearer local-test-value",
         "X-MCP-Tools": "get_weather",
         "X-MCP-Readonly": "true",
     }
     assert instances[0].kwargs["tool_name_prefix"] is True
     assert instances[0].kwargs["handle_tool_errors"] is False
     assert len(instances[0].kwargs["tool_interceptors"]) == 1
+    assert "local-test-value" not in caplog.text
+
+
+def test_initialize_merges_direct_and_env_headers_for_adapter(
+    monkeypatch,
+    settings_factory,
+    tmp_path,
+):
+    path = tmp_path / "mcp.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "servers": {
+                    "weather": {
+                        "transport": "http",
+                        "url": "https://weather.example.com/mcp",
+                        "allowed_tools": ["get_weather"],
+                        "headers": {"X-Api-Key": "local-adapter-test-key"},
+                        "headers_env": {
+                            "Authorization": "DEPLOYMENT_AUTHORIZATION"
+                        },
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    connections_seen = []
+
+    class RecordingClient:
+        def __init__(self, connections, **kwargs):
+            del kwargs
+            connections_seen.append(connections)
+
+        async def get_tools(self, *, server_name=None):
+            return [_raw_tool(server_name, "get_weather")]
+
+    monkeypatch.setattr(mcp_client, "MultiServerMCPClient", RecordingClient)
+    monkeypatch.setenv(
+        "DEPLOYMENT_AUTHORIZATION",
+        "Bearer deployment-adapter-test-value",
+    )
+    settings = settings_factory(
+        mcp_tools_enabled=True,
+        mcp_servers_config_path=path,
+    )
+
+    asyncio.run(mcp_client.initialize_mcp_runtime(settings))
+
+    assert connections_seen[0]["weather"]["headers"] == {
+        "X-Api-Key": "local-adapter-test-key",
+        "Authorization": "Bearer deployment-adapter-test-value",
+    }
+
+
+def test_initialize_all_disabled_servers_builds_empty_cache_without_client(
+    monkeypatch,
+    settings_factory,
+    tmp_path,
+):
+    path = tmp_path / "mcp.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "servers": {
+                    "weather": {
+                        "enabled": False,
+                        "enabled_for_default_principal": True,
+                        "transport": "http",
+                        "url": "https://weather.example.com/mcp",
+                        "allowed_tools": ["get_weather"],
+                        "headers_env": {
+                            "Authorization": "MISSING_DEPLOYMENT_AUTHORIZATION"
+                        },
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def forbidden(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("disabled servers must not construct an MCP client")
+
+    monkeypatch.setattr(mcp_client, "MultiServerMCPClient", forbidden)
+    settings = settings_factory(
+        mcp_tools_enabled=True,
+        mcp_servers_config_path=path,
+    )
+
+    runtime = asyncio.run(mcp_client.initialize_mcp_runtime(settings))
+
+    assert runtime is not None
+    assert runtime.client is None
+    assert runtime.provider.catalog() == []
+    assert runtime.provider.list_tools(
+        context=ToolInvocationContext(permissions=("mcp:weather",))
+    ) == []

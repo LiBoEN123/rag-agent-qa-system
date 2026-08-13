@@ -59,6 +59,8 @@ async def discover_mcp_tools(
     cached: list[CachedMcpTool] = []
     exposed_names = set(local_tool_names)
     for alias, server in config.servers.items():
+        if not server.enabled:
+            continue
         if len(server.allowed_tools) > settings.mcp_max_tools_per_server:
             raise McpDiscoveryError(
                 f"MCP Server {alias!r} 的 allowlist 超过每 Server 工具上限"
@@ -113,6 +115,7 @@ async def discover_mcp_tools(
                 CachedMcpTool(
                     server_alias=alias,
                     remote_tool_name=remote_name,
+                    server_config=server,
                     tool=build_governed_mcp_tool(
                         raw_tool,
                         server_alias=alias,
