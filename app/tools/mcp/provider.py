@@ -68,6 +68,12 @@ class McpToolProvider:
                 ),
                 "tool_name": entry.tool.name,
                 "remote_tool": entry.remote_tool_name,
+                "risk_level": str(
+                    (entry.tool.metadata or {}).get("risk_level") or "read_only"
+                ),
+                "approval_required": bool(
+                    (entry.tool.metadata or {}).get("approval_required", False)
+                ),
                 "description": " ".join(entry.tool.description.split())[:240],
             }
             for entry in self._entries

@@ -36,7 +36,6 @@ def _settings(tmp_path: Path) -> AppSettings:
         metrics_path=tmp_path / "production-metrics.jsonl",
         bad_cases_path=tmp_path / "production-bad.jsonl",
         tool_audit_path=tmp_path / "production-audit.jsonl",
-        langgraph_checkpointer="disabled",
     )
 
 
@@ -103,7 +102,7 @@ def test_in_memory_multi_turn_uses_chat_service_history_and_isolation(
     tmp_path,
     monkeypatch,
 ):
-    from app.graph import runtime as graph_runtime
+    from app.agent import runtime as agent_runtime
     from app.services import chat_service
 
     settings = _settings(tmp_path)
@@ -144,7 +143,7 @@ def test_in_memory_multi_turn_uses_chat_service_history_and_isolation(
         settings_provider=lambda: settings,
         get_history=lambda session_id: [],
         rewrite_query_with_history=fake_rewrite,
-        run_agent_langgraph=fake_runtime,
+        run_agent=fake_runtime,
         build_query_rewrite_trace=build_query_rewrite_trace,
         attach_query_rewrite_trace=attach_query_rewrite_trace,
         collect_trace_metrics=collect_trace_metrics,
@@ -160,8 +159,8 @@ def test_in_memory_multi_turn_uses_chat_service_history_and_isolation(
         lambda: dependencies,
     )
     monkeypatch.setattr(
-        graph_runtime,
-        "run_agent_langgraph",
+        agent_runtime,
+        "run_agent",
         fake_runtime,
     )
     dataset = AgentEvaluationDataset.model_validate(

@@ -61,7 +61,7 @@ def map_agent_status_to_result_status(
 
 
 def map_rag_status_to_agent_status(status: str) -> AgentStatus:
-    """将现有 RAG 状态映射为平铺 AgentGraphState 状态。"""
+    """将现有 RAG 状态映射为普通 Agent Runtime 状态。"""
     mapping: dict[str, AgentStatus] = {
         "OK": "ok",
         "NEED_CLARIFICATION": "clarify",
@@ -109,7 +109,7 @@ def summarize_observations_for_result(
 
 
 def build_agent_result(state: Mapping[str, Any]) -> AgentRunResult:
-    """从平铺 AgentGraphState 构造并校验唯一 Runtime 结果。"""
+    """从普通 Agent Runtime 状态构造并校验唯一结果。"""
     status = str(state.get("status") or "")
     reason = str(state.get("reason") or "")
     final_answer = str(state.get("final_answer") or "")

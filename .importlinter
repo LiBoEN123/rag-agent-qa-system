@@ -8,7 +8,6 @@ type = layers
 layers =
     app.api
     app.services
-    app.graph
     app.agent
     app.tools
     app.rag
@@ -33,7 +32,6 @@ source_modules =
 forbidden_modules =
     app.api
     app.services
-    app.graph
     app.agent
     app.tools
     app.rag
@@ -46,7 +44,6 @@ name = FastAPI and Starlette are HTTP adapter dependencies
 type = forbidden
 source_modules =
     app.services
-    app.graph
     app.agent
     app.tools
     app.rag
@@ -66,7 +63,6 @@ type = forbidden
 source_modules =
     app.api
     app.services
-    app.graph
     app.agent
     app.tools
     app.rag

@@ -35,7 +35,7 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
         "web_pdf_fetch": ["web:fetch"],
     }
     expected_timeouts = {
-        "search_knowledge_base": 10.0,
+        "search_knowledge_base": 120.0,
         "compare_documents": 20.0,
         "simple_calculator": 3.0,
         "list_documents": 5.0,
@@ -117,6 +117,21 @@ def test_tool_registry_dispatch_search_knowledge_base(
         fake_search_relevant_chunks,
         raising=False
     )
+    monkeypatch.setattr(
+        "app.rag.graph.run_rag_subgraph",
+        lambda **kwargs: {
+            "status": "OK",
+            "answer": "测试 RAG 回答",
+            "references": [],
+            "retrieval_confidence": 0.91,
+            "answer_confidence": 0.8,
+            "need_clarification": False,
+            "clarification_question": "",
+            "reason": "测试证据充分",
+            "tool_trace": [],
+            "timings": {},
+        },
+    )
 
     result = tool_registry.dispatch(
         "search_knowledge_base",
@@ -137,6 +152,7 @@ def test_tool_registry_dispatch_search_knowledge_base(
     assert result["output"]["chunks"][0]["chunk_id"] == 1
     assert result["output"]["top_chunk_ids"] == [1]
     assert result["output"]["top_scores"] == [0.91]
+    assert result["output"]["rag_result"]["answer"] == "测试 RAG 回答"
 
 
 def test_tool_registry_dispatch_unknown_tool(tool_registry):

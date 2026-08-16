@@ -81,8 +81,8 @@ python scripts/run_evaluation_baseline.py \
 
 多轮 Agent case 使用真实 `ChatService` 流程，但注入内存 session adapter 和
 no-op metrics/bad-case writer。每个 case 使用独立 session，结束后清空。
-评测 Settings 快照关闭 LangGraph Checkpointer、Agent trace store 和 tool audit
-写入，并把所有备用路径限定在本次 output 目录下。因此评测不会写生产 SQLite、
+评测 Settings 快照关闭 Agent trace store 和 tool audit 写入，并把所有备用路径限定在
+本次 output 目录下。因此评测不会写生产 SQLite、
 metrics、bad case、trace 或工具审计文件。
 
 生产 tool trace 只保留按 ToolSpec 脱敏后的输出摘要。为校验 `tool_output_keys`，

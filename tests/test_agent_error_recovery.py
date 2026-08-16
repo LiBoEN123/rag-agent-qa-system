@@ -7,8 +7,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_tools
-from app.graph import nodes as graph_nodes
-from app.graph.builder import build_agent_graph
+from app.config import get_settings
 import app.tools.runtime as tool_runtime
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolRiskLevel, ToolSpec
@@ -16,6 +15,7 @@ from app.tools.errors import ToolErrorCode
 from app.tools.providers import LocalToolProvider
 from app.tools.registry import ToolRegistry
 from app.tools.result import tool_error, tool_success
+from tests.support.agent_runtime import build_agent_harness
 
 
 class ValueArgs(BaseModel):
@@ -97,7 +97,7 @@ def _invoke(
         "get_agent_tool_provider",
         lambda: provider,
     )
-    settings = graph_nodes.get_settings().model_copy(
+    settings = get_settings().model_copy(
         update={
             "agent_max_iterations": 10,
             "agent_max_tool_calls": 20,
@@ -115,7 +115,7 @@ def _invoke(
         source="agent_error_recovery_test",
         idempotency_key="idem-test",
     )
-    return build_agent_graph(settings).compile().invoke(
+    return build_agent_harness(settings).invoke(
         {
             "original_question": "执行测试工具",
             "effective_question": "执行测试工具",

@@ -94,9 +94,7 @@ def test_async_success_is_standard_untrusted_redacted_and_audited(
             },
         )
 
-    message = asyncio.run(
-        interceptor(_request(_runtime("mcp:weather")), handler)
-    )
+    message = asyncio.run(interceptor(_request(_runtime("mcp:weather")), handler))
     payload = _payload(message)
 
     assert payload["ok"] is True
@@ -162,6 +160,69 @@ def test_permission_denial_does_not_call_remote_handler(settings_factory):
     ]
 
 
+def test_external_write_stops_for_approval_before_remote_handler(
+    settings_factory,
+):
+    sink = RecordingSink()
+    interceptor = McpToolCallInterceptor(
+        settings_factory(),
+        server_configs=_server_configs(approval_required_tools=["get_weather"]),
+        audit_sink=sink,
+    )
+    calls = 0
+
+    async def handler(request):
+        nonlocal calls
+        del request
+        calls += 1
+        return CallToolResult(content=[])
+
+    message = asyncio.run(interceptor(_request(_runtime("mcp:weather")), handler))
+    payload = _payload(message)
+
+    assert calls == 0
+    assert payload["error_code"] == "approval_required"
+    assert payload["runtime"]["attempt_count"] == 0
+    assert payload["governance"] == {
+        "decision": "require_approval",
+        "risk_level": "external_write",
+        "approval_required": True,
+        "args_fingerprint": payload["governance"]["args_fingerprint"],
+        "missing_permissions": [],
+    }
+    assert payload["governance"]["args_fingerprint"].startswith("sha256:")
+    assert [event.event_type.value for event in sink.events] == [
+        "requested",
+        "approval_required",
+    ]
+    assert all(event.risk_level == "external_write" for event in sink.events)
+    assert all(event.policy_decision == "require_approval" for event in sink.events)
+
+
+def test_external_write_fails_closed_when_audit_is_disabled(settings_factory):
+    interceptor = McpToolCallInterceptor(
+        settings_factory(tool_audit_enabled=False),
+        server_configs=_server_configs(approval_required_tools=["get_weather"]),
+    )
+    calls = 0
+
+    async def handler(request):
+        nonlocal calls
+        del request
+        calls += 1
+        return CallToolResult(content=[])
+
+    payload = _payload(
+        asyncio.run(interceptor(_request(_runtime("mcp:weather")), handler))
+    )
+
+    assert calls == 0
+    assert payload["error_code"] == "audit_write_failed"
+    assert payload["governance"]["risk_level"] == "external_write"
+    assert payload["governance"]["decision"] == "deny"
+    assert payload["audit"]["write_failed"] is True
+
+
 def test_default_service_principal_is_authorized_at_execution_boundary(
     settings_factory,
 ):
@@ -184,9 +245,7 @@ def test_default_service_principal_is_authorized_at_execution_boundary(
         nonlocal calls
         del request
         calls += 1
-        return CallToolResult(
-            content=[TextContent(type="text", text="Sunny")]
-        )
+        return CallToolResult(content=[TextContent(type="text", text="Sunny")])
 
     payload = _payload(asyncio.run(interceptor(_request(runtime), handler)))
 
@@ -364,13 +423,16 @@ def test_unsupported_binary_and_large_outputs_are_bounded(settings_factory):
     output = bounded["output"]
     assert len(output["content"]) <= 128
     assert output["truncated"] is True
-    assert len(
-        json.dumps(
-            output["structured_content"],
-            ensure_ascii=False,
-            separators=(",", ":"),
+    assert (
+        len(
+            json.dumps(
+                output["structured_content"],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
         )
-    ) <= 256
+        <= 256
+    )
     assert "structured-secret" not in json.dumps(output)
 
 
@@ -411,9 +473,7 @@ def test_governed_tool_supports_sync_and_native_async_paths(settings_factory):
     runtime = _runtime("mcp:weather")
 
     sync_result = tool.func(runtime=runtime, location="Beijing")
-    async_result = asyncio.run(
-        tool.coroutine(runtime=runtime, location="Beijing")
-    )
+    async_result = asyncio.run(tool.coroutine(runtime=runtime, location="Beijing"))
 
     assert sync_result["ok"] is True
     assert async_result["ok"] is True

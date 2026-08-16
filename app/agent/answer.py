@@ -27,7 +27,7 @@ def build_rag_answer_updates(
     state: Mapping[str, Any],
     rag_result: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """将 RAG 子图结果映射为平铺 AgentGraphState 更新。"""
+    """将 RAG Graph 结果映射为普通 Agent Runtime 更新。"""
     status = map_rag_status_to_agent_status(rag_result.get("status", ""))
     final_answer = str(rag_result.get("answer", "") or "")
     raw_references = rag_result.get("references", [])

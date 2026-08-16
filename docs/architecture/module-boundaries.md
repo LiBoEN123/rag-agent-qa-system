@@ -8,7 +8,6 @@
 ```text
 app.api
   → app.services
-  → app.graph
   → app.agent
   → app.tools
   → app.rag
@@ -31,12 +30,11 @@ app.api
 | Package | 主要职责 | 允许依赖 | 禁止依赖 |
 | --- | --- | --- | --- |
 | `app.api` | FastAPI app、HTTP Schema/middleware、Uvicorn 适配、lifespan、路由和依赖组装 | 所有下层 | 无低层限制；它是组合根 |
-| `app.services` | Chat 应用用例，编排 Graph、Result、Session、Metrics、Query Rewrite | graph 及所有更低层 | api、FastAPI、Starlette |
-| `app.graph` | LangGraph 父图、状态、节点、Runtime、Checkpointer 组装 | agent、tools、rag 及更低层 | api、services |
-| `app.agent` | Agent 业务、框架适配、治理事件和结果转换 | tools、rag、llm 及基础设施/基础层 | api、services、graph |
-| `app.tools` | ToolSpec、Provider、Registry、Runtime 和具体工具 | rag、llm、storage 及基础层 | api、services、graph、agent |
-| `app.rag` | 索引、检索、重排、生成、引用和 RAG 子图 | llm、storage、observability 及基础层 | api、services、graph、agent、tools |
-| `app.llm` | 模型传输、工厂、错误和模型 Schema | contracts、config、common | rag、tools、agent、graph、services、api |
+| `app.services` | Chat 应用用例，编排 Agent Runtime、Result、Session、Metrics、Query Rewrite | agent 及所有更低层 | api、FastAPI、Starlette |
+| `app.agent` | 直接 `create_agent` Runtime、Router、框架适配、治理事件和结果转换 | tools、rag、llm 及基础设施/基础层 | api、services |
+| `app.tools` | ToolSpec、Provider、Registry、Runtime 和具体工具 | rag、llm、storage 及基础层 | api、services、agent |
+| `app.rag` | 索引、检索、重排、生成、引用和独立 RAG Graph | llm、storage、observability 及基础层 | api、services、agent、tools |
+| `app.llm` | 模型传输、工厂、错误和模型 Schema | contracts、config、common | rag、tools、agent、services、api |
 | `app.storage` | SQLite、session、trace 持久化 | observability 及基础层 | 业务层 |
 | `app.observability` | 框架无关 metrics、trace ID 和日志数据处理 | storage 及基础层 | 业务层、FastAPI、Starlette |
 | `app.contracts` | 跨层稳定值对象和状态策略 | 无 | config、common 及所有应用/基础设施层 |
@@ -51,7 +49,7 @@ health 和 diagnostics Router 及其默认依赖。`app/api/chat.py` 只把 HTTP
 `ChatServiceOutcome` 映射回 HTTP Schema。因此 `app.api` 可以跨层直接组装依赖，
 不要求通过无价值包装器逐层转发。
 
-限制只沿反方向生效：ChatService、Graph、Agent、Tools、RAG、LLM、Storage、
+限制只沿反方向生效：ChatService、Agent、Tools、RAG、LLM、Storage、
 Observability 和基础层都不能导入 API。ChatService 继续接收框架无关 Request 并
 返回框架无关 Outcome。
 
@@ -64,7 +62,7 @@ factory 并公开 `app`。
   `request_enter_perf` 和 `X-Trace-Id`/`X-Total-Cost-Ms`。
 - `app/api/http_logging.py` 拥有 Uvicorn access-log URL 解码与控制字符转义。
 - `app/api/application.py` 拥有 FastAPI 实例、Router 注册和 lifespan 组合。
-- `app/api/lifecycle.py` 拥有 RAG/Graph 初始化与 Runtime 关闭细节。
+- `app/api/lifecycle.py` 拥有 RAG/Agent 初始化与 Runtime 关闭细节。
 - lifespan 显式、幂等调用 `configure_uvicorn_access_log()`。
 - `app.common.logging` 只提供 `get_logger()`；导入它不会修改全局 Uvicorn logger。
 - `app.observability` 只保留 metrics、trace ID 和框架无关数据处理。
@@ -123,8 +121,8 @@ python scripts/inspect_agent_runtime.py --check
    `app.api`。
 3. 跨层且框架无关的稳定类型放入 `app.contracts`；纯 helper 放入
    `app.common`；配置解析和语义留在 `app.config`。
-4. Graph 编排放入 `app.graph`，Agent 业务放入 `app.agent`，工具执行放入
-   `app.tools`，索引/检索/生成放入 `app.rag`。
+4. Agent Loop 与直接 Runtime 放入 `app.agent`，工具执行放入 `app.tools`；只有独立
+   RAG Graph、索引、检索和生成放入 `app.rag`。不要重新创建 Parent Agent Graph。
 5. 更新 `.importlinter` 时把新 package 加到职责匹配的层，不通过调整顺序把偶然
    耦合合法化，也不添加 ignore。
 6. 运行 `lint-imports --verbose` 查看完整 importer/imported 链，再运行 focused

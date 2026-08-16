@@ -9,7 +9,7 @@
 外部只读工具接入见
 [受治理的 MCP Client 工具源](docs/tools/mcp-client.md)。
 
-本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。同步 `/chat` 与 SSE `/chat/stream` 复用 LangGraph 父图中的 LangChain `create_agent` 模型—工具循环；传入 `session_id` 时还会结合 SQLite 中最近的会话历史对短追问做 Query Rewrite。
+本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。同步 `/chat` 与 SSE `/chat/stream` 复用唯一的 LangChain `create_agent` 模型—工具循环；传入 `session_id` 时还会结合 SQLite 中最近的会话历史对短追问做 Query Rewrite。
 
 ## 项目亮点
 
@@ -17,8 +17,8 @@
 - 混合检索：BM25 负责关键词精确匹配，SentenceTransformer Embedding 负责语义召回，提升中文问答召回稳定性。
 - CrossEncoder rerank：对候选 chunk 做二阶段重排，缓解初召回排序不准的问题。
 - ChromaDB 持久化：chunk 文本、metadata 和 embedding 持久化保存，服务重启可复用索引缓存。
-- 图内确定性入口 Router：由 LangGraph 父图在每次 Runtime 调用时执行一次，只处理空问题、少量稳定直答和明确澄清；其他自然语言请求统一进入 `agent`，具体工具由 Agent Model 根据当前请求可见的动态 Tool Schema 选择。
-- 框架原生 Agent Runtime：LangGraph 父图嵌入 LangChain `create_agent` 子图，由框架管理模型—工具循环、参数校验、ToolMessage 和调用上限。
+- 普通 Python 入口 Router：由 Agent Runtime 在每次调用时执行一次，只处理空问题、少量稳定直答和明确澄清；其他自然语言请求统一进入 `agent`，具体工具由 Agent Model 根据当前请求可见的动态 Tool Schema 选择。
+- 框架原生 Agent Runtime：直接执行 LangChain `create_agent` 返回的 CompiledStateGraph，由框架管理唯一的模型—工具循环、参数校验、ToolMessage 和调用上限。
 - 权限感知的动态工具发现：本地 Provider 按 `required_permissions` 过滤 Registry tools；可选 MCP Provider 通过 Server 默认可见性或显式 `mcp:<server>` 授权过滤启动期缓存的 adapter tools，两者由同一 Middleware 注入模型和执行层。
 - Agent 循环防护：工具错误总数、连续相同调用、连续相同错误和模型/工具累计耗时均有独立预算；终止错误对同批后续调用 fail-closed，并补齐关联 ToolMessage。
 - 多轮追问改写：同一 `session_id` 下通过 SQLite 保留最近会话历史，短追问和指代问题会先改写成独立检索问题。
@@ -67,7 +67,7 @@ flowchart TD
         Runtime[ToolRuntime.execute]
         Handler[ToolSpec.handler]
 
-        Middleware[RegistryToolsMiddleware]
+        Middleware[请求级 governed tools]
 
         Provider --> Middleware
         Middleware --> StructuredTool
@@ -135,9 +135,9 @@ flowchart TD
 | 多轮追问 | `session_id` 通过 SQLite 维持最近会话历史，对短追问、指代问题做 Query Rewrite |
 | 答案生成 | 调用 OpenAI-compatible Chat Completions，要求模型返回 JSON |
 | 引用绑定 | 将 `Reference N` 映射回真实文件、`chunk_id`、`snippet` 和分数 |
-| Agent Runtime | LangGraph 父图嵌入唯一的 LangChain `create_agent` 子图；框架负责模型—工具循环、参数校验、ToolMessage 和模型/工具调用上限 |
-| Agent 路由 | 父图 `route` 是唯一 Router 所有者；所有 Runtime 调用先路由再 initialize。正常请求输出 `agent`，`direct_answer` / `clarify` 在 initialize + compose 中安全短路 |
-| 工具发现 | 本地 `ToolProvider` 过滤 ToolSpec；可选 MCP Provider 过滤启动期 discovery cache。`RegistryToolsMiddleware` 对模型绑定和执行使用同一组请求级工具 |
+| Agent Runtime | 直接执行唯一的 LangChain `create_agent` CompiledStateGraph；框架负责模型—工具循环、参数校验、ToolMessage 和模型/工具调用上限 |
+| Agent 路由 | `app.agent.runtime` 是唯一 Router 调用者；正常请求输出 `agent`，`direct_answer` / `clarify` 在普通 Python 中安全短路 |
+| 工具发现 | 本地 `ToolProvider` 过滤 ToolSpec；可选 MCP Provider 过滤启动期 discovery cache。Runtime 对模型绑定和执行使用同一组请求级 governed tools |
 | Agent Guardrail | 工具错误总数、连续相同调用/错误、累计模型与工具耗时预算、同批 fail-closed、无悬空 ToolMessage |
 | 工具调用 | 默认 Registry 保持八个生产工具；显式启用只读 SQL 后额外注册 `list_sql_tables`、`describe_sql_table`、`query_sql_readonly`。模型可见集合始终由请求权限决定 |
 | 可观测性 | `trace_id`、请求耗时、阶段耗时、工具调用日志、metrics 汇总接口 |
@@ -152,7 +152,7 @@ flowchart TD
 3. 文档切分：Markdown 先按标题层级切分并保留标题路径，普通文本按段落和标点递归切分。
 4. 建立索引：构建 BM25 关键词索引，并使用 SentenceTransformer 生成 embedding；向量、chunk 和 metadata 持久化到 ChromaDB。
 5. 多轮改写：`/chat` 如果传入 `session_id`，会读取最近历史；短追问或指代问题会先改写成独立问题。
-6. Agent 执行：ChatService 把改写后的问题直接交给 LangGraph Runtime；父图入口 `route` 执行一次粗粒度 Router，再进入 initialize。普通问题由 Agent Model 根据 Provider 动态提供的工具描述、参数 Schema、AIMessage 与 ToolMessage 迭代选择工具或生成最终回答。`direct_answer` 和 `clarify` 不调用 Agent Model；外部旧 decision 会被图内 Router 覆盖。Agent 选择知识库检索后仍统一进入专用 RAG 子图。
+6. Agent 执行：ChatService 把改写后的问题交给 Agent Runtime；普通 Python Router 执行一次粗粒度路由。普通问题直接进入 `create_agent`，由 Agent Model 根据 Provider 动态提供的工具描述、参数 Schema、AIMessage 与 ToolMessage 迭代选择工具或生成最终回答。`direct_answer` 和 `clarify` 不调用 Agent Model。Agent 选择知识库检索后，由该工具调用独立 RAG Graph。
 7. 查询拆分：启用 `ENABLE_QUERY_DECOMPOSE` 后，复杂问题可由拆分模型生成子问题。
 8. 混合召回：查询时同时执行 BM25 和 embedding 召回，合并候选 chunk。
 9. 二阶段重排：使用 CrossEncoder reranker 对候选证据重新排序。
@@ -198,7 +198,7 @@ flowchart TD
 - metrics 记录 Query Rewrite、路由、Agent、检索、问题拆分、重排、上下文构造、LLM 调用、JSON 解析等阶段耗时和 LLM 调用次数。
 - bad case 日志用于定位失败样例，包括模型 JSON 解析失败、引用异常、工具异常、内部异常和索引未就绪。
 
-模型客户端统一和 LangGraph 编排彼此独立；LangGraph 主图不改变 RAG 检索、Rerank、ChromaDB 数据结构和引用机制。
+模型客户端、`create_agent` Agent Loop 和独立 RAG Graph 彼此分层；本次 Agent Runtime 瘦身不改变 RAG 检索、Rerank、ChromaDB 数据结构和引用机制。
 
 ## Chat 应用服务层
 
@@ -206,9 +206,9 @@ flowchart TD
 请求上下文、调用已注入的 `ChatService`、设置状态码，并委托
 `app/api/responses.py` 的具体函数构造响应。Query Rewrite、Runtime 调用、状态策略
 和 session 由 `app/services/chat_service.py` 编排，metrics、bad case 与
-`tool_call_chain` 收尾位于 `app/services/chat_telemetry.py`。Router 由 LangGraph
-父图的 `route_node` 唯一持有，因此聊天业务可脱离 FastAPI 测试且不会形成第二个
-路由入口。
+`tool_call_chain` 收尾位于 `app/services/chat_telemetry.py`。Router 只由
+`app.agent.runtime.prepare_agent_runtime_invocation()` 调用，因此聊天业务可脱离
+FastAPI 测试且不会形成第二个路由入口。
 
 同步 API 请求/响应 Schema、HTTP 状态和 trace/total-cost 响应头保持不变；流式入口复用同一个 ChatService，完整 SSE 合同见 [聊天流式 API](docs/api/chat-streaming.md)。
 
@@ -228,22 +228,21 @@ AgentGraphState.status
 → ChatServiceOutcome / HTTP、API data.status 与 metrics status
 ```
 
-RAG 状态先由同一结果模块中的 RAG-to-Agent mapper 写回
-`AgentGraphState.status`。`AgentRunResult` 实例不会写入 LangGraph State 或
-Checkpoint；Graph 的 `result` channel 始终保存 JSON-compatible 普通字典。
+RAG 状态由同一结果模块中的 RAG-to-Agent mapper 写入普通 Runtime 快照。
+`AgentRunResult` 只在边界校验，返回 ChatService 的值始终是 JSON-compatible 普通字典。
 HTTP code/message、公开小写状态和 metrics 状态由唯一
 `CHAT_STATUS_POLICIES` 决定，API response adapter 不再读取业务状态表或依赖
 Agent Runtime。
 
 ## LangChain Tool 适配层
 
-`RegistryToolsMiddleware` 在每次模型调用和工具执行时从同一 `ToolProvider` 解析稳定有序的 `ToolSpec`，再构造请求级 LangChain `StructuredTool`。`ToolRuntime` 注入参数不会出现在模型 Schema 中；适配函数从 `runtime.context` 取得 trace、session、principal、permissions、source 和 idempotency key，再调用定义所属的 `ToolRegistry.dispatch()`。Registry 继续统一进入项目 `ToolRuntime.execute()`，参数治理、权限、审批、超时、重试、审计、脱敏和错误码均未绕过。
+Agent Runtime 在请求入口从同一 `ToolProvider` 解析稳定有序的 `ToolSpec`，再构造并绑定请求级 LangChain governed `StructuredTool`。`ToolRuntime` 注入参数不会出现在模型 Schema 中；适配函数从 `runtime.context` 取得 trace、session、principal、permissions、source、RAG 参数和 idempotency key，再调用定义所属的 `ToolRegistry.dispatch()`。Registry 继续统一进入项目 `ToolRuntime.execute()`，参数治理、权限、审批、超时、重试、审计、脱敏和错误码均未绕过。
 
-新增普通本地工具只需创建合法 `ToolSpec` 并注册到 Registry，不需要修改 Router、父图、`create_agent` 或 Middleware。`LocalToolProvider` 复用精确、区分大小写的 `has_permission()`，仅当 Context 满足全部 `required_permissions` 时才向模型暴露工具；空权限要求始终可见。过滤保持 Registry 顺序，不执行完整 Policy、handler、Runtime 或审计，也不会因审批、风险等级或暂缺幂等键隐藏工具。
+新增普通本地工具只需创建合法 `ToolSpec` 并注册到 Registry，不需要修改 Router、`create_agent` 或 Middleware。`LocalToolProvider` 复用精确、区分大小写的 `has_permission()`，仅当 Context 满足全部 `required_permissions` 时才向模型暴露工具；空权限要求始终可见。过滤保持 Registry 顺序，不执行完整 Policy、handler、Runtime 或审计，也不会因审批、风险等级或暂缺幂等键隐藏工具。
 
 模型伪造未绑定的隐藏名称时沿用框架未知工具路径，只返回 `unknown_tool`，不证明工具是否存在，也不泄漏 description、参数 Schema 或缺失权限。模型可见性不是授权替代：本地真实调用仍进入 `ToolRegistry.dispatch() → ToolRuntime.execute()` 做最终权限与执行期治理；MCP Provider 和官方 adapter interceptor 复用同一个 Server Access Policy。多工具源合并保持稳定顺序并拒绝重名。
 
-模型—工具循环由 `langchain.agents.create_agent` 构建；其内部使用 LangGraph 标准 model/tools 节点处理 Pydantic 校验、同轮调用和基础 ToolMessage。动态工具通过 Middleware 覆盖请求，而不是在父图节点中手工 `bind_tools()`。`ModelCallLimitMiddleware` 和 `ToolCallLimitMiddleware` 分别执行单次 run 的模型与工具调用上限，父图调用还设置 `recursion_limit` 作为最终图级兜底。
+模型—工具循环由 `langchain.agents.create_agent` 构建；其内部使用 LangGraph 标准 model/tools 节点处理 Pydantic 校验、同轮调用和基础 ToolMessage。动态工具通过 Middleware 覆盖请求。`ModelCallLimitMiddleware` 和 `ToolCallLimitMiddleware` 分别执行单次 run 的模型与工具调用上限，直接 Runtime 调用还设置 `recursion_limit` 作为框架级最终兜底。
 
 `ProjectToolGovernanceMiddleware` 只保留框架无法决定的项目语义：错误码分类、累计错误、连续相同调用/错误、协作式总耗时预算以及 terminal error 同批 fail-closed。已注册工具的调用指纹复用 `app.tools.policy.build_tool_args_fingerprint()`；未知模型 JSON 只做小型 JSON-compatible fallback。它不执行 handler、不复制 ToolRuntime 重试，也不自行实现参数校验或工具循环。
 
@@ -300,7 +299,7 @@ MCP 专属最小 async-to-sync bridge，流式 `/chat/stream` 直接 await corou
 
 ## Web Search
 
-`web_search` 使用开源 `ddgs` 的公共 Python API 搜索公开互联网中的当前或外部信息，只返回有限的 `title`、`url` 和 `snippet`。它与 `search_knowledge_base` 的边界不同：后者读取本地受控知识库并进入专用 RAG 引用路径；Web Search 是普通 Agent 工具，结果形成 ToolMessage 后回到 Agent Model，不设置 `pending_rag_result`，也不进入 RAG 子图。
+`web_search` 使用开源 `ddgs` 的公共 Python API 搜索公开互联网中的当前或外部信息，只返回有限的 `title`、`url` 和 `snippet`。它与 `search_knowledge_base` 的边界不同：后者读取本地受控知识库并调用独立 RAG Graph；Web Search 是普通 Agent 工具，结果形成 ToolMessage 后回到 Agent Model，不进入 RAG Graph。
 
 Web Search 默认关闭可见性。要让默认 `/chat` 服务主体看到它，必须显式配置：
 
@@ -328,7 +327,7 @@ python scripts/smoke_test_online_tools.py search \
 
 受控本地开发环境可显式设置 `WEB_TRUSTED_PROXY_MODE=true` 和 `WEB_TRUSTED_PROXY_URL=http://127.0.0.1:<port>`。开启后统一代理覆盖 `WEB_SEARCH_PROXY`、`WEB_FETCH_PROXY`，搜索、HTML 和 PDF 工具共用该代理；下载层仍禁用环境代理并保留 URL、超时、响应体量、Content-Type 和资源关闭约束，但把 DNS/IP、私网及重定向目标的网络策略委托给受信代理。该代理必须自行拒绝局域网、环回、metadata 地址和危险重定向，不能把此模式当作生产安全默认值；关闭开关即恢复原有 hardened SSRF 校验。
 
-URL、页面元数据和正文全部是不可信输入。输出固定包含 `content_is_untrusted=true`；模型不得执行页面中的命令、不得把正文视为 system/developer/tool 指令，也不得因为页面要求而调用其他工具，只能将其作为回答用户问题的参考，并在回答中注明实际 `final_url`。网页不会写入 ChromaDB/BM25，不设置 `pending_rag_result`，也不会生成本地 RAG references。
+URL、页面元数据和正文全部是不可信输入。输出固定包含 `content_is_untrusted=true`；模型不得执行页面中的命令、不得把正文视为 system/developer/tool 指令，也不得因为页面要求而调用其他工具，只能将其作为回答用户问题的参考，并在回答中注明实际 `final_url`。网页不会写入 ChromaDB/BM25，不进入本地 RAG，也不会生成本地 RAG references。
 
 默认权限仍只有 `knowledge_base:read`，因此三个 Web 工具都默认不可见。两项 Web 权限彼此独立：只有 `web:search` 时只能搜索；只有 `web:fetch` 时可用 `web_fetch` 和 `web_pdf_fetch` 读取明确 URL；两者都有时才支持搜索后读取：
 
@@ -354,7 +353,7 @@ python scripts/smoke_test_online_tools.py fetch \
 
 正文按实际页码返回 `[Page N]` 边界，空白页不列入 `page_numbers`，title、author 和 subject 只做有限单行规范化。加密、损坏、页数超限和无可提取文本的 PDF 会返回稳定非重试错误；扫描件/图片型 PDF 不自动 OCR，也不接收密码、提取图片/附件/脚本或调用 LLM 清洗。
 
-PDF 文本和元数据固定标记 `content_is_untrusted=true`，只能作为回答参考；模型不得执行 PDF 中的命令或把内容视为 system/developer/tool 指令，回答时应注明 `final_url` 和相关页码。`web_pdf_fetch` 要求 `web:fetch` 权限，经过普通 `StructuredTool → Registry → ToolRuntime → handler → ToolMessage` 链路；它不进入本地 RAG、不设置 `pending_rag_result`、不写 ChromaDB/BM25，也不生成本地 references。
+PDF 文本和元数据固定标记 `content_is_untrusted=true`，只能作为回答参考；模型不得执行 PDF 中的命令或把内容视为 system/developer/tool 指令，回答时应注明 `final_url` 和相关页码。`web_pdf_fetch` 要求 `web:fetch` 权限，经过普通 `StructuredTool → Registry → ToolRuntime → handler → ToolMessage` 链路；它不进入本地 RAG、不写 ChromaDB/BM25，也不生成本地 references。
 
 真实网络验证仅由维护者手动执行，不进入 Pytest/CI：
 
@@ -370,51 +369,37 @@ python scripts/smoke_test_online_tools.py pdf \
 
 ## Agent Runtime
 
-项目当前唯一 Agent Runtime 是 LangGraph 父图中的 LangChain `create_agent` 子图。旧 `agent_model`、`governed_tools` 和 `limit_handler` 自定义循环已经删除，不提供双实现或运行时回滚开关；需要回滚版本时使用 Git commit、tag 或 release。
+项目当前唯一 Agent Runtime 是 LangChain `create_agent` 返回的 CompiledStateGraph。旧手写循环和 Parent Agent Graph 都已删除，不提供双实现或运行时回滚开关；需要回滚版本时使用 Git commit、tag 或 release。
 
-同步请求链路为 `FastAPI application → Chat Router → ChatService → Session History / Query Rewrite → run_agent_langgraph → route → initialize → framework_agent / compose → Finalize → Session / Metrics → API Response`。流式入口把 Runtime 门面替换为 `stream_agent_langgraph → graph.astream → 安全事件投影 → SSE`，最终结果仍回到同一状态策略和 Response mapper。ChatService 不调用 Router，也不生成或传入 decision；正常 `/chat`、`/chat/stream`、离线评测和其他 Runtime 调用方都共享父图入口的同一个 Router。Router 不枚举工具意图，也不调用模型；它把普通请求交给能看到动态工具 Schema 的 Agent Model。
+同步请求链路为 `FastAPI application → Chat Router → ChatService → Session History / Query Rewrite → run_agent → 普通 Python Router → create_agent.invoke → Result 归一化 → Session / Metrics → API Response`。流式入口替换为 `stream_agent → create_agent.astream → 安全事件投影 → SSE`，最终结果仍回到同一状态策略和 Response mapper。正常 `/chat`、`/chat/stream`、离线评测和其他 Runtime 调用方共享 `app.agent.runtime` 中的同一个 Router 调用点。Router 不枚举工具意图，也不调用模型；它把普通请求交给能看到动态工具 Schema 的 Agent Model。
 
-主图的核心结构为：
+核心结构为：
 
 ```text
-START → route → initialize
-  ├─ direct_answer / clarify / 不支持动作 → compose → finalize
-  └─ agent → framework_agent（create_agent 内部 model ↔ tools）
-       → adapt_framework
-       ├─ search_knowledge_base 成功 → RAG 子图 → finalize
-       ├─ Web / SQL / MCP 等普通工具 → ToolMessage → Agent Model → compose → finalize
-       ├─ 无工具最终回答 → compose → finalize
-       └─ 治理或调用预算终止 → compose → finalize
+普通 Python Router
+  ├─ direct_answer / clarify / 不支持动作 → Result 归一化
+  └─ agent → create_agent（model ↔ tools）
+       ├─ search_knowledge_base → ToolRuntime → 独立 RAG Graph → Result 归一化
+       ├─ Web / SQL / MCP 等普通工具 → ToolMessage → Agent Model
+       ├─ 无工具最终回答 → Result 归一化
+       └─ 治理或调用预算终止 → Result 归一化
 ```
 
 `agent` 路径的模型不可用或调用失败会写入 `agent_model_call_failed` 治理事件并受控返回 `MODEL_ERROR`，不会进入第二套执行架构。成功的知识库检索继续进入原 RAG 子图，以保留问题拆分、重排、证据门控、拒答、引用绑定和验证能力。
 
-旧手写 Agent 编排入口和 Planner/Executor 兼容链已经删除。父图只保留 route、initialize、框架 Agent 适配、RAG、compose 和 finalize；`route_node` 独占 Router 调用和计时，`AgentGraphState` 是一次请求唯一的完整运行状态。节点直接返回平铺字段更新，Query Rewrite 只通过 `original_question` 与 `effective_question` 表达问题语义，不再嵌套完整业务状态或重复保存 `rewritten_question`。完整 RAG 问答不再提供独立顺序式入口，脚本和测试统一调用当前 LangGraph Runtime。
+旧手写 Agent 编排入口、Planner/Executor 兼容链和 Parent Graph 节点已删除。Runtime 在普通 Python 中完成路由、请求 Context、结果映射和 trace 持久化；框架内部只保存 messages、append-only 治理事件、停止原因和可选知识库结构化结果。
 
 ### LangGraph RAG 子图
 
-知识库问答由独立子图依次执行问题歧义判断、Query Decompose、检索与重排、Evidence Gate、Context Build、回答生成、JSON 解析、引用绑定与验证。子图复用现有检索、Rerank、ChromaDB、模型网关、引用和置信度算法，API Schema 没有变化。`search_knowledge_base` 成功时工具返回 `Command.PARENT` 更新 ToolMessage 与 `pending_rag_result`；父图薄适配节点据此进入 RAG 子图，避免 Agent Model 直接基于原始 chunks 生成无引用答案。Evaluation Baseline v2 也固定使用同一 LangGraph Runtime。SSE 会流出 RAG 进度和安全工具状态，但不会流出 RAG JSON token；完整回答位于 `final`。Interrupt 仍未实现。
+知识库问答由独立 RAG Graph 依次执行问题歧义判断、Query Decompose、检索与重排、Evidence Gate、Context Build、回答生成、JSON 解析、引用绑定与验证。`search_knowledge_base` handler 通过请求级 Tool Context 取得改写后问题和 RAG 参数，调用该图并返回带答案、引用、状态、置信度、timings 与 trace 的结构化 ToolResult；Middleware 生成配对 ToolMessage，随后 Runtime 采用 RAG 权威结果。不存在 `Command.PARENT` 或 Parent Graph 条件边。SSE 会流出 RAG 进度和安全工具状态，但不会流出 RAG JSON token；完整回答位于 `final`。
 
-### LangGraph Checkpointer
+### Checkpointer 边界
 
-Checkpointer 默认仍为 `disabled`；该模式编译普通 LangGraph 且不会创建 Checkpoint 数据库。它支持以下模式：
-
-```env
-LANGGRAPH_CHECKPOINTER=disabled
-LANGGRAPH_CHECKPOINTER=memory
-LANGGRAPH_CHECKPOINTER=sqlite
-LANGGRAPH_CHECKPOINT_DB_PATH=./data/langgraph_checkpoints.sqlite3
-```
-
-`memory` 仅适合测试和本地实验，进程退出后状态会丢失；`sqlite` 适合本地运行和开发。同步 `/chat` 使用 `SqliteSaver`，流式 `/chat/stream` 使用 `AsyncSqliteSaver` 与独立异步连接，两者保持相同数据库路径、表结构和 thread ID 规则。当前每次请求都会根据该请求的 `trace_id` 生成独立且经过摘要处理的 Graph thread，因此同一 `session_id` 的不同请求也不会累积上一轮的 `decision`、业务结果字段或 `result`。Checkpoint 的 channel payload 直接对应平铺的 `AgentGraphState`，其中 observation 是普通字典；SQLite Saver 的表结构没有变化。
-
-Checkpointer 只保存 Graph 节点执行快照，不替代应用级聊天历史。Query Rewrite 仍从 `SQLITE_DB_PATH` 指定的 session 数据库读取最近消息，用户和助手消息也仍写入该数据库。Checkpoint 文件可能包含用户问题、工具结果、模型回答、引用信息和 Graph 中间状态，不能提交到 Git 仓库，并应按敏感业务数据保护。
-
-当前尚未实现 Checkpoint 自动恢复、Replay、Time Travel、Interrupt、人工审批、RAG JSON token streaming、Checkpoint 管理 API 或生产级分布式 Checkpointer。
+当前没有 Interrupt/Resume、Replay、Time Travel 或跨请求图恢复消费者，因此 Phase 1 删除了 Parent Graph Checkpointer 配置、依赖和存储。应用级聊天历史仍由 `SQLITE_DB_PATH` 指定的 session 数据库保存并供 Query Rewrite 使用；这与图 checkpoint 不是同一职责。
 
 ### Tool Calling 自动测试与真实模型冒烟
 
-Fake Model 自动测试验证 Graph 编排、错误分类、治理链、预算、ToolMessage 轨迹和 Checkpointer 序列化；真实模型冒烟脚本验证供应商实际返回的 Tool Calling 协议。两者不能互相替代。
+Fake Model 自动测试验证直接 Agent Loop、错误分类、治理链、预算和 ToolMessage 轨迹；真实模型冒烟脚本验证供应商实际返回的 Tool Calling 协议。两者不能互相替代。
 
 在已配置真实 OpenAI-compatible 模型的本地环境中，可手动运行：
 
@@ -534,13 +519,13 @@ API key、路径或创建任何目录。配置来源优先级为：
 
 测试和一次性脚本应显式构造
 `AppSettings(_env_file=None, ...)`，并把实例传给现有依赖边界，以免维护者本地
-`.env`、代理、权限或 Checkpointer 污染结果。配置模型只负责解析和纯校验；真实
+`.env`、代理或权限污染结果。配置模型只负责解析和纯校验；真实
 API key、知识库目录及可写持久化路径等外部前提由 FastAPI lifespan 在启动时通过
 `validate_startup_environment()` 检查。
 
 `get_settings()` 的结果不会随环境变量或 `.env` 动态变化。受控刷新必须先调用
 `clear_settings_cache()`，并同步清理持有旧快照的 Model Factory、Tool Registry、
-Tool Runtime、Graph/Checkpointer 缓存；生产服务通常直接重启进程。不要把 `.env`
+Tool Runtime 与 Agent Runtime 缓存；生产服务通常直接重启进程。不要把 `.env`
 当作动态热更新配置。
 
 | 配置项 | 说明 |
@@ -606,8 +591,6 @@ Tool Runtime、Graph/Checkpointer 缓存；生产服务通常直接重启进程�
 | `AGENT_MAX_CONSECUTIVE_SAME_TOOL_CALLS` | 连续完全相同调用最多执行次数，默认 `2` |
 | `AGENT_MAX_CONSECUTIVE_SAME_TOOL_ERRORS` | 连续相同调用与错误码停止阈值，默认 `2` |
 | `AGENT_MAX_TOTAL_COST_MS` | Agent 模型与工具累计协作式耗时预算（毫秒），默认 `120000` |
-| `LANGGRAPH_CHECKPOINTER` | LangGraph Checkpointer，支持 `disabled`（默认）、`memory` 或 `sqlite` |
-| `LANGGRAPH_CHECKPOINT_DB_PATH` | SQLite Checkpoint 文件路径，默认 `./data/langgraph_checkpoints.sqlite3` |
 | `ENABLE_AGENT_TRACE_STORE` | 是否将 Agent 运行摘要和步骤写入 SQLite，默认 `false` |
 | `SQLITE_DB_PATH` | 会话历史及可选 Agent trace 的 SQLite 文件路径，默认 `./data/app.sqlite` |
 | `ENABLE_QUERY_REWRITE` | 是否启用多轮追问改写，默认 `true` |
@@ -780,7 +763,7 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
 
 ### `/decide`
 
-`/decide` 用于观察父图 `route_node` 对问题产生的确定性路由结果；它复用同一 Router 所有者，但不执行后续 Agent、工具或 RAG。
+`/decide` 用于观察 `app.agent.runtime` 使用的确定性 Router 对问题产生的结果；它复用同一 Router 函数，但不执行后续 Agent、工具或 RAG。
 
 ```json
 {
@@ -793,9 +776,9 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
 
 `web_search` 不作为 Router 关键词 action。普通问题先进入 `agent`，再由 Agent Model 根据动态 Tool Schema 和当前请求权限决定是否调用 Web Search。
 
-`web_fetch` 同样不作为 Router action，也不在 Query Rewrite 或父图中增加 URL 特判；它由 Agent Model 在普通工具循环中按权限和 Schema 选择。
+`web_fetch` 同样不作为 Router action，也不在 Query Rewrite 或 Runtime 中增加 URL 特判；它由 Agent Model 在普通工具循环中按权限和 Schema 选择。
 
-`web_pdf_fetch` 也不增加 PDF Router action 或父图特判；模型可根据 `web_fetch` 的类型错误 ToolMessage 在同一框架循环中改用 PDF 工具。
+`web_pdf_fetch` 也不增加 PDF Router action 或 Runtime 特判；模型可根据 `web_fetch` 的类型错误 ToolMessage 在同一框架循环中改用 PDF 工具。
 
 ### `/kb_summary`
 
@@ -821,7 +804,7 @@ GET /metrics-summary?limit=20
 
 如果 `/chat` 传入 `session_id`，Query Rewrite 会在 Agent Router 之前执行；Router 看到的是改写后的有效问题，响应中的 `data.question` 仍保留原始输入，改写细节记录在 `data.tool_trace` 的 `query_rewrite` step 中。
 
-Router 不调用独立模型，也不解析具体工具 action。普通问题进入 `create_agent` 后，Agent Model 根据 `RegistryToolsMiddleware` 注入的当前可见 StructuredTool/Pydantic Schema 选择本地 Registry 工具或获授权的 MCP 工具；本地执行仍统一经过 `ToolRegistry` 和 `ToolRuntime`，MCP 执行通过官方 adapter 和项目 bridge 后进入相同 Agent 治理。
+Router 不调用独立模型，也不解析具体工具 action。普通问题进入 `create_agent` 后，Agent Model 根据 Runtime 绑定的当前可见 StructuredTool/Pydantic Schema 选择本地 Registry 工具或获授权的 MCP 工具；本地执行仍统一经过 `ToolRegistry` 和 `ToolRuntime`，MCP 执行通过官方 adapter 和项目 bridge 后进入相同 Agent 治理。
 
 ## 索引构建与缓存
 
@@ -982,7 +965,7 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   │   ├── schemas.py           # 请求、响应和引用数据模型
 │   │   ├── diagnostics.py       # 检索、知识库和指标诊断接口
 │   │   ├── responses.py         # ChatOutcome 到 HTTP Schema 的单一路径
-│   │   └── lifecycle.py         # RAG/Graph 初始化和 Runtime 关闭
+│   │   └── lifecycle.py         # RAG/Agent 初始化和 Runtime 关闭
 │   ├── contracts/
 │   │   └── chat.py              # 唯一 Chat Result/HTTP/API/metrics 状态策略
 │   ├── agent/
@@ -993,20 +976,13 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   │   ├── state.py             # Observation 与内部 Agent 状态
 │   │   ├── results.py           # AgentRunResult、状态 mapper 与结果构造
 │   │   ├── answer.py            # 最终答案合成
-│   │   ├── framework_agent.py   # create_agent 子图构建与父图结果适配
+│   │   ├── framework_agent.py   # 唯一 create_agent Agent Loop 构建
 │   │   ├── framework_middleware.py # 项目特有 Agent 治理 Middleware
-│   │   ├── framework_tools.py   # 动态框架工具、Context 与 RAG handoff 适配
+│   │   ├── framework_tools.py   # 动态框架工具与 Context 适配
 │   │   ├── tool_events.py       # 框架工具事件到 observation/trace 的转换
 │   │   ├── guardrails.py        # 错误分类、Stop Reason 与小型指纹辅助
-│   │   └── runtime.py           # Agent 治理统计和 trace 辅助逻辑
-│   ├── graph/
-│   │   ├── state.py             # LangGraph 状态 Schema
-│   │   ├── nodes.py             # 父图业务节点与框架子图薄适配节点
-│   │   ├── conditions.py        # Router 条件入口
-│   │   ├── checkpointing.py      # Checkpointer 配置、缓存和 thread_id
-│   │   ├── builder.py           # StateGraph 构建、连接与缓存编译
-│   │   ├── runtime.py           # 共享调用准备与同步 Runtime 门面
-│   │   └── streaming.py         # 异步 astream 与安全 Graph 事件投影
+│   │   ├── runtime.py           # Router、同步 invoke、结果归一化与 trace
+│   │   └── streaming.py         # 直接 astream 与安全 Agent 事件投影
 │   ├── rag/
 │   │   ├── __init__.py          # RAG 公共门面和依赖注入
 │   │   ├── pipeline.py          # 索引状态、生命周期与检索门面
@@ -1143,8 +1119,6 @@ docker run --rm -p 8000:8000 --env-file .env \
 - 回答/Agent 模型、追问改写模型、拆分模型和 Judge 模型都按 OpenAI-compatible Chat Completions 格式调用。
 - embedding 和 rerank 模型首次加载较慢，可能需要下载权重。
 - 多轮历史使用本地 SQLite 持久化，适合单实例运行；多实例部署时需要额外规划共享存储和并发策略。
-- SQLite Checkpointer 适合单进程本地开发；高并发、多进程共享、数据持续增长和敏感状态留存需要额外的容量、权限及清理策略。
 - Agent 已通过唯一的 `create_agent` 路径支持 Registry-driven 多轮工具观察、同轮多个工具调用和参数修正，并具备错误次数、重复调用/错误、总耗时和同批 fail-closed 防护。
 - 当前尚未实现 RAG JSON token streaming、Interrupt/Resume、SQL/MCP 写工具、写工具的跨请求人工审批恢复或多 Agent；MCP 第一版也不支持 Server、stdio、OAuth、Resources 或 Prompts。
-- 当前 Checkpointer 面向单进程本地使用，不是生产级分布式 Checkpointer。
 - retrieval_confidence 和 answer_confidence 是启发式估计，不等同于严格概率。

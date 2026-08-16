@@ -41,7 +41,6 @@ _SQL_SYSTEM_SCHEMAS = frozenset(
     }
 )
 
-LangGraphCheckpointer = Literal["disabled", "memory", "sqlite"]
 WebSearchSafeSearch = Literal["on", "moderate", "off"]
 ToolPermissions = Annotated[tuple[str, ...], NoDecode]
 SqlAllowedTables = Annotated[tuple[str, ...], NoDecode]
@@ -247,10 +246,6 @@ class AppSettings(BaseSettings):
         ge=1,
         le=3_600_000,
     )
-    langgraph_checkpointer: LangGraphCheckpointer = "disabled"
-    langgraph_checkpoint_db_path: Path = (
-        BASE_DIR / "data" / "langgraph_checkpoints.sqlite3"
-    )
     enable_agent_trace_store: bool = False
 
     # 工具运行时与治理
@@ -368,7 +363,6 @@ class AppSettings(BaseSettings):
         "rag_file_path",
         "index_store_dir",
         "chroma_persist_dir",
-        "langgraph_checkpoint_db_path",
         "tool_audit_path",
         "sqlite_db_path",
         "metrics_path",
@@ -514,14 +508,6 @@ class AppSettings(BaseSettings):
         """统一安全搜索配置的大小写与两端空白。"""
         return value.strip().lower() if isinstance(value, str) else value
 
-    @field_validator("langgraph_checkpointer", mode="before")
-    @classmethod
-    def _normalize_checkpointer(cls, value: object) -> object:
-        """统一检查点后端名称，并将空字符串恢复为禁用状态。"""
-        if not isinstance(value, str):
-            return value
-        return value.strip().lower() or "disabled"
-
     @field_validator("tool_default_permissions", mode="before")
     @classmethod
     def _parse_permissions(cls, value: object) -> tuple[str, ...]:
@@ -642,7 +628,6 @@ class AppSettings(BaseSettings):
             if sqlite_path is not None:
                 protected_files = {
                     self.sqlite_db_path.resolve(),
-                    self.langgraph_checkpoint_db_path.resolve(),
                     self.tool_audit_path.resolve(),
                 }
                 protected_directories = {
@@ -759,13 +744,6 @@ def validate_startup_environment(settings: AppSettings) -> None:
     validate_rag_environment(settings)
 
     file_paths = [("SQLITE_DB_PATH", settings.sqlite_db_path)]
-    if settings.langgraph_checkpointer == "sqlite":
-        file_paths.append(
-            (
-                "LANGGRAPH_CHECKPOINT_DB_PATH",
-                settings.langgraph_checkpoint_db_path,
-            )
-        )
     if settings.tool_audit_enabled:
         file_paths.append(("TOOL_AUDIT_PATH", settings.tool_audit_path))
     for name, path in file_paths:

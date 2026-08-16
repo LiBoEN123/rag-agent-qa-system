@@ -8,7 +8,7 @@ import pytest
 from app.agent.results import create_agent_result
 from app.api.responses import build_chat_response_from_outcome
 from app.contracts.chat import AgentResultStatus
-from app.graph.streaming import AgentRuntimeStreamEvent
+from app.agent.streaming import AgentRuntimeStreamEvent
 from app.observability.metrics import (
     attach_query_rewrite_trace,
     build_query_rewrite_trace,
@@ -17,6 +17,16 @@ from app.observability.metrics import (
 from app.services.chat_models import ChatServiceRequest
 from app.services.chat_service import ChatService, ChatServiceDependencies
 from app.services.chat_stream_models import ChatStreamEvent
+
+
+@pytest.fixture(autouse=True)
+def run_blocking_calls_inline_in_sandbox(monkeypatch):
+    """隔离沙箱默认 executor 关闭挂起，不改变流式业务断言。"""
+
+    async def run_inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", run_inline)
 
 
 class IncrementingClock:
@@ -104,7 +114,7 @@ def _build_service(runtime_events, *, sync_result=None):
         settings_provider=lambda: SimpleNamespace(top_k=5, decompose_top_k=10),
         get_history=lambda session_id: [],
         rewrite_query_with_history=fake_rewrite,
-        run_agent_langgraph=lambda **kwargs: dict(resolved_sync_result),
+        run_agent=lambda **kwargs: dict(resolved_sync_result),
         build_query_rewrite_trace=build_query_rewrite_trace,
         attach_query_rewrite_trace=attach_query_rewrite_trace,
         collect_trace_metrics=collect_trace_metrics,
@@ -115,7 +125,7 @@ def _build_service(runtime_events, *, sync_result=None):
         ),
         now_iso=lambda: "2026-08-02T10:00:00.000",
         perf_counter=clock,
-        stream_agent_langgraph=fake_stream,
+        stream_agent=fake_stream,
     )
     return ChatService(dependencies), calls
 

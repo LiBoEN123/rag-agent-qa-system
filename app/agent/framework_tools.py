@@ -4,12 +4,10 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
-from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ToolCallRequest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
-from langgraph.types import Command
 from pydantic import ConfigDict, create_model
 
 from app.agent.guardrails import build_unknown_tool_call_fingerprint
@@ -40,34 +38,45 @@ def find_last_ai_message(
         if isinstance(message, AIMessage):
             return message
     if required:
-        raise RuntimeError("RAG handoff requires the requesting AIMessage")
+        raise RuntimeError("tool governance requires the requesting AIMessage")
     return None
 
 
-def _rag_handoff(
-    result: dict[str, Any],
+def _tool_request(
+    *,
+    name: str,
+    args: dict[str, Any],
     runtime: ToolRuntime[ToolInvocationContext],
-) -> Command:
-    """把成功知识库结果和配对消息交接给父图。"""
-    tool_message = ToolMessage(
-        content=json.dumps(result, ensure_ascii=False, sort_keys=True, default=str),
-        artifact=result,
-        tool_call_id=runtime.tool_call_id or "",
-        status="success",
-    )
-    return Command(
-        graph=Command.PARENT,
-        update={
-            "messages": [
-                find_last_ai_message(runtime.state.get("messages", []), required=True),
-                tool_message,
-            ],
-            "pending_rag_result": result,
+    tool: BaseTool,
+) -> ToolCallRequest:
+    """根据框架注入 Runtime 构造项目治理需要的调用视图。"""
+    return ToolCallRequest(
+        tool_call={
+            "name": name,
+            "args": args,
+            "id": runtime.tool_call_id or "",
+            "type": "tool_call",
         },
+        tool=tool,
+        state=runtime.state,
+        runtime=runtime,
     )
 
 
-def _build_tool(spec: ToolSpec, registry: ToolRegistry) -> StructuredTool:
+def _tool_message(result: object, *, name: str, call_id: str) -> ToolMessage:
+    """把工具函数结果包装为供治理层解析的配对消息。"""
+    return ToolMessage(
+        content=json.dumps(result, ensure_ascii=False, sort_keys=True, default=str),
+        tool_call_id=call_id,
+        name=name,
+    )
+
+
+def _build_tool(
+    spec: ToolSpec,
+    registry: ToolRegistry,
+    governance: Any,
+) -> StructuredTool:
     """将单个 ToolSpec 转换为带 Runtime 注入的框架工具。"""
     if spec.args_model is None:
         raise ValueError(f"tool {spec.name!r} 缺少 Pydantic args_model")
@@ -78,43 +87,155 @@ def _build_tool(spec: ToolSpec, registry: ToolRegistry) -> StructuredTool:
         runtime=(ToolRuntime[ToolInvocationContext], ...),
     )
 
+    structured_tool: StructuredTool | None = None
+
     def invoke_registered_tool(
         runtime: ToolRuntime[ToolInvocationContext],
         **tool_args: Any,
-    ) -> dict[str, Any] | Command:
+    ) -> tuple[str, object]:
         """通过项目 Registry/Runtime 执行，不直接接触 handler。"""
         context = runtime.context
         if not isinstance(context, ToolInvocationContext):
             raise RuntimeError("ToolRuntime did not inject ToolInvocationContext")
-        result = registry.dispatch(spec.name, tool_args, context=context)
-        output = result.get("output") if isinstance(result, dict) else None
-        is_rag = (
-            spec.name == "search_knowledge_base"
-            and result.get("ok") is True
-            and isinstance(output, dict)
-            and isinstance(output.get("chunks"), list)
+        assert structured_tool is not None
+        request = _tool_request(
+            name=spec.name,
+            args=tool_args,
+            runtime=runtime,
+            tool=structured_tool,
         )
-        last_ai = find_last_ai_message(runtime.state.get("messages", []), required=True)
-        assert last_ai is not None
-        if is_rag and len(last_ai.tool_calls) == 1:
-            return _rag_handoff(result, runtime)
-        return result
+        message = governance.govern_tool_call(
+            request,
+            lambda _request: _tool_message(
+                registry.dispatch(spec.name, tool_args, context=context),
+                name=spec.name,
+                call_id=runtime.tool_call_id or "",
+            ),
+        )
+        return str(message.content), message.artifact
 
-    return StructuredTool.from_function(
+    async def ainvoke_registered_tool(
+        runtime: ToolRuntime[ToolInvocationContext],
+        **tool_args: Any,
+    ) -> tuple[str, object]:
+        """异步 Agent 复用 Registry/Runtime 的受控同步执行边界。"""
+        context = runtime.context
+        if not isinstance(context, ToolInvocationContext):
+            raise RuntimeError("ToolRuntime did not inject ToolInvocationContext")
+        assert structured_tool is not None
+        request = _tool_request(
+            name=spec.name,
+            args=tool_args,
+            runtime=runtime,
+            tool=structured_tool,
+        )
+        async def dispatch(_request):
+            result = registry.dispatch(
+                spec.name,
+                tool_args,
+                context=context,
+            )
+            return _tool_message(
+                result,
+                name=spec.name,
+                call_id=runtime.tool_call_id or "",
+            )
+
+        message = await governance.agovern_tool_call(request, dispatch)
+        return str(message.content), message.artifact
+
+    structured_tool = StructuredTool.from_function(
         func=invoke_registered_tool,
+        coroutine=ainvoke_registered_tool,
         name=spec.name,
         description=spec.description,
         args_schema=runtime_schema,
         metadata={"tool_version": spec.version},
+        response_format="content_and_artifact",
     )
+    return structured_tool
+
+
+def _build_governed_external_tool(
+    tool: BaseTool,
+    governance: Any,
+) -> StructuredTool:
+    """为已带执行治理的 MCP StructuredTool 补充 Agent 循环治理。"""
+    raw_func = getattr(tool, "func", None)
+    raw_coroutine = getattr(tool, "coroutine", None)
+    if not callable(raw_func) or not callable(raw_coroutine):
+        raise ValueError(f"external tool {tool.name!r} 缺少同步或异步入口")
+    structured_tool: StructuredTool | None = None
+
+    def invoke_external_tool(
+        runtime: ToolRuntime[ToolInvocationContext],
+        **tool_args: Any,
+    ) -> tuple[str, object]:
+        assert structured_tool is not None
+        request = _tool_request(
+            name=tool.name,
+            args=tool_args,
+            runtime=runtime,
+            tool=structured_tool,
+        )
+        message = governance.govern_tool_call(
+            request,
+            lambda _request: _tool_message(
+                raw_func(runtime=runtime, **tool_args),
+                name=tool.name,
+                call_id=runtime.tool_call_id or "",
+            ),
+        )
+        return str(message.content), message.artifact
+
+    async def ainvoke_external_tool(
+        runtime: ToolRuntime[ToolInvocationContext],
+        **tool_args: Any,
+    ) -> tuple[str, object]:
+        assert structured_tool is not None
+        request = _tool_request(
+            name=tool.name,
+            args=tool_args,
+            runtime=runtime,
+            tool=structured_tool,
+        )
+
+        async def execute(_request):
+            result = await raw_coroutine(runtime=runtime, **tool_args)
+            return _tool_message(
+                result,
+                name=tool.name,
+                call_id=runtime.tool_call_id or "",
+            )
+
+        message = await governance.agovern_tool_call(request, execute)
+        return str(message.content), message.artifact
+
+    structured_tool = StructuredTool.from_function(
+        func=invoke_external_tool,
+        coroutine=ainvoke_external_tool,
+        name=tool.name,
+        description=tool.description,
+        args_schema=tool.args_schema,
+        metadata=dict(tool.metadata or {}),
+        response_format="content_and_artifact",
+    )
+    return structured_tool
 
 
 def build_framework_tools(
     provider: ToolProvider,
     *,
     context: ToolInvocationContext,
+    governance: Any | None = None,
 ) -> list[BaseTool]:
     """按本次请求 Provider 构造供 create_agent 使用的动态工具。"""
+    if governance is None:
+        from app.agent.framework_middleware import (
+            ProjectToolGovernanceMiddleware,
+        )
+
+        governance = ProjectToolGovernanceMiddleware()
     registry = _provider_registry(provider)
     specs: Sequence[ToolSpec] = provider.list_specs(context=context)
     tools: list[BaseTool] = []
@@ -125,7 +246,7 @@ def build_framework_tools(
         if spec.name in seen:
             raise ValueError(f"tool {spec.name!r} 重复，禁止静默覆盖")
         seen.add(spec.name)
-        tools.append(_build_tool(spec, registry))
+        tools.append(_build_tool(spec, registry, governance))
     return tools
 
 
@@ -133,29 +254,41 @@ def build_agent_framework_tools(
     provider: ToolProvider,
     *,
     context: ToolInvocationContext,
+    governance: Any,
 ) -> list[BaseTool]:
     """合并本地 Registry tools 与启动期缓存的受治理 MCP tools。"""
-    tools = build_framework_tools(provider, context=context)
+    tools = build_framework_tools(
+        provider,
+        context=context,
+        governance=governance,
+    )
     seen = {tool.name for tool in tools}
     for tool in list_mcp_tools_for_context(context):
         if tool.name in seen:
             raise ValueError(f"tool {tool.name!r} 在本地与 MCP 工具源中重复")
         seen.add(tool.name)
-        tools.append(tool)
+        tools.append(_build_governed_external_tool(tool, governance))
     return tools
 
 
-def resolve_tool_message(output: object, call_id: str) -> ToolMessage:
-    """读取 ToolNode 已生成且与调用 ID 匹配的消息。"""
-    if isinstance(output, ToolMessage):
-        return output
-    if not isinstance(output, Command) or not isinstance(output.update, dict):
-        raise TypeError("ToolNode must return ToolMessage or Command")
-    return next(
-        item
-        for item in output.update.get("messages", [])
-        if isinstance(item, ToolMessage) and item.tool_call_id == call_id
+def resolve_agent_tools(
+    context: ToolInvocationContext,
+    *,
+    governance: Any,
+) -> list[BaseTool]:
+    """从唯一 Provider 入口解析本次请求可见的完整工具集合。"""
+    return build_agent_framework_tools(
+        get_agent_tool_provider(),
+        context=context,
+        governance=governance,
     )
+
+
+def resolve_tool_message(output: object, call_id: str) -> ToolMessage:
+    """读取治理包装器生成且与调用 ID 匹配的普通 ToolMessage。"""
+    if not isinstance(output, ToolMessage) or output.tool_call_id != call_id:
+        raise TypeError("governed tool must return its paired ToolMessage")
+    return output
 
 
 def parse_tool_result(
@@ -238,37 +371,3 @@ def governance_block(
         "cost_ms": 0,
     }
     return message, event
-
-
-class RegistryToolsMiddleware(AgentMiddleware):
-    """为模型与 ToolNode 从同一请求 Provider 解析动态工具。"""
-
-    @staticmethod
-    def _tools(context: ToolInvocationContext):
-        """按当前请求上下文解析动态工具列表。"""
-        return build_agent_framework_tools(
-            get_agent_tool_provider(),
-            context=context,
-        )
-
-    def wrap_model_call(self, request, handler):
-        """向本次模型调用注入 Provider 提供的动态工具。"""
-        return handler(request.override(tools=self._tools(request.runtime.context)))
-
-    async def awrap_model_call(self, request, handler):
-        """在异步模型调用中注入同一组请求级动态工具。"""
-        return await handler(
-            request.override(tools=self._tools(request.runtime.context))
-        )
-
-    def wrap_tool_call(self, request, handler):
-        """以同一 Provider 语义解析模型实际请求的工具。"""
-        tools = {tool.name: tool for tool in self._tools(request.runtime.context)}
-        return handler(request.override(tool=tools.get(request.tool_call["name"])))
-
-    async def awrap_tool_call(self, request, handler):
-        """在异步工具调用中保持与模型可见工具相同的解析语义。"""
-        tools = {tool.name: tool for tool in self._tools(request.runtime.context)}
-        return await handler(
-            request.override(tool=tools.get(request.tool_call["name"]))
-        )

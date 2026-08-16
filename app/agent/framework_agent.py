@@ -1,8 +1,8 @@
-"""构建 create_agent 子图并转换其最小业务事件。"""
+"""构建项目唯一的 LangChain ``create_agent`` Agent Loop。"""
 
 import operator
-from collections.abc import Mapping
-from typing import Annotated, Any, TypedDict
+from collections.abc import Sequence
+from typing import Annotated, Any
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
@@ -10,15 +10,18 @@ from langchain.agents.middleware import (
     ToolCallLimitMiddleware,
 )
 from langchain.agents.middleware.types import AgentState as LangChainAgentState
+from langchain_core.messages import AIMessage
+from langchain_core.tools import BaseTool
 from typing_extensions import NotRequired
 
-from app.agent.framework_middleware import ProjectToolGovernanceMiddleware
-from app.agent.framework_tools import RegistryToolsMiddleware
+from app.agent.framework_middleware import (
+    _MODEL_GOVERNANCE_KEY,
+    ProjectToolGovernanceMiddleware,
+)
+from app.agent.framework_tools import resolve_agent_tools
 from app.agent.model import get_agent_chat_model
-from app.agent.state import AgentObservation
-from app.agent.tool_events import build_tool_observation, build_tool_trace
 from app.config import AppSettings, get_settings
-from app.tools.context import ToolInvocationContext
+from app.tools.context import ToolInvocationContext, build_default_tool_context
 
 
 def _prefer_stop_reason(left: str, right: str) -> str:
@@ -27,20 +30,12 @@ def _prefer_stop_reason(left: str, right: str) -> str:
 
 
 class FrameworkAgentState(LangChainAgentState):
-    """create_agent 与父图共享的最小治理状态。"""
+    """create_agent 内部使用的最小治理状态。"""
 
     governance_events: NotRequired[Annotated[list[dict[str, Any]], operator.add]]
     agent_elapsed_ms: NotRequired[int]
     stop_reason: NotRequired[Annotated[str, _prefer_stop_reason]]
-    pending_rag_result: NotRequired[dict[str, Any]]
-
-
-class FrameworkEventProjection(TypedDict):
-    """框架治理事件投影到父图业务字段后的纯更新。"""
-
-    observations: list[AgentObservation]
-    tool_trace: list[dict[str, Any]]
-    framework_events_applied: int
+    knowledge_base_result: NotRequired[dict[str, Any]]
 
 
 class _DeferredAgentModel:
@@ -57,28 +52,105 @@ class _DeferredAgentModel:
         return model
 
     def bind_tools(self, tools, **kwargs):
-        """把动态工具绑定转发给实际模型。"""
+        """绑定静态请求工具，并返回记录治理事件的模型适配器。"""
         clean_kwargs = {
             key: value for key, value in kwargs.items() if value is not None
         }
-        return self._model().bind_tools(tools, **clean_kwargs)
+        bound = self._model().bind_tools(tools, **clean_kwargs)
+        return _GovernedBoundModel(
+            bound,
+            available_tool_names=[tool.name for tool in tools],
+        )
 
     def bind(self, **kwargs):
         """兼容转发模型的通用绑定参数。"""
         model = self._model()
         bind = getattr(model, "bind", None)
-        return bind(**kwargs) if callable(bind) else model
+        bound = bind(**kwargs) if callable(bind) else model
+        return _GovernedBoundModel(bound, available_tool_names=[])
 
 
-def build_framework_agent(settings: AppSettings | None = None):
-    """创建使用框架循环、动态工具和内置调用限制的 Agent 子图。"""
+class _GovernedBoundModel:
+    """在模型边界记录成功/失败，交给 ``after_model`` 写入状态。"""
+
+    def __init__(self, model: Any, *, available_tool_names: list[str]) -> None:
+        self._model = model
+        self._available_tool_names = list(available_tool_names)
+        self.profile = getattr(model, "profile", {})
+
+    def _success(self, output: Any, started: int) -> Any:
+        if not isinstance(output, AIMessage):
+            return output
+        event = {
+            "kind": "model",
+            "ok": True,
+            "cost_ms": max(0, _now_ms() - started),
+            "has_tool_calls": bool(output.tool_calls),
+            "requested_tool_call_count": len(output.tool_calls),
+            "available_tool_names": self._available_tool_names,
+        }
+        return output.model_copy(
+            update={
+                "additional_kwargs": {
+                    **output.additional_kwargs,
+                    _MODEL_GOVERNANCE_KEY: event,
+                }
+            }
+        )
+
+    @staticmethod
+    def _failure(started: int, exc: Exception) -> AIMessage:
+        event = {
+            "kind": "model",
+            "ok": False,
+            "cost_ms": max(0, _now_ms() - started),
+            "error_type": type(exc).__name__,
+        }
+        return AIMessage(
+            content="Agent model unavailable",
+            additional_kwargs={_MODEL_GOVERNANCE_KEY: event},
+        )
+
+    def invoke(self, messages):
+        """同步调用实际绑定模型并转换异常。"""
+        started = _now_ms()
+        try:
+            return self._success(self._model.invoke(messages), started)
+        except Exception as exc:
+            return self._failure(started, exc)
+
+    async def ainvoke(self, messages):
+        """异步调用实际绑定模型并保持相同事件语义。"""
+        started = _now_ms()
+        try:
+            return self._success(await self._model.ainvoke(messages), started)
+        except Exception as exc:
+            return self._failure(started, exc)
+
+
+def build_framework_agent(
+    settings: AppSettings | None = None,
+    *,
+    tools: Sequence[BaseTool] | None = None,
+    governance: ProjectToolGovernanceMiddleware | None = None,
+):
+    """创建使用请求可见工具和内置调用限制的唯一 Agent Loop。"""
     resolved = settings or get_settings()
+    resolved_governance = governance or ProjectToolGovernanceMiddleware(
+        settings=resolved
+    )
+    resolved_tools = list(tools) if tools is not None else resolve_agent_tools(
+        build_default_tool_context(
+            source="agent_runtime",
+            settings=resolved,
+        ),
+        governance=resolved_governance,
+    )
     agent = create_agent(
         _DeferredAgentModel(),
-        tools=[],
+        tools=resolved_tools,
         middleware=[
-            RegistryToolsMiddleware(),
-            ProjectToolGovernanceMiddleware(settings=resolved),
+            resolved_governance,
             ModelCallLimitMiddleware(
                 run_limit=resolved.agent_max_iterations,
                 exit_behavior="end",
@@ -92,160 +164,18 @@ def build_framework_agent(settings: AppSettings | None = None):
         context_schema=ToolInvocationContext,
         name="framework_agent",
     )
-    # 当前 ToolNode 对同批调用使用 Send；顺序执行使 fatal fail-closed 可确定。
+    # ToolNode 对同批调用使用 Send；顺序执行使 terminal fail-closed 可确定。
     return agent.with_config({"max_concurrency": 1})
 
 
-def _model_trace(event: dict[str, Any], index: int) -> dict[str, Any]:
-    """把模型治理事件转换为现有迭代 trace。"""
-    return {
-        "step": "agent_iteration",
-        "iteration_index": index,
-        "status": "success" if event.get("ok") else "fallback",
-        "model_has_tool_calls": bool(event.get("has_tool_calls")),
-        "requested_tool_call_count": int(
-            event.get("requested_tool_call_count", 0) or 0
-        ),
-        "model_cost_ms": max(0, int(event.get("cost_ms", 0) or 0)),
-        "available_tool_names": list(event.get("available_tool_names", []))[:50],
-        "error_type": str(event.get("error_type") or ""),
-    }
+def _now_ms() -> int:
+    """复用治理 Middleware 的可测试时钟。"""
+    from app.agent.framework_middleware import _now_ms as middleware_now_ms
 
-
-def _guardrail_trace(event: dict[str, Any]) -> dict[str, Any]:
-    """为未执行的治理拦截生成兼容 trace。"""
-    result = event.get("result") if isinstance(event.get("result"), dict) else {}
-    return {
-        "step": "tool_call",
-        "action": "tool_call",
-        "tool_name": str(event.get("name") or ""),
-        "tool_status": "error",
-        "success": False,
-        "error": str(result.get("error") or "Agent governance stopped tool execution"),
-        "error_code": str(event.get("error_code") or ""),
-        "tool_call_id": str(event.get("tool_call_id") or ""),
-        "cost_ms": 0,
-        "handler_executed": False,
-        "will_return_to_agent_model": False,
-        "stop_reason": str(event.get("stop_reason") or ""),
-        "call_fingerprint": str(event.get("call_fingerprint") or ""),
-    }
-
-
-def _project_tool_event(
-    event: dict[str, Any],
-    *,
-    step_id: int,
-) -> tuple[AgentObservation, dict[str, Any]]:
-    """把已执行工具事件映射为 observation 和 tool trace。"""
-    result = event.get("result") if isinstance(event.get("result"), dict) else {}
-    tool_name = str(event.get("name") or "")
-    tool_args = event.get("args") if isinstance(event.get("args"), dict) else {}
-    observation = build_tool_observation(
-        step_id=step_id,
-        tool_name=tool_name,
-        result=result,
-        cost_ms=max(0, int(event.get("cost_ms", 0) or 0)),
-    )
-    trace = build_tool_trace(
-        step_id=step_id,
-        tool_name=tool_name,
-        tool_args=tool_args,
-        result=result,
-        observation=observation,
-    )
-    trace.update(
-        {
-            "failure_kind": str(event.get("failure_kind") or ""),
-            "handler_executed": bool(event.get("handler_executed")),
-            "will_return_to_agent_model": not bool(event.get("stop_reason")),
-            "stop_reason": str(event.get("stop_reason") or ""),
-            "call_fingerprint": str(event.get("call_fingerprint") or ""),
-        }
-    )
-    return observation, trace
-
-
-def project_framework_events(
-    graph_state: Mapping[str, Any],
-) -> FrameworkEventProjection:
-    """把尚未消费的框架事件投影为新的 observation/trace 列表。"""
-    events = list(graph_state.get("governance_events", []))
-    applied = max(0, int(graph_state.get("framework_events_applied", 0) or 0))
-    observations = [
-        dict(item)
-        for item in graph_state.get("observations", [])
-        if isinstance(item, dict)
-    ]
-    tool_trace = [
-        dict(item)
-        for item in graph_state.get("tool_trace", [])
-        if isinstance(item, dict)
-    ]
-    model_index = sum(item.get("kind") == "model" for item in events[:applied])
-    for event in events[applied:]:
-        if event.get("kind") == "model":
-            model_index += 1
-            tool_trace.append(_model_trace(event, model_index))
-            continue
-        if event.get("counted_call"):
-            observation, trace = _project_tool_event(
-                event,
-                step_id=len(observations) + 1,
-            )
-            observations.append(observation)
-        else:
-            trace = _guardrail_trace(event)
-        tool_trace.append(trace)
-    return {
-        "observations": observations,
-        "tool_trace": tool_trace,
-        "framework_events_applied": len(events),
-    }
-
-
-def framework_metrics(events: list[dict[str, Any]]) -> dict[str, Any]:
-    """从 append-only 事件计算兼容计数和连续指纹。"""
-    calls = [
-        item
-        for item in events
-        if item.get("kind") == "tool"
-        and item.get("error_code") != "agent_batch_aborted"
-    ]
-    tools = [item for item in calls if item.get("counted_call")]
-    errors = [item for item in tools if not item.get("ok")]
-
-    def tail(key: str) -> tuple[str, int]:
-        """计算指定指纹在调用事件尾部的连续次数。"""
-        value = str(calls[-1].get(key) or "") if calls else ""
-        count = 0
-        for item in reversed(calls):
-            if not value or str(item.get(key) or "") != value:
-                break
-            count += 1
-        return value, count
-
-    last_call, call_count = tail("call_fingerprint")
-    last_error = str(errors[-1].get("error_fingerprint") or "") if errors else ""
-    error_count = 0
-    for item in reversed(tools):
-        if item.get("ok") or str(item.get("error_fingerprint") or "") != last_error:
-            break
-        error_count += 1
-    return {
-        "iteration_count": sum(item.get("kind") == "model" for item in events),
-        "tool_call_count": len(tools),
-        "tool_error_count": len(errors),
-        "last_tool_call_fingerprint": last_call,
-        "consecutive_same_tool_call_count": call_count,
-        "last_tool_error_fingerprint": last_error,
-        "consecutive_same_tool_error_count": error_count,
-    }
+    return middleware_now_ms()
 
 
 __all__ = [
-    "FrameworkEventProjection",
+    "FrameworkAgentState",
     "build_framework_agent",
-    "framework_metrics",
-    "project_framework_events",
 ]

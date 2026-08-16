@@ -7,11 +7,11 @@ from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import ValidationError
 
 from app.agent import framework_agent, framework_tools
-from app.graph.builder import build_agent_graph
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolAuditOutputMode, ToolRiskLevel
 from app.tools.providers import LocalToolProvider
 from app.tools.registry import ToolRegistry, register_default_tools
+from tests.support.agent_runtime import build_agent_harness
 
 
 SQL_TOOL_NAMES = {
@@ -189,7 +189,7 @@ def test_framework_agent_calls_all_sql_tools_through_registry_runtime(
         source="sql_agent_test",
     )
 
-    output = build_agent_graph(sql_settings).compile().invoke(
+    output = build_agent_harness(sql_settings).invoke(
         {
             "original_question": "查看学生表",
             "effective_question": "查看学生表",

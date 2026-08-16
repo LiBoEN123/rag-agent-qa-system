@@ -15,18 +15,18 @@ from app.api.health import create_health_router
 from app.api.http_logging import configure_uvicorn_access_log
 from app.api.lifecycle import (
     StartupDependencies,
-    aclose_agent_graph_runtime,
+    aclose_agent_runtime,
     close_mcp_runtime,
     close_sql_engine_runtime,
     close_tool_runtime,
-    initialize_agent_graph_runtime,
+    initialize_agent_runtime,
     initialize_mcp_runtime,
     initialize_rag,
 )
 from app.api.middleware import trace_and_timing_middleware
 from app.api.schemas import SearchData, SearchResponse, SearchResult
 from app.config import get_settings, validate_startup_environment
-from app.graph.nodes import route_node
+from app.agent.router import route_agent_action
 from app.observability.metrics import read_recent_metrics
 from app.rag import (
     get_rag_status,
@@ -60,13 +60,13 @@ def get_default_diagnostics_dependencies() -> DiagnosticsDependencies:
         rerank=rerank,
         should_refuse=should_refuse,
         safe_float=safe_float,
-        route_node=route_node,
+        route_agent_action=route_agent_action,
         read_recent_metrics=read_recent_metrics,
     )
 
 
 def start_application_resources() -> None:
-    """按现有顺序校验配置并初始化 RAG 与 Agent Graph。"""
+    """按现有顺序校验配置并初始化 RAG 与 Agent Runtime。"""
     settings = get_settings()
     validate_startup_environment(settings)
     initialize_rag(
@@ -78,7 +78,7 @@ def start_application_resources() -> None:
             rebuild_and_persist_index=rebuild_and_persist_index,
         )
     )
-    initialize_agent_graph_runtime(settings)
+    initialize_agent_runtime(settings)
 
 
 @asynccontextmanager
@@ -93,7 +93,7 @@ async def lifespan(_app: FastAPI):
         await close_mcp_runtime()
         close_tool_runtime()
         close_sql_engine_runtime()
-        await aclose_agent_graph_runtime()
+        await aclose_agent_runtime()
 
 
 def create_app(

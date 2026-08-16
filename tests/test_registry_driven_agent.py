@@ -7,12 +7,12 @@ from pydantic import BaseModel, Field
 
 from app.agent import framework_agent, framework_tools
 from app.agent.framework_tools import build_framework_tools
-from app.graph.builder import build_agent_graph
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from app.tools.providers import LocalToolProvider
 from app.tools.registry import ToolRegistry, get_tool_registry
 from app.tools.result import tool_success
+from tests.support.agent_runtime import build_agent_harness
 
 
 class EchoTextArgs(BaseModel):
@@ -117,7 +117,7 @@ def _invoke_dynamic_graph(
         "trace_id": context.trace_id,
         "session_id": context.session_id,
     }
-    return build_agent_graph().compile().invoke(
+    return build_agent_harness().invoke(
         graph_input,
         context=context,
     )
@@ -191,11 +191,14 @@ def test_agent_discovers_and_calls_echo_without_core_tool_mapping(monkeypatch):
     assert isinstance(message, ToolMessage)
     assert json.loads(message.content)["output"] == {"text": "hello"}
     assert output["result"]["answer"] == "echo complete"
-    assert contexts == [context]
+    assert len(contexts) == 1
     assert contexts[0].trace_id == "trace-echo"
     assert contexts[0].session_id == "session-echo"
     assert contexts[0].permissions == ("knowledge_base:read",)
     assert contexts[0].source == "registry_driven_test"
+    assert contexts[0].effective_question == "调用动态测试工具"
+    assert contexts[0].top_k == 5
+    assert contexts[0].decompose_top_k == 10
     assert get_tool_registry().get("echo_text") is None
 
 
@@ -233,11 +236,12 @@ def test_new_tool_request_reaches_agent_without_router_changes(monkeypatch):
         question="请用刚增加的处理能力原样接住这句话",
     )
 
-    assert output["decision"]["action"] == "agent"
-    assert "tool_name" not in output["decision"]
+    assert output["result"]["action"] == "agent"
     assert model.bound_tool_names == ["echo_text", "join_texts"]
     assert output["result"]["answer"] == "任意新口吻"
-    assert contexts == [context]
+    assert len(contexts) == 1
+    assert contexts[0].trace_id == context.trace_id
+    assert contexts[0].effective_question == "请用刚增加的处理能力原样接住这句话"
 
 
 def test_agent_binds_different_dynamic_args_schema(monkeypatch):

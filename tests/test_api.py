@@ -119,7 +119,7 @@ def test_chat_langgraph_internal_error_result_returns_http_500():
     )
     runtime_calls = []
 
-    def fake_run_agent_langgraph(**kwargs):
+    def fake_run_agent(**kwargs):
         runtime_calls.append(kwargs)
         return build_internal_error_result(
             RuntimeError(sensitive_message),
@@ -139,7 +139,7 @@ def test_chat_langgraph_internal_error_result_returns_http_500():
             "rewrite_llm_used": False,
             "error": "",
         },
-        run_agent_langgraph=fake_run_agent_langgraph,
+        run_agent=fake_run_agent,
     )
     http_response = Response()
     response_body = ask_api(
@@ -200,7 +200,7 @@ def test_chat_uses_rewritten_question_for_follow_up():
 
     agent_questions = []
 
-    def fake_run_agent_langgraph(**kwargs):
+    def fake_run_agent(**kwargs):
         question = kwargs["effective_question"]
         agent_questions.append(question)
         return {
@@ -227,7 +227,7 @@ def test_chat_uses_rewritten_question_for_follow_up():
 
     service = build_chat_service(
         rewrite_query_with_history=fake_rewrite,
-        run_agent_langgraph=fake_run_agent_langgraph,
+        run_agent=fake_run_agent,
     )
     ask_api(
         service,
@@ -267,9 +267,9 @@ def test_chat_uses_rewritten_question_for_follow_up():
     clear_session(session_id)
 
 
-def test_chat_uses_langgraph_once_and_keeps_rewrite_api_protocol():
+def test_chat_uses_agent_runtime_once_and_keeps_rewrite_api_protocol():
     """唯一 Runtime 只调用一次，且保留改写和 API 协议。"""
-    calls = {"rewrite": 0, "langgraph": 0}
+    calls = {"rewrite": 0, "agent": 0}
     runtime_kwargs: dict = {}
 
     def fake_rewrite(question, history, trace_id=""):
@@ -286,12 +286,12 @@ def test_chat_uses_langgraph_once_and_keeps_rewrite_api_protocol():
             "error": "",
         }
 
-    def fake_langgraph_runner(**kwargs):
-        calls["langgraph"] += 1
+    def fake_agent_runner(**kwargs):
+        calls["agent"] += 1
         runtime_kwargs.update(kwargs)
         return {
             "status": "OK",
-            "answer": "langgraph answer",
+            "answer": "agent answer",
             "references": [],
             "retrieval_confidence": 0.0,
             "answer_confidence": 0.0,
@@ -318,7 +318,7 @@ def test_chat_uses_langgraph_once_and_keeps_rewrite_api_protocol():
 
     service = build_chat_service(
         rewrite_query_with_history=fake_rewrite,
-        run_agent_langgraph=fake_langgraph_runner,
+        run_agent=fake_agent_runner,
     )
     response = ask_api(
         service,
@@ -331,7 +331,7 @@ def test_chat_uses_langgraph_once_and_keeps_rewrite_api_protocol():
     )
     body = response.model_dump()
 
-    assert calls == {"rewrite": 1, "langgraph": 1}
+    assert calls == {"rewrite": 1, "agent": 1}
     assert "question" not in runtime_kwargs
     assert runtime_kwargs["original_question"] == "原始问题"
     assert runtime_kwargs["effective_question"] == "改写后的问题"
@@ -340,10 +340,10 @@ def test_chat_uses_langgraph_once_and_keeps_rewrite_api_protocol():
     assert "decision" not in runtime_kwargs
     assert runtime_kwargs["session_id"] == "runtime-switch-session"
     assert body["code"] == 0
-    assert body["data"]["answer"] == "langgraph answer"
+    assert body["data"]["answer"] == "agent answer"
     assert body["data"]["question"] == "原始问题"
     assert body["data"]["tool_trace"][0]["step"] == "query_rewrite"
     assert get_history("runtime-switch-session") == [
         {"role": "user", "content": "原始问题"},
-        {"role": "assistant", "content": "langgraph answer"},
+        {"role": "assistant", "content": "agent answer"},
     ]

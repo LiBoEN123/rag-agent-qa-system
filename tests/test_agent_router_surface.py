@@ -6,7 +6,7 @@ import pytest
 
 import app.agent as agent_package
 from app.agent.router import route_agent_action
-from app.graph import nodes as graph_nodes
+from app.agent import runtime as agent_runtime
 from app.services.chat_service import get_default_chat_service_dependencies
 
 
@@ -52,9 +52,9 @@ def test_current_router_surface_remains_importable_from_explicit_module():
     assert callable(route_agent_action)
 
 
-def test_only_graph_node_owns_the_router_in_chat_runtime():
-    """ChatService 不再持有 Router，父图 route 节点是唯一所有者。"""
+def test_agent_runtime_is_the_only_chat_router_owner():
+    """ChatService 不持有 Router，普通 Python Runtime 是唯一所有者。"""
     dependencies = get_default_chat_service_dependencies()
 
     assert not hasattr(dependencies, "route_agent_action")
-    assert graph_nodes.route_agent_action is route_agent_action
+    assert agent_runtime.route_agent_action is route_agent_action

@@ -833,7 +833,7 @@ def execute_agent_case(
     """通过真实 ChatService 执行一个完全隔离的 Agent case。"""
     from dataclasses import replace
 
-    from app.graph.runtime import run_agent_langgraph
+    from app.agent.runtime import run_agent
     from app.observability.metrics import (
         attach_query_rewrite_trace,
         build_query_rewrite_trace,
@@ -861,13 +861,13 @@ def execute_agent_case(
             permissions=permissions,
             source="evaluation_baseline_v2",
         )
-        return run_agent_langgraph(**kwargs)
+        return run_agent(**kwargs)
 
     dependencies = replace(
         base,
         settings_provider=lambda: settings,
         get_history=session.get_history,
-        run_agent_langgraph=run_runtime,
+        run_agent=run_runtime,
         build_query_rewrite_trace=build_query_rewrite_trace,
         attach_query_rewrite_trace=attach_query_rewrite_trace,
         collect_trace_metrics=collect_trace_metrics,

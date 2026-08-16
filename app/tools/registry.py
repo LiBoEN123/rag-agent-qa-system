@@ -114,7 +114,7 @@ def _handle_search_knowledge_base(
     context: ToolInvocationContext,
 ) -> dict:
     """适配知识库检索工具的参数格式。"""
-    return search_knowledge_base(args)
+    return search_knowledge_base(args, context)
 
 
 def _handle_compare_documents(
@@ -137,7 +137,8 @@ def register_default_tools(
             version="1.0.0",
             description=(
                 "用于回答需要依据当前本地知识库文档的问题；传入检索问题和"
-                "候选数量，返回相关证据 chunk。仅检索本地知识库，不用于互联网搜索。"
+                "候选数量，执行完整的本地 RAG 工作流并返回答案、引用和证据。"
+                "不用于互联网搜索。"
             ),
             args_schema={
                 "query": "string, 必填，用户问题或检索问题",
@@ -147,12 +148,13 @@ def register_default_tools(
                 "count": "integer, 命中的 chunk 数量",
                 "chunks": "list, 候选证据 chunk 列表",
                 "top_chunk_ids": "list, 命中的 chunk_id 列表",
+                "rag_result": "object, RAG 答案、引用、置信度、状态和 trace",
             },
             handler=_handle_search_knowledge_base,
             args_model=SearchKnowledgeBaseArgs,
             risk_level=ToolRiskLevel.READ_ONLY,
             required_permissions=("knowledge_base:read",),
-            timeout=10.0,
+            timeout=max(10.0, settings.agent_max_total_cost_ms / 1000.0),
             max_retries=0,
             idempotent=True,
             requires_approval=False,

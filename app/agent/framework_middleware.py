@@ -3,19 +3,14 @@
 import json
 import threading
 import time
-from dataclasses import replace
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import (
-    ExtendedModelResponse,
-    ModelRequest,
-    ModelResponse,
     ToolCallRequest,
     hook_config,
 )
-from langchain_core.messages import AIMessage, ToolMessage
-from langgraph.types import Command
+from langchain_core.messages import ToolMessage
 
 from app.agent.framework_tools import (
     find_last_ai_message,
@@ -24,7 +19,10 @@ from app.agent.framework_tools import (
     resolve_tool_message,
     tool_call_fingerprint,
 )
-from app.agent.guardrails import AgentStopReason
+from app.agent.guardrails import (
+    AgentStopReason,
+    build_unknown_tool_call_fingerprint,
+)
 from app.agent.runtime import (
     build_tool_governance_event,
     count_consecutive_events,
@@ -38,6 +36,10 @@ def _now_ms() -> int:
     return time.time_ns() // 1_000_000
 
 
+_MODEL_GOVERNANCE_KEY = "_project_model_governance"
+_TOOL_GOVERNANCE_KEY = "_project_tool_governance"
+
+
 class ProjectToolGovernanceMiddleware(AgentMiddleware):
     """保留错误分类、循环检测、耗时预算和批次 fail-closed。"""
 
@@ -47,72 +49,82 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
         self._lock = threading.Lock()
         self._batch_events: dict[tuple[str, tuple[str, ...]], list[dict]] = {}
 
-    def wrap_model_call(self, request: ModelRequest, handler):
-        """调用模型并记录结果、耗时和可见工具。"""
-        started = _now_ms()
-        try:
-            response = handler(request)
-        except Exception as exc:
-            return self._model_failure(started, exc)
-        return self._finish_model_call(request, response, started)
-
-    async def awrap_model_call(self, request: ModelRequest, handler):
-        """异步调用模型，并保持与同步入口相同的治理事件。"""
-        started = _now_ms()
-        try:
-            response = await handler(request)
-        except Exception as exc:
-            return self._model_failure(started, exc)
-        return self._finish_model_call(request, response, started)
-
-    @staticmethod
-    def _model_failure(started: int, exc: Exception) -> ExtendedModelResponse:
-        """把同步或异步模型异常转换成统一的安全终止结果。"""
-        event = {
-            "kind": "model",
-            "ok": False,
-            "cost_ms": max(0, _now_ms() - started),
-            "error_type": type(exc).__name__,
+    def after_model(self, state, runtime):
+        """消费一次模型私有标记并写入 append-only 治理事件。"""
+        del runtime
+        ai_message = find_last_ai_message(state.get("messages", []))
+        if ai_message is None:
+            return None
+        raw_event = ai_message.additional_kwargs.get(_MODEL_GOVERNANCE_KEY)
+        if not isinstance(raw_event, dict):
+            return None
+        additional_kwargs = dict(ai_message.additional_kwargs)
+        additional_kwargs.pop(_MODEL_GOVERNANCE_KEY, None)
+        updates: dict[str, Any] = {
+            "messages": [
+                ai_message.model_copy(
+                    update={"additional_kwargs": additional_kwargs}
+                )
+            ],
+            "governance_events": [dict(raw_event)],
         }
-        return ExtendedModelResponse(
-            ModelResponse(result=[AIMessage(content="Agent model unavailable")]),
-            Command(
-                update={
-                    "governance_events": [event],
-                    "stop_reason": "agent_model_call_failed",
-                }
-            ),
-        )
+        if raw_event.get("ok") is False:
+            updates["stop_reason"] = "agent_model_call_failed"
+        elif not ai_message.tool_calls:
+            updates["stop_reason"] = AgentStopReason.COMPLETED.value
+        return updates
 
-    @staticmethod
-    def _finish_model_call(
-        request: ModelRequest,
-        response: ModelResponse,
-        started: int,
-    ) -> ExtendedModelResponse:
-        """为同步或异步模型响应追加相同的可观测事件。"""
-        ai_message = find_last_ai_message(response.result)
-        event = {
-            "kind": "model",
-            "ok": True,
-            "cost_ms": max(0, _now_ms() - started),
-            "has_tool_calls": bool(ai_message and ai_message.tool_calls),
-            "requested_tool_call_count": len(ai_message.tool_calls)
-            if ai_message
-            else 0,
-            "available_tool_names": [tool.name for tool in request.tools],
-        }
-        return ExtendedModelResponse(
-            response,
-            Command(update={"governance_events": [event]}),
-        )
+    async def aafter_model(self, state, runtime):
+        """异步图复用同一模型治理事件消费逻辑。"""
+        return self.after_model(state, runtime)
 
     @hook_config(can_jump_to=["end"])
     def before_model(self, state, runtime):
         """在下一轮模型调用前执行停止和 RAG 交接检查。"""
-        events = list(state.get("governance_events", []))
+        del runtime
+        marker_events: list[dict[str, Any]] = []
+        cleaned_messages: list[ToolMessage] = []
+        knowledge_result: dict[str, Any] | None = None
+        for item in state.get("messages", []):
+            if not isinstance(item, ToolMessage) or not isinstance(
+                item.artifact, dict
+            ):
+                continue
+            marker = item.artifact.get(_TOOL_GOVERNANCE_KEY)
+            if not isinstance(marker, dict):
+                continue
+            event = marker.get("event")
+            if isinstance(event, dict):
+                marker_events.append(dict(event))
+            candidate = marker.get("knowledge_base_result")
+            if isinstance(candidate, dict):
+                knowledge_result = candidate
+            cleaned_messages.append(
+                item.model_copy(
+                    update={
+                        "artifact": None,
+                        "status": (
+                            "success"
+                            if isinstance(event, dict) and event.get("ok") is True
+                            else "error"
+                        ),
+                    }
+                )
+            )
+
+        events = [*state.get("governance_events", []), *marker_events]
         reason = str(state.get("stop_reason") or "")
+        if not reason:
+            reason = next(
+                (
+                    str(item.get("stop_reason") or "")
+                    for item in reversed(marker_events)
+                    if item.get("stop_reason")
+                ),
+                "",
+            )
         last_ai = find_last_ai_message(state.get("messages", []))
+        trailing: list[object] = []
         if not reason and last_ai is not None:
             messages = state.get("messages", [])
             trailing = messages[messages.index(last_ai) + 1 :]
@@ -122,12 +134,89 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
                 for item in trailing
             ):
                 reason = AgentStopReason.MAX_TOOL_CALLS.value
+        if last_ai is not None:
+            latest_model_event = next(
+                (
+                    item
+                    for item in reversed(events)
+                    if item.get("kind") == "model"
+                ),
+                {},
+            )
+            available_tool_names = set(
+                latest_model_event.get("available_tool_names", [])
+            )
+            calls_by_id = {
+                str(call.get("id") or ""): call
+                for call in last_ai.tool_calls
+            }
+            for item in trailing:
+                if (
+                    not isinstance(item, ToolMessage)
+                    or isinstance(item.artifact, dict)
+                    or item.tool_call_id not in calls_by_id
+                    or str(item.content).startswith("Tool call limit exceeded")
+                ):
+                    continue
+                call = calls_by_id[item.tool_call_id]
+                args = call.get("args") or {}
+                known_tool = str(call.get("name") or "") in available_tool_names
+                result = parse_tool_result(
+                    item,
+                    known=known_tool,
+                    name=str(call.get("name") or ""),
+                    args=args,
+                )
+                event = build_tool_governance_event(
+                    tool_call=call,
+                    result=result,
+                    call_fingerprint=build_unknown_tool_call_fingerprint(
+                        tool_name=str(call.get("name") or ""),
+                        tool_args=args,
+                    ),
+                    prior_events=events,
+                    cost_ms=0,
+                    known_tool=known_tool,
+                    settings=self._settings,
+                )
+                result.update(
+                    {
+                        "call_fingerprint": event["call_fingerprint"],
+                        "failure_kind": event["failure_kind"],
+                        "error_source": event["error_source"],
+                        "handler_executed": event["handler_executed"],
+                        "stop_reason": event["stop_reason"],
+                        "model_tool_call_id": call.get("id") or "",
+                    }
+                )
+                marker_events.append(event)
+                events.append(event)
+                cleaned_messages.append(
+                    item.model_copy(
+                        update={
+                            "content": json.dumps(
+                                result,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                                default=str,
+                            ),
+                            "status": "error",
+                        }
+                    )
+                )
+                if not reason and event.get("stop_reason"):
+                    reason = str(event["stop_reason"])
         updates: dict[str, Any] = {
             "agent_elapsed_ms": sum_governance_event_costs(events)
         }
+        if marker_events:
+            updates["governance_events"] = marker_events
+            updates["messages"] = cleaned_messages
+        if knowledge_result is not None:
+            updates["knowledge_base_result"] = knowledge_result
         if reason:
             updates.update({"stop_reason": reason, "jump_to": "end"})
-        elif state.get("pending_rag_result"):
+        elif knowledge_result is not None or state.get("knowledge_base_result"):
             updates["jump_to"] = "end"
         return updates
 
@@ -195,11 +284,11 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
                 aborted=bool(terminal),
             )
             self._remember(key, event, len(key[1]))
-            blocked = Command(
+            blocked = message.model_copy(
                 update={
-                    "messages": [message],
-                    "governance_events": [event],
-                    "stop_reason": reason,
+                    "artifact": {
+                        _TOOL_GOVERNANCE_KEY: {"event": event}
+                    }
                 }
             )
             return args, key, prior, fingerprint, blocked
@@ -216,8 +305,8 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
         prior: list[dict],
         fingerprint: str,
         started: int,
-    ) -> Command:
-        """把同步或异步工具输出归一化为相同治理事件和 Command。"""
+    ) -> ToolMessage:
+        """把同步或异步工具输出归一化为带内部标记的 ToolMessage。"""
         message = resolve_tool_message(output, request.tool_call["id"])
         result = parse_tool_result(
             message,
@@ -234,10 +323,10 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
             known_tool=request.tool is not None,
             settings=self._settings,
         )
-        return self._finish_tool_call(request, output, message, result, event, key)
+        return self._finish_tool_call(request, message, result, event, key)
 
-    def wrap_tool_call(self, request: ToolCallRequest, handler):
-        """在框架工具同步执行前后应用项目特有治理规则。"""
+    def govern_tool_call(self, request: ToolCallRequest, handler):
+        """在本地或 MCP 工具同步执行前后应用项目治理规则。"""
         args, key, prior, fingerprint, blocked = self._prepare_tool_call(request)
         if blocked is not None:
             return blocked
@@ -254,8 +343,8 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
             started=started,
         )
 
-    async def awrap_tool_call(self, request: ToolCallRequest, handler):
-        """在框架工具异步执行前后应用与同步入口相同的治理规则。"""
+    async def agovern_tool_call(self, request: ToolCallRequest, handler):
+        """在异步工具执行前后应用与同步入口相同的治理规则。"""
         args, key, prior, fingerprint, blocked = self._prepare_tool_call(request)
         if blocked is not None:
             return blocked
@@ -273,9 +362,9 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
         )
 
     def _finish_tool_call(
-        self, request, output, message, result, event, key
-    ) -> Command:
-        """补充兼容结果字段，并合并框架 ToolMessage 或 Command。"""
+        self, request, message, result, event, key
+    ) -> ToolMessage:
+        """补充兼容字段，并把治理事件放入内部 ToolMessage artifact。"""
         result.update(
             {
                 "call_fingerprint": event["call_fingerprint"],
@@ -286,30 +375,24 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
                 "model_tool_call_id": request.tool_call["id"],
             }
         )
-        message = message.model_copy(
+        self._remember(key, event, len(key[1]))
+        marker: dict[str, Any] = {"event": event}
+        if request.tool_call["name"] == "search_knowledge_base" and event["ok"]:
+            output_value = result.get("output")
+            if (
+                isinstance(output_value, dict)
+                and isinstance(output_value.get("rag_result"), dict)
+            ):
+                marker["knowledge_base_result"] = result
+        return message.model_copy(
             update={
                 "content": json.dumps(
                     result, ensure_ascii=False, sort_keys=True, default=str
                 ),
                 "status": "success" if event["ok"] else "error",
+                "artifact": {_TOOL_GOVERNANCE_KEY: marker},
             }
         )
-        self._remember(key, event, len(key[1]))
-        updates = {"governance_events": [event]}
-        if event.get("stop_reason"):
-            updates["stop_reason"] = event["stop_reason"]
-        if request.tool_call["name"] == "search_knowledge_base" and event["ok"]:
-            updates["pending_rag_result"] = result
-        if isinstance(output, Command):
-            command_updates = dict(output.update or {})
-            command_updates.update(updates)
-            command_updates["messages"] = [
-                item if not isinstance(item, ToolMessage) else message
-                for item in command_updates.get("messages", [])
-            ]
-            return replace(output, update=command_updates)
-        updates["messages"] = [message]
-        return Command(update=updates)
 
     def after_agent(self, state, runtime):
         """归一化框架结束原因并保存最终累计耗时。"""

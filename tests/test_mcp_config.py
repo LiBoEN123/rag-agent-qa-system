@@ -59,7 +59,9 @@ def test_mcp_config_path_allows_project_relative_and_absolute_overrides(tmp_path
         _env_file=None,
         mcp_servers_config_path="config/custom-mcp.json",
     )
-    absolute = AppSettings(_env_file=None, mcp_servers_config_path=tmp_path / "mcp.json")
+    absolute = AppSettings(
+        _env_file=None, mcp_servers_config_path=tmp_path / "mcp.json"
+    )
 
     assert relative.mcp_servers_config_path == BASE_DIR / "config" / "custom-mcp.json"
     assert absolute.mcp_servers_config_path == tmp_path / "mcp.json"
@@ -98,9 +100,7 @@ def test_headers_env_is_resolved_from_process_environment(tmp_path):
     config = load_mcp_config(
         _write_config(
             tmp_path,
-            _valid_payload(
-                headers_env={"Authorization": "DEPLOYMENT_AUTHORIZATION"}
-            ),
+            _valid_payload(headers_env={"Authorization": "DEPLOYMENT_AUTHORIZATION"}),
         )
     )
 
@@ -160,7 +160,9 @@ def test_direct_and_env_headers_reject_case_insensitive_conflicts(
     assert secret not in str(captured.value)
 
 
-@pytest.mark.parametrize("value", ["", "   ", "abc\rdef", "abc\ndef", "abc\0def", "abc\tdef"])
+@pytest.mark.parametrize(
+    "value", ["", "   ", "abc\rdef", "abc\ndef", "abc\0def", "abc\tdef"]
+)
 def test_direct_header_rejects_empty_or_control_character_values(value):
     with pytest.raises(ValidationError) as captured:
         _server(headers={"Authorization": value})
@@ -190,6 +192,22 @@ def test_server_enablement_defaults_are_safe():
 
     assert server.enabled is True
     assert server.enabled_for_default_principal is False
+    assert server.approval_required_tools == ()
+
+
+def test_approval_required_tools_must_be_exact_allowlist_subset():
+    server = _server(approval_required_tools=["get_weather"])
+
+    assert server.approval_required_tools == ("get_weather",)
+
+    for invalid in (
+        "get_weather",
+        ["not_allowed"],
+        ["get_weather", "get_weather"],
+        ["*"],
+    ):
+        with pytest.raises(ValidationError):
+            _server(approval_required_tools=invalid)
 
 
 def test_disabled_mcp_does_not_read_config_or_construct_client(
@@ -235,6 +253,7 @@ def test_enabled_mcp_requires_existing_config_file(settings_factory, tmp_path):
         _valid_payload(allowed_tools=[]),
         _valid_payload(allowed_tools=["get_weather", "get_weather"]),
         _valid_payload(allowed_tools=["*"]),
+        _valid_payload(approval_required_tools=["not_allowed"]),
         _valid_payload(headers_env={"Authorization": "lowercase_name"}),
     ],
 )
@@ -274,9 +293,7 @@ def test_invalid_json_missing_file_and_missing_header_env_are_safe(tmp_path):
     config = load_mcp_config(
         _write_config(
             tmp_path,
-            _valid_payload(
-                headers_env={"Authorization": "DEPLOYMENT_AUTHORIZATION"}
-            ),
+            _valid_payload(headers_env={"Authorization": "DEPLOYMENT_AUTHORIZATION"}),
         )
     )
     with pytest.raises(McpConfigurationError) as captured:
@@ -292,9 +309,7 @@ def test_headers_env_connection_keeps_transport_and_timeout(tmp_path):
     config = load_mcp_config(
         _write_config(
             tmp_path,
-            _valid_payload(
-                headers_env={"Authorization": "DEPLOYMENT_AUTHORIZATION"}
-            ),
+            _valid_payload(headers_env={"Authorization": "DEPLOYMENT_AUTHORIZATION"}),
         )
     )
 
@@ -319,11 +334,14 @@ def test_disabled_server_does_not_resolve_headers_or_enter_connections():
         )
     )
 
-    assert build_mcp_connections(
-        config,
-        tool_timeout_seconds=15,
-        environ={},
-    ) == {}
+    assert (
+        build_mcp_connections(
+            config,
+            tool_timeout_seconds=15,
+            environ={},
+        )
+        == {}
+    )
 
 
 def test_env_example_contains_only_global_mcp_variables():

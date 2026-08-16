@@ -42,7 +42,7 @@ def _build_service_request(
 
 
 async def _close_stream(stream: object) -> None:
-    """关闭 Service async generator，并让取消继续传到 Graph。"""
+    """关闭 Service async generator，并让取消继续传到 Agent Runtime。"""
     close = getattr(stream, "aclose", None)
     if callable(close):
         await close()

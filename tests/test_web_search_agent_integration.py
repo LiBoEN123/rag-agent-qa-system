@@ -8,11 +8,11 @@ import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
 from app.agent import framework_agent
-from app.graph import nodes as graph_nodes
-from app.graph.builder import build_agent_graph
+from app.rag import graph as rag_graph
 import app.tools.runtime as tool_runtime
 from app.tools.context import ToolInvocationContext
 from app.tools.registry import get_tool_registry
+from tests.support.agent_runtime import build_agent_harness
 
 
 web_search_module = import_module("app.tools.web_search")
@@ -284,7 +284,7 @@ def _tool_call(call_id="web-call"):
 
 
 def _invoke(model, context):
-    return build_agent_graph().compile().invoke(
+    return build_agent_harness().invoke(
         {
             "original_question": "查一下 LangGraph 最近有什么变化",
             "effective_question": "查一下 LangGraph 最近有什么变化",
@@ -329,7 +329,7 @@ def test_consecutive_requests_keep_web_visibility_isolated_and_execute_graph(
 
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     monkeypatch.setattr(
-        graph_nodes,
+        rag_graph,
         "run_rag_subgraph",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError(f"web_search must not enter RAG: {args!r} {kwargs!r}")
@@ -398,7 +398,7 @@ def test_consecutive_requests_keep_web_visibility_isolated_and_execute_graph(
     ]
     assert visible_output["result"]["status"] == "OK"
     assert visible_output["result"]["references"] == []
-    assert visible_output["pending_rag_result"] == {}
+    assert "knowledge_base_result" not in visible_output
     trace = next(
         item
         for item in visible_output["result"]["tool_trace"]
@@ -415,7 +415,7 @@ def test_consecutive_requests_keep_web_visibility_isolated_and_execute_graph(
         "get_chunk_text",
         "web_search",
     } <= set(get_tool_registry().names())
-    assert "web_search" not in build_agent_graph().nodes
+    assert "web_search" not in build_agent_harness().nodes
 
 
 def test_forged_hidden_web_search_is_unknown_without_ddgs_or_runtime(
@@ -477,7 +477,7 @@ def test_agent_searches_then_fetches_through_registry_runtime(monkeypatch):
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     monkeypatch.setattr(web_download_module, "Manager", FakeFetchManager)
     monkeypatch.setattr(
-        graph_nodes,
+        rag_graph,
         "run_rag_subgraph",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError(f"web tools must not enter RAG: {args!r} {kwargs!r}")
@@ -526,7 +526,7 @@ def test_agent_searches_then_fetches_through_registry_runtime(monkeypatch):
     assert "LangGraph 1.2 release details" in output["result"]["answer"]
     assert model.selected_url in output["result"]["answer"]
     assert output["result"]["references"] == []
-    assert output["pending_rag_result"] == {}
+    assert "knowledge_base_result" not in output
     assert [
         item["tool_name"]
         for item in output["result"]["tool_trace"]
@@ -534,8 +534,8 @@ def test_agent_searches_then_fetches_through_registry_runtime(monkeypatch):
     ] == ["web_search", "web_fetch"]
     assert len(ddgs_calls) == 2
     assert len(FakeFetchManager.sessions) == 1
-    assert "web_search" not in build_agent_graph().nodes
-    assert "web_fetch" not in build_agent_graph().nodes
+    assert "web_search" not in build_agent_harness().nodes
+    assert "web_fetch" not in build_agent_harness().nodes
 
 
 def test_agent_searches_then_reads_pdf_through_registry_runtime(monkeypatch):
@@ -560,7 +560,7 @@ def test_agent_searches_then_reads_pdf_through_registry_runtime(monkeypatch):
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     monkeypatch.setattr(web_download_module, "Manager", FakePdfManager)
     monkeypatch.setattr(
-        graph_nodes,
+        rag_graph,
         "run_rag_subgraph",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError(f"web PDF must not enter RAG: {args!r} {kwargs!r}")
@@ -610,7 +610,7 @@ def test_agent_searches_then_reads_pdf_through_registry_runtime(monkeypatch):
     assert model.selected_url in output["result"]["answer"]
     assert "[1, 2]" in output["result"]["answer"]
     assert output["result"]["references"] == []
-    assert output["pending_rag_result"] == {}
+    assert "knowledge_base_result" not in output
     assert [
         item["tool_name"]
         for item in output["result"]["tool_trace"]
@@ -624,7 +624,7 @@ def test_agent_searches_then_reads_pdf_through_registry_runtime(monkeypatch):
     assert pdf_trace["tool_args"]["url"] == "***REDACTED***"
     assert len(ddgs_calls) == 2
     assert len(FakePdfManager.sessions) == 1
-    assert "web_pdf_fetch" not in build_agent_graph().nodes
+    assert "web_pdf_fetch" not in build_agent_harness().nodes
 
 
 def test_agent_recovers_from_web_fetch_pdf_content_type_error(monkeypatch):
@@ -632,7 +632,7 @@ def test_agent_recovers_from_web_fetch_pdf_content_type_error(monkeypatch):
     FakePdfManager.sessions = []
     monkeypatch.setattr(web_download_module, "Manager", FakePdfManager)
     monkeypatch.setattr(
-        graph_nodes,
+        rag_graph,
         "run_rag_subgraph",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError(f"web PDF recovery must not enter RAG: {args} {kwargs}")
@@ -660,7 +660,7 @@ def test_agent_recovers_from_web_fetch_pdf_content_type_error(monkeypatch):
     assert model.pdf_output["page_numbers"] == [1, 2]
     assert "Governed Web PDF Fixture" in output["result"]["answer"]
     assert output["result"]["references"] == []
-    assert output["pending_rag_result"] == {}
+    assert "knowledge_base_result" not in output
     assert [
         (item["tool_name"], item["tool_status"])
         for item in output["result"]["tool_trace"]

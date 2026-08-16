@@ -98,7 +98,6 @@ def test_database_layer_rejects_writes_even_without_ast_policy(
     "protected_field",
     [
         "sqlite_db_path",
-        "langgraph_checkpoint_db_path",
         "tool_audit_path",
     ],
 )

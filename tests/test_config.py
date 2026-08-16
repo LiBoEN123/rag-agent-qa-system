@@ -36,7 +36,6 @@ def test_defaults_do_not_require_api_key_or_existing_rag_path(
     )
 
     assert settings.top_k == 5
-    assert settings.langgraph_checkpointer == "disabled"
     assert settings.llm_api_key is None
 
 
@@ -112,7 +111,6 @@ def test_scalar_path_literal_secret_and_permissions_types(tmp_path):
         top_k="6",
         temperature="0.25",
         rag_file_path=tmp_path,
-        langgraph_checkpointer="memory",
         llm_api_key="secret",
         tool_default_permissions="knowledge_base:read,web:search,web:fetch",
     )
@@ -120,7 +118,6 @@ def test_scalar_path_literal_secret_and_permissions_types(tmp_path):
     assert settings.top_k == 6
     assert settings.temperature == 0.25
     assert settings.rag_file_path == tmp_path
-    assert settings.langgraph_checkpointer == "memory"
     assert isinstance(settings.llm_api_key, SecretStr)
     assert secret_value(settings.llm_api_key) == "secret"
     assert settings.tool_default_permissions == (
@@ -390,18 +387,15 @@ def test_two_settings_instances_are_isolated(tmp_path):
         top_k=3,
         tool_default_permissions=("knowledge_base:read",),
         tool_audit_path=tmp_path / "first.jsonl",
-        langgraph_checkpointer="disabled",
     )
     second = AppSettings(
         _env_file=None,
         top_k=8,
         tool_default_permissions=("web:search",),
         tool_audit_path=tmp_path / "second.jsonl",
-        langgraph_checkpointer="memory",
     )
 
     assert first.top_k == 3
     assert second.top_k == 8
     assert first.tool_default_permissions != second.tool_default_permissions
     assert first.tool_audit_path != second.tool_audit_path
-    assert first.langgraph_checkpointer != second.langgraph_checkpointer

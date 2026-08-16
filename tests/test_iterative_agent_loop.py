@@ -7,11 +7,8 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agent import framework_agent, framework_tools
-from app.graph import builder as graph_builder
-from app.graph import checkpointing, runtime as graph_runtime
-from app.graph.builder import build_agent_graph
-from app.graph import nodes as graph_nodes
-from app.graph.nodes import initialize_node
+from app.agent.runtime import prepare_agent_runtime_invocation
+from app.config import get_settings
 from app.tools.context import ToolInvocationContext
 import app.tools.runtime as tool_runtime
 from app.tools.contracts import ToolSpec
@@ -19,6 +16,7 @@ from app.tools.providers import LocalToolProvider
 from app.tools.registry import ToolRegistry
 from app.tools.result import tool_success
 from app.tools.schemas import SearchKnowledgeBaseArgs
+from tests.support.agent_runtime import build_agent_harness
 
 
 @pytest.fixture(autouse=True)
@@ -75,13 +73,13 @@ def _invoke_graph(
 ):
     """使用确定性模型和独立图执行一次 Agent 请求。"""
     monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
-    settings = graph_nodes.get_settings().model_copy(
+    settings = get_settings().model_copy(
         update={
             "agent_max_iterations": max_iterations,
             "agent_max_tool_calls": max_tool_calls,
         }
     )
-    return build_agent_graph(settings).compile().invoke(
+    return build_agent_harness(settings).invoke(
         {
             "original_question": "请计算 1+2",
             "effective_question": "请计算 1+2",
@@ -108,15 +106,15 @@ def _astream_graph(
     max_iterations=6,
     max_tool_calls=10,
 ):
-    """用确定性异步模型执行真实父图，并返回最后一个 values 快照。"""
+    """用确定性异步模型执行真实 create_agent 并返回最终快照。"""
     monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
-    settings = graph_nodes.get_settings().model_copy(
+    settings = get_settings().model_copy(
         update={
             "agent_max_iterations": max_iterations,
             "agent_max_tool_calls": max_tool_calls,
         }
     )
-    graph = build_agent_graph(settings).compile()
+    agent = build_agent_harness(settings)
     context = ToolInvocationContext(
         trace_id="trace-async-loop",
         session_id="session-async-loop",
@@ -128,7 +126,7 @@ def _astream_graph(
     async def collect():
         return [
             value
-            async for value in graph.astream(
+            async for value in agent.astream(
                 {
                     "original_question": "请计算 1+2",
                     "effective_question": "请计算 1+2",
@@ -146,24 +144,19 @@ def _astream_graph(
 
 
 def test_initialize_agent_loop_state_uses_effective_question():
-    """初始化只把本次有效问题写入 Agent 消息轨迹一次。"""
-    updates = initialize_node(
-        {
-            "original_question": "它什么时候开始？",
-            "effective_question": "奖学金申请什么时候开始？",
-            "trace_id": "trace-loop-init",
-            "session_id": "session-loop-init",
-            "decision": {"action": "direct_answer"},
-        }
+    """Runtime 只把本次有效问题写入 Agent 消息轨迹一次。"""
+    invocation = prepare_agent_runtime_invocation(
+        original_question="它什么时候开始？",
+        effective_question="奖学金申请什么时候开始？",
+        top_k=5,
+        decompose_top_k=10,
+        trace_id="trace-loop-init",
+        session_id="session-loop-init",
     )
 
-    assert updates["messages"] == [
+    assert invocation.agent_input["messages"] == [
         HumanMessage(content="奖学金申请什么时候开始？")
     ]
-    assert updates["iteration_count"] == 0
-    assert updates["tool_call_count"] == 0
-    assert updates["tool_error_count"] == 0
-    assert updates["stop_reason"] == ""
 
 
 def test_agent_loop_answers_without_calling_tools(monkeypatch):
@@ -596,13 +589,22 @@ def test_agent_loop_preserves_runtime_context_and_audit_chain(monkeypatch):
         context=context,
     )
 
-    assert execute_contexts == [context]
+    assert len(execute_contexts) == 1
+    execution_context = execute_contexts[0]
+    assert execution_context.trace_id == context.trace_id
+    assert execution_context.session_id == context.session_id
+    assert execution_context.permissions == context.permissions
+    assert execution_context.effective_question == "请计算 1+2"
+    assert execution_context.top_k == 5
+    assert execution_context.decompose_top_k == 10
     assert [event for event, _ in audit_events] == [
         "requested",
         "started",
         "succeeded",
     ]
-    assert all(event_context is context for _, event_context in audit_events)
+    assert all(
+        event_context is execution_context for _, event_context in audit_events
+    )
     trace = next(
         item
         for item in output["result"]["tool_trace"]
@@ -684,7 +686,17 @@ def test_agent_selected_knowledge_search_keeps_rag_citation_path(
             handler=lambda args, context: tool_success(
                 "search_knowledge_base",
                 args,
-                {"count": 1, "chunks": [chunk]},
+                {
+                    "count": 1,
+                    "chunks": [chunk],
+                    "rag_result": fake_rag_subgraph(
+                        question=context.effective_question,
+                        top_k=context.top_k,
+                        decompose_top_k=context.decompose_top_k,
+                        retrieved_chunks=[chunk],
+                        trace_id=context.trace_id,
+                    ),
+                },
             ),
             args_model=SearchKnowledgeBaseArgs,
             required_permissions=("knowledge_base:read",),
@@ -711,7 +723,6 @@ def test_agent_selected_knowledge_search_keeps_rag_citation_path(
         "get_agent_tool_provider",
         lambda: LocalToolProvider(registry),
     )
-    monkeypatch.setattr(graph_nodes, "run_rag_subgraph", fake_rag_subgraph)
 
     output = (
         _astream_graph(monkeypatch, model)
@@ -730,72 +741,3 @@ def test_agent_selected_knowledge_search_keeps_rag_citation_path(
         item.get("mode") == "rag"
         for item in output["result"]["tool_trace"]
     )
-
-
-def test_sqlite_checkpointer_serializes_full_agent_message_loop(
-    monkeypatch,
-    tmp_path,
-    settings_env,
-):
-    """SQLite Saver 可往返 Human/AI/Tool/AI 的完整消息轨迹。"""
-    model = FakeToolCallingModel(
-        [
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "simple_calculator",
-                        "args": {"expression": "10+5"},
-                        "id": "sqlite-calc",
-                        "type": "tool_call",
-                    }
-                ],
-            ),
-            AIMessage(content="结果是 15。"),
-        ]
-    )
-    db_path = tmp_path / "iterative-checkpoint.sqlite3"
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
-    settings_env(
-        agent_max_iterations=6,
-        agent_max_tool_calls=10,
-        langgraph_checkpointer="sqlite",
-        langgraph_checkpoint_db_path=db_path,
-    )
-    graph_builder.reset_agent_graph_runtime()
-    try:
-        result = graph_runtime.run_agent_langgraph(
-            write_bad_cases=lambda record: None,
-            original_question="请计算 10+5",
-            effective_question="请计算 10+5",
-            top_k=5,
-            decompose_top_k=10,
-            trace_id="trace-sqlite-loop",
-            session_id="session-sqlite-loop",
-        )
-        thread_id = checkpointing.build_checkpoint_thread_id(
-            trace_id="trace-sqlite-loop",
-            session_id="session-sqlite-loop",
-        )
-        saved = checkpointing.get_checkpointer().get_tuple(
-            {"configurable": {"thread_id": thread_id}}
-        )
-
-        assert result["status"] == "OK"
-        assert saved is not None
-        messages = saved.checkpoint["channel_values"]["messages"]
-        assert [message.type for message in messages] == [
-            "human",
-            "ai",
-            "tool",
-            "ai",
-        ]
-        assert messages[2].tool_call_id == "sqlite-calc"
-        values = saved.checkpoint["channel_values"]
-        assert values["result"]["answer"] == "结果是 15。"
-        assert values["observations"][0]["output"]["result"] == 15
-        assert type(values["observations"][0]) is dict
-        assert values["tool_trace"] == values["result"]["tool_trace"]
-        assert "agent_state" not in values
-    finally:
-        graph_builder.reset_agent_graph_runtime()

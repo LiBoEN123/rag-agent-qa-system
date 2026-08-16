@@ -15,6 +15,17 @@ class LocalToolProvider:
             raise TypeError("registry 必须是 ToolRegistry")
         self._registry = registry
 
+    def __eq__(self, other: object) -> bool:
+        """同一 Registry 的无状态 Provider 共享 Runtime 编译缓存。"""
+        return (
+            isinstance(other, LocalToolProvider)
+            and self._registry is other._registry
+        )
+
+    def __hash__(self) -> int:
+        """缓存身份由实际 Registry 对象决定。"""
+        return hash(self._registry)
+
     @property
     def registry(self) -> ToolRegistry:
         """返回工具定义所属注册表，供适配层统一分发。"""

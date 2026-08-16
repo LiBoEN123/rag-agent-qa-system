@@ -7,7 +7,6 @@ from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_tools
-from app.graph.builder import build_agent_graph
 import app.tools.runtime as tool_runtime
 from app.tools.context import ToolInvocationContext, has_permission
 from app.tools.contracts import ToolRiskLevel, ToolSpec
@@ -15,6 +14,7 @@ from app.tools.providers import LocalToolProvider
 from app.tools.providers.base import is_tool_visible
 from app.tools.registry import ToolRegistry
 from app.tools.result import tool_success
+from tests.support.agent_runtime import build_agent_harness
 
 
 class TextArgs(BaseModel):
@@ -88,7 +88,7 @@ def _invoke_graph(monkeypatch, registry, model, context):
         "get_agent_tool_provider",
         lambda: LocalToolProvider(registry),
     )
-    return build_agent_graph().compile().invoke(
+    return build_agent_harness().invoke(
         {
             "original_question": "验证权限感知工具可见性",
             "effective_question": "验证权限感知工具可见性",
@@ -247,8 +247,13 @@ def test_agent_binds_visible_tools_and_executes_authorized_tool(monkeypatch):
     monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", recording_execute)
     output = _invoke_graph(monkeypatch, registry, model, context)
     assert model.bound_tool_names == ["public_tool", "private_tool"]
-    assert runtime_calls == [("private_tool", context)]
-    assert calls == [("private_tool", {"text": "allowed"}, context)]
+    assert len(runtime_calls) == 1
+    assert runtime_calls[0][0] == "private_tool"
+    execution_context = runtime_calls[0][1]
+    assert execution_context.trace_id == context.trace_id
+    assert execution_context.permissions == context.permissions
+    assert execution_context.effective_question
+    assert calls == [("private_tool", {"text": "allowed"}, execution_context)]
     assert output["result"]["answer"] == "authorized tool complete"
 
 

@@ -7,10 +7,11 @@ from app.agent.results import (
     build_internal_error_result,
 )
 from app.agent.runtime import (
+    finish_short_circuit,
+    prepare_agent_runtime_invocation,
     resolve_llm_call_count,
     upsert_llm_usage_trace,
 )
-from app.graph import nodes as graph_nodes
 
 
 def test_build_result_preserves_public_protocol_without_mutation():
@@ -112,41 +113,28 @@ def test_internal_error_result_keeps_compatible_schema():
     ]
 
 
-def test_finalize_node_uses_one_trace_snapshot_without_mutating_input(
+def test_runtime_short_circuit_uses_one_trace_snapshot_and_saves_result(
     monkeypatch,
 ):
-    state = {
-        "trace_id": "trace-finalize",
-        "session_id": "session-finalize",
-        "original_question": "原问题",
-        "effective_question": "改写问题",
-        "decision": {"action": "agent"},
-        "status": "ok",
-        "final_answer": "最终回答",
-        "references": [],
-        "reason": "completed",
-        "observations": [],
-        "tool_trace": [{"step": "decide"}],
-        "decompose_llm_used": False,
-        "answer_llm_used": True,
-        "llm_call_count": 1,
-    }
-    original = deepcopy(state)
     saved = []
     monkeypatch.setattr(
-        graph_nodes,
-        "maybe_save_agent_trace",
+        "app.agent.runtime.maybe_save_agent_trace",
         lambda **kwargs: saved.append(kwargs),
     )
+    invocation = prepare_agent_runtime_invocation(
+        original_question="你是谁？",
+        effective_question="你是谁？",
+        top_k=5,
+        decompose_top_k=10,
+        trace_id="trace-finalize",
+        session_id="session-finalize",
+    )
 
-    updates = graph_nodes.finalize_node(state)
+    result = finish_short_circuit(invocation)
 
-    assert state == original
-    assert updates["tool_trace"] == updates["result"]["tool_trace"]
-    assert updates["result"]["tool_trace"] is not updates["tool_trace"]
     assert sum(
         item.get("step") == "llm_usage"
-        for item in updates["tool_trace"]
+        for item in result["tool_trace"]
     ) == 1
-    assert saved[0]["rewritten_question"] == "改写问题"
-    assert saved[0]["tool_trace"] is updates["result"]["tool_trace"]
+    assert saved[0]["rewritten_question"] == ""
+    assert saved[0]["tool_trace"] == result["tool_trace"]

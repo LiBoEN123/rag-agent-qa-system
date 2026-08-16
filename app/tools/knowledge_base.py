@@ -3,6 +3,7 @@
 向 Agent 暴露文档列表、chunk 原文和相关证据检索等基础能力。
 """
 
+from app.tools.context import ToolInvocationContext
 from app.tools.result import tool_error, tool_success
 
 
@@ -67,12 +68,16 @@ def _round_chunk_score(chunk: dict, key: str) -> float:
         return 0.0
 
 
-def search_knowledge_base(args: dict) -> dict:
-    """校验检索参数并调用知识库召回流程。"""
+def search_knowledge_base(
+    args: dict,
+    context: ToolInvocationContext | None = None,
+) -> dict:
+    """检索本地证据并在工具内部执行独立 RAG Graph。"""
     tool_name = "search_knowledge_base"
     try:
         from app.config import get_settings
         from app.rag import search_relevant_chunks
+        from app.rag.graph import run_rag_subgraph
 
         args = args or {}
         query = str(args.get("query") or "").strip()
@@ -91,6 +96,27 @@ def search_knowledge_base(args: dict) -> dict:
             return tool_error(tool_name, tool_input, "query 不能为空")
 
         chunks = search_relevant_chunks(query, top_k=top_k)
+        effective_question = (
+            (context.effective_question if context is not None else "").strip()
+            or query
+        )
+        rag_top_k = (
+            context.top_k
+            if context is not None and context.top_k > 0
+            else top_k
+        )
+        decompose_top_k = (
+            context.decompose_top_k
+            if context is not None and context.decompose_top_k > 0
+            else get_settings().decompose_top_k
+        )
+        rag_result = run_rag_subgraph(
+            question=effective_question,
+            top_k=rag_top_k,
+            decompose_top_k=decompose_top_k,
+            retrieved_chunks=chunks,
+            trace_id=context.trace_id if context is not None else "",
+        )
         return tool_success(
             tool_name,
             tool_input,
@@ -103,6 +129,7 @@ def search_knowledge_base(args: dict) -> dict:
                 "top_scores": [
                     _round_chunk_score(chunk, "hybrid_score") for chunk in chunks
                 ],
+                "rag_result": rag_result,
             },
         )
     except Exception as exc:

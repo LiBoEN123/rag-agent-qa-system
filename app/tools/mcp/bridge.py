@@ -26,6 +26,7 @@ from app.tools.audit import (
     utc_timestamp,
 )
 from app.tools.context import ToolInvocationContext
+from app.tools.contracts import ToolRiskLevel
 from app.tools.errors import ToolErrorCode
 from app.tools.mcp.access import can_use_mcp_server
 from app.tools.mcp.config import McpServerConfig
@@ -112,15 +113,35 @@ def _result_runtime(
     }
 
 
-def _governance(args_fingerprint: str, *, allowed: bool) -> dict[str, Any]:
-    """构造只读 MCP 调用的标准治理判定摘要。"""
+def _governance(
+    args_fingerprint: str,
+    *,
+    allowed: bool,
+    risk_level: ToolRiskLevel = ToolRiskLevel.READ_ONLY,
+    approval_required: bool = False,
+    decision: str = "",
+) -> dict[str, Any]:
+    """构造 MCP 调用的标准治理判定摘要。"""
     return {
-        "decision": "allow" if allowed else "deny",
-        "risk_level": "read_only",
-        "approval_required": False,
+        "decision": decision or ("allow" if allowed else "deny"),
+        "risk_level": risk_level.value,
+        "approval_required": approval_required,
         "args_fingerprint": args_fingerprint,
         "missing_permissions": [],
     }
+
+
+def _tool_risk_level(
+    server_config: McpServerConfig | None,
+    remote_tool_name: str,
+) -> ToolRiskLevel:
+    """把部署者明确指定的审批工具视为外部写。"""
+    if (
+        server_config is not None
+        and remote_tool_name in server_config.approval_required_tools
+    ):
+        return ToolRiskLevel.EXTERNAL_WRITE
+    return ToolRiskLevel.READ_ONLY
 
 
 def _standard_result(
@@ -138,6 +159,9 @@ def _standard_result(
     timed_out: bool = False,
     allowed: bool = True,
     audit_write_failed: bool = False,
+    risk_level: ToolRiskLevel = ToolRiskLevel.READ_ONLY,
+    approval_required: bool = False,
+    policy_decision: str = "",
 ) -> dict[str, Any]:
     """把 MCP 成功或失败统一封装为项目标准 ToolResult。"""
     runtime = _result_runtime(
@@ -147,7 +171,13 @@ def _standard_result(
         timed_out=timed_out,
         error_code=error_code,
     )
-    governance = _governance(args_fingerprint, allowed=allowed)
+    governance = _governance(
+        args_fingerprint,
+        allowed=allowed,
+        risk_level=risk_level,
+        approval_required=approval_required,
+        decision=policy_decision,
+    )
     if error_code:
         result = tool_error(
             exposed_tool_name,
@@ -200,6 +230,7 @@ class McpToolCallInterceptor:
         error_code: str = "",
         output: object = None,
         policy_decision: str = "allow",
+        risk_level: ToolRiskLevel = ToolRiskLevel.READ_ONLY,
     ) -> bool:
         """写入不含完整参数和输出的审计事件，并返回写入是否成功。"""
         event = ToolAuditEvent(
@@ -213,16 +244,14 @@ class McpToolCallInterceptor:
             source=context.source,
             tool_name=exposed_tool_name,
             tool_version=MCP_BRIDGE_VERSION,
-            risk_level="read_only",
+            risk_level=risk_level.value,
             policy_decision=policy_decision,
             args_fingerprint=args_fingerprint,
             attempt_count=attempt_count,
             elapsed_ms=_elapsed_ms(started_at),
             success=success,
             error_code=error_code,
-            error_message=(
-                "" if not error_code else "MCP tool call failed"
-            ),
+            error_message=("" if not error_code else "MCP tool call failed"),
             sanitized_input=_args_summary(request.args, self._settings),
             sanitized_output_summary=summarize_mcp_output(output),
             server_alias=request.server_name,
@@ -244,7 +273,7 @@ class McpToolCallInterceptor:
         request: MCPToolCallRequest,
         handler,
     ) -> ToolMessage:
-        """调用一次远端 read-only tool，并始终返回安全 ToolMessage。"""
+        """对一次远端调用执行权限、审批、审计和输出治理。"""
         started_at = time.perf_counter()
         exposed_name = f"{request.server_name}_{request.name}"
         call_id = _runtime_call_id(request.runtime)
@@ -259,6 +288,7 @@ class McpToolCallInterceptor:
             args_fingerprint = ""
 
         server_config = self._server_configs.get(request.server_name)
+        risk_level = _tool_risk_level(server_config, request.name)
         if (
             context is None
             or server_config is None
@@ -280,6 +310,7 @@ class McpToolCallInterceptor:
                 error_code=ToolErrorCode.MCP_PERMISSION_DENIED.value,
                 attempt_count=0,
                 allowed=False,
+                risk_level=risk_level,
             )
             if context is not None:
                 requested_written = self._audit(
@@ -291,6 +322,7 @@ class McpToolCallInterceptor:
                     started_at=started_at,
                     error_code=ToolErrorCode.MCP_PERMISSION_DENIED.value,
                     policy_decision="deny",
+                    risk_level=risk_level,
                 )
                 denied_written = self._audit(
                     event_type=ToolAuditEventType.DENIED,
@@ -301,10 +333,68 @@ class McpToolCallInterceptor:
                     started_at=started_at,
                     error_code=ToolErrorCode.MCP_PERMISSION_DENIED.value,
                     policy_decision="deny",
+                    risk_level=risk_level,
                 )
                 result["audit"]["write_failed"] = not (
                     requested_written and denied_written
                 )
+            return _result_message(result, exposed_name, call_id)
+
+        if risk_level is ToolRiskLevel.EXTERNAL_WRITE:
+            requested_written = self._audit(
+                event_type=ToolAuditEventType.REQUESTED,
+                request=request,
+                context=context,
+                exposed_tool_name=exposed_name,
+                args_fingerprint=args_fingerprint,
+                started_at=started_at,
+                policy_decision="require_approval",
+                risk_level=risk_level,
+            )
+            if not requested_written:
+                result = _standard_result(
+                    exposed_tool_name=exposed_name,
+                    args=request.args,
+                    settings=self._settings,
+                    started_at=started_at,
+                    args_fingerprint=args_fingerprint,
+                    call_id=call_id,
+                    error="MCP write tool audit is unavailable",
+                    error_code=ToolErrorCode.AUDIT_WRITE_FAILED.value,
+                    attempt_count=0,
+                    allowed=False,
+                    audit_write_failed=True,
+                    risk_level=risk_level,
+                    policy_decision="deny",
+                )
+                return _result_message(result, exposed_name, call_id)
+            approval_written = self._audit(
+                event_type=ToolAuditEventType.APPROVAL_REQUIRED,
+                request=request,
+                context=context,
+                exposed_tool_name=exposed_name,
+                args_fingerprint=args_fingerprint,
+                started_at=started_at,
+                error_code=ToolErrorCode.APPROVAL_REQUIRED.value,
+                policy_decision="require_approval",
+                risk_level=risk_level,
+            )
+            result = _standard_result(
+                exposed_tool_name=exposed_name,
+                args=request.args,
+                settings=self._settings,
+                started_at=started_at,
+                args_fingerprint=args_fingerprint,
+                call_id=call_id,
+                error="MCP external write requires human approval",
+                error_code=ToolErrorCode.APPROVAL_REQUIRED.value,
+                attempt_count=0,
+                allowed=False,
+                audit_write_failed=not approval_written,
+                risk_level=risk_level,
+                approval_required=True,
+                policy_decision="require_approval",
+            )
             return _result_message(result, exposed_name, call_id)
 
         requested_written = self._audit(
@@ -496,6 +586,7 @@ def build_governed_mcp_tool(
     server_alias: str,
     remote_tool_name: str,
     description: str,
+    approval_required: bool = False,
 ) -> StructuredTool:
     """为 adapter coroutine 增加项目同步入口和有限 metadata。"""
     exposed_name = f"{server_alias}_{remote_tool_name}"
@@ -571,6 +662,12 @@ def build_governed_mcp_tool(
             "mcp_server": server_alias,
             "remote_tool_name": remote_tool_name,
             "tool_version": MCP_BRIDGE_VERSION,
+            "risk_level": (
+                ToolRiskLevel.EXTERNAL_WRITE.value
+                if approval_required
+                else ToolRiskLevel.READ_ONLY.value
+            ),
+            "approval_required": approval_required,
         },
     )
 

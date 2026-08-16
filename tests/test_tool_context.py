@@ -40,6 +40,9 @@ def test_context_normalizes_and_freezes_request_fields():
         "permissions",
         "source",
         "idempotency_key",
+        "effective_question",
+        "top_k",
+        "decompose_top_k",
     }
 
 

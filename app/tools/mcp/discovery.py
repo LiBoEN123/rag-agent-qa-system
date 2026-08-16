@@ -43,8 +43,7 @@ def _annotations_allow_read_only(tool: BaseTool) -> bool:
     """拒绝 annotation 明确声明为破坏性或非只读的远端工具。"""
     metadata = tool.metadata if isinstance(tool.metadata, dict) else {}
     return not (
-        metadata.get("destructiveHint") is True
-        or metadata.get("readOnlyHint") is False
+        metadata.get("destructiveHint") is True or metadata.get("readOnlyHint") is False
     )
 
 
@@ -73,9 +72,7 @@ async def discover_mcp_tools(
                 f"MCP Server {alias!r} discovery timed out"
             ) from None
         except Exception:
-            raise McpDiscoveryError(
-                f"MCP Server {alias!r} discovery failed"
-            ) from None
+            raise McpDiscoveryError(f"MCP Server {alias!r} discovery failed") from None
 
         by_exposed_name: dict[str, BaseTool] = {}
         for raw_tool in discovered:
@@ -89,6 +86,7 @@ async def discover_mcp_tools(
 
         for remote_name in server.allowed_tools:
             exposed_name = f"{alias}_{remote_name}"
+            approval_required = remote_name in server.approval_required_tools
             if not _EXPOSED_TOOL_NAME_PATTERN.fullmatch(exposed_name):
                 raise McpDiscoveryError(
                     f"MCP Tool 名称加前缀后不符合项目名称合同: {exposed_name!r}"
@@ -98,7 +96,7 @@ async def discover_mcp_tools(
                 raise McpDiscoveryError(
                     f"MCP allowlist 工具不可用: {alias!r}/{remote_name!r}"
                 )
-            if not _annotations_allow_read_only(raw_tool):
+            if not _annotations_allow_read_only(raw_tool) and not approval_required:
                 raise McpDiscoveryError(
                     f"MCP Tool 明确声明为非只读或 destructive: {exposed_name!r}"
                 )
@@ -121,6 +119,7 @@ async def discover_mcp_tools(
                         server_alias=alias,
                         remote_tool_name=remote_name,
                         description=_safe_description(raw_tool.description),
+                        approval_required=approval_required,
                     ),
                 )
             )

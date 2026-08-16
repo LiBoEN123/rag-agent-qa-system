@@ -6,7 +6,6 @@ from importlib import import_module
 from pydantic import BaseModel
 
 from app.agent import framework_agent
-from app.graph import builder as graph_builder
 from app.tools.context import build_default_tool_context
 from app.tools.contracts import ToolSpec
 from app.tools.providers import LocalToolProvider
@@ -24,63 +23,32 @@ def _knowledge_only(settings_factory, *permissions):
     )
 
 
-def test_runtime_report_preserves_graph_contract(
+def test_runtime_report_preserves_direct_create_agent_contract(
     monkeypatch,
     settings_factory,
 ):
-    """报告来自真实编译图，并保留父图与嵌入子图关键边界。"""
+    """报告来自真实 create_agent，并拒绝 Parent Graph 节点。"""
     settings = _knowledge_only(settings_factory)
     report = inspection.inspect_runtime(settings=settings)
-    parent_nodes = set(report["parent_graph"]["nodes"])
-    parent_edges = {
-        (edge["source"], edge["target"], edge["conditional"])
-        for edge in report["parent_graph"]["edges"]
-    }
-    framework_nodes = set(report["framework_agent"]["nodes"])
+    agent_nodes = set(report["agent_runtime"]["nodes"])
     state_fields = set(report["state_schema"]["fields"])
 
-    assert inspection.EXPECTED_PARENT_NODES <= parent_nodes
-    assert parent_edges == inspection.EXPECTED_PARENT_EDGES
-    assert ("__start__", "initialize", False) not in parent_edges
-    assert ("__start__", "initialize", True) not in parent_edges
-    assert inspection.FORBIDDEN_PARENT_NODES.isdisjoint(parent_nodes)
-    assert {"model", "tools"} <= framework_nodes
-    assert any(
-        name.endswith(":model") for name in report["parent_graph"]["xray_nodes"]
-    )
-    assert any(
-        name.endswith(":tools") for name in report["parent_graph"]["xray_nodes"]
-    )
-    assert any("ModelCallLimitMiddleware" in name for name in framework_nodes)
-    assert any("ToolCallLimitMiddleware" in name for name in framework_nodes)
-    assert inspection.BUSINESS_STATE_FIELDS <= state_fields
-    assert "agent_state" not in state_fields
+    assert inspection.EXPECTED_AGENT_NODES <= agent_nodes
+    assert inspection.FORBIDDEN_PARENT_NODES.isdisjoint(agent_nodes)
+    assert "knowledge_base_result" in state_fields
+    assert "framework_events_applied" not in state_fields
     assert {
-        "single_runtime_state",
-        "no_nested_agent_state",
-        "state_has_business_fields",
+        "create_agent_is_only_agent_loop",
+        "no_parent_agent_graph",
+        "router_is_plain_python",
+        "runtime_invokes_create_agent_directly",
+        "streaming_uses_create_agent_directly",
+        "rag_graph_is_tool_owned",
+        "no_parent_event_projection_cursor",
         "agent_result_contract",
         "status_policy_complete",
-        "single_status_policy",
-        "result_is_checkpoint_safe",
-        "api_response_adapter_boundary",
-        "application_factory_present",
-        "chat_router_isolated",
-        "chat_service_orchestration_boundary",
-        "chat_telemetry_extracted",
-        "chat_stream_route_present",
-        "chat_stream_uses_same_service",
-        "graph_streaming_runtime_present",
-        "stream_event_contract_present",
-        "sync_chat_route_preserved",
         "current_architecture_documented",
         "history_archived",
-        "pydantic_settings_model",
-        "lazy_settings",
-        "immutable_settings",
-        "no_static_settings_class",
-        "no_manual_env_parsers",
-        "no_import_time_dotenv",
         "import_linter_configured",
         "application_layer_contract",
         "top_level_acyclic_contract",
@@ -88,21 +56,8 @@ def test_runtime_report_preserves_graph_contract(
         "settings_framework_boundary",
         "zero_import_ignores",
         "sql_tools_disabled_by_default",
-        "sql_tools_require_database_read",
-        "sql_tools_are_read_only",
-        "sql_tools_use_registry_runtime",
-        "sql_tools_have_pydantic_contracts",
-        "sql_tools_do_not_require_approval",
-        "sql_tools_share_chat_paths",
         "mcp_disabled_by_default",
-        "mcp_uses_langchain_adapter",
-        "mcp_http_only_v1",
-        "mcp_tools_require_server_permission",
-        "mcp_tools_have_local_allowlist",
-        "mcp_tool_names_are_prefixed",
-        "mcp_outputs_are_untrusted",
-        "mcp_local_registry_path_preserved",
-        "mcp_governance_path_preserved",
+        "tool_runtime_governance_preserved",
     } <= {item["name"] for item in report["checks"]}
     assert report["module_boundaries"] == {
         "import_linter_configured": True,
@@ -210,14 +165,14 @@ def test_json_cli_is_parseable_stable_and_safe(capsys):
 
 
 def test_mermaid_cli_uses_xray_compiled_graph(capsys):
-    """Mermaid 文本由真实 xray 图生成并包含父图与框架子图。"""
+    """Mermaid 文本直接来自 create_agent xray 图。"""
     assert inspection.main(["--format", "mermaid"]) == 0
     output = capsys.readouterr().out
 
     assert "graph TD;" in output
-    assert "subgraph framework_agent" in output
-    assert "route(route)" in output
-    assert "rag_subgraph(rag_subgraph)" in output
+    assert "model" in output
+    assert "tools" in output
+    assert "rag_subgraph(rag_subgraph)" not in output
     assert "ModelCallLimitMiddleware" in output
 
 
@@ -267,11 +222,11 @@ def test_inspection_reports_both_fetch_tools_when_permission_is_enabled(
     assert all(item["passed"] for item in report["checks"])
 
 
-def test_inspection_does_not_initialize_model_checkpointer_or_handler(
+def test_inspection_does_not_initialize_model_or_handler(
     monkeypatch,
     settings_factory,
 ):
-    """内省只读取契约，不初始化模型、Checkpointer 或工具 handler。"""
+    """内省只读取契约，不初始化模型或工具 handler。"""
 
     class ProbeArgs(BaseModel):
         value: int
@@ -293,7 +248,6 @@ def test_inspection_does_not_initialize_model_checkpointer_or_handler(
         )
     )
     monkeypatch.setattr(framework_agent, "get_agent_chat_model", forbidden)
-    monkeypatch.setattr(graph_builder, "get_checkpointer", forbidden)
     monkeypatch.setattr(
         import_module("app.tools.web_download"),
         "Manager",

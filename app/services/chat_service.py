@@ -26,10 +26,10 @@ from app.contracts.chat import (
     ChatStatusPolicy,
     get_chat_status_policy,
 )
-from app.graph.runtime import run_agent_langgraph
-from app.graph.streaming import (
+from app.agent.runtime import run_agent
+from app.agent.streaming import (
     AgentRuntimeStreamEvent,
-    stream_agent_langgraph,
+    stream_agent,
 )
 from app.observability.metrics import (
     attach_query_rewrite_trace,
@@ -91,7 +91,7 @@ class ChatServiceDependencies:
     settings_provider: Callable[[], AppSettings]
     get_history: Callable[[str | None], list[dict]]
     rewrite_query_with_history: Callable[..., dict]
-    run_agent_langgraph: Callable[..., dict[str, Any]]
+    run_agent: Callable[..., dict[str, Any]]
     build_query_rewrite_trace: Callable[[dict], dict]
     attach_query_rewrite_trace: Callable[[dict, dict], dict]
     collect_trace_metrics: Callable[[dict], dict]
@@ -100,9 +100,9 @@ class ChatServiceDependencies:
     append_message: Callable[[str | None, str, str], None]
     now_iso: Callable[[], str]
     perf_counter: Callable[[], float]
-    stream_agent_langgraph: Callable[
+    stream_agent: Callable[
         ..., AsyncIterator[AgentRuntimeStreamEvent]
-    ] = stream_agent_langgraph
+    ] = stream_agent
 
 
 def get_default_chat_service_dependencies() -> ChatServiceDependencies:
@@ -111,7 +111,7 @@ def get_default_chat_service_dependencies() -> ChatServiceDependencies:
         settings_provider=get_settings,
         get_history=get_history,
         rewrite_query_with_history=rewrite_query_with_history,
-        run_agent_langgraph=run_agent_langgraph,
+        run_agent=run_agent,
         build_query_rewrite_trace=build_query_rewrite_trace,
         attach_query_rewrite_trace=attach_query_rewrite_trace,
         collect_trace_metrics=collect_trace_metrics,
@@ -179,6 +179,7 @@ class ChatService:
             }
         )
         runtime_stream: object | None = None
+        runtime_stream_completed = False
         agent_start: float | None = None
         final_outcome_formed = False
         try:
@@ -239,7 +240,7 @@ class ChatService:
             result: dict[str, Any] | None = None
             streamed_answer_parts: list[str] = []
             try:
-                runtime_stream = self._deps.stream_agent_langgraph(
+                runtime_stream = self._deps.stream_agent(
                     write_bad_cases=self._deps.write_bad_cases,
                     original_question=context.original_question,
                     effective_question=context.effective_question,
@@ -284,6 +285,7 @@ class ChatService:
                         runtime_event.event,
                         dict(runtime_event.data),
                     )
+                runtime_stream_completed = True
                 if result is None:
                     raise RuntimeError(
                         "streaming Runtime did not return a final result"
@@ -346,7 +348,7 @@ class ChatService:
                 {"reason": "completed"},
             )
         finally:
-            if runtime_stream is not None:
+            if runtime_stream is not None and not runtime_stream_completed:
                 await self._close_async_stream(runtime_stream)
             if agent_start is not None and not context.metrics.get("agent_cost_ms"):
                 context.metrics["agent_cost_ms"] = max(
@@ -365,7 +367,7 @@ class ChatService:
 
     @staticmethod
     async def _close_async_stream(stream: object) -> None:
-        """关闭下游异步生成器，使客户端取消尽可能向 Graph 传播。"""
+        """关闭下游异步生成器，使客户端取消尽可能向 Agent 传播。"""
         close = getattr(stream, "aclose", None)
         if callable(close):
             await close()
@@ -549,10 +551,10 @@ class ChatService:
     def _run_agent(self, context: ChatRequestContext) -> dict[str, Any]:
         agent_start = self._deps.perf_counter()
         logger.info(
-            "[trace_id=%s] [agent] runtime_start agent_runtime=langgraph",
+            "[trace_id=%s] [agent] runtime_start agent_runtime=create_agent",
             context.request.trace_id,
         )
-        result = self._deps.run_agent_langgraph(
+        result = self._deps.run_agent(
             write_bad_cases=self._deps.write_bad_cases,
             original_question=context.original_question,
             effective_question=context.effective_question,

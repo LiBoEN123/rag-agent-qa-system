@@ -105,6 +105,7 @@ class McpServerConfig(BaseModel):
     transport: Literal["http"]
     url: str
     allowed_tools: tuple[str, ...]
+    approval_required_tools: tuple[str, ...] = ()
     enabled_for_default_principal: bool = False
     headers: dict[str, SecretStr] = Field(default_factory=dict)
     headers_env: dict[str, str] = Field(default_factory=dict)
@@ -135,6 +136,31 @@ class McpServerConfig(BaseModel):
             normalized.append(name)
         if not normalized:
             raise ValueError("allowed_tools 不能为空")
+        return tuple(normalized)
+
+    @field_validator("approval_required_tools", mode="before")
+    @classmethod
+    def _validate_approval_required_tools(
+        cls,
+        value: object,
+    ) -> tuple[str, ...]:
+        """规范化必须经人工审批的精确远端工具名。"""
+        if value is None:
+            return ()
+        if isinstance(value, str) or not isinstance(value, (list, tuple)):
+            raise ValueError("approval_required_tools 必须是字符串列表")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError("approval_required_tools 每一项都必须是字符串")
+            name = item.strip()
+            if not _TOOL_NAME_PATTERN.fullmatch(name):
+                raise ValueError("approval_required_tools 只允许精确合法工具名")
+            if name in seen:
+                raise ValueError("approval_required_tools 不允许重复工具名")
+            seen.add(name)
+            normalized.append(name)
         return tuple(normalized)
 
     @field_validator("headers", mode="before")
@@ -186,8 +212,13 @@ class McpServerConfig(BaseModel):
         return normalized
 
     @model_validator(mode="after")
-    def _validate_header_sources(self) -> McpServerConfig:
-        """同一 Header 不得同时从 local Secret 与部署环境注入。"""
+    def _validate_server_policy(self) -> McpServerConfig:
+        """校验审批工具子集与 Header 注入边界。"""
+        unknown_approval_tools = set(self.approval_required_tools).difference(
+            self.allowed_tools
+        )
+        if unknown_approval_tools:
+            raise ValueError("approval_required_tools 必须是 allowed_tools 的子集")
         direct_names = {header.casefold() for header in self.headers}
         env_names = {header.casefold() for header in self.headers_env}
         if direct_names & env_names:
@@ -231,9 +262,7 @@ def load_mcp_config(path: Path) -> McpConfig:
     except OSError:
         raise McpConfigurationError("MCP Server 配置文件不可读取") from None
     except (UnicodeError, json.JSONDecodeError):
-        raise McpConfigurationError(
-            "MCP Server 配置文件不是合法 UTF-8 JSON"
-        ) from None
+        raise McpConfigurationError("MCP Server 配置文件不是合法 UTF-8 JSON") from None
     try:
         return McpConfig.model_validate(payload)
     except Exception:
@@ -263,9 +292,7 @@ def build_mcp_connections(
         for header, env_name in server.headers_env.items():
             value = source.get(env_name)
             if not isinstance(value, str) or not value.strip():
-                raise McpConfigurationError(
-                    f"MCP Header 环境变量未配置: {env_name}"
-                )
+                raise McpConfigurationError(f"MCP Header 环境变量未配置: {env_name}")
             try:
                 headers[header] = _validate_header_value(
                     value,
