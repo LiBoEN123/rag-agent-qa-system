@@ -142,6 +142,10 @@ def _module_boundaries() -> dict[str, bool]:
         "top_level_acyclic_contract": (
             "[importlinter:contract:top-level-acyclic]" in text
         ),
+        "middleware_runtime_boundary": (
+            "[importlinter:contract:framework-middleware-does-not-depend-on-runtime]"
+            in text
+        ),
         "http_framework_boundary": (
             "[importlinter:contract:http-framework-only-in-api]" in text
         ),
@@ -205,6 +209,15 @@ def inspect_runtime(
     runtime_source = (
         PROJECT_ROOT / "app" / "agent" / "runtime.py"
     ).read_text(encoding="utf-8")
+    middleware_source = (
+        PROJECT_ROOT / "app" / "agent" / "framework_middleware.py"
+    ).read_text(encoding="utf-8")
+    results_source = (
+        PROJECT_ROOT / "app" / "agent" / "results.py"
+    ).read_text(encoding="utf-8")
+    chat_service_source = (
+        PROJECT_ROOT / "app" / "services" / "chat_service.py"
+    ).read_text(encoding="utf-8")
     streaming_source = inspect.getsource(stream_agent)
     knowledge_source = (
         PROJECT_ROOT / "app" / "tools" / "knowledge_base.py"
@@ -246,6 +259,23 @@ def inspect_runtime(
             "runtime_invokes_create_agent_directly",
             "invocation.agent.invoke(" in runtime_source,
             "sync Runtime directly invokes create_agent graph",
+        ),
+        _check(
+            "middleware_does_not_depend_on_runtime",
+            "app.agent.runtime" not in middleware_source,
+            "framework middleware imports guardrails instead of Runtime",
+        ),
+        _check(
+            "result_builder_owns_agent_result",
+            "def build_framework_agent_result(" in results_source
+            and "def build_framework_agent_result(" not in runtime_source,
+            "results owns framework output to AgentRunResult normalization",
+        ),
+        _check(
+            "chat_service_consumes_agent_result",
+            "validate_agent_result_payload" not in chat_service_source
+            and "AgentRunResult.model_validate" not in chat_service_source,
+            "ChatService applies HTTP policy without rebuilding AgentResult",
         ),
         _check(
             "streaming_uses_create_agent_directly",

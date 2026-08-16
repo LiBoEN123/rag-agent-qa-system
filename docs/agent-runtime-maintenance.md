@@ -11,14 +11,14 @@ Parent Agent Graph；LangGraph 只继续承载框架内部 model/tools 循环和
 | 1 | `app/api/application.py`、`app/api/chat.py`、`app/api/streaming.py` | FastAPI 如何组装，以及同步 JSON/SSE 如何进入 ChatService |
 | 2 | `app/services/chat_service.py`、`chat_models.py`、`chat_stream_models.py`、`chat_telemetry.py` | 同步/流式应用流程和 telemetry 分工 |
 | 3 | `app/contracts/chat.py` | Result status 如何唯一决定 HTTP、API 和 metrics 状态 |
-| 4 | `app/agent/runtime.py` | 普通 Python Router、同步 invoke、事件归一化和结果边界 |
+| 4 | `app/agent/runtime.py` | 普通 Python Router、请求准备、Agent 缓存和同步 invoke |
 | 5 | `app/agent/streaming.py` | 直接 astream、消息缓冲和安全事件投影 |
 | 6 | `app/agent/framework_agent.py` | `create_agent`、最小内部 State 和 Middleware 顺序 |
-| 7 | `app/agent/framework_middleware.py` | 错误分类、预算、循环防护、同批 fail-closed 与 RAG 终止条件 |
+| 7 | `app/agent/framework_middleware.py` | LangChain 生命周期 Hook、同批 fail-closed 与 RAG 终止协调 |
 | 8 | `app/agent/framework_tools.py` | 动态 StructuredTool 和 Registry dispatch |
 | 9 | `app/tools/runtime.py` | 单次本地工具调用的权限、审批、审计、超时、重试和输出校验 |
 | 10 | `app/tools/knowledge_base.py`、`app/rag/graph/` | 知识库 Tool 如何调用独立 RAG Graph |
-| 11 | `app/agent/results.py`、`answer.py`、`tool_events.py` | Result、RAG 映射、observation 与 trace |
+| 11 | `app/agent/guardrails.py`、`tool_events.py`、`results.py`、`answer.py` | 治理计算、事件投影、RAG 映射与 Result 合同 |
 | 12 | `app/tools/mcp/` | 可选 MCP discovery、权限、同步/异步 bridge 和安全输出 |
 
 ## 主调用链
@@ -34,7 +34,7 @@ FastAPI application
   └─ agent → create_agent.invoke
              → 请求级 governed StructuredTool / ProjectToolGovernanceMiddleware
              → StructuredTool / ToolMessage
-             → Runtime 结果归一化
+             → tool_events 投影 → results 结果归一化
 → AgentRunResult
 → ChatStatusPolicy
 → ChatResponse
@@ -93,7 +93,7 @@ StructuredTool
 `search_knowledge_base` 也遵守这条链。其 handler 先取得候选 chunks，再使用 Context 中
 的 `effective_question`、`top_k`、`decompose_top_k` 和 `trace_id` 调用独立
 `run_rag_subgraph()`。成功 ToolResult 包含 `rag_result`；Middleware 写入配对
-ToolMessage 和内部 `knowledge_base_result`，在下一轮模型前结束 Agent，Runtime 将
+ToolMessage 和内部 `knowledge_base_result`，在下一轮模型前结束 Agent，Result builder 将
 RAG 状态映射为权威 AgentRunResult。不存在 `Command.PARENT`、父图或事件投影游标。
 
 `web_search`、`web_fetch`、`web_pdf_fetch`、只读 SQL 与 MCP 是普通 ToolMessage
@@ -109,26 +109,28 @@ RAG 状态映射为权威 AgentRunResult。不存在 `Command.PARENT`、父图�
 - `agent_elapsed_ms` 和 `stop_reason`；
 - 可选 `knowledge_base_result`。
 
-Runtime 在调用结束后一次性把治理事件转换成 observations、tool trace、迭代/工具/错误
-计数和连续指纹；没有 `framework_events_applied` 之类重放游标。Router decision、
-问题语义、references、业务 status 和最终 answer 只存在于普通 Python 结果快照，
-不复制到第二个 Graph State。
+`tool_events.py` 在调用结束后一次性把治理事件转换成 observations、tool trace、
+迭代/工具/错误计数和连续指纹；没有 `framework_events_applied` 之类重放游标。
+Router decision、问题语义、references、业务 status 和最终 answer 只存在于
+`results.py` 使用的普通 Python 结果快照，不复制到第二个 Graph State。
 
 固定结果链为：
 
 ```text
 Router short-circuit 或 create_agent final state
-→ app.agent.runtime 归一化
-→ map_agent_status_to_result_status
+→ app.agent.tool_events 投影（agent 路径）
+→ app.agent.results / app.agent.answer 归一化
 → AgentRunResult
 → model_dump(mode="json")
+→ ChatService 附加受控 Query Rewrite trace
 → ChatStatusPolicy
 → ChatServiceOutcome / API / metrics
 ```
 
 RAG 的 `OK`、`NEED_CLARIFICATION`、`NO_RELEVANT_INFO`、`MODEL_ERROR` 和
 `MODEL_BAD_OUTPUT` 先由 RAG-to-Agent mapper 收敛。未知状态与未知异常一律 fail
-closed；Pydantic 模型只做边界校验，ChatService 收到普通字典。
+closed；Pydantic 模型只在 Result builder 做一次边界校验，ChatService 收到普通字典且
+不再重复构造或校验 Agent Result。
 
 ## 配置与生命周期
 
@@ -155,12 +157,14 @@ Agent trace 仍可按 `ENABLE_AGENT_TRACE_STORE` 单独保存。
 
 | 文件 | 责任 |
 | --- | --- |
-| `app/agent/runtime.py` | Router、调用准备、同步 invoke、治理事件归一化、结果和 trace |
+| `app/agent/runtime.py` | 参数校验、Router、请求 Context、Agent 缓存和同步 invoke |
 | `app/agent/streaming.py` | 直接 astream、安全 projector、取消传播和最终状态捕获 |
 | `app/agent/framework_agent.py` | `create_agent` 与最小 Framework State |
-| `app/agent/framework_middleware.py` | 模型/工具治理和 RAG 结果终止条件 |
+| `app/agent/framework_middleware.py` | LangChain 模型/工具生命周期 Hook 和 RAG 终止协调 |
 | `app/agent/framework_tools.py` | ToolSpec/MCP 到动态框架工具的薄适配 |
-| `app/agent/results.py` | 唯一 AgentRunResult 与状态映射 |
+| `app/agent/guardrails.py` | 工具治理规则、预算、错误分类、停止原因和指纹 |
+| `app/agent/tool_events.py` | Framework event 到 observation、trace 和 metrics 的投影 |
+| `app/agent/results.py` | Framework output 到唯一 AgentRunResult、校验和 trace 快照 |
 | `app/agent/answer.py` | direct/clarify/RAG 结果更新 helper |
 | `app/tools/context.py` | 请求主体、权限、trace 和 RAG 请求参数 |
 | `app/tools/registry.py` | ToolSpec 注册与 ToolRuntime 分发入口 |
@@ -181,7 +185,7 @@ Agent trace 仍可按 `ENABLE_AGENT_TRACE_STORE` 单独保存。
 | 重复调用未停止 | governance event 指纹与连续计数 |
 | 知识库未返回引用 | ToolResult 是否含合法 `rag_result`，RAG 状态和引用验证 |
 | 流式泄漏参数或正文 | `project_agent_stream_part()` 白名单与 tainted buffer |
-| 同步/流式结果不一致 | 两入口的最终 `finish_framework_agent()` 输入 |
+| 同步/流式结果不一致 | 两入口的最终 `build_framework_agent_result()` 输入 |
 | MCP 工具不存在 | 启动期 discovery、Server allowlist、默认主体/请求权限 |
 | 配置变更不生效 | `.env` 非热更新；清缓存或重启进程 |
 

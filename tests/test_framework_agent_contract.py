@@ -6,7 +6,7 @@ from langchain_core.messages import AIMessage
 from app.agent.framework_agent import (
     build_framework_agent,
 )
-from app.agent.runtime import normalize_governance_events
+from app.agent.tool_events import normalize_governance_events
 
 
 class _ProbeModel:

@@ -21,10 +21,8 @@ from app.agent.framework_tools import (
 )
 from app.agent.guardrails import (
     AgentStopReason,
-    build_unknown_tool_call_fingerprint,
-)
-from app.agent.runtime import (
     build_tool_governance_event,
+    build_unknown_tool_call_fingerprint,
     count_consecutive_events,
     sum_governance_event_costs,
 )

@@ -38,27 +38,10 @@ flowchart TD
     Service --> History[(SQLite Session History)]
     History --> Rewrite[Query Rewrite]
 
-    subgraph AgentGraph[LangGraph Agent Graph]
-        Router[route<br/>确定性 Router]
-        Initialize[initialize<br/>初始化 AgentGraphState 和 HumanMessage]
-        FrameworkAgent[framework_agent<br/>LangChain create_agent 子图]
-        FrameworkAdapt[adapt_framework<br/>框架事件纯投影]
-        RAGEntry[rag_subgraph]
-        Composer[Answer Composer]
-        Finalize[Finalize / AgentRunResult]
-
-        Router --> Initialize
-        Initialize -->|agent| FrameworkAgent
-        Initialize -->|direct_answer / clarify / 不支持动作| Composer
-
-        FrameworkAgent --> FrameworkAdapt
-        FrameworkAdapt -->|知识库检索成功| RAGEntry
-        FrameworkAdapt -->|最终回答 / 治理或预算终止| Composer
-
-        Composer --> Finalize
-    end
-
-    Rewrite --> Router
+    Rewrite --> AgentRuntime[Agent Runtime<br/>准备请求与同步/流式执行]
+    AgentRuntime --> Router[确定性 Router]
+    Router -->|agent| FrameworkAgent[LangChain create_agent<br/>唯一 model ↔ tools 循环]
+    Router -->|direct_answer / clarify| Results[Result Builder<br/>AgentRunResult]
 
     subgraph ToolRuntime[受治理工具执行链]
         Provider[LocalToolProvider]
@@ -67,17 +50,21 @@ flowchart TD
         Runtime[ToolRuntime.execute]
         Handler[ToolSpec.handler]
 
-        Middleware[请求级 governed tools]
+        Middleware[Framework Middleware<br/>生命周期 Hook]
+        Guardrails[Guardrails<br/>治理规则与预算]
 
         Provider --> Middleware
         Middleware --> StructuredTool
         StructuredTool --> Registry
         Registry --> Runtime
         Runtime --> Handler
+        Middleware --> Guardrails
     end
 
     FrameworkAgent -. 请求级模型与工具 hook .-> Middleware
     Handler -. 统一工具结果 .-> FrameworkAgent
+    FrameworkAgent --> Events[Tool Events<br/>observation / trace / metrics]
+    Events --> Results
 
     subgraph RAGGraph[LangGraph RAG Subgraph]
         Decompose[Query Decompose]
@@ -96,8 +83,8 @@ flowchart TD
         Generation --> Citations
     end
 
-    RAGEntry --> Decompose
-    Citations --> Finalize
+    Handler -. search_knowledge_base .-> Decompose
+    Citations -. 权威 RAG 结果 .-> FrameworkAgent
 
     subgraph Indexing[索引构建流程]
         Loader[Document Loader<br/>txt / md / pdf / docx]
@@ -119,7 +106,8 @@ flowchart TD
 
     Chroma --> Retrieval
     BM25 --> Retrieval
-    Finalize --> Store[Session / Metrics]
+    Results --> Policy[ChatStatusPolicy]
+    Policy --> Store[Session / Metrics]
     Store --> Response[统一 ChatResponse]
 ```
 
@@ -221,15 +209,18 @@ logger。完整依赖规则见
 最终结果只经过一条状态链：
 
 ```text
-AgentGraphState.status
-→ app/agent/results.py 的内部状态 mapper
+Router short-circuit 或 create_agent final state
+→ app/agent/tool_events.py 的 framework event 投影（agent 路径）
+→ app/agent/results.py 的答案/状态/LLM usage 归一化
 → AgentRunResult（Pydantic 校验后 dump 为普通 dict）
 → app/contracts/chat.py 的 ChatStatusPolicy
 → ChatServiceOutcome / HTTP、API data.status 与 metrics status
 ```
 
-RAG 状态由同一结果模块中的 RAG-to-Agent mapper 写入普通 Runtime 快照。
-`AgentRunResult` 只在边界校验，返回 ChatService 的值始终是 JSON-compatible 普通字典。
+RAG 状态由 Result builder 通过 `answer.py` 的 RAG-to-Agent mapper 写入普通结果快照。
+`AgentRunResult` 只在 `results.py` 构造边界校验一次，返回 ChatService 的值始终是
+JSON-compatible 普通字典；ChatService 只附加受控的 Query Rewrite trace，不再次构造或
+校验 Agent Result。
 HTTP code/message、公开小写状态和 metrics 状态由唯一
 `CHAT_STATUS_POLICIES` 决定，API response adapter 不再读取业务状态表或依赖
 Agent Runtime。
@@ -387,11 +378,15 @@ python scripts/smoke_test_online_tools.py pdf \
 
 `agent` 路径的模型不可用或调用失败会写入 `agent_model_call_failed` 治理事件并受控返回 `MODEL_ERROR`，不会进入第二套执行架构。成功的知识库检索继续进入原 RAG 子图，以保留问题拆分、重排、证据门控、拒答、引用绑定和验证能力。
 
-旧手写 Agent 编排入口、Planner/Executor 兼容链和 Parent Graph 节点已删除。Runtime 在普通 Python 中完成路由、请求 Context、结果映射和 trace 持久化；框架内部只保存 messages、append-only 治理事件、停止原因和可选知识库结构化结果。
+旧手写 Agent 编排入口、Planner/Executor 兼容链和 Parent Graph 节点已删除。Runtime
+只在普通 Python 中完成参数校验、路由、请求 Context、Agent 构建/缓存与 invoke；
+`guardrails.py` 保存治理规则，`tool_events.py` 投影 observation/trace/metrics，
+`results.py` 把短路或 Framework 输出构造成唯一 AgentResult 并保存同一 trace 快照。
+框架内部只保存 messages、append-only 治理事件、停止原因和可选知识库结构化结果。
 
 ### LangGraph RAG 子图
 
-知识库问答由独立 RAG Graph 依次执行问题歧义判断、Query Decompose、检索与重排、Evidence Gate、Context Build、回答生成、JSON 解析、引用绑定与验证。`search_knowledge_base` handler 通过请求级 Tool Context 取得改写后问题和 RAG 参数，调用该图并返回带答案、引用、状态、置信度、timings 与 trace 的结构化 ToolResult；Middleware 生成配对 ToolMessage，随后 Runtime 采用 RAG 权威结果。不存在 `Command.PARENT` 或 Parent Graph 条件边。SSE 会流出 RAG 进度和安全工具状态，但不会流出 RAG JSON token；完整回答位于 `final`。
+知识库问答由独立 RAG Graph 依次执行问题歧义判断、Query Decompose、检索与重排、Evidence Gate、Context Build、回答生成、JSON 解析、引用绑定与验证。`search_knowledge_base` handler 通过请求级 Tool Context 取得改写后问题和 RAG 参数，调用该图并返回带答案、引用、状态、置信度、timings 与 trace 的结构化 ToolResult；Middleware 生成配对 ToolMessage，随后 Result builder 采用 RAG 权威结果。不存在 `Command.PARENT` 或 Parent Graph 条件边。SSE 会流出 RAG 进度和安全工具状态，但不会流出 RAG JSON token；完整回答位于 `final`。
 
 ### Checkpointer 边界
 
@@ -974,14 +969,14 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   │   ├── rules.py             # Router 问题规范化规则
 │   │   ├── query_rewrite.py     # 多轮追问识别和 Query Rewrite
 │   │   ├── state.py             # Observation 与内部 Agent 状态
-│   │   ├── results.py           # AgentRunResult、状态 mapper 与结果构造
+│   │   ├── results.py           # Framework 输出到 AgentRunResult 的唯一构造/校验边界
 │   │   ├── answer.py            # 最终答案合成
 │   │   ├── framework_agent.py   # 唯一 create_agent Agent Loop 构建
 │   │   ├── framework_middleware.py # 项目特有 Agent 治理 Middleware
 │   │   ├── framework_tools.py   # 动态框架工具与 Context 适配
-│   │   ├── tool_events.py       # 框架工具事件到 observation/trace 的转换
-│   │   ├── guardrails.py        # 错误分类、Stop Reason 与小型指纹辅助
-│   │   ├── runtime.py           # Router、同步 invoke、结果归一化与 trace
+│   │   ├── tool_events.py       # Framework 事件到 observation/trace/metrics 的投影
+│   │   ├── guardrails.py        # 治理规则、预算、错误分类、Stop Reason 与指纹
+│   │   ├── runtime.py           # 请求准备、Router、Agent 缓存与同步 invoke
 │   │   └── streaming.py         # 直接 astream 与安全 Agent 事件投影
 │   ├── rag/
 │   │   ├── __init__.py          # RAG 公共门面和依赖注入

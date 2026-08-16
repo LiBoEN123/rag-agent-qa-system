@@ -6,8 +6,9 @@
 
 ## 总体结论
 
-系统不存在 Parent Agent Graph。确定性 Router 是 Agent Runtime 外的一段普通 Python
-逻辑；正常请求直接进入 LangChain `create_agent` 返回的 CompiledStateGraph。项目仍用
+系统不存在 Parent Agent Graph。确定性 Router 位于 `create_agent` 之外，由 Agent
+Runtime 以普通 Python 调用；正常 agent 请求直接进入 LangChain `create_agent` 返回的
+CompiledStateGraph。项目仍用
 LangGraph 实现独立 RAG Graph，但它只由本地知识库工具调用，不是 Agent 外层控制图。
 
 ```text
@@ -33,7 +34,7 @@ create_agent
 → search_knowledge_base handler
 → 独立 RAG Graph
 → 结构化工具结果 + 配对 ToolMessage
-→ Agent Runtime 结果归一化
+→ Agent Result builder 归一化
 ```
 
 ## HTTP 与应用服务
@@ -68,9 +69,17 @@ Router 只决定 `agent`、`direct_answer` 或 `clarify`，不选择具体工具
 `create_agent` 是唯一 Agent Loop，其图只包含框架自己的 `model ↔ tools` 循环。动态
 工具由 Runtime 按当前请求权限解析，并在构造本次 `create_agent` 时绑定；
 `ProjectToolGovernanceMiddleware` 与受治理 StructuredTool 保留模型/工具调用计数、错误分类、重复调用检测、
-累计耗时、同批 fail-closed、停止原因和 ToolMessage 配对。Runtime 在唯一出口一次性
-把 append-only `governance_events` 归一化为 observations、tool trace、计数和结果，
-不再维护事件游标或父图适配节点。
+累计耗时、同批 fail-closed、停止原因和 ToolMessage 配对。Agent 内部职责固定为：
+
+- `runtime.py`：参数校验、Router、请求 Context、Agent 构建/缓存和同步 invoke；
+- `streaming.py`：`astream` 消费与安全 SSE 事件投影；
+- `guardrails.py`：治理规则、预算、错误分类和指纹计算；
+- `tool_events.py`：append-only framework event 到 observations、tool trace 和 metrics；
+- `results.py`：短路或 Framework output 到唯一 `AgentRunResult`，以及同一结果 trace 快照；
+- `framework_middleware.py`：只在 LangChain 生命周期 Hook 中协调这些规则和 ToolMessage。
+
+`framework_middleware.py` 不依赖 `runtime.py`；`.importlinter` 和 Runtime Inspection 同时
+固化这条边界。系统不再维护事件游标或父图适配节点。
 
 同步入口直接使用 `create_agent.invoke()`，流式入口直接使用
 `create_agent.astream()`。两者共享输入准备和最终结果归一化，因此公开
@@ -120,7 +129,7 @@ RAG Graph 保持原有问题歧义判断、Query Decompose、BM25 + Embedding �
 CrossEncoder 重排、Evidence Gate、Context Build、回答生成、JSON 解析、引用绑定和
 验证。工具成功结果包含 RAG 的答案、引用、状态、置信度、timings 与 trace，并形成与
 原 tool call ID 配对的普通 ToolMessage。Middleware 看到完整知识库结果后结束下一轮
-Agent Model，Runtime 直接采用 RAG 的权威结果；不存在 `Command.PARENT`、
+Agent Model，Result builder 直接采用 RAG 的权威结果；不存在 `Command.PARENT`、
 `pending_rag_result` 或父图条件边。
 
 Web Search、Web Fetch、Web PDF Fetch、SQL 和 MCP 都是普通 ToolMessage 路径；它们不
@@ -132,23 +141,25 @@ Web Search、Web Fetch、Web PDF Fetch、SQL 和 MCP 都是普通 ToolMessage �
 
 - `FrameworkAgentState`：`create_agent` 内部的 messages、append-only
   `governance_events`、累计耗时、停止原因和可选知识库结构化结果；
-- 普通 Python Runtime 快照：Router decision、observations、references、tool trace、
-  LLM 计数和最终状态，仅用于结果归一化与 trace 持久化。
+- 普通 Python Result 快照：Router decision、observations、references、tool trace、
+  LLM 计数和最终状态，仅由 `results.py` 用于结果归一化与 trace 持久化。
 
 最终结果固定经过：
 
 ```text
 Router short-circuit 或 create_agent final state
-→ app.agent.runtime 归一化
-→ app.agent.results 状态映射
+→ app.agent.tool_events 事件投影（agent 路径）
+→ app.agent.results 答案、状态与 LLM usage 归一化
 → AgentRunResult 校验
 → JSON-compatible dict
+→ ChatService 附加受控 Query Rewrite trace
 → ChatStatusPolicy
 → HTTP status / code / public status / metrics status
 ```
 
-未知 Runtime/Result status 按 `INTERNAL_ERROR` fail closed。项目没有 Parent Graph
-State，也不保存另一份嵌套业务状态。
+`AgentRunResult` 只在 `results.py` 的构造边界通过 Pydantic 校验一次；ChatService 不再
+把同一结果做 dict/model 往返或重复业务构造。未知 Runtime/Result status 按
+`INTERNAL_ERROR` fail closed。项目没有 Parent Graph State，也不保存另一份嵌套业务状态。
 
 ## 配置、生命周期与持久化
 
@@ -164,7 +175,7 @@ Agent trace、RAG index、metrics、bad case 和 tool audit 的既有存储所�
 
 ## 模块边界
 
-生产依赖方向由 `.importlinter` 的五项合同执行：
+生产依赖方向由 `.importlinter` 的六项合同执行：
 
 ```text
 api → services → agent → tools → rag → llm
@@ -173,7 +184,9 @@ api → services → agent → tools → rag → llm
 
 `app.api` 是唯一 HTTP 组合层；services 不依赖 API，FastAPI/Starlette 不进入低层，
 `pydantic-settings` 只由 `app.config` 直接导入。生产代码中没有 `app.graph` 包；独立
-RAG Graph 属于 `app.rag`。详细规则见[模块依赖边界](module-boundaries.md)。
+RAG Graph 属于 `app.rag`。额外 forbidden contract 明确禁止
+`app.agent.framework_middleware → app.agent.runtime`。详细规则见
+[模块依赖边界](module-boundaries.md)。
 
 ## 测试与质量门
 

@@ -5,12 +5,12 @@ from copy import deepcopy
 from app.agent.results import (
     build_agent_result,
     build_internal_error_result,
-)
-from app.agent.runtime import (
-    finish_short_circuit,
-    prepare_agent_runtime_invocation,
+    build_short_circuit_result,
     resolve_llm_call_count,
     upsert_llm_usage_trace,
+)
+from app.agent.runtime import (
+    prepare_agent_runtime_invocation,
 )
 
 
@@ -118,7 +118,7 @@ def test_runtime_short_circuit_uses_one_trace_snapshot_and_saves_result(
 ):
     saved = []
     monkeypatch.setattr(
-        "app.agent.runtime.maybe_save_agent_trace",
+        "app.agent.results.maybe_save_agent_trace",
         lambda **kwargs: saved.append(kwargs),
     )
     invocation = prepare_agent_runtime_invocation(
@@ -130,7 +130,7 @@ def test_runtime_short_circuit_uses_one_trace_snapshot_and_saves_result(
         session_id="session-finalize",
     )
 
-    result = finish_short_circuit(invocation)
+    result = build_short_circuit_result(invocation)
 
     assert sum(
         item.get("step") == "llm_usage"

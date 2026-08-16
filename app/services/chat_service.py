@@ -14,10 +14,8 @@ from typing import Any
 
 from app.agent.query_rewrite import rewrite_query_with_history
 from app.agent.results import (
-    AgentResultContractError,
     build_empty_question_result,
     build_internal_error_result,
-    validate_agent_result_payload,
 )
 from app.common.logging import get_logger
 from app.config import AppSettings, get_settings
@@ -577,32 +575,11 @@ class ChatService:
         *,
         agent_start: float,
     ) -> dict[str, Any]:
-        """复用 Query Rewrite trace、Result 校验、日志和 Agent 耗时。"""
+        """附加 Query Rewrite trace，并记录日志和 Agent 耗时。"""
         result = self._deps.attach_query_rewrite_trace(
             result,
             context.rewrite_trace,
         )
-        try:
-            result = validate_agent_result_payload(result)
-        except AgentResultContractError as exc:
-            logger.error(
-                "[trace_id=%s] [agent] invalid_result error_type=%s",
-                context.request.trace_id,
-                type(exc).__name__,
-            )
-            result = build_internal_error_result(
-                exc,
-                runtime_label="ChatService Agent result",
-                trace_step="chat_result_contract_error",
-                tool_trace=[
-                    context.rewrite_trace,
-                    {
-                        "step": "chat_result_contract_error",
-                        "status": "error",
-                        "error": "internal_error",
-                    },
-                ],
-            )
         log_tool_call_chain(
             context.request.trace_id,
             result.get("tool_trace") or [],

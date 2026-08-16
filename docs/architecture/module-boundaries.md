@@ -83,13 +83,15 @@ Import Linter 2.13 的 `allow_indirect_imports = True`，只禁止 source packag
 
 ## 合同清单
 
-`.importlinter` 声明五项合同：
+`.importlinter` 声明六项合同：
 
 1. `application-layers`：固化总体单向层级；
 2. `top-level-acyclic`：禁止 `app` 顶层 package 形成循环；
-3. `foundation-does-not-depend-on-application`：为基础层反向依赖提供明确错误；
-4. `http-framework-only-in-api`：限制 FastAPI/Starlette；
-5. `pydantic-settings-only-in-config`：限制 pydantic-settings 的直接导入。
+3. `framework-middleware-does-not-depend-on-runtime`：禁止 Middleware 反向依赖
+   Agent Runtime，治理规则只能从 `guardrails.py` 等低耦合模块取得；
+4. `foundation-does-not-depend-on-application`：为基础层反向依赖提供明确错误；
+5. `http-framework-only-in-api`：限制 FastAPI/Starlette；
+6. `pydantic-settings-only-in-config`：限制 pydantic-settings 的直接导入。
 
 合同不包含 `ignore_imports`。函数内 import 和包级 re-export 都会进入 Import
 Linter 的图，不是规避手段；也不得用 `importlib`、Service Locator 或动态 Registry

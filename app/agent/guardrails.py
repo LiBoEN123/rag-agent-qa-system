@@ -1,9 +1,11 @@
-"""Agent 专属错误分类与未知工具 JSON 指纹。"""
+"""Agent 工具治理规则、预算计算与稳定指纹。"""
 
 import hashlib
 import json
 from enum import StrEnum
+from typing import Any
 
+from app.config import AppSettings, get_settings
 from app.tools.errors import ToolErrorCode
 
 
@@ -136,3 +138,128 @@ def build_agent_tool_error_fingerprint(
             "error_code": str(error_code or "").strip().lower(),
         }
     )
+
+
+def sum_governance_event_costs(events: list[dict[str, Any]]) -> int:
+    """汇总模型和工具治理事件记录的非负耗时。"""
+    return sum(max(0, int(item.get("cost_ms", 0) or 0)) for item in events)
+
+
+def count_consecutive_events(
+    events: list[dict[str, Any]],
+    *,
+    key: str,
+    value: str,
+) -> int:
+    """统计已计数工具事件尾部连续出现的指定字段值。"""
+    count = 0
+    for event in reversed(events):
+        if event.get("kind") != "tool" or not event.get("counted_call"):
+            continue
+        if str(event.get(key) or "") != value:
+            break
+        count += 1
+    return count
+
+
+def build_tool_governance_event(
+    *,
+    tool_call: dict[str, Any],
+    result: dict[str, Any],
+    call_fingerprint: str,
+    prior_events: list[dict[str, Any]],
+    cost_ms: int,
+    known_tool: bool,
+    settings: AppSettings | None = None,
+) -> dict[str, Any]:
+    """根据标准工具结果计算错误分类、预算和最小治理事件。"""
+    resolved_settings = settings or get_settings()
+    tool_args = tool_call.get("args") or {}
+    ok = result.get("ok") is True
+    error_code = str(result.get("error_code") or "")
+    failure_kind = ""
+    stop_reason = ""
+    error_fingerprint = ""
+
+    if not ok:
+        failure = classify_tool_failure(
+            error_code=error_code,
+            retryable=result.get("retryable", False),
+        )
+        failure_kind = failure.value
+        error_fingerprint = build_agent_tool_error_fingerprint(
+            call_fingerprint=call_fingerprint,
+            error_code=error_code,
+        )
+        immediate_stop = stop_reason_for_tool_failure(
+            error_code=error_code,
+            failure_kind=failure,
+        )
+        error_count = (
+            sum(
+                event.get("kind") == "tool"
+                and event.get("counted_call")
+                and not event.get("ok")
+                for event in prior_events
+            )
+            + 1
+        )
+        repeated_errors = (
+            count_consecutive_events(
+                prior_events,
+                key="error_fingerprint",
+                value=error_fingerprint,
+            )
+            + 1
+        )
+        if immediate_stop:
+            stop_reason = immediate_stop.value
+        elif error_count >= resolved_settings.agent_max_tool_errors:
+            stop_reason = AgentStopReason.MAX_TOOL_ERRORS.value
+        elif (
+            repeated_errors
+            >= resolved_settings.agent_max_consecutive_same_tool_errors
+        ):
+            stop_reason = AgentStopReason.REPEATED_TOOL_ERROR.value
+
+    elapsed_ms = sum_governance_event_costs(prior_events) + max(0, cost_ms)
+    if not stop_reason and elapsed_ms >= resolved_settings.agent_max_total_cost_ms:
+        stop_reason = AgentStopReason.MAX_TOTAL_COST.value
+
+    runtime = result.get("runtime") if isinstance(result.get("runtime"), dict) else {}
+    error_source = "tool_runtime"
+    if not runtime:
+        error_source = (
+            "structured_tool_validation" if known_tool else "structured_tool_adapter"
+        )
+
+    return {
+        "kind": "tool",
+        "name": str(tool_call.get("name") or ""),
+        "args": tool_args,
+        "result": result,
+        "ok": ok,
+        "counted_call": True,
+        "call_fingerprint": call_fingerprint,
+        "error_fingerprint": error_fingerprint,
+        "error_code": error_code,
+        "failure_kind": failure_kind,
+        "error_source": error_source,
+        "handler_executed": int(runtime.get("attempt_count", 0) or 0) > 0,
+        "stop_reason": stop_reason,
+        "cost_ms": max(0, int(cost_ms)),
+        "tool_call_id": str(tool_call.get("id") or ""),
+    }
+
+
+__all__ = [
+    "AgentStopReason",
+    "AgentToolFailureKind",
+    "build_agent_tool_error_fingerprint",
+    "build_tool_governance_event",
+    "build_unknown_tool_call_fingerprint",
+    "classify_tool_failure",
+    "count_consecutive_events",
+    "stop_reason_for_tool_failure",
+    "sum_governance_event_costs",
+]

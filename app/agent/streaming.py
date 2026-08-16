@@ -10,10 +10,12 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
-from app.agent.runtime import (
+from app.agent.results import (
     build_agent_runtime_error_result,
-    finish_framework_agent,
-    finish_short_circuit,
+    build_framework_agent_result,
+    build_short_circuit_result,
+)
+from app.agent.runtime import (
     prepare_agent_runtime_invocation,
 )
 from app.common.logging import get_logger
@@ -268,7 +270,7 @@ async def stream_agent(
             key="progress:routing:completed",
         )
         if invocation.agent is None:
-            result = finish_short_circuit(invocation)
+            result = build_short_circuit_result(invocation)
             yield AgentRuntimeStreamEvent(
                 event="result",
                 data={"result": result},
@@ -337,7 +339,7 @@ async def stream_agent(
         agent_stream_completed = True
         if final_state is None:
             raise RuntimeError("create_agent stream did not produce final state")
-        result = finish_framework_agent(invocation, final_state)
+        result = build_framework_agent_result(invocation, final_state)
         logger.info(
             "[trace_id=%s] [agent] runtime_end status=%s streaming=true",
             trace_id,

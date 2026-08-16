@@ -5,13 +5,12 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
-from app.agent.runtime import (
-    finish_framework_agent,
-    finish_short_circuit,
-    framework_metrics,
-    normalize_governance_events,
-    prepare_agent_runtime_invocation,
+from app.agent.results import (
+    build_framework_agent_result,
+    build_short_circuit_result,
 )
+from app.agent.runtime import prepare_agent_runtime_invocation
+from app.agent.tool_events import framework_metrics, normalize_governance_events
 from app.config import AppSettings, get_settings
 from app.tools.context import ToolInvocationContext
 
@@ -93,7 +92,7 @@ class AgentRuntimeHarness:
         del kwargs
         invocation = self._prepare(input_value, context)
         if invocation.agent is None:
-            result = finish_short_circuit(invocation)
+            result = build_short_circuit_result(invocation)
             return self._merge_state({}, result)
         raw = invocation.agent.invoke(
             invocation.agent_input,
@@ -101,7 +100,7 @@ class AgentRuntimeHarness:
             context=invocation.tool_context,
         )
         assert isinstance(raw, Mapping)
-        result = finish_framework_agent(invocation, raw)
+        result = build_framework_agent_result(invocation, raw)
         return self._merge_state(raw, result)
 
     async def astream(
@@ -115,7 +114,7 @@ class AgentRuntimeHarness:
         """异步执行直接 Agent；values 模式最后追加归一化快照。"""
         invocation = self._prepare(input_value, context)
         if invocation.agent is None:
-            yield self._merge_state({}, finish_short_circuit(invocation))
+            yield self._merge_state({}, build_short_circuit_result(invocation))
             return
         raw: Mapping[str, Any] | None = None
         async for part in invocation.agent.astream(
@@ -130,7 +129,7 @@ class AgentRuntimeHarness:
             yield part
         if stream_mode == "values":
             assert raw is not None
-            result = finish_framework_agent(invocation, raw)
+            result = build_framework_agent_result(invocation, raw)
             yield self._merge_state(raw, result)
 
     def get_graph(self, **kwargs):

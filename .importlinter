@@ -22,6 +22,14 @@ ancestors =
     app
 depth = 0
 
+[importlinter:contract:framework-middleware-does-not-depend-on-runtime]
+name = Framework middleware does not depend on Agent Runtime
+type = forbidden
+source_modules =
+    app.agent.framework_middleware
+forbidden_modules =
+    app.agent.runtime
+
 [importlinter:contract:foundation-does-not-depend-on-application]
 name = Foundation modules do not depend on application modules
 type = forbidden
