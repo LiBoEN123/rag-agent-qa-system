@@ -1,9 +1,9 @@
 import json
 
-from app.tools.registry import ToolRegistry, ToolSpec
 from app.tools.context import ToolInvocationContext
+from app.tools.registry import ToolRegistry, ToolSpec
+from app.tools.runtime import execute_registered_tool
 from app.tools.schemas import SearchKnowledgeBaseArgs
-from app.tools.dispatch import dispatch_tool
 
 
 def test_tool_registry_names_include_builtin_tools(tool_registry):
@@ -80,11 +80,12 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
     assert pdf["audit_output_mode"] == "summary"
 
 
-def test_tool_registry_dispatch_simple_calculator(tool_registry):
-    """验证注册中心可以调用计算器工具。"""
-    result = tool_registry.dispatch(
-        "simple_calculator",
-        {"expression": "1 + 2 * 3"}
+def test_execute_registered_tool_runs_simple_calculator(tool_registry):
+    """验证唯一执行入口可以调用已注册计算器工具。"""
+    result = execute_registered_tool(
+        registry=tool_registry,
+        tool_name="simple_calculator",
+        tool_args={"expression": "1 + 2 * 3"},
     )
 
     assert result["ok"] is True
@@ -92,7 +93,7 @@ def test_tool_registry_dispatch_simple_calculator(tool_registry):
     assert result["output"]["result"] == 7
 
 
-def test_tool_registry_dispatch_search_knowledge_base(
+def test_execute_registered_tool_runs_search_knowledge_base(
     monkeypatch,
     tool_registry,
 ):
@@ -133,12 +134,13 @@ def test_tool_registry_dispatch_search_knowledge_base(
         },
     )
 
-    result = tool_registry.dispatch(
-        "search_knowledge_base",
-        {
+    result = execute_registered_tool(
+        registry=tool_registry,
+        tool_name="search_knowledge_base",
+        tool_args={
             "query": "普通本科四年制专业最长学习年限是多少？",
             "top_k": 5,
-        }
+        },
     )
 
     assert result["ok"] is True
@@ -155,9 +157,13 @@ def test_tool_registry_dispatch_search_knowledge_base(
     assert result["output"]["rag_result"]["answer"] == "测试 RAG 回答"
 
 
-def test_tool_registry_dispatch_unknown_tool(tool_registry):
+def test_execute_registered_tool_rejects_unknown_tool(tool_registry):
     """验证未知工具返回兼容错误结构。"""
-    result = tool_registry.dispatch("unknown_tool", {})
+    result = execute_registered_tool(
+        registry=tool_registry,
+        tool_name="unknown_tool",
+        tool_args={},
+    )
 
     assert result["ok"] is False
     assert result["status"] == "error"
@@ -170,8 +176,8 @@ def test_tool_registry_dispatch_unknown_tool(tool_registry):
     assert result["runtime"]["attempt_count"] == 0
 
 
-def test_dispatch_validates_args_before_handler():
-    """验证 dispatch 在调用 handler 前执行参数校验。"""
+def test_execution_entry_validates_args_before_handler():
+    """验证唯一执行入口在调用 handler 前执行参数校验。"""
     registry = ToolRegistry()
     seen = {}
 
@@ -200,9 +206,10 @@ def test_dispatch_validates_args_before_handler():
     )
 
     context = ToolInvocationContext(trace_id="trace-registry")
-    result = registry.dispatch(
-        "search_knowledge_base",
-        {"query": "测试", "top_k": 5},
+    result = execute_registered_tool(
+        registry=registry,
+        tool_name="search_knowledge_base",
+        tool_args={"query": "测试", "top_k": 5},
         context=context,
     )
 
@@ -211,7 +218,7 @@ def test_dispatch_validates_args_before_handler():
     assert seen["context"] is context
 
 
-def test_dispatch_returns_tool_error_when_args_invalid():
+def test_execution_entry_returns_tool_error_when_args_invalid():
     """验证参数非法时返回工具错误且不调用 handler。"""
     registry = ToolRegistry()
     called = {"count": 0}
@@ -232,9 +239,10 @@ def test_dispatch_returns_tool_error_when_args_invalid():
         )
     )
 
-    result = registry.dispatch(
-        "search_knowledge_base",
-        {"query": "测试", "top_k": 999},
+    result = execute_registered_tool(
+        registry=registry,
+        tool_name="search_knowledge_base",
+        tool_args={"query": "测试", "top_k": 999},
     )
 
     assert called["count"] == 0
@@ -245,12 +253,14 @@ def test_dispatch_returns_tool_error_when_args_invalid():
     assert result["runtime"]["attempt_count"] == 0
 
 
-def test_dispatch_tool_keeps_compatible_entrypoint():
-    """验证旧的 dispatch_tool 入口仍可调用注册工具。"""
-    result = dispatch_tool(
-        "simple_calculator",
-        {"expression": "2 + 3"},
-        trace_id="test_trace"
+def test_execution_entry_accepts_explicit_context(tool_registry):
+    """验证唯一执行入口保留显式请求上下文。"""
+    context = ToolInvocationContext(trace_id="test-trace")
+    result = execute_registered_tool(
+        registry=tool_registry,
+        tool_name="simple_calculator",
+        tool_args={"expression": "2 + 3"},
+        context=context,
     )
 
     assert result["ok"] is True

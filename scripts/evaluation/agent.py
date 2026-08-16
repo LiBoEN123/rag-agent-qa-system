@@ -236,24 +236,30 @@ class InMemorySessionAdapter:
 @contextmanager
 def capture_tool_output_keys() -> Iterator[list[dict[str, Any]]]:
     """仅为评测捕获真实工具输出的字段名，不保留字段值。"""
+    from app.tools import runtime as tool_runtime
     from app.tools.registry import ToolRegistry
 
     records: list[dict[str, Any]] = []
-    original_dispatch = ToolRegistry.dispatch
+    original_execute = tool_runtime.execute_registered_tool
 
-    def dispatch_with_schema_capture(
-        registry: ToolRegistry,
-        name: str,
-        args: dict | None = None,
+    def execute_with_schema_capture(
         *,
+        registry: ToolRegistry,
+        tool_name: str,
+        tool_args: dict | None = None,
         context: Any = None,
     ) -> dict:
-        """调用真实工具分发，并只记录输出结构而不保存字段值。"""
-        result = original_dispatch(registry, name, args, context=context)
+        """调用唯一执行入口，并只记录输出结构而不保存字段值。"""
+        result = original_execute(
+            registry=registry,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            context=context,
+        )
         output = result.get("output") if isinstance(result, dict) else None
         records.append(
             {
-                "tool_name": name,
+                "tool_name": tool_name,
                 "status": result.get("status", "")
                 if isinstance(result, dict)
                 else "",
@@ -267,11 +273,11 @@ def capture_tool_output_keys() -> Iterator[list[dict[str, Any]]]:
         )
         return result
 
-    ToolRegistry.dispatch = dispatch_with_schema_capture
+    tool_runtime.execute_registered_tool = execute_with_schema_capture
     try:
         yield records
     finally:
-        ToolRegistry.dispatch = original_dispatch
+        tool_runtime.execute_registered_tool = original_execute
 
 
 def _rate(numerator: int, denominator: int) -> float:

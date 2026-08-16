@@ -15,6 +15,7 @@ from app.tools.registry import ToolRegistry
 from app.tools.result import tool_error, tool_success
 from app.tools.runtime import (
     ToolRuntime,
+    execute_registered_tool,
     get_tool_runtime,
     reset_tool_runtime,
 )
@@ -469,8 +470,8 @@ def test_legacy_result_helpers_keep_positional_calls():
     assert error["runtime"] == {}
 
 
-def test_registry_dispatch_uses_runtime_protocol():
-    """Registry 兼容入口不会绕过 Runtime。"""
+def test_execution_entry_uses_runtime_protocol():
+    """唯一执行入口不会绕过 Runtime。"""
     registry = ToolRegistry()
     registry.register(
         make_spec(
@@ -482,17 +483,22 @@ def test_registry_dispatch_uses_runtime_protocol():
         )
     )
 
-    result = registry.dispatch("runtime_echo", {"value": "4"})
+    result = execute_registered_tool(
+        registry=registry,
+        tool_name="runtime_echo",
+        tool_args={"value": "4"},
+    )
 
     assert result["tool_input"] == {"value": 4}
     assert result["runtime"]["attempt_count"] == 1
 
 
-def test_registry_dispatch_returns_runtime_extensions(tool_registry):
-    """直接测试通过 Registry 分发并获得 Runtime 扩展字段。"""
-    result = tool_registry.dispatch(
-        "simple_calculator",
-        {"expression": "1 + 2"},
+def test_execution_entry_returns_runtime_extensions(tool_registry):
+    """直接测试唯一执行入口返回 Runtime 扩展字段。"""
+    result = execute_registered_tool(
+        registry=tool_registry,
+        tool_name="simple_calculator",
+        tool_args={"expression": "1 + 2"},
         context=ToolInvocationContext(trace_id="runtime-trace"),
     )
 

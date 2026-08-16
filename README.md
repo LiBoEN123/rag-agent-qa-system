@@ -45,18 +45,21 @@ flowchart TD
 
     subgraph ToolRuntime[受治理工具执行链]
         Provider[LocalToolProvider]
-        Registry[ToolRegistry.dispatch]
+        Registry[ToolRegistry]
         StructuredTool[请求级 StructuredTool]
+        Execution[execute_registered_tool]
         Runtime[ToolRuntime.execute]
         Handler[ToolSpec.handler]
 
         Middleware[Framework Middleware<br/>生命周期 Hook]
         Guardrails[Guardrails<br/>治理规则与预算]
 
+        Registry --> Provider
         Provider --> Middleware
         Middleware --> StructuredTool
-        StructuredTool --> Registry
-        Registry --> Runtime
+        StructuredTool --> Execution
+        Registry --> Execution
+        Execution --> Runtime
         Runtime --> Handler
         Middleware --> Guardrails
     end
@@ -236,11 +239,11 @@ Agent Runtime。
 
 ## LangChain Tool 适配层
 
-Agent Runtime 在请求入口从同一 `ToolProvider` 解析稳定有序的 `ToolSpec`，再构造并绑定请求级 LangChain governed `StructuredTool`。`ToolRuntime` 注入参数不会出现在模型 Schema 中；适配函数从 `runtime.context` 取得 trace、session、principal、permissions、source、RAG 参数和 idempotency key，再调用定义所属的 `ToolRegistry.dispatch()`。Registry 继续统一进入项目 `ToolRuntime.execute()`，参数治理、权限、审批、超时、重试、审计、脱敏和错误码均未绕过。
+Agent Runtime 在请求入口从同一 `ToolProvider` 解析稳定有序的 `ToolSpec`，再构造并绑定请求级 LangChain governed `StructuredTool`。`ToolRuntime` 注入参数不会出现在模型 Schema 中；适配函数从 `runtime.context` 取得 trace、session、principal、permissions、source、RAG 参数和 idempotency key，再调用唯一公共本地执行入口 `execute_registered_tool()`。该入口按 Registry 取得共享项目 `ToolRuntime` 并调用 `ToolRuntime.execute()`，参数治理、权限、审批、超时、重试、审计、脱敏和错误码均未绕过；Registry 自身只负责注册、查找、稳定顺序和契约导出。
 
 新增普通本地工具只需创建合法 `ToolSpec` 并注册到 Registry，不需要修改 Router、`create_agent` 或 Middleware。`LocalToolProvider` 复用精确、区分大小写的 `has_permission()`，仅当 Context 满足全部 `required_permissions` 时才向模型暴露工具；空权限要求始终可见。过滤保持 Registry 顺序，不执行完整 Policy、handler、Runtime 或审计，也不会因审批、风险等级或暂缺幂等键隐藏工具。
 
-模型伪造未绑定的隐藏名称时沿用框架未知工具路径，只返回 `unknown_tool`，不证明工具是否存在，也不泄漏 description、参数 Schema 或缺失权限。模型可见性不是授权替代：本地真实调用仍进入 `ToolRegistry.dispatch() → ToolRuntime.execute()` 做最终权限与执行期治理；MCP Provider 和官方 adapter interceptor 复用同一个 Server Access Policy。多工具源合并保持稳定顺序并拒绝重名。
+模型伪造未绑定的隐藏名称时沿用框架未知工具路径，只返回 `unknown_tool`，不证明工具是否存在，也不泄漏 description、参数 Schema 或缺失权限。模型可见性不是授权替代：本地真实调用仍进入 `execute_registered_tool() → ToolRuntime.execute()` 做最终权限与执行期治理；MCP Provider 和官方 adapter interceptor 复用同一个 Server Access Policy，并保持独立于本地 ToolRuntime。多工具源合并保持稳定顺序并拒绝重名。
 
 模型—工具循环由 `langchain.agents.create_agent` 构建；其内部使用 LangGraph 标准 model/tools 节点处理 Pydantic 校验、同轮调用和基础 ToolMessage。动态工具通过 Middleware 覆盖请求。`ModelCallLimitMiddleware` 和 `ToolCallLimitMiddleware` 分别执行单次 run 的模型与工具调用上限，直接 Runtime 调用还设置 `recursion_limit` 作为框架级最终兜底。
 
@@ -1009,13 +1012,14 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   │   ├── knowledge_base.py    # 文档、chunk 和检索工具
 │   │   ├── compare_documents.py # 双文档证据对比
 │   │   ├── context.py           # 请求级工具调用上下文
-│   │   ├── dispatch.py          # 工具分发与调用日志
+│   │   ├── contracts.py         # ToolSpec、风险和审计输出契约
+│   │   ├── runtime.py           # 唯一执行入口与 ToolRuntime 治理
 │   │   ├── web_search.py        # DDGS 调用、结果规范化和公开异常映射
 │   │   ├── web_download.py      # HTML/PDF 共用的 hardened 有限下载适配
 │   │   ├── web_fetch.py         # HTML/XHTML/纯文本的 Trafilatura 提取
 │   │   ├── web_pdf_fetch.py     # PDF magic、pypdf 页范围与元数据提取
 │   │   ├── mcp/                 # MCP 配置、discovery、bridge、Provider 与安全序列化
-│   │   ├── registry.py          # 工具注册和分发
+│   │   ├── registry.py          # 工具注册、查找、顺序和契约导出
 │   │   └── schemas.py           # 工具参数模型
 │   ├── services/
 │   │   ├── chat_models.py       # 框架无关请求、结果和内部上下文

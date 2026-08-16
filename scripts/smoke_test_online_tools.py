@@ -1,6 +1,6 @@
 """受治理 Online Tools 的手动冒烟验证程序。
 
-用途：通过正式 ToolRegistry/ToolRuntime 分别验证网页搜索、网页抓取和 PDF 抓取。
+用途：通过唯一本地执行入口分别验证网页搜索、网页抓取和 PDF 抓取。
 输入：search/fetch/pdf 子命令、目标查询或 URL，以及当前工具权限和网络配置。
 输出：脱敏且限制长度的 JSON 摘要，并用退出码区分成功、执行失败和权限不足。
 边界：会访问真实外部网络，仅供人工显式运行；不会由 Pytest 或 CI 自动触发。
@@ -26,6 +26,7 @@ from app.tools.context import (  # noqa: E402
     build_default_tool_context,
 )
 from app.tools.registry import ToolRegistry, get_tool_registry  # noqa: E402
+from app.tools.runtime import execute_registered_tool  # noqa: E402
 
 
 PERMISSIONS = {
@@ -36,7 +37,7 @@ PERMISSIONS = {
 
 
 def build_context(tool_name: str) -> ToolInvocationContext:
-    """为受治理分发构造显式的默认主体调用上下文。"""
+    """为受治理执行构造显式的默认主体调用上下文。"""
     source = "manual_online_tools_smoke"
     default = build_default_tool_context(source=source)
     return ToolInvocationContext(
@@ -143,7 +144,7 @@ def run_command(
     *,
     registry: ToolRegistry | None = None,
 ) -> int:
-    """检查权限、经 Runtime 分发真实工具，并统一退出码。"""
+    """检查权限、经唯一入口执行真实工具，并统一退出码。"""
     tool_name, tool_args = _command_spec(args)
     context = build_context(tool_name)
     required_permission = PERMISSIONS[tool_name]
@@ -156,10 +157,11 @@ def run_command(
         return 2
     started = time.perf_counter()
     try:
-        # 这里刻意走正式注册表边界，确保权限、超时和错误合同都参与验证。
-        result = (registry or get_tool_registry()).dispatch(
-            tool_name,
-            tool_args,
+        # 这里刻意走唯一执行入口，确保权限、超时和错误合同都参与验证。
+        result = execute_registered_tool(
+            registry=registry or get_tool_registry(),
+            tool_name=tool_name,
+            tool_args=tool_args,
             context=context,
         )
     except Exception as exc:

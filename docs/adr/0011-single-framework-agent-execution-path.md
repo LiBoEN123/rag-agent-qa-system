@@ -4,6 +4,10 @@
 - 日期：2026-07-28
 - 决策者：Project Maintainer
 
+> 2026-08-16 修订：旧 `ToolRegistry.dispatch` plumbing 已按
+> [ADR 0004 修订说明](0004-registry-driven-tool-discovery.md#2026-08-16-修订说明)
+> 收口为 `execute_registered_tool → ToolRuntime.execute`；下文保留当时决策原文。
+
 ## 背景
 
 父图在迁移到 LangChain `create_agent` 后仍同时保留 `plan → execute` 兼容链。正常 `agent` 请求由框架管理模型—工具循环，但显式旧 action、短路回答和部分模型失败仍可能进入 Planner/Executor。旧 Executor 还依赖第二套闭包式 StructuredTool 适配，框架事件转换则为了复用其中的 observation/trace 逻辑构造虚假的 `AgentPlanStep`。

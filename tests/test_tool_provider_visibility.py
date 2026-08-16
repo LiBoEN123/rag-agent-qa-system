@@ -14,6 +14,7 @@ from app.tools.providers import LocalToolProvider
 from app.tools.providers.base import is_tool_visible
 from app.tools.registry import ToolRegistry
 from app.tools.result import tool_success
+from app.tools.runtime import execute_registered_tool
 from tests.support.agent_runtime import build_agent_harness
 
 
@@ -297,16 +298,17 @@ def test_forged_hidden_tool_is_unknown_without_metadata_leak(monkeypatch):
     assert output["result"]["answer"] == "hidden tool handled safely"
 
 
-def test_direct_registry_dispatch_remains_runtime_authorized():
+def test_direct_execution_entry_remains_runtime_authorized():
     registry = ToolRegistry()
     calls: list = []
     registry.register(
         _spec("private_tool", calls, required_permissions=("documents:read",))
     )
 
-    result = registry.dispatch(
-        "private_tool",
-        {"text": "blocked"},
+    result = execute_registered_tool(
+        registry=registry,
+        tool_name="private_tool",
+        tool_args={"text": "blocked"},
         context=ToolInvocationContext(trace_id="trace-direct"),
     )
     assert result["error_code"] == "permission_denied"

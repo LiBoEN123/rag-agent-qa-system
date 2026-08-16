@@ -10,6 +10,7 @@ from app.agent.results import create_agent_result
 from app.config import AppSettings
 from app.contracts.chat import AgentResultStatus
 from app.services.chat_service import ChatServiceDependencies
+from app.tools import runtime as tool_runtime
 from app.tools.registry import ToolRegistry
 from scripts.evaluation import agent as agent_evaluation
 from scripts.evaluation import runner
@@ -68,19 +69,27 @@ def test_validate_only_never_runs_agent_rag_or_creates_output(
 
 
 def test_capture_tool_output_keys_never_keeps_values(monkeypatch):
-    def fake_dispatch(registry, name, args=None, *, context=None):
-        del registry, args, context
+    def fake_execute(*, registry, tool_name, tool_args=None, context=None):
+        del registry, tool_args, context
         return {
             "status": "success",
             "ok": True,
-            "tool_name": name,
+            "tool_name": tool_name,
             "output": {"result": 7, "private_value": "must-not-persist"},
         }
 
-    monkeypatch.setattr(ToolRegistry, "dispatch", fake_dispatch)
+    monkeypatch.setattr(
+        tool_runtime,
+        "execute_registered_tool",
+        fake_execute,
+    )
 
     with agent_evaluation.capture_tool_output_keys() as records:
-        ToolRegistry().dispatch("simple_calculator", {"expression": "1+2"})
+        tool_runtime.execute_registered_tool(
+            registry=ToolRegistry(),
+            tool_name="simple_calculator",
+            tool_args={"expression": "1+2"},
+        )
 
     assert records == [
         {

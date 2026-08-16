@@ -1,6 +1,6 @@
 """工具注册表模块。
 
-管理工具查询和分发，并注册系统内置工具集合。
+管理工具注册与查询，并注册系统内置工具集合。
 """
 
 from functools import lru_cache
@@ -39,7 +39,7 @@ from app.tools.web_search import web_search
 
 
 class ToolRegistry:
-    """统一管理工具注册、查询和分发。"""
+    """统一管理工具注册、查询和稳定顺序。"""
 
     def __init__(self):
         """初始化空工具注册表。"""
@@ -66,24 +66,6 @@ class ToolRegistry:
     def contract_specs(self) -> list[dict]:
         """返回完整且可序列化的工具契约。"""
         return [spec.to_contract_dict() for spec in self._tools.values()]
-
-    def dispatch(
-        self,
-        name: str,
-        args: dict | None = None,
-        *,
-        context: ToolInvocationContext | None = None,
-    ) -> dict:
-        """按名称通过统一 ToolRuntime 分发工具调用。"""
-        from app.tools.runtime import execute_registered_tool
-
-        return execute_registered_tool(
-            registry=self,
-            tool_name=name,
-            tool_args=args,
-            context=context,
-        )
-
 
 def _handle_simple_calculator(
     args: dict,

@@ -17,11 +17,21 @@ class FakeRegistry:
         self.error = error
         self.calls = []
 
-    def dispatch(self, name, args, *, context):
-        self.calls.append((name, args, context))
+    def execute(self, tool_name, tool_args, *, context):
+        self.calls.append((tool_name, tool_args, context))
         if self.error:
             raise self.error
         return self.result
+
+
+@pytest.fixture(autouse=True)
+def route_execution_through_fake_registry(monkeypatch):
+    """让 CLI 测试替身仍经过唯一函数形态而不创建真实 Runtime。"""
+
+    def fake_execute(*, registry, tool_name, tool_args=None, context=None):
+        return registry.execute(tool_name, tool_args, context=context)
+
+    monkeypatch.setattr(smoke, "execute_registered_tool", fake_execute)
 
 
 def _context(*permissions):
@@ -62,7 +72,7 @@ def _context(*permissions):
         ),
     ],
 )
-def test_subcommands_dispatch_through_registry(
+def test_subcommands_use_registered_tool_execution_entry(
     monkeypatch,
     argv,
     permission,
@@ -80,7 +90,7 @@ def test_subcommands_dispatch_through_registry(
     assert registry.calls[0][2].permissions == (permission,)
 
 
-def test_permission_failure_returns_two_without_dispatch(monkeypatch, capsys):
+def test_permission_failure_returns_two_without_execution(monkeypatch, capsys):
     monkeypatch.setattr(smoke, "build_context", lambda name: _context())
     registry = FakeRegistry()
     args = smoke.build_parser().parse_args(["search", "--query", "news"])
@@ -90,7 +100,7 @@ def test_permission_failure_returns_two_without_dispatch(monkeypatch, capsys):
     assert "web:search" in capsys.readouterr().err
 
 
-def test_dispatch_exception_is_redacted_and_returns_one(monkeypatch, capsys):
+def test_execution_exception_is_redacted_and_returns_one(monkeypatch, capsys):
     monkeypatch.setattr(
         smoke,
         "build_context",
@@ -107,7 +117,7 @@ def test_dispatch_exception_is_redacted_and_returns_one(monkeypatch, capsys):
     assert "secret detail" not in captured.err
 
 
-def test_debug_reraises_dispatch_exception(monkeypatch):
+def test_debug_reraises_execution_exception(monkeypatch):
     monkeypatch.setattr(
         smoke,
         "build_context",
@@ -140,4 +150,3 @@ def test_runtime_failure_result_returns_one(monkeypatch):
     args = smoke.build_parser().parse_args(["search", "--query", "news"])
 
     assert smoke.run_command(args, registry=registry) == 1
-

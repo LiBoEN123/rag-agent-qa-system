@@ -222,6 +222,22 @@ def inspect_runtime(
     knowledge_source = (
         PROJECT_ROOT / "app" / "tools" / "knowledge_base.py"
     ).read_text(encoding="utf-8")
+    framework_tools_source = (
+        PROJECT_ROOT / "app" / "agent" / "framework_tools.py"
+    ).read_text(encoding="utf-8")
+    registry_source = (
+        PROJECT_ROOT / "app" / "tools" / "registry.py"
+    ).read_text(encoding="utf-8")
+    tool_runtime_source = (
+        PROJECT_ROOT / "app" / "tools" / "runtime.py"
+    ).read_text(encoding="utf-8")
+    local_provider_source = (
+        PROJECT_ROOT / "app" / "tools" / "providers" / "local.py"
+    ).read_text(encoding="utf-8")
+    mcp_source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((PROJECT_ROOT / "app" / "tools" / "mcp").glob("*.py"))
+    )
     current_architecture = (
         PROJECT_ROOT / "docs" / "architecture" / "current-system.md"
     ).read_text(encoding="utf-8")
@@ -286,6 +302,37 @@ def inspect_runtime(
             "rag_graph_is_tool_owned",
             "run_rag_subgraph(" in knowledge_source,
             "knowledge base tool invokes independent RAG graph",
+        ),
+        _check(
+            "local_tool_execution_entry_is_unique",
+            "tool_runtime.execute_registered_tool(" in framework_tools_source
+            and "registry.dispatch(" not in framework_tools_source
+            and "def dispatch(" not in registry_source
+            and not (PROJECT_ROOT / "app" / "tools" / "dispatch.py").exists(),
+            "StructuredTool calls execute_registered_tool without dispatch wrappers",
+        ),
+        _check(
+            "local_handler_is_runtime_owned",
+            "return runtime.execute(" in tool_runtime_source
+            and tool_runtime_source.count("spec.handler") == 1
+            and "spec.handler" not in framework_tools_source
+            and "spec.handler" not in local_provider_source,
+            "only ToolRuntime submits the local ToolSpec handler",
+        ),
+        _check(
+            "local_provider_is_discovery_only",
+            "def list_specs(" in local_provider_source
+            and "is_tool_visible(" in local_provider_source
+            and "execute_registered_tool" not in local_provider_source
+            and ".handler" not in local_provider_source,
+            "LocalToolProvider only preserves registry order and visibility",
+        ),
+        _check(
+            "mcp_governance_is_independent",
+            "class McpToolCallInterceptor" in mcp_source
+            and "def build_governed_mcp_tool(" in mcp_source
+            and "from app.tools.runtime" not in mcp_source,
+            "MCP keeps its adapter interceptor instead of local ToolRuntime",
         ),
         _check(
             "no_parent_event_projection_cursor",
@@ -359,6 +406,13 @@ def inspect_runtime(
         "registered_tools": registered,
         "default_visible_tools": visible,
         "tool_visibility": visibility,
+        "local_tool_execution": {
+            "provider": "LocalToolProvider.list_specs",
+            "adapter": "request-level StructuredTool",
+            "entry": "execute_registered_tool",
+            "runtime": "ToolRuntime.execute",
+            "terminal": "ToolSpec.handler",
+        },
         "module_boundaries": module_boundaries,
         "mcp_client": {
             "enabled_by_default": False,

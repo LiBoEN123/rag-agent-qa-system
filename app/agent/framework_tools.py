@@ -12,6 +12,7 @@ from pydantic import ConfigDict, create_model
 
 from app.agent.guardrails import build_unknown_tool_call_fingerprint
 from app.agent.model import get_agent_tool_provider
+from app.tools import runtime as tool_runtime
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from app.tools.errors import ToolErrorCode
@@ -23,10 +24,10 @@ from app.tools.result import tool_error
 
 
 def _provider_registry(provider: ToolProvider) -> ToolRegistry:
-    """取得 Provider 所属 Registry，并拒绝绕过统一分发。"""
+    """取得 Provider 所属 Registry，供唯一执行入口复用。"""
     registry = getattr(provider, "registry", None)
     if not isinstance(registry, ToolRegistry):
-        raise ValueError("Agent ToolProvider 必须暴露用于统一分发的 ToolRegistry")
+        raise ValueError("Agent ToolProvider 必须暴露 ToolSpec 所属的 ToolRegistry")
     return registry
 
 
@@ -93,7 +94,7 @@ def _build_tool(
         runtime: ToolRuntime[ToolInvocationContext],
         **tool_args: Any,
     ) -> tuple[str, object]:
-        """通过项目 Registry/Runtime 执行，不直接接触 handler。"""
+        """通过项目唯一执行入口进入 Runtime，不直接接触 handler。"""
         context = runtime.context
         if not isinstance(context, ToolInvocationContext):
             raise RuntimeError("ToolRuntime did not inject ToolInvocationContext")
@@ -107,7 +108,12 @@ def _build_tool(
         message = governance.govern_tool_call(
             request,
             lambda _request: _tool_message(
-                registry.dispatch(spec.name, tool_args, context=context),
+                tool_runtime.execute_registered_tool(
+                    registry=registry,
+                    tool_name=spec.name,
+                    tool_args=tool_args,
+                    context=context,
+                ),
                 name=spec.name,
                 call_id=runtime.tool_call_id or "",
             ),
@@ -118,7 +124,7 @@ def _build_tool(
         runtime: ToolRuntime[ToolInvocationContext],
         **tool_args: Any,
     ) -> tuple[str, object]:
-        """异步 Agent 复用 Registry/Runtime 的受控同步执行边界。"""
+        """异步 Agent 复用本地工具的受控同步执行边界。"""
         context = runtime.context
         if not isinstance(context, ToolInvocationContext):
             raise RuntimeError("ToolRuntime did not inject ToolInvocationContext")
@@ -129,10 +135,11 @@ def _build_tool(
             runtime=runtime,
             tool=structured_tool,
         )
-        async def dispatch(_request):
-            result = registry.dispatch(
-                spec.name,
-                tool_args,
+        async def execute(_request):
+            result = tool_runtime.execute_registered_tool(
+                registry=registry,
+                tool_name=spec.name,
+                tool_args=tool_args,
                 context=context,
             )
             return _tool_message(
@@ -141,7 +148,7 @@ def _build_tool(
                 call_id=runtime.tool_call_id or "",
             )
 
-        message = await governance.agovern_tool_call(request, dispatch)
+        message = await governance.agovern_tool_call(request, execute)
         return str(message.content), message.artifact
 
     structured_tool = StructuredTool.from_function(
@@ -242,7 +249,7 @@ def build_framework_tools(
     seen: set[str] = set()
     for spec in specs:
         if not isinstance(spec, ToolSpec) or registry.get(spec.name) is not spec:
-            raise ValueError("Provider ToolSpec 必须属于其分发 Registry")
+            raise ValueError("Provider ToolSpec 必须属于其声明的 Registry")
         if spec.name in seen:
             raise ValueError(f"tool {spec.name!r} 重复，禁止静默覆盖")
         seen.add(spec.name)

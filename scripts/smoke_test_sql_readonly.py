@@ -1,6 +1,6 @@
 """受治理只读 SQL 工具的手动冒烟程序。
 
-用途：通过正式 ToolRegistry/ToolRuntime 手动验证表清单、有限 Schema 和只读查询。
+用途：通过唯一本地执行入口手动验证表清单、有限 Schema 和只读查询。
 输入：list/describe/query 子命令，以及当前 SQL_* 和 TOOL_DEFAULT_PERMISSIONS 配置。
 输出：不含数据库 URL/凭据的有限 JSON 摘要，并用退出码表达配置或执行结果。
 边界：可能连接显式配置的真实业务数据库，仅供人工运行；不会由 Pytest/CI 自动执行。
@@ -22,6 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from app.config import get_settings  # noqa: E402
 from app.tools.context import build_default_tool_context  # noqa: E402
 from app.tools.registry import get_tool_registry  # noqa: E402
+from app.tools.runtime import execute_registered_tool  # noqa: E402
 
 
 def _tool_call(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
@@ -71,7 +72,7 @@ def _limited_output(command: str, output: object) -> dict[str, Any]:
 
 
 def run_command(args: argparse.Namespace) -> int:
-    """检查显式启用与授权后，经 Registry/Runtime 分发一次调用。"""
+    """检查显式启用与授权后，经唯一执行入口调用一次工具。"""
     settings = get_settings()
     if not settings.sql_tool_enabled:
         print(
@@ -90,10 +91,11 @@ def run_command(args: argparse.Namespace) -> int:
         return 2
 
     tool_name, tool_args = _tool_call(args)
-    # 刻意走正式 Registry/Runtime，确保权限、超时、审计与错误治理生效。
-    result = get_tool_registry().dispatch(
-        tool_name,
-        tool_args,
+    # 刻意走唯一执行入口，确保权限、超时、审计与错误治理生效。
+    result = execute_registered_tool(
+        registry=get_tool_registry(),
+        tool_name=tool_name,
+        tool_args=tool_args,
         context=context,
     )
     summary = {

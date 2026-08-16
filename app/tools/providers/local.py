@@ -28,7 +28,7 @@ class LocalToolProvider:
 
     @property
     def registry(self) -> ToolRegistry:
-        """返回工具定义所属注册表，供适配层统一分发。"""
+        """返回工具定义所属注册表，供适配层绑定唯一执行入口。"""
         return self._registry
 
     def list_specs(

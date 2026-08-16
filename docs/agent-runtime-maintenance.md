@@ -80,14 +80,15 @@ Router 只决定 `agent`、`direct_answer` 或 `clarify`，不决定具体工具
 
 ```text
 StructuredTool
-→ ToolRegistry.dispatch
+→ execute_registered_tool
 → ToolRuntime.execute
 → ToolSpec.handler
 → 标准 ToolResult
 → 配对 ToolMessage
 ```
 
-模型可见性不是授权替代。Provider 只过滤 Schema；最终权限、策略、审批、幂等、审计、
+模型可见性不是授权替代。Provider 只过滤 Schema；Registry 只负责注册和查找；
+`execute_registered_tool` 是唯一公共本地执行入口。最终权限、策略、审批、幂等、审计、
 超时、有限重试、脱敏和输出模型仍由 ToolRuntime 独占。
 
 `search_knowledge_base` 也遵守这条链。其 handler 先取得候选 chunks，再使用 Context 中

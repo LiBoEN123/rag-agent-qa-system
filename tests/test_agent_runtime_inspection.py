@@ -47,6 +47,10 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "chat_service_consumes_agent_result",
         "streaming_uses_create_agent_directly",
         "rag_graph_is_tool_owned",
+        "local_tool_execution_entry_is_unique",
+        "local_handler_is_runtime_owned",
+        "local_provider_is_discovery_only",
+        "mcp_governance_is_independent",
         "no_parent_event_projection_cursor",
         "agent_result_contract",
         "status_policy_complete",
@@ -79,6 +83,13 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "config_version": 1,
         "transport": "streamable_http",
         "dependency": "0.3.2",
+    }
+    assert report["local_tool_execution"] == {
+        "provider": "LocalToolProvider.list_specs",
+        "adapter": "request-level StructuredTool",
+        "entry": "execute_registered_tool",
+        "runtime": "ToolRuntime.execute",
+        "terminal": "ToolSpec.handler",
     }
     assert {
         item["result_status"] for item in report["chat_status_policy"]

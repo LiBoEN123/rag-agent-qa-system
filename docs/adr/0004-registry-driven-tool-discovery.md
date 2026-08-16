@@ -69,3 +69,23 @@ Router 只允许 `agent`、`rag_fast_path`、`direct_answer` 和 `clarify` 四�
 2. 外部 Provider 必须定义自己的请求级可见性规则，同时保留本地 Runtime 最终授权边界。
 3. 后续独立 PR 再评估删除旧具体工具 decision 和 legacy Planner/Executor 入口。
 4. 在引入任何写工具前完成持久化幂等、人工审批 interrupt 与恢复语义。
+
+## 2026-08-16 修订说明
+
+Phase 4 保留本 ADR 关于 Registry 事实来源、Provider 请求级可见性、测试隔离和 Runtime
+最终授权的决策，但收口了其后逐步形成的纯转发 plumbing。当前本地执行链修订为：
+
+```text
+LocalToolProvider
+→ ToolRegistry 中已注册的 ToolSpec
+→ 请求级 StructuredTool
+→ execute_registered_tool
+→ ToolRuntime.execute
+→ ToolSpec.handler
+```
+
+`ToolRegistry.dispatch()` 与旧 `dispatch_tool()` 门面已经删除。Registry 只负责注册、
+重名拒绝、查找、稳定顺序和契约导出；`execute_registered_tool()` 是唯一公共本地执行
+入口，继续按 Registry 复用 ToolRuntime。Provider 不执行工具，MCP 仍使用独立的 adapter
+interceptor 安全边界。本修订同时取代 ADR 0003 和 ADR 0011 中对旧 dispatch 链路的当前
+实现描述，不改变那些 ADR 记录的历史背景。

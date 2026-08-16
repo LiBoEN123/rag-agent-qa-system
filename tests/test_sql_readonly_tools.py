@@ -1,4 +1,4 @@
-"""三个 SQL ToolSpec、Runtime 分发与 Framework Agent 集成测试。"""
+"""三个 SQL ToolSpec、Runtime 执行与 Framework Agent 集成测试。"""
 
 import json
 
@@ -11,6 +11,7 @@ from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolAuditOutputMode, ToolRiskLevel
 from app.tools.providers import LocalToolProvider
 from app.tools.registry import ToolRegistry, register_default_tools
+from app.tools.runtime import execute_registered_tool
 from tests.support.agent_runtime import build_agent_harness
 
 
@@ -75,9 +76,10 @@ def test_query_args_and_outputs_are_pydantic_validated(sql_registry):
 
 
 def test_runtime_permission_gate_runs_before_sql_handler(sql_registry):
-    denied = sql_registry.dispatch(
-        "list_sql_tables",
-        {},
+    denied = execute_registered_tool(
+        registry=sql_registry,
+        tool_name="list_sql_tables",
+        tool_args={},
         context=ToolInvocationContext(source="sql_tool_test"),
     )
 
@@ -101,7 +103,13 @@ def test_runtime_executes_three_sql_tools_with_structured_outputs(sql_registry):
     ]
 
     results = [
-        sql_registry.dispatch(name, args, context=context) for name, args in calls
+        execute_registered_tool(
+            registry=sql_registry,
+            tool_name=name,
+            tool_args=args,
+            context=context,
+        )
+        for name, args in calls
     ]
 
     assert all(result["ok"] is True for result in results)
@@ -112,9 +120,10 @@ def test_runtime_executes_three_sql_tools_with_structured_outputs(sql_registry):
 
 
 def test_runtime_returns_safe_specific_sql_error(sql_registry):
-    result = sql_registry.dispatch(
-        "query_sql_readonly",
-        {"sql": "DELETE FROM students"},
+    result = execute_registered_tool(
+        registry=sql_registry,
+        tool_name="query_sql_readonly",
+        tool_args={"sql": "DELETE FROM students"},
         context=ToolInvocationContext(
             permissions=("database:read",),
             source="sql_tool_test",

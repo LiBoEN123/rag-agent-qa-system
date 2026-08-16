@@ -1,4 +1,4 @@
-"""工具治理 Runtime、旧分发入口和 LangChain 适配集成测试。"""
+"""工具治理 Runtime、唯一执行入口和 LangChain 适配集成测试。"""
 
 import json
 
@@ -9,10 +9,9 @@ from app.agent.tool_events import build_tool_trace
 from app.tools.audit import ToolAuditEvent
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolRiskLevel, ToolSpec
-from app.tools.dispatch import dispatch_tool
-from app.tools.registry import ToolRegistry
+from app.tools.registry import ToolRegistry, get_tool_registry
 from app.tools.result import tool_success
-from app.tools.runtime import ToolRuntime
+from app.tools.runtime import ToolRuntime, execute_registered_tool
 
 
 class IntegrationArgs(BaseModel):
@@ -86,11 +85,12 @@ def test_external_write_returns_structured_approval_without_handler_execution():
     runtime.close()
 
 
-def test_legacy_dispatch_uses_default_read_only_service_context():
-    result = dispatch_tool(
-        "simple_calculator",
-        {"expression": "1 + 2"},
-        trace_id="legacy-trace",
+def test_execution_entry_runs_default_registry_tool():
+    result = execute_registered_tool(
+        registry=get_tool_registry(),
+        tool_name="simple_calculator",
+        tool_args={"expression": "1 + 2"},
+        context=ToolInvocationContext(trace_id="direct-trace"),
     )
     assert result["ok"] is True
     assert result["governance"]["decision"] == "allow"

@@ -2,7 +2,9 @@ import app.rag as rag
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 import app.tools.compare_documents as compare_documents_module
-import app.tools.dispatch as tool_dispatch
+from app.tools.context import build_default_tool_context
+from app.tools.registry import get_tool_registry
+from app.tools.runtime import execute_registered_tool
 
 
 compare_documents_tool = compare_documents_module.compare_documents_tool
@@ -241,8 +243,11 @@ def test_compare_llm_uses_compare_factory_and_parses_business_fields(monkeypatch
     assert "证据 B" in model.calls[0][1].content
 
 
-def test_dispatch_compare_documents_propagates_trace_id(monkeypatch, tmp_path):
-    """请求 trace_id 经分发器和注册表传到文档对比模型网关。"""
+def test_execution_entry_propagates_compare_documents_trace_id(
+    monkeypatch,
+    tmp_path,
+):
+    """请求 trace_id 经唯一执行入口传到文档对比模型网关。"""
     fake_chunks = [
         {
             "chunk_id": 1,
@@ -270,14 +275,15 @@ def test_dispatch_compare_documents_propagates_trace_id(monkeypatch, tmp_path):
         "invoke_text",
         fake_invoke_text,
     )
-    result = tool_dispatch.dispatch_tool(
-        "compare_documents",
-        {
+    result = execute_registered_tool(
+        registry=get_tool_registry(),
+        tool_name="compare_documents",
+        tool_args={
             "query": "普通本科四年制最长学习年限",
             "doc_a": "old.md",
             "doc_b": "new.md",
         },
-        trace_id="trace-tool",
+        context=build_default_tool_context(trace_id="trace-tool"),
     )
 
     assert result["ok"] is True

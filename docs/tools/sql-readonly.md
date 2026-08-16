@@ -89,8 +89,7 @@ AST 检查不能替代数据库权限。SQLite 由文件级 `mode=ro` + `query_o
 ```text
 LangChain create_agent
 → 请求级 governed StructuredTool
-→ 请求级 StructuredTool
-→ ToolRegistry.dispatch
+→ execute_registered_tool
 → ToolRuntime.execute
 → SQL service
 → sqlglot / SQLAlchemy

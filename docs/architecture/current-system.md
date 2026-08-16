@@ -18,7 +18,8 @@ FastAPI application
 → Query Rewrite
 → Agent Runtime
 → create_agent
-→ Local ToolRegistry / ToolRuntime 或 governed MCP adapter tools
+→ LocalToolProvider / execute_registered_tool / ToolRuntime
+  或 governed MCP adapter tools
 → AgentRunResult
 → ChatStatusPolicy
 → ChatServiceOutcome
@@ -30,7 +31,7 @@ FastAPI application
 ```text
 create_agent
 → search_knowledge_base StructuredTool
-→ ToolRegistry.dispatch
+→ execute_registered_tool
 → ToolRuntime.execute
 → search_knowledge_base handler
 → 独立 RAG Graph
@@ -117,8 +118,21 @@ Router 只决定 `agent`、`direct_answer` 或 `clarify`，不选择具体工具
 本地工具的执行期治理始终经过：
 
 ```text
+LocalToolProvider.list_specs
+→ request-level StructuredTool
+→ execute_registered_tool()
+→ ToolRuntime.execute()
+→ ToolSpec.handler
+```
+
+`ToolRegistry` 只拥有 ToolSpec 注册、重名拒绝、按名查找、稳定顺序列举和契约导出；
+`execute_registered_tool()` 是生产本地工具的唯一公共执行入口，按 Registry 取得进程内
+共享 Runtime 后调用 `ToolRuntime.execute()`。Registry 不再提供 dispatch 方法，项目也
+不再保留额外的 `dispatch_tool` 兼容门面。
+
+```text
 StructuredTool
-→ ToolRegistry.dispatch()
+→ execute_registered_tool()
 → ToolRuntime.execute()
 → ToolSpec.handler
 ```
@@ -130,11 +144,15 @@ StructuredTool
 `langchain-mcp-adapters.MultiServerMCPClient` discovery 并缓存受治理的只读工具。
 MCP adapter 工具与本地工具进入同一个 `create_agent`，继续受请求权限、调用预算、
 错误分类、重复调用和安全输出边界约束。`/chat`、`/chat/stream`、ChatService 与 SSE
-projector 没有 MCP 专属分支。完整配置见[受治理的 MCP Client 工具源](../tools/mcp-client.md)。
+projector 没有 MCP 专属分支。MCP 不进入本地 ToolRuntime；其执行链保持为
+`McpToolProvider → governed MCP StructuredTool → adapter coroutine →
+McpToolCallInterceptor → remote MCP server`，继续独立承担 Server Access Policy、审批、
+超时、审计、序列化和 fail-closed。完整配置见
+[受治理的 MCP Client 工具源](../tools/mcp-client.md)。
 
 ## 知识库工具与独立 RAG Graph
 
-`search_knowledge_base` 是普通 StructuredTool。它先经过 Registry 和 ToolRuntime 的
+`search_knowledge_base` 是普通 StructuredTool。它先经过唯一执行入口和 ToolRuntime 的
 统一治理，再由 handler 检索候选 chunks，并调用 `app.rag.graph.run_rag_subgraph()`。
 传入 RAG 的问题是 Query Rewrite 后的 `effective_question`，`top_k`、
 `decompose_top_k` 和 `trace_id` 来自请求级 Tool Context。
@@ -217,9 +235,10 @@ git diff --check
 ```
 
 Runtime Inspection 检查直接 `create_agent` 节点、Parent Graph 文件/符号不存在、默认
-ToolSpec 与可选 SQL/MCP 合同、知识库 Tool 到 RAG Graph 的边界、同步/流式直接调用、
-唯一 Result/Status Policy、应用组合根和当前文档。Import Linter 负责完整生产 import
-graph。自动测试用 fake 隔离模型、网络、RAG 索引和生产持久化副作用。
+ToolSpec 与可选 SQL/MCP 合同、本地工具唯一执行入口和 Runtime handler 所有权、MCP
+独立治理、知识库 Tool 到 RAG Graph 的边界、同步/流式直接调用、唯一 Result/Status
+Policy、应用组合根和当前文档。Import Linter 负责完整生产 import graph。自动测试用
+fake 隔离模型、网络、RAG 索引和生产持久化副作用。
 
 ## 已知产品边界
 

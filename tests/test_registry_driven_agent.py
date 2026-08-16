@@ -12,6 +12,7 @@ from app.tools.contracts import ToolSpec
 from app.tools.providers import LocalToolProvider
 from app.tools.registry import ToolRegistry, get_tool_registry
 from app.tools.result import tool_success
+from app.tools.runtime import execute_registered_tool
 from tests.support.agent_runtime import build_agent_harness
 
 
@@ -385,8 +386,8 @@ def test_provider_request_isolation(monkeypatch):
     ]
 
 
-def test_direct_dispatch_still_enforces_runtime_permissions():
-    """绕过模型可见性直接分发时，最终权限仍由 ToolRuntime 拒绝。"""
+def test_direct_execution_entry_still_enforces_runtime_permissions():
+    """绕过模型可见性直接执行时，最终权限仍由 ToolRuntime 拒绝。"""
     registry = ToolRegistry()
     called: list[str] = []
 
@@ -410,9 +411,10 @@ def test_direct_dispatch_still_enforces_runtime_permissions():
         trace_id="trace-denied",
         source="permission_test",
     )
-    result = registry.dispatch(
-        "protected_echo",
-        {"text": "blocked"},
+    result = execute_registered_tool(
+        registry=registry,
+        tool_name="protected_echo",
+        tool_args={"text": "blocked"},
         context=context,
     )
 

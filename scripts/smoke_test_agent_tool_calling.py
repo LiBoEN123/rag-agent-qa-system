@@ -9,13 +9,23 @@
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent.framework_tools import build_framework_tools
-from app.agent.model import get_agent_chat_model, get_agent_tool_provider
-from app.tools.context import build_default_tool_context
-from app.tools.redaction import redact_sensitive_data
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.agent.framework_tools import build_framework_tools  # noqa: E402
+from app.agent.model import (  # noqa: E402
+    get_agent_chat_model,
+    get_agent_tool_provider,
+)
+from app.tools.context import build_default_tool_context  # noqa: E402
+from app.tools.redaction import redact_sensitive_data  # noqa: E402
 
 
 SCENARIOS = (
@@ -57,7 +67,7 @@ def main() -> int:
         tool = tool_map.get(required_name)
         if tool is None:
             raise RuntimeError(f"模型工具列表缺少 {required_name}")
-        schema = tool.args_schema.model_json_schema()
+        schema = tool.tool_call_schema.model_json_schema()
         _print_json(f"{required_name}.args_schema", schema)
 
     bound_model = model.bind_tools(tools)
