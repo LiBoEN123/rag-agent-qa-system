@@ -21,6 +21,7 @@ FastAPI application
 → Local ToolRegistry / ToolRuntime 或 governed MCP adapter tools
 → AgentRunResult
 → ChatStatusPolicy
+→ ChatServiceOutcome
 → ChatResponse（同步 JSON 或 SSE final）
 ```
 
@@ -46,8 +47,21 @@ Chat Router、health Router 和 diagnostics Router；真实 RAG/Agent/MCP 资源
 
 `ChatService` 是同步与流式应用流程协调器：取得请求级 Settings 快照、读取 session
 历史、执行 Query Rewrite、调用 `run_agent()` 或 `stream_agent()`、应用唯一状态策略、
-安排 session 保存，并委托 `chat_telemetry` 完成 metrics、bad case 和调用链收尾。
-Service 模型不包含 FastAPI Request/Response，也不维护第二套 Agent State。
+安排 session 保存，并委托 `chat_telemetry` 完成 metrics、bad case、流式事件记账和
+调用链收尾。两条入口共享请求准备和 Result 收尾，差异只保留在同步/异步 Runtime
+执行方式和流式中间事件；`ChatServiceDependencies` 只表达 Settings、模型/Runtime、
+Session、持久化和时钟等外部边界，不注入稳定的 trace 构造/汇总纯函数。Service 模型
+不包含 FastAPI Request/Response，也不维护第二套 Agent State。
+
+```text
+handle  → prepare → run_agent    → finish Result → finalize
+stream  → prepare → stream_agent → finish Result → finalize
+```
+
+其中 `chat_service.py` 决定何时发送 `start/progress/tool/answer_delta/final/done`，
+`chat_telemetry.py` 决定事件如何更新 event count、首事件/首 delta、答案字符数、工具状态、
+最终答案一致性和 `client_disconnected`。客户端取消仍关闭下游 Agent stream，且不保存
+未完成的 assistant turn。
 
 `POST /chat` 保持同步 JSON 行为；`POST /chat/stream` 由同一个 Router 闭包和同一个
 Service 实例提供 SSE。流式执行直接调用

@@ -834,11 +834,6 @@ def execute_agent_case(
     from dataclasses import replace
 
     from app.agent.runtime import run_agent
-    from app.observability.metrics import (
-        attach_query_rewrite_trace,
-        build_query_rewrite_trace,
-        collect_trace_metrics,
-    )
     from app.services.chat_models import ChatServiceRequest
     from app.services.chat_service import (
         ChatService,
@@ -868,9 +863,6 @@ def execute_agent_case(
         settings_provider=lambda: settings,
         get_history=session.get_history,
         run_agent=run_runtime,
-        build_query_rewrite_trace=build_query_rewrite_trace,
-        attach_query_rewrite_trace=attach_query_rewrite_trace,
-        collect_trace_metrics=collect_trace_metrics,
         log_and_write_metrics=lambda item: captured_metrics.append(dict(item)),
         write_bad_cases=lambda item: None,
         append_message=session.append_message,

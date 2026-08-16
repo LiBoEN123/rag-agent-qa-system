@@ -194,9 +194,18 @@ flowchart TD
 请求上下文、调用已注入的 `ChatService`、设置状态码，并委托
 `app/api/responses.py` 的具体函数构造响应。Query Rewrite、Runtime 调用、状态策略
 和 session 由 `app/services/chat_service.py` 编排，metrics、bad case 与
-`tool_call_chain` 收尾位于 `app/services/chat_telemetry.py`。Router 只由
+`tool_call_chain` 收尾位于 `app/services/chat_telemetry.py`。同步与流式入口共享同一套
+请求准备（Settings 参数、Session History、Query Rewrite）和 Result 收尾（rewrite
+trace、Agent 耗时、trace metrics、`ChatStatusPolicy`、`ChatServiceOutcome`）；两条路径
+只在 `run_agent()` 与 `stream_agent()` 的执行方式及中间 SSE 事件上不同。流式事件数、
+首事件/首答案增量、增量字符数、工具完成状态、最终答案一致性和客户端断连也统一由
+`chat_telemetry.py` 记账。Router 只由
 `app.agent.runtime.prepare_agent_runtime_invocation()` 调用，因此聊天业务可脱离
 FastAPI 测试且不会形成第二个路由入口。
+
+`ChatServiceDependencies` 只保留 Settings、Session、Query Rewrite、Agent Runtime、
+持久化和时钟等可替换外部边界；构造/附加 rewrite trace 与汇总 trace metrics 的稳定
+纯函数由 Service 直接调用，不作为依赖函数表暴露。
 
 同步 API 请求/响应 Schema、HTTP 状态和 trace/total-cost 响应头保持不变；流式入口复用同一个 ChatService，完整 SSE 合同见 [聊天流式 API](docs/api/chat-streaming.md)。
 
@@ -362,7 +371,7 @@ python scripts/smoke_test_online_tools.py pdf \
 
 项目当前唯一 Agent Runtime 是 LangChain `create_agent` 返回的 CompiledStateGraph。旧手写循环和 Parent Agent Graph 都已删除，不提供双实现或运行时回滚开关；需要回滚版本时使用 Git commit、tag 或 release。
 
-同步请求链路为 `FastAPI application → Chat Router → ChatService → Session History / Query Rewrite → run_agent → 普通 Python Router → create_agent.invoke → Result 归一化 → Session / Metrics → API Response`。流式入口替换为 `stream_agent → create_agent.astream → 安全事件投影 → SSE`，最终结果仍回到同一状态策略和 Response mapper。正常 `/chat`、`/chat/stream`、离线评测和其他 Runtime 调用方共享 `app.agent.runtime` 中的同一个 Router 调用点。Router 不枚举工具意图，也不调用模型；它把普通请求交给能看到动态工具 Schema 的 Agent Model。
+同步请求链路为 `FastAPI application → Chat Router → ChatService prepare → run_agent → 普通 Python Router → create_agent.invoke → Result 归一化 → ChatService finish → Session / Telemetry → API Response`。流式入口只把执行段替换为 `stream_agent → create_agent.astream → 安全事件投影 → SSE`，最终 Result 仍回到同一个 finish、状态策略和 Response mapper。正常 `/chat`、`/chat/stream`、离线评测和其他 Runtime 调用方共享 `app.agent.runtime` 中的同一个 Router 调用点。Router 不枚举工具意图，也不调用模型；它把普通请求交给能看到动态工具 Schema 的 Agent Model。
 
 核心结构为：
 
@@ -1012,7 +1021,7 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   │   ├── chat_models.py       # 框架无关请求、结果和内部上下文
 │   │   ├── chat_stream_models.py # 框架无关流事件合同
 │   │   ├── chat_service.py      # 同步/流式 Query Rewrite、Runtime、状态策略和会话编排
-│   │   └── chat_telemetry.py    # metrics、bad case 和 tool_call_chain 收尾
+│   │   └── chat_telemetry.py    # metrics、bad case、stream accounting 和调用链收尾
 │   ├── llm/                     # 统一模型工厂、调用网关、Schema 和错误类型
 │   ├── storage/                 # SQLite、session 和 Agent trace 存储
 │   ├── observability/

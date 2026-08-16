@@ -11,11 +11,6 @@ from app.agent import framework_agent, framework_tools
 from app.agent import runtime as agent_runtime
 from app.agent.runtime import reset_agent_runtime, run_agent
 from app.rag import graph as rag_graph
-from app.observability.metrics import (
-    attach_query_rewrite_trace,
-    build_query_rewrite_trace,
-    collect_trace_metrics,
-)
 from app.services.chat_service import (
     ChatService,
     ChatServiceDependencies,
@@ -260,9 +255,6 @@ def test_chat_service_runs_real_create_agent_provider_and_runtime(
         get_history=lambda session_id: [],
         rewrite_query_with_history=rewrite,
         run_agent=run_agent,
-        build_query_rewrite_trace=build_query_rewrite_trace,
-        attach_query_rewrite_trace=attach_query_rewrite_trace,
-        collect_trace_metrics=collect_trace_metrics,
         log_and_write_metrics=lambda record: metric_writes.append(dict(record)),
         write_bad_cases=lambda record: bad_cases.append(dict(record)),
         append_message=lambda session_id, role, content: session_writes.append(
@@ -446,9 +438,6 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
         get_history=lambda session_id: [],
         rewrite_query_with_history=rewrite,
         run_agent=run_agent,
-        build_query_rewrite_trace=build_query_rewrite_trace,
-        attach_query_rewrite_trace=attach_query_rewrite_trace,
-        collect_trace_metrics=collect_trace_metrics,
         log_and_write_metrics=lambda record: metric_writes.append(dict(record)),
         write_bad_cases=lambda record: None,
         append_message=lambda session_id, role, content: session_writes.append(
@@ -640,9 +629,6 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
         get_history=lambda session_id: [],
         rewrite_query_with_history=rewrite,
         run_agent=run_agent,
-        build_query_rewrite_trace=build_query_rewrite_trace,
-        attach_query_rewrite_trace=attach_query_rewrite_trace,
-        collect_trace_metrics=collect_trace_metrics,
         log_and_write_metrics=lambda record: metric_writes.append(dict(record)),
         write_bad_cases=lambda record: None,
         append_message=lambda session_id, role, content: session_writes.append(

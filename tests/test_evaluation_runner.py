@@ -9,11 +9,6 @@ import pytest
 from app.agent.results import create_agent_result
 from app.config import AppSettings
 from app.contracts.chat import AgentResultStatus
-from app.observability.metrics import (
-    attach_query_rewrite_trace,
-    build_query_rewrite_trace,
-    collect_trace_metrics,
-)
 from app.services.chat_service import ChatServiceDependencies
 from app.tools.registry import ToolRegistry
 from scripts.evaluation import agent as agent_evaluation
@@ -144,9 +139,6 @@ def test_in_memory_multi_turn_uses_chat_service_history_and_isolation(
         get_history=lambda session_id: [],
         rewrite_query_with_history=fake_rewrite,
         run_agent=fake_runtime,
-        build_query_rewrite_trace=build_query_rewrite_trace,
-        attach_query_rewrite_trace=attach_query_rewrite_trace,
-        collect_trace_metrics=collect_trace_metrics,
         log_and_write_metrics=lambda item: None,
         write_bad_cases=lambda item: None,
         append_message=lambda session_id, role, content: None,

@@ -5,11 +5,6 @@ import pytest
 
 from app.agent.results import build_internal_error_result
 from app.contracts.chat import get_chat_status_policy
-from app.observability.metrics import (
-    attach_query_rewrite_trace,
-    build_query_rewrite_trace,
-    collect_trace_metrics,
-)
 from app.services.chat_service import (
     ChatService,
     ChatServiceDependencies,
@@ -69,6 +64,7 @@ def build_service(
     *,
     history=None,
     rewrite_result=None,
+    rewrite_error: Exception | None = None,
     runtime_result=None,
     append_error=False,
     metrics_error=False,
@@ -109,6 +105,8 @@ def build_service(
         calls["rewrite"].append(
             {"question": question, "history": list(history), "trace_id": trace_id}
         )
+        if rewrite_error is not None:
+            raise rewrite_error
         result = dict(rewrite_result)
         result["original_question"] = result.get("original_question") or question
         result["rewritten_question"] = (
@@ -139,9 +137,6 @@ def build_service(
         get_history=fake_get_history,
         rewrite_query_with_history=fake_rewrite,
         run_agent=lambda **kwargs: run_runtime("agent", kwargs),
-        build_query_rewrite_trace=build_query_rewrite_trace,
-        attach_query_rewrite_trace=attach_query_rewrite_trace,
-        collect_trace_metrics=collect_trace_metrics,
         log_and_write_metrics=fake_metrics,
         write_bad_cases=lambda record: calls["bad_cases"].append(dict(record)),
         append_message=fake_append,
@@ -469,13 +464,10 @@ def test_runtime_exception_returns_compatible_error_and_writes_bad_case_once():
     assert calls["metrics"][0]["status"] == "internal_error"
 
 
-def test_unknown_exception_returns_internal_error_with_error_status(monkeypatch):
-    service, calls = build_service()
-
-    def fail_rewrite(_context):
-        raise RuntimeError("unexpected chat failure")
-
-    monkeypatch.setattr(service, "_rewrite_question", fail_rewrite)
+def test_service_exception_returns_internal_error_with_error_status():
+    service, calls = build_service(
+        rewrite_error=RuntimeError("unexpected chat failure")
+    )
 
     outcome = service.handle(make_request())
 
@@ -483,6 +475,8 @@ def test_unknown_exception_returns_internal_error_with_error_status(monkeypatch)
     assert outcome.code == "INTERNAL_ERROR"
     assert outcome.response_status == "error"
     assert calls["agent"] == []
+    assert len(calls["bad_cases"]) == 1
+    assert calls["bad_cases"][0]["error_type"] == "internal_error"
     assert calls["metrics"][0]["status"] == "internal_error"
 
 
