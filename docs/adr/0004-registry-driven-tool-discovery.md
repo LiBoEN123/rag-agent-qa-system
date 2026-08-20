@@ -89,3 +89,13 @@ LocalToolProvider
 入口，继续按 Registry 复用 ToolRuntime。Provider 不执行工具，MCP 仍使用独立的 adapter
 interceptor 安全边界。本修订同时取代 ADR 0003 和 ADR 0011 中对旧 dispatch 链路的当前
 实现描述，不改变那些 ADR 记录的历史背景。
+
+## 2026-08-20 修订说明
+
+Phase 5 将本地 ToolSpec 的参数契约收敛为 Pydantic `args_model` 单一事实来源。
+`ToolRuntime` 参数校验、LangChain StructuredTool 的模型可见 Schema 与
+`ToolRegistry.contract_specs()` 导出均由该模型驱动，ToolSpec 构造器不再接收手写
+`args_schema`。输出侧不强求形式对称：存在 `output_model` 时由它校验并派生 Schema；
+没有输出模型时保留显式 `output_schema` 作为 handler payload 的展示 fallback，且禁止
+两种来源同时声明。本修订不改变 ToolResult Runtime envelope、Provider、MCP 或 RAG
+边界。

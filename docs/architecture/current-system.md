@@ -130,6 +130,13 @@ LocalToolProvider.list_specs
 共享 Runtime 后调用 `ToolRuntime.execute()`。Registry 不再提供 dispatch 方法，项目也
 不再保留额外的 `dispatch_tool` 兼容门面。
 
+本地 `ToolSpec` 的参数契约只由 Pydantic `args_model` 定义：同一个模型同时用于
+`ToolRuntime` 参数校验、LangChain 模型可见 Schema 和 `contract_specs()` 导出，不再
+手写第二份 `args_schema`。输出契约按真实能力非对称处理：存在 `output_model` 时由该
+模型负责 Runtime 校验并派生导出 Schema；没有输出模型时才要求显式 `output_schema`
+作为 handler payload 的展示契约。两者不能同时声明。这里的输出仅指 handler 的
+`output` payload，不包含 `ToolResult` 外层状态、治理、attempt、耗时或审计元数据。
+
 ```text
 StructuredTool
 → execute_registered_tool()

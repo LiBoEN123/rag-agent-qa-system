@@ -241,6 +241,8 @@ Agent Runtime。
 
 Agent Runtime 在请求入口从同一 `ToolProvider` 解析稳定有序的 `ToolSpec`，再构造并绑定请求级 LangChain governed `StructuredTool`。`ToolRuntime` 注入参数不会出现在模型 Schema 中；适配函数从 `runtime.context` 取得 trace、session、principal、permissions、source、RAG 参数和 idempotency key，再调用唯一公共本地执行入口 `execute_registered_tool()`。该入口按 Registry 取得共享项目 `ToolRuntime` 并调用 `ToolRuntime.execute()`，参数治理、权限、审批、超时、重试、审计、脱敏和错误码均未绕过；Registry 自身只负责注册、查找、稳定顺序和契约导出。
 
+`args_model` 是本地工具参数契约的单一事实来源：Runtime 参数校验、LangChain 模型可见 Schema 和 Registry 契约导出都由它驱动，不再手写重复 `args_schema`。输出存在 `output_model` 时同样由模型校验并派生 Schema；没有输出模型时才声明显式 `output_schema` fallback。该 Schema 只描述 handler 的 payload，不包含 `ToolResult` Runtime envelope。
+
 新增普通本地工具只需创建合法 `ToolSpec` 并注册到 Registry，不需要修改 Router、`create_agent` 或 Middleware。`LocalToolProvider` 复用精确、区分大小写的 `has_permission()`，仅当 Context 满足全部 `required_permissions` 时才向模型暴露工具；空权限要求始终可见。过滤保持 Registry 顺序，不执行完整 Policy、handler、Runtime 或审计，也不会因审批、风险等级或暂缺幂等键隐藏工具。
 
 模型伪造未绑定的隐藏名称时沿用框架未知工具路径，只返回 `unknown_tool`，不证明工具是否存在，也不泄漏 description、参数 Schema 或缺失权限。模型可见性不是授权替代：本地真实调用仍进入 `execute_registered_tool() → ToolRuntime.execute()` 做最终权限与执行期治理；MCP Provider 和官方 adapter interceptor 复用同一个 Server Access Policy，并保持独立于本地 ToolRuntime。多工具源合并保持稳定顺序并拒绝重名。

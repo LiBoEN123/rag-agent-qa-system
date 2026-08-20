@@ -192,7 +192,9 @@ Agent trace 仍可按 `ENABLE_AGENT_TRACE_STORE` 单独保存。
 
 ## 新增普通工具
 
-1. 定义严格 Pydantic args/output model 与 ToolSpec。
+1. 定义严格 Pydantic `args_model`；输出可严格建模时定义 `output_model`，否则只声明
+   显式 `output_schema` fallback，然后创建 ToolSpec。不要再手写 `args_schema`，也不要
+   同时维护 `output_model` 与重复 `output_schema`。
 2. 注册到 ToolRegistry，设置权限、风险、超时、重试、幂等、审批和审计模式。
 3. 让 handler 返回标准 `tool_success()` / `tool_error()`。
 4. 为 Registry、ToolRuntime、Provider 可见性和框架调用补测试。

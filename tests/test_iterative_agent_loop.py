@@ -681,7 +681,6 @@ def test_agent_selected_knowledge_search_keeps_rag_citation_path(
             name="search_knowledge_base",
             version="1.0.0",
             description="从测试知识库检索证据",
-            args_schema={"query": "string", "top_k": "integer"},
             output_schema={"chunks": "list"},
             handler=lambda args, context: tool_success(
                 "search_knowledge_base",

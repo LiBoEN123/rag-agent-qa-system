@@ -53,7 +53,6 @@ def test_external_write_returns_structured_approval_without_handler_execution():
             name="external_tool",
             version="1.0.0",
             description="外部写测试",
-            args_schema={"value": "integer"},
             output_schema={},
             handler=handler,
             args_model=IntegrationArgs,

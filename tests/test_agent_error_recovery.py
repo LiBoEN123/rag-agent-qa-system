@@ -68,7 +68,6 @@ def _spec(
         name=name,
         version="1.0.0",
         description=f"执行 {name} 的受控 Agent 错误恢复测试工具",
-        args_schema={"value": "integer"},
         output_schema={"value": "integer"},
         handler=handler,
         args_model=ValueArgs,

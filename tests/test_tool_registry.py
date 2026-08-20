@@ -51,6 +51,8 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
     json.dumps(specs)
 
     for name, spec in specs_by_name.items():
+        registered = tool_registry.get(name)
+        assert registered is not None
         assert spec["version"] == "1.0.0"
         assert spec["risk_level"] == "read_only"
         assert spec["required_permissions"] == expected_permissions[name]
@@ -67,6 +69,14 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
                 "web_pdf_fetch": "WebPdfFetchOutput",
             }.get(name)
         )
+        assert spec["args_schema"] == registered.args_model.model_json_schema()
+        if registered.output_model is not None:
+            assert (
+                spec["output_schema"]
+                == registered.output_model.model_json_schema()
+            )
+        else:
+            assert spec["output_schema"] == registered.output_schema
         assert "handler" not in spec
 
     web = specs_by_name["web_search"]
@@ -198,7 +208,6 @@ def test_execution_entry_validates_args_before_handler():
             name="search_knowledge_base",
             version="1.0.0",
             description="检索知识库",
-            args_schema={"query": "string", "top_k": "integer"},
             output_schema={},
             handler=fake_handler,
             args_model=SearchKnowledgeBaseArgs,
@@ -232,7 +241,6 @@ def test_execution_entry_returns_tool_error_when_args_invalid():
             name="search_knowledge_base",
             version="1.0.0",
             description="检索知识库",
-            args_schema={"query": "string", "top_k": "integer"},
             output_schema={},
             handler=fake_handler,
             args_model=SearchKnowledgeBaseArgs,

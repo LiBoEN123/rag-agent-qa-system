@@ -257,7 +257,6 @@ def test_inspection_does_not_initialize_model_or_handler(
             name="inspection_probe",
             version="1.0.0",
             description="仅用于验证 Runtime inspection 不执行 handler",
-            args_schema={"value": "integer"},
             output_schema={"value": "integer"},
             handler=forbidden,
             args_model=ProbeArgs,

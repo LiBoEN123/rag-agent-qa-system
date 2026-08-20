@@ -63,7 +63,6 @@ def _spec(
         name=name,
         version="1.0.0",
         description=description,
-        args_schema={"text": "string"},
         output_schema={"text": "string"},
         handler=handler,
         args_model=TextArgs,

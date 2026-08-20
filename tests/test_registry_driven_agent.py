@@ -75,7 +75,6 @@ def _register_dynamic_tools(
             name="echo_text",
             version="1.0.0",
             description="回显传入的 text，用于需要原样返回测试文本的场景",
-            args_schema={"text": "string"},
             output_schema={"text": "string"},
             handler=echo_handler,
             args_model=EchoTextArgs,
@@ -86,7 +85,6 @@ def _register_dynamic_tools(
             name="join_texts",
             version="1.0.0",
             description="按 separator 拼接 parts 列表并返回拼接文本",
-            args_schema={"parts": "list[string]", "separator": "string"},
             output_schema={"text": "string"},
             handler=join_handler,
             args_model=JoinTextsArgs,
@@ -125,7 +123,7 @@ def _invoke_dynamic_graph(
 
 
 def test_tool_spec_builds_framework_structured_tool_from_provider():
-    """唯一框架适配完整复用 ToolSpec 定义、Schema 与 Registry。"""
+    """自定义工具的模型同时驱动 Registry、StructuredTool 与 Runtime。"""
     registry = ToolRegistry()
     contexts: list[ToolInvocationContext] = []
     _register_dynamic_tools(registry, contexts)
@@ -148,7 +146,35 @@ def test_tool_spec_builds_framework_structured_tool_from_provider():
     assert tool.description == registry.get("join_texts").description
     assert issubclass(tool.args_schema, JoinTextsArgs)
     assert "runtime" not in tool.tool_call_schema.model_fields
+    exported = next(
+        spec
+        for spec in registry.contract_specs()
+        if spec["name"] == "join_texts"
+    )
+    framework_schema = tool.tool_call_schema.model_json_schema()
+    assert exported["args_schema"]["properties"] == framework_schema["properties"]
+    assert exported["args_schema"]["required"] == framework_schema["required"]
+    assert exported["args_schema"]["properties"]["separator"]["default"] == " "
+    assert registry.contract_specs() == registry.contract_specs()
+    json.dumps(registry.contract_specs())
+
+    invalid = execute_registered_tool(
+        registry=registry,
+        tool_name="join_texts",
+        tool_args={"parts": "不是列表"},
+        context=context,
+    )
+    assert invalid["error_code"] == "invalid_arguments"
     assert contexts == []
+
+    valid = execute_registered_tool(
+        registry=registry,
+        tool_name="join_texts",
+        tool_args={"parts": ["a", "b"]},
+        context=context,
+    )
+    assert valid["output"] == {"text": "a b"}
+    assert contexts == [context]
 
 
 def test_agent_discovers_and_calls_echo_without_core_tool_mapping(monkeypatch):
@@ -344,7 +370,6 @@ def test_provider_request_isolation(monkeypatch):
                 name=tool_name,
                 version="1.0.0",
                 description=f"仅供 {trace_id} 使用的请求隔离工具",
-                args_schema={"value": "string"},
                 output_schema={"value": "string"},
                 handler=handler,
                 args_model=RequestArgs,
@@ -400,7 +425,6 @@ def test_direct_execution_entry_still_enforces_runtime_permissions():
             name="protected_echo",
             version="1.0.0",
             description="需要 dynamic:use 权限的测试回显工具",
-            args_schema={"text": "string"},
             output_schema={"text": "string"},
             handler=handler,
             args_model=EchoTextArgs,

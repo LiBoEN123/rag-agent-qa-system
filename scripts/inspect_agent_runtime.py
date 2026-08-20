@@ -106,7 +106,7 @@ def _tool_report(
                 "name": spec.name,
                 "version": spec.version,
                 "description": spec.description,
-                "args_schema": spec.args_model.model_json_schema(),
+                "args_schema": spec.args_schema,
                 "output_model": (
                     spec.output_model.__name__
                     if spec.output_model is not None

@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import (
@@ -23,7 +23,8 @@ from app.tools.registry import ToolSpec as RegistryToolSpec
 class EchoArgs(BaseModel):
     """回显工具参数。"""
 
-    value: str
+    value: str = Field(..., description="需要回显的文本")
+    repeat: int = Field(default=1, ge=1, description="回显次数")
 
 
 class EchoOutput(BaseModel):
@@ -53,11 +54,19 @@ def _make_spec(**overrides: Any) -> ToolSpec:
         "name": "echo_tool",
         "version": "1.0.0",
         "description": "回显输入",
-        "args_schema": {"value": "string"},
-        "output_schema": {"value": "string"},
+        "output_schema": {
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+            "required": ["value"],
+        },
         "handler": echo_handler,
         "args_model": EchoArgs,
     }
+    if (
+        overrides.get("output_model") is not None
+        and "output_schema" not in overrides
+    ):
+        values.pop("output_schema")
     values.update(overrides)
     return ToolSpec(**values)
 
@@ -105,10 +114,60 @@ def test_tool_spec_normalizes_and_serializes_contract():
     assert "handler" not in contract_spec
     assert contract_spec["args_model"] == "EchoArgs"
     assert contract_spec["output_model"] == "EchoOutput"
+    args_schema = contract_spec["args_schema"]
+    assert set(args_schema["properties"]) == {"value", "repeat"}
+    assert args_schema["properties"]["value"] == {
+        "description": "需要回显的文本",
+        "title": "Value",
+        "type": "string",
+    }
+    assert args_schema["properties"]["repeat"]["default"] == 1
+    assert args_schema["properties"]["repeat"]["description"] == "回显次数"
+    assert args_schema["properties"]["repeat"]["type"] == "integer"
+    assert args_schema["required"] == ["value"]
+    assert contract_spec["output_schema"] == EchoOutput.model_json_schema()
     assert contract_spec["required_permissions"] == [
         "knowledge_base:read",
         "ticket:create",
     ]
+
+
+def test_tool_spec_derives_fresh_deterministic_schemas():
+    """重复导出由模型派生的稳定副本，且显式输出 fallback 不被外部修改。"""
+    spec = _make_spec()
+
+    first = spec.to_contract_dict()
+    first["args_schema"]["properties"].clear()
+    first["output_schema"]["properties"].clear()
+    second = spec.to_contract_dict()
+
+    assert set(second["args_schema"]["properties"]) == {"value", "repeat"}
+    assert set(second["output_schema"]["properties"]) == {"value"}
+    assert second == spec.to_contract_dict()
+    json.dumps(second)
+
+
+def test_tool_spec_rejects_manual_args_schema():
+    """参数 Schema 只能从 args_model 派生，构造器不再接收手写副本。"""
+    with pytest.raises(TypeError, match="args_schema"):
+        _make_spec(args_schema={"value": "string"})
+
+
+def test_tool_spec_requires_exactly_one_output_contract_source():
+    """输出模型与显式 fallback 必须二选一。"""
+    with pytest.raises(ValueError, match="缺少 output_model"):
+        _make_spec(output_schema=None)
+    with pytest.raises(ValueError, match="不能与 output_model 同时声明"):
+        _make_spec(
+            output_model=EchoOutput,
+            output_schema={"value": "string"},
+        )
+
+
+def test_tool_spec_rejects_non_json_output_fallback():
+    """显式输出 fallback 必须保持 Registry contract 可 JSON 序列化。"""
+    with pytest.raises(ValueError, match="必须可稳定序列化为 JSON"):
+        _make_spec(output_schema={"value": object()})
 
 
 @pytest.mark.parametrize(
@@ -174,7 +233,6 @@ def test_tool_spec_rejects_invalid_permissions(required_permissions):
 @pytest.mark.parametrize(
     "field_name,invalid_value",
     [
-        ("args_schema", []),
         ("output_schema", []),
         ("handler", None),
         ("args_model", object),

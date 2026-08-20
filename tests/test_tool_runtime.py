@@ -42,7 +42,6 @@ def make_spec(
         "name": "runtime_echo",
         "version": "2.1.0",
         "description": "Runtime 测试工具",
-        "args_schema": {"value": "integer"},
         "output_schema": {"value": "integer"},
         "handler": handler,
         "args_model": RuntimeArgs,
@@ -50,6 +49,11 @@ def make_spec(
         "max_retries": 0,
         "idempotent": True,
     }
+    if (
+        overrides.get("output_model") is not None
+        and "output_schema" not in overrides
+    ):
+        values.pop("output_schema")
     values.update(overrides)
     return ToolSpec(**values)
 

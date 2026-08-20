@@ -193,7 +193,6 @@ def test_chat_service_runs_real_create_agent_provider_and_runtime(
             name="chat_echo",
             version="1.0.0",
             description="回显 ChatService 集成测试文本",
-            args_schema={"text": "string"},
             output_schema={"text": "string"},
             handler=handler,
             args_model=ChatEchoArgs,
