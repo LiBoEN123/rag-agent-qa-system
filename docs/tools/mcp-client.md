@@ -17,9 +17,12 @@ MultiServerMCPClient → governed StructuredTool ────┘
 
 本地工具继续使用 `ToolSpec → ToolRegistry → ToolRuntime`，MCP adapter 已经把远端
 Schema 转换成 LangChain `StructuredTool`，因此不会把 MCP Tool 反向转换成
-`ToolSpec`。两类工具在进入 Agent 前都按当前请求权限构造成 governed StructuredTool，
-并共用 `ProjectToolGovernanceMiddleware` 的调用数、错误数、重复调用、累计耗时、
-同批 fail-closed 和 ToolMessage pairing。
+`ToolSpec`。本地工具按当前请求权限构造成 StructuredTool；MCP 工具保留 Bridge 已生成的
+governed StructuredTool，不再经过 framework 二次 wrapper。两类 BaseTool 都由
+`create_agent` ToolNode 的原生
+`ProjectToolGovernanceMiddleware.wrap_tool_call/awrap_tool_call` 截获，共用调用数、
+错误数、重复调用、累计耗时、同批 fail-closed 和 ToolMessage pairing；MCP Server
+Access Policy、审批、远端超时、审计和序列化仍只在 MCP Bridge 内执行。
 
 MCP Tool 不进入本地 RAG；只有本地 `search_knowledge_base` 会调用独立 RAG Graph。
 `/chat`、`/chat/stream`、ChatService、Agent Runtime 和 SSE Schema 都没有 MCP 特判。

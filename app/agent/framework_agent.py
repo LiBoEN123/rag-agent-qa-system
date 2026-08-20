@@ -29,13 +29,26 @@ def _prefer_stop_reason(left: str, right: str) -> str:
     return right or left
 
 
+def _prefer_knowledge_base_result(
+    left: dict[str, Any] | None,
+    right: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """同批知识库调用完成时保留最后一个非空交接结果。"""
+    return right or left
+
+
 class FrameworkAgentState(LangChainAgentState):
     """create_agent 内部使用的最小治理状态。"""
 
     governance_events: NotRequired[Annotated[list[dict[str, Any]], operator.add]]
     agent_elapsed_ms: NotRequired[int]
     stop_reason: NotRequired[Annotated[str, _prefer_stop_reason]]
-    knowledge_base_result: NotRequired[dict[str, Any]]
+    knowledge_base_result: NotRequired[
+        Annotated[
+            dict[str, Any] | None,
+            _prefer_knowledge_base_result,
+        ]
+    ]
 
 
 class _DeferredAgentModel:
@@ -143,8 +156,7 @@ def build_framework_agent(
         build_default_tool_context(
             source="agent_runtime",
             settings=resolved,
-        ),
-        governance=resolved_governance,
+        )
     )
     agent = create_agent(
         _DeferredAgentModel(),

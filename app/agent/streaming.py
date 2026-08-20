@@ -201,14 +201,30 @@ def _project_tool_completions(
     return projected
 
 
+def _project_nested_update(value: object) -> list[AgentRuntimeStreamEvent]:
+    """递归寻找原生 Command 更新，到达治理事件字段后停止深入。"""
+    if isinstance(value, Mapping):
+        if "governance_events" in value:
+            return _project_tool_completions(value)
+        projected: list[AgentRuntimeStreamEvent] = []
+        for nested in value.values():
+            projected.extend(_project_nested_update(nested))
+        return projected
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        projected: list[AgentRuntimeStreamEvent] = []
+        for nested in value:
+            projected.extend(_project_nested_update(nested))
+        return projected
+    return []
+
+
 def _project_update_part(data: object) -> list[AgentRuntimeStreamEvent]:
     """从 ``create_agent`` updates 中投影工具完成状态。"""
     if not isinstance(data, Mapping):
         return []
     projected: list[AgentRuntimeStreamEvent] = []
     for raw_update in data.values():
-        if isinstance(raw_update, Mapping):
-            projected.extend(_project_tool_completions(raw_update))
+        projected.extend(_project_nested_update(raw_update))
     return projected
 
 

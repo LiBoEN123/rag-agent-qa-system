@@ -10,7 +10,7 @@ from langchain_mcp_adapters.interceptors import MCPToolCallRequest
 from mcp.types import CallToolResult, ImageContent, TextContent
 from pydantic import BaseModel
 
-from app.agent.framework_tools import parse_tool_result
+from app.agent.framework_middleware import parse_tool_result
 from app.tools.audit import ToolAuditEvent
 from app.tools.context import PrincipalType, ToolInvocationContext
 from app.tools.mcp.bridge import (

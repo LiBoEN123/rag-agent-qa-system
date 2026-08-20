@@ -99,7 +99,6 @@ def _get_cached_framework_agent(
             tools=framework_tools.build_framework_tools(
                 provider,
                 context=context,
-                governance=governance,
             ),
             governance=governance,
         ),
@@ -132,7 +131,6 @@ def get_compiled_agent_runtime(
             resolved_settings,
             tools=framework_tools.resolve_agent_tools(
                 tool_context,
-                governance=governance,
             ),
             governance=governance,
         ),

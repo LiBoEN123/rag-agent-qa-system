@@ -8,6 +8,24 @@
 > [ADR 0011](0011-single-framework-agent-execution-path.md) 取代；框架原生循环、
 > Middleware 治理和 RAG handoff 决定继续有效。
 
+## Phase 6A 修订（2026-08-20）
+
+当前系统已删除 Parent Agent Graph，`create_agent` 是唯一 Agent Loop。Phase 6A 进一步把
+项目 Tool Governance 从 StructuredTool 内部手工调用协议迁移到 LangChain 1.3.14 原生
+`ProjectToolGovernanceMiddleware.wrap_tool_call/awrap_tool_call`。Middleware 在 handler
+返回标准 ToolMessage 后生成 `Command(update=...)`，直接写入配对消息、
+`governance_events`、可选 `stop_reason` 和 `knowledge_base_result`。
+
+项目私有 `_project_tool_governance` artifact marker、手工 `ToolCallRequest`、
+`govern_tool_call/agovern_tool_call` 和 MCP framework 二次 wrapper 已删除；第三方或框架
+自身的真实 ToolMessage artifact 语义不受限制。模型侧 `_project_model_governance` marker
+暂时保留，留待后续独立决策。
+
+同批 ToolNode task 仍从同一 State 快照开始，因此 `_batch_events` 与
+`max_concurrency=1` 继续负责 terminal 后续调用 fail-closed；它们没有被 Command State
+Update 取代。下文 Parent Graph、Registry dispatch 和旧 RAG handoff 描述仅记录本 ADR
+最初决策时的历史实现，以本修订和当前架构文档为准。
+
 ## 背景
 
 PR1–PR3 在 `app/graph/nodes.py` 中逐步实现模型—工具循环、动态工具绑定、StructuredTool 调用、ToolMessage 批处理、错误分类、指纹、预算、trace 和 RAG 交接。该文件增长到 1276 行，同时承担父图业务节点、Agent Runtime 和工具治理，框架已能提供的能力也由项目重复维护，修改任一错误路径都容易破坏消息协议或条件边。

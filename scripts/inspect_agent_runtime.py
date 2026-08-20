@@ -190,7 +190,6 @@ def inspect_runtime(
         tools=build_framework_tools(
             resolved_provider,
             context=inspection_context,
-            governance=governance,
         ),
         governance=governance,
     )
@@ -225,6 +224,10 @@ def inspect_runtime(
     framework_tools_source = (
         PROJECT_ROOT / "app" / "agent" / "framework_tools.py"
     ).read_text(encoding="utf-8")
+    agent_source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((PROJECT_ROOT / "app" / "agent").glob("*.py"))
+    )
     registry_source = (
         PROJECT_ROOT / "app" / "tools" / "registry.py"
     ).read_text(encoding="utf-8")
@@ -280,6 +283,30 @@ def inspect_runtime(
             "middleware_does_not_depend_on_runtime",
             "app.agent.runtime" not in middleware_source,
             "framework middleware imports guardrails instead of Runtime",
+        ),
+        _check(
+            "native_tool_middleware_hooks",
+            "def wrap_tool_call(" in middleware_source
+            and "def awrap_tool_call(" in middleware_source,
+            "project governance overrides LangChain native tool hooks",
+        ),
+        _check(
+            "no_tool_governance_artifact_protocol",
+            "_TOOL_GOVERNANCE_KEY" not in agent_source
+            and "_project_tool_governance" not in agent_source,
+            "tool governance updates state through Command instead of artifacts",
+        ),
+        _check(
+            "framework_tools_does_not_simulate_middleware",
+            "ToolCallRequest(" not in framework_tools_source
+            and "govern_tool_call" not in framework_tools_source
+            and "agovern_tool_call" not in framework_tools_source,
+            "framework tools do not construct or invoke middleware requests",
+        ),
+        _check(
+            "mcp_tool_has_no_framework_rewrapper",
+            "_build_governed_external_tool" not in framework_tools_source,
+            "governed MCP BaseTool enters the shared native middleware directly",
         ),
         _check(
             "result_builder_owns_agent_result",

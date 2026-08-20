@@ -218,6 +218,10 @@ def test_agent_loop_returns_single_tool_message_to_model(monkeypatch):
     assert isinstance(tool_message, ToolMessage)
     assert tool_message.tool_call_id == "calc-call-1"
     assert tool_message.name == "simple_calculator"
+    assert not (
+        isinstance(tool_message.artifact, dict)
+        and "_project_tool_governance" in tool_message.artifact
+    )
     payload = json.loads(tool_message.content)
     assert payload["ok"] is True
     assert payload["status"] == "success"

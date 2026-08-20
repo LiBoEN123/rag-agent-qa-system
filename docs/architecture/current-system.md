@@ -83,8 +83,11 @@ Router 只决定 `agent`、`direct_answer` 或 `clarify`，不选择具体工具
 
 `create_agent` 是唯一 Agent Loop，其图只包含框架自己的 `model ↔ tools` 循环。动态
 工具由 Runtime 按当前请求权限解析，并在构造本次 `create_agent` 时绑定；
-`ProjectToolGovernanceMiddleware` 与受治理 StructuredTool 保留模型/工具调用计数、错误分类、重复调用检测、
-累计耗时、同批 fail-closed、停止原因和 ToolMessage 配对。Agent 内部职责固定为：
+`ProjectToolGovernanceMiddleware.wrap_tool_call/awrap_tool_call` 直接包裹框架 ToolNode
+调用，保留模型/工具调用计数、错误分类、重复调用检测、累计耗时、同批 fail-closed、
+停止原因和 ToolMessage 配对。工具治理结果通过原生 `Command(update=...)` 写入
+`FrameworkAgentState`，不再借用 `ToolMessage.artifact` 传递项目私有事件。Agent 内部
+职责固定为：
 
 - `runtime.py`：参数校验、Router、请求 Context、Agent 构建/缓存和同步 invoke；
 - `streaming.py`：`astream` 消费与安全 SSE 事件投影；
@@ -120,9 +123,16 @@ Router 只决定 `agent`、`direct_answer` 或 `clarify`，不选择具体工具
 ```text
 LocalToolProvider.list_specs
 → request-level StructuredTool
+→ create_agent tools
+
+create_agent ToolNode
+→ ProjectToolGovernanceMiddleware.wrap_tool_call / awrap_tool_call
+→ request-level StructuredTool
 → execute_registered_tool()
 → ToolRuntime.execute()
 → ToolSpec.handler
+→ paired ToolMessage
+→ Command(update={governance_events, stop_reason, ...})
 ```
 
 `ToolRegistry` 只拥有 ToolSpec 注册、重名拒绝、按名查找、稳定顺序列举和契约导出；
@@ -151,8 +161,10 @@ StructuredTool
 `langchain-mcp-adapters.MultiServerMCPClient` discovery 并缓存受治理的只读工具。
 MCP adapter 工具与本地工具进入同一个 `create_agent`，继续受请求权限、调用预算、
 错误分类、重复调用和安全输出边界约束。`/chat`、`/chat/stream`、ChatService 与 SSE
-projector 没有 MCP 专属分支。MCP 不进入本地 ToolRuntime；其执行链保持为
-`McpToolProvider → governed MCP StructuredTool → adapter coroutine →
+projector 没有 MCP 专属分支。MCP BaseTool 不再由 framework tools 二次包装，而是直接
+经过同一个原生 Tool Middleware。MCP 不进入本地 ToolRuntime；其执行链保持为
+`ToolNode → ProjectToolGovernanceMiddleware → McpToolProvider 提供的 governed MCP
+StructuredTool → adapter coroutine →
 McpToolCallInterceptor → remote MCP server`，继续独立承担 Server Access Policy、审批、
 超时、审计、序列化和 fail-closed。完整配置见
 [受治理的 MCP Client 工具源](../tools/mcp-client.md)。
@@ -167,8 +179,9 @@ McpToolCallInterceptor → remote MCP server`，继续独立承担 Server Access
 RAG Graph 保持原有问题歧义判断、Query Decompose、BM25 + Embedding 混合召回、
 CrossEncoder 重排、Evidence Gate、Context Build、回答生成、JSON 解析、引用绑定和
 验证。工具成功结果包含 RAG 的答案、引用、状态、置信度、timings 与 trace，并形成与
-原 tool call ID 配对的普通 ToolMessage。Middleware 看到完整知识库结果后结束下一轮
-Agent Model，Result builder 直接采用 RAG 的权威结果；不存在 `Command.PARENT`、
+原 tool call ID 配对的普通 ToolMessage。Middleware 在同一个原生 Command 中把该消息、
+治理事件和 `knowledge_base_result` 写入 State，下一轮 `before_model` 直接读取 State
+并结束 Agent Model，Result builder 采用 RAG 的权威结果；不存在 `Command.PARENT`、
 `pending_rag_result` 或父图条件边。
 
 Web Search、Web Fetch、Web PDF Fetch、SQL 和 MCP 都是普通 ToolMessage 路径；它们不
@@ -243,7 +256,8 @@ git diff --check
 
 Runtime Inspection 检查直接 `create_agent` 节点、Parent Graph 文件/符号不存在、默认
 ToolSpec 与可选 SQL/MCP 合同、本地工具唯一执行入口和 Runtime handler 所有权、MCP
-独立治理、知识库 Tool 到 RAG Graph 的边界、同步/流式直接调用、唯一 Result/Status
+独立治理、原生 Tool Middleware Hook、项目 artifact 协议不存在、知识库 Tool 到 RAG
+Graph 的边界、同步/流式直接调用、唯一 Result/Status
 Policy、应用组合根和当前文档。Import Linter 负责完整生产 import graph。自动测试用
 fake 隔离模型、网络、RAG 索引和生产持久化副作用。
 

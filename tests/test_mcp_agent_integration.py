@@ -31,11 +31,13 @@ class FakeAgentModel:
     def __init__(self, responses):
         self.responses = list(responses)
         self.bound_tool_names = []
+        self.bound_tools = []
         self.received_messages = []
 
     def bind_tools(self, tools, **kwargs):
         del kwargs
-        self.bound_tool_names = [tool.name for tool in tools]
+        self.bound_tools = list(tools)
+        self.bound_tool_names = [tool.name for tool in self.bound_tools]
         return self
 
     def invoke(self, messages, **kwargs):
@@ -196,9 +198,12 @@ def test_mcp_tool_runs_through_sync_agent_and_native_async_bridge(
     settings = settings_factory()
     sync_calls = []
     sync_model = FakeAgentModel(_responses())
-    sync_graph, _ = _setup(monkeypatch, settings, sync_model, sync_calls)
+    sync_graph, source_tool = _setup(
+        monkeypatch, settings, sync_model, sync_calls
+    )
     sync_output = sync_graph.invoke(_input(), context=_context())
     _assert_success(sync_output, sync_model, sync_calls)
+    assert sync_model.bound_tools == [source_tool]
 
     async_calls = []
     async_model = FakeAgentModel(_responses())
