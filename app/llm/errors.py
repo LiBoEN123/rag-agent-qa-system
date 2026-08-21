@@ -46,3 +46,20 @@ class ModelCallError(Exception):
         self.provider = str(provider)
         self.model_name = str(model_name)
         self.retryable = bool(retryable)
+
+
+class StructuredOutputError(Exception):
+    """表示模型已返回响应，但响应无法通过结构化输出校验。"""
+
+    def __init__(
+        self,
+        user_message: str,
+        detail: str = "",
+        *,
+        schema_name: str = "",
+    ) -> None:
+        safe_user_message = _redact_secrets(user_message)
+        super().__init__(safe_user_message)
+        self.user_message = safe_user_message
+        self.detail = _redact_secrets(detail)
+        self.schema_name = str(schema_name)

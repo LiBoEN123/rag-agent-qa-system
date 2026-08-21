@@ -1,7 +1,10 @@
 import app.rag as rag
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from pydantic import ValidationError
 
 import app.tools.compare_documents as compare_documents_module
+from app.llm.schemas import CompareDocumentsLLMOutput
 from app.tools.context import build_default_tool_context
 from app.tools.registry import get_tool_registry
 from app.tools.runtime import execute_registered_tool
@@ -97,11 +100,11 @@ def test_compare_documents_success(monkeypatch):
     monkeypatch.setattr(
         compare_documents_module,
         "_call_compare_documents_llm",
-        lambda **kwargs: {
-            "comparison": "旧文档规定为 3 至 8 年，新文档调整为 3 至 6 年。",
-            "conflict_detected": True,
-            "summary": "最长学习年限由 8 年缩短为 6 年。",
-        },
+        lambda **kwargs: CompareDocumentsLLMOutput(
+            comparison="旧文档规定为 3 至 8 年，新文档调整为 3 至 6 年。",
+            conflict_detected=True,
+            summary="最长学习年限由 8 年缩短为 6 年。",
+        ),
     )
 
     result = compare_documents_tool({
@@ -145,11 +148,11 @@ def test_compare_documents_same_numeric_terms_not_conflict(monkeypatch):
     monkeypatch.setattr(
         compare_documents_module,
         "_call_compare_documents_llm",
-        lambda **kwargs: {
-            "comparison": "两份文档均规定普通本科四年制最长学习年限为 3 至 6 年。",
-            "conflict_detected": False,
-            "summary": "两份文档关于最长学习年限的规定一致。",
-        },
+        lambda **kwargs: CompareDocumentsLLMOutput(
+            comparison="两份文档均规定普通本科四年制最长学习年限为 3 至 6 年。",
+            conflict_detected=False,
+            summary="两份文档关于最长学习年限的规定一致。",
+        ),
     )
 
     result = compare_documents_tool({
@@ -200,8 +203,28 @@ def test_compare_documents_returns_error_when_llm_fails(monkeypatch):
     assert "LLM \u5bf9\u6bd4\u751f\u6210\u5931\u8d25" in result["error"]
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"conflict_detected": True, "summary": "摘要"},
+        {"comparison": "存在差异", "conflict_detected": True},
+        {
+            "comparison": "存在差异",
+            "conflict_detected": "true",
+            "summary": "摘要",
+        },
+        {"comparison": "   ", "conflict_detected": False, "summary": "摘要"},
+        {"comparison": "无差异", "conflict_detected": False, "summary": "   "},
+    ],
+)
+def test_compare_documents_llm_schema_rejects_invalid_business_fields(payload):
+    """内部 LLM Schema 拒绝缺字段、字符串 bool 和空白文本。"""
+    with pytest.raises(ValidationError):
+        CompareDocumentsLLMOutput.model_validate(payload)
+
+
 def test_compare_llm_uses_compare_factory_and_parses_business_fields(monkeypatch):
-    """文档对比通过独立工厂调用，并保留 JSON 字段解析。"""
+    """文档对比通过独立工厂调用，并返回经过校验的业务字段。"""
 
     class FakeCompareModel:
         def __init__(self):
@@ -232,7 +255,8 @@ def test_compare_llm_uses_compare_factory_and_parses_business_fields(monkeypatch
         doc_b_evidence=[{"chunk_id": 2, "snippet": "证据 B"}],
     )
 
-    assert result == {
+    assert isinstance(result, CompareDocumentsLLMOutput)
+    assert result.model_dump() == {
         "comparison": "存在差异",
         "conflict_detected": True,
         "summary": "摘要",
@@ -262,18 +286,20 @@ def test_execution_entry_propagates_compare_documents_trace_id(
     ]
     received = {}
 
-    def fake_invoke_text(self, messages, *, trace_id=""):
+    def fake_invoke_structured(self, messages, schema, *, trace_id=""):
+        assert schema is CompareDocumentsLLMOutput
         received["trace_id"] = trace_id
-        return (
-            '{"comparison":"存在差异",'
-            '"conflict_detected":true,"summary":"摘要"}'
+        return CompareDocumentsLLMOutput(
+            comparison="存在差异",
+            conflict_detected=True,
+            summary="摘要",
         )
 
     monkeypatch.setattr(rag, "chunks", fake_chunks, raising=False)
     monkeypatch.setattr(
         compare_documents_module.ModelGateway,
-        "invoke_text",
-        fake_invoke_text,
+        "invoke_structured",
+        fake_invoke_structured,
     )
     result = execute_registered_tool(
         registry=get_tool_registry(),

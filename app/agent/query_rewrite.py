@@ -3,13 +3,13 @@
 结合会话历史识别省略和指代，将追问改写为可独立检索的完整问题。
 """
 
-import json
 import re
 
 from app.config import AppSettings, get_settings
 from app.common.logging import get_logger
 from app.llm.factory import get_query_rewrite_model
 from app.llm.gateway import ModelGateway
+from app.llm.schemas import QueryRewriteOutput
 
 
 logger = get_logger("chat_service")
@@ -172,39 +172,6 @@ def build_rewrite_prompt(question: str, history: list[dict]) -> str:
     )
 
 
-def _parse_rewrite_json(output: str) -> dict:
-    """解析改写模型返回的 JSON 对象。"""
-    text = (output or "").strip()
-    if text.startswith("```"):
-        text = text.replace("```json", "").replace("```", "").strip()
-
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start < 0 or end <= start:
-            raise ValueError("query rewrite model did not return JSON")
-        data = json.loads(text[start:end + 1])
-
-    if not isinstance(data, dict):
-        raise ValueError("query rewrite output is not a JSON object")
-
-    rewritten_question = str(data.get("rewritten_question") or "").strip()
-    if not rewritten_question:
-        raise ValueError("query rewrite output missing rewritten_question")
-
-    need_rewrite = data.get("need_rewrite")
-    if not isinstance(need_rewrite, bool):
-        raise ValueError("query rewrite output has invalid need_rewrite")
-
-    return {
-        "need_rewrite": need_rewrite,
-        "rewritten_question": rewritten_question,
-        "reason": str(data.get("reason") or "").strip(),
-    }
-
-
 def _query_rewrite_llm_configured(settings: AppSettings) -> bool:
     """判断追问改写 LLM 是否具备最小调用配置。"""
     return bool(
@@ -214,17 +181,21 @@ def _query_rewrite_llm_configured(settings: AppSettings) -> bool:
     )
 
 
-def call_query_rewrite_llm(prompt: str, trace_id: str = "") -> str:
-    """调用追问改写模型并返回原始文本。"""
+def call_query_rewrite_llm(
+    prompt: str,
+    trace_id: str = "",
+) -> QueryRewriteOutput:
+    """调用追问改写模型并返回经过校验的结构化结果。"""
     gateway = ModelGateway(
         role="query_rewrite",
         langchain_model=get_query_rewrite_model(),
     )
-    return gateway.invoke_text(
+    return gateway.invoke_structured(
         [
             {"role": "system", "content": "你只输出合法 JSON。"},
             {"role": "user", "content": prompt},
         ],
+        QueryRewriteOutput,
         trace_id=trace_id,
     )
 
@@ -294,10 +265,9 @@ def rewrite_query_with_history(
     try:
         prompt = build_rewrite_prompt(original_question, history)
         output = call_query_rewrite_llm(prompt, trace_id=trace_id)
-        parsed = _parse_rewrite_json(output)
-        need_rewrite = parsed["need_rewrite"]
+        need_rewrite = output.need_rewrite
         rewritten_question = (
-            parsed["rewritten_question"]
+            output.rewritten_question
             if need_rewrite
             else original_question
         )
@@ -309,7 +279,7 @@ def rewrite_query_with_history(
             "rewritten_question": rewritten_question,
             "history_used": need_rewrite,
             "rewritten": rewritten_question != original_question,
-            "reason": parsed.get("reason") or reason,
+            "reason": output.reason or reason,
             "rewrite_llm_used": True,
             "error": "",
         }

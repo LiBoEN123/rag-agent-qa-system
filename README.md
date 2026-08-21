@@ -120,6 +120,7 @@ Phase 6B 的 Model private marker 是已接受设计，不是待迁移 TODO。�
 
 - 配置通过 `.env` 管理，`.env.example` 提供默认模板，回答/Agent 模型、追问改写模型、拆分模型和评测 Judge 均使用 OpenAI-compatible Chat Completions 配置。
 - 应用内部模型调用统一由 LangChain `ChatOpenAI(base_url=...)` 访问 OpenAI-compatible 服务，各角色原有模型环境变量仍然有效。
+- Answer、Query Rewrite、Query Decompose 与 Compare Documents 的 JSON 业务输出统一由 Pydantic Schema 定义，并经 `ModelGateway` 使用原生 Structured Output；供应商明确不支持时仅由 Gateway 执行文本 JSON fallback 和校验。
 - `requirements.txt` 保留顶层依赖声明，`requirements.lock` 固定 Python 3.12 验证过的版本；Docker 和 CI 均使用 lock 文件安装依赖。
 - `.importlinter` 使用 Import Linter 2.13 固化应用包的单向依赖、顶层无环、基础层、HTTP 框架和 Settings 框架边界；CI 在 Ruff 后执行全量 `lint-imports`。
 - 支持 embedding / rerank 模型本地缓存，默认缓存目录为 `./.cache/huggingface/hub`，也可通过 `MODEL_CACHE_DIR`、`HF_HOME` 等环境变量调整。
@@ -128,8 +129,8 @@ Phase 6B 的 Model private marker 是已接受设计，不是待迁移 TODO。�
 - 多轮会话历史保存在 `SQLITE_DB_PATH` 指定的 SQLite 数据库中，每个 `session_id` 默认读取最近 6 条 user/assistant 消息，服务重启后仍可继续使用。
 - 设置 `ENABLE_AGENT_TRACE_STORE=true` 后，Agent 的运行摘要和步骤明细会写入同一 SQLite 数据库的 `agent_runs`、`agent_steps` 表。
 - `/chat` 请求支持继承或生成 `trace_id`，响应头返回 `X-Trace-Id` 和 `X-Total-Cost-Ms`；`/chat/stream` 只在响应头返回 `X-Trace-Id`，真实总耗时位于 `final.data.total_cost_ms`。
-- metrics 记录 Query Rewrite、路由、Agent、检索、问题拆分、重排、上下文构造、LLM 调用、JSON 解析等阶段耗时和 LLM 调用次数。
-- bad case 日志用于定位失败样例，包括模型 JSON 解析失败、引用异常、工具异常、内部异常和索引未就绪。
+- metrics 记录 Query Rewrite、路由、Agent、检索、问题拆分、重排、上下文构造、LLM 调用、结构化结果规范化等阶段耗时和 LLM 调用次数。
+- bad case 日志用于定位失败样例，包括模型结构化输出校验失败、引用异常、工具异常、内部异常和索引未就绪。
 
 模型客户端、`create_agent` Agent Loop 和独立 RAG Graph 彼此分层；本次 Agent Runtime 瘦身不改变 RAG 检索、Rerank、ChromaDB 数据结构和引用机制。
 
@@ -694,7 +695,7 @@ python scripts/cache_models.py
 | --- | --- |
 | `logs/metrics.jsonl` | 每次同步/流式聊天的耗时、状态、action、引用数、工具信息、Query Rewrite、LLM 与流事件统计 |
 | `logs/tool_calls.jsonl` | 每次工具调用的输入、输出、耗时和是否成功 |
-| `logs/bad_cases.jsonl` | 模型 JSON 解析失败、引用异常、工具异常、内部异常、索引未就绪等失败样例 |
+| `logs/bad_cases.jsonl` | 模型结构化输出校验失败、引用异常、工具异常、内部异常、索引未就绪等失败样例 |
 
 日志汇总脚本：
 

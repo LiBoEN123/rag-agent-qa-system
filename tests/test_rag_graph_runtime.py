@@ -1,10 +1,10 @@
 """LangGraph RAG 子图运行时与业务分支测试。"""
 
-import json
-
 import pytest
 
-from app.llm.errors import ModelCallError
+from app.llm.errors import ModelCallError, StructuredOutputError
+from app.llm.schemas import AnswerOutput
+from app.rag import generation
 from app.rag.graph import builder as rag_graph_builder
 from app.rag.graph import nodes as rag_graph_nodes
 from app.rag.graph import runtime as rag_graph_runtime
@@ -45,12 +45,9 @@ def configure_success_path(monkeypatch) -> None:
     monkeypatch.setattr(
         rag_graph_nodes,
         "call_llm",
-        lambda question, context, trace_id="": json.dumps(
-            {
-                "answer": "测试政策允许用户申请退款。",
-                "references": ["Reference 1"],
-            },
-            ensure_ascii=False,
+        lambda question, context, trace_id="": AnswerOutput(
+            answer="测试政策允许用户申请退款。",
+            references=["Reference 1"],
         ),
     )
 
@@ -220,6 +217,91 @@ def test_decompose_model_can_keep_single_query(monkeypatch, settings_env):
     }
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        StructuredOutputError(
+            "模型返回的结构化内容不符合预期。",
+            schema_name="QueryDecomposeOutput",
+        ),
+        ModelCallError("拆分模型暂时不可用"),
+    ],
+    ids=["malformed-structured-output", "unavailable-model"],
+)
+def test_decompose_failure_falls_back_to_single_query(
+    monkeypatch,
+    settings_env,
+    error,
+):
+    """拆分坏输出和模型故障都沿用原问题单查询 fallback。"""
+    settings_env(
+        enable_query_decompose=True,
+        decompose_model_name="fake",
+        decompose_api_url="http://example.test",
+    )
+    monkeypatch.setattr(
+        rag_graph_nodes,
+        "should_decompose_query",
+        lambda question: (True, "multiple intents"),
+    )
+    monkeypatch.setattr(
+        rag_graph_nodes,
+        "decompose_query_with_llm",
+        lambda *args, **kwargs: (_ for _ in ()).throw(error),
+    )
+    monkeypatch.setattr(
+        rag_graph_nodes,
+        "retrieve_with_sub_queries_from_current_index",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("拆分失败后不应进入多查询检索")
+        ),
+    )
+    configure_success_path(monkeypatch)
+
+    result = run_rag_subgraph(
+        question="请分别说明测试政策入口和退款条件？",
+        retrieved_chunks=[make_chunk()],
+    )
+
+    assert result["status"] == "OK"
+    assert result["decompose_llm_used"] is True
+    assert result["llm_call_count"] == 2
+
+
+def test_decompose_not_configured_skips_model_and_uses_single_query(
+    monkeypatch,
+    settings_env,
+):
+    """拆分模型未配置时不调用模型并继续使用原问题。"""
+    settings_env(
+        enable_query_decompose=True,
+        decompose_model_name="",
+        decompose_api_url="http://example.test",
+    )
+    monkeypatch.setattr(
+        rag_graph_nodes,
+        "should_decompose_query",
+        lambda question: (True, "multiple intents"),
+    )
+    monkeypatch.setattr(
+        rag_graph_nodes,
+        "decompose_query_with_llm",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("未配置时不应调用拆分模型")
+        ),
+    )
+    configure_success_path(monkeypatch)
+
+    result = run_rag_subgraph(
+        question="请分别说明测试政策入口和退款条件？",
+        retrieved_chunks=[make_chunk()],
+    )
+
+    assert result["status"] == "OK"
+    assert result["decompose_llm_used"] is False
+    assert result["llm_call_count"] == 1
+
+
 def test_multi_query_uses_current_index_facade_only(monkeypatch, settings_env):
     """多查询使用 decompose_top_k，且不进入单查询 retrieve/rerank。"""
     calls = {"decompose": 0, "facade": 0, "retrieve": 0, "rerank": 0}
@@ -360,12 +442,57 @@ def test_model_error_keeps_answer_llm_usage(monkeypatch):
 def test_bad_model_output_stops_before_citation_binding(monkeypatch):
     """模型坏输出返回 MODEL_BAD_OUTPUT 和空引用，不继续绑定。"""
     configure_success_path(monkeypatch)
-    monkeypatch.setattr(rag_graph_nodes, "call_llm", lambda *args, **kwargs: "not-json")
+    monkeypatch.setattr(
+        rag_graph_nodes,
+        "call_llm",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            StructuredOutputError(
+                "模型返回的结构化内容不符合预期。",
+                schema_name="AnswerOutput",
+            )
+        ),
+    )
     monkeypatch.setattr(
         rag_graph_nodes,
         "format_reference",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("解析失败后不应绑定引用")
+        ),
+    )
+
+    result = run_rag_subgraph(
+        question="测试政策如何申请退款？",
+        retrieved_chunks=[make_chunk()],
+    )
+
+    assert result["status"] == "MODEL_BAD_OUTPUT"
+    assert result["references"] == []
+    assert result["answer_llm_used"] is True
+
+
+def test_invalid_answer_references_cannot_bypass_schema_validation(monkeypatch):
+    """非法 references 在 Gateway 边界失败并继续映射为 MODEL_BAD_OUTPUT。"""
+
+    class InvalidStructuredRunnable:
+        def invoke(self, messages):
+            return {
+                "answer": "测试政策允许用户申请退款。",
+                "references": "Reference 1",
+            }
+
+    class InvalidAnswerModel:
+        def with_structured_output(self, schema):
+            assert schema is AnswerOutput
+            return InvalidStructuredRunnable()
+
+    monkeypatch.setattr(rag_graph_nodes, "rerank", lambda candidates, question: candidates)
+    monkeypatch.setattr(rag_graph_nodes, "should_refuse", lambda chunks: False)
+    monkeypatch.setattr(generation, "get_answer_model", lambda: InvalidAnswerModel())
+    monkeypatch.setattr(
+        rag_graph_nodes,
+        "format_reference",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("Schema 校验失败后不应绑定引用")
         ),
     )
 
@@ -423,9 +550,9 @@ def test_missing_reference_or_stop_word_returns_no_evidence(
     monkeypatch.setattr(
         rag_graph_nodes,
         "call_llm",
-        lambda *args, **kwargs: json.dumps(
-            {"answer": answer, "references": references},
-            ensure_ascii=False,
+        lambda *args, **kwargs: AnswerOutput(
+            answer=answer,
+            references=references,
         ),
     )
     monkeypatch.setattr(

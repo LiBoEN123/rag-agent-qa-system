@@ -22,7 +22,8 @@ class RAGGraphState(TypedDict, total=False):
     evidence_gate: dict[str, Any]
 
     context: str
-    llm_output: str
+    answer_output: dict[str, Any]
+    answer_output_invalid: bool
     parsed_output: dict[str, Any]
 
     final_references: list[dict[str, Any]]

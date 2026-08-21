@@ -48,6 +48,8 @@ create_agent
 
 - FastAPI/API 只负责组合、协议转换、HTTP/SSE 与生命周期。
 - ChatService 拥有 Query Rewrite、session、Agent 调用、状态策略和 telemetry 编排。
+- JSON 形态的业务模型输出由 `app.llm.schemas` 定义，并统一经过 `ModelGateway` 的原生
+  Structured Output 或受控文本 fallback；业务模块不自行解析模型 JSON。
 - Agent Runtime 以普通 Python 执行唯一 Router，并直接调用 `create_agent`。
 - LangChain `create_agent` 是唯一 Agent Loop；项目不再包裹 Parent Agent Graph。
 - Project Governance Middleware 拥有模型事件消费、Tool Hook、预算和 fail-closed 语义。
@@ -219,8 +221,9 @@ McpToolCallInterceptor → remote MCP server`，继续独立承担 Server Access
 `decompose_top_k` 和 `trace_id` 来自请求级 Tool Context。
 
 RAG Graph 保持原有问题歧义判断、Query Decompose、BM25 + Embedding 混合召回、
-CrossEncoder 重排、Evidence Gate、Context Build、回答生成、JSON 解析、引用绑定和
-验证。工具成功结果包含 RAG 的答案、引用、状态、置信度、timings 与 trace，并形成与
+CrossEncoder 重排、Evidence Gate、Context Build、回答生成、结构化结果规范化、引用
+绑定和验证。模型调用失败与结构化输出校验失败仍分别映射为 `MODEL_ERROR` 和
+`MODEL_BAD_OUTPUT`。工具成功结果包含 RAG 的答案、引用、状态、置信度、timings 与 trace，并形成与
 原 tool call ID 配对的普通 ToolMessage。Middleware 在同一个原生 Command 中把该消息、
 治理事件和 `knowledge_base_result` 写入 State，下一轮 `before_model` 直接读取 State
 并结束 Agent Model，Result builder 采用 RAG 的权威结果；不存在 `Command.PARENT`、

@@ -3,11 +3,11 @@
 筛选两份文档的相关证据，调用模型生成差异说明并验证引用支撑情况。
 """
 
-import json
 from typing import Any
 
 from app.llm.factory import get_compare_model
 from app.llm.gateway import ModelGateway
+from app.llm.schemas import CompareDocumentsLLMOutput
 from app.tools.result import tool_error, tool_success
 
 
@@ -152,39 +152,6 @@ def _format_compare_evidence_for_llm(label: str, evidence: list[dict]) -> str:
     return "\n\n".join(blocks)
 
 
-def _parse_compare_llm_output(llm_output: str) -> dict:
-    """解析 compare_documents 的 LLM JSON 输出。"""
-    text = (llm_output or "").strip()
-    if text.startswith("```"):
-        text = text.replace("```json", "").replace("```", "").strip()
-
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start < 0 or end <= start:
-            return {"comparison": text}
-        data = json.loads(text[start:end + 1])
-
-    if not isinstance(data, dict):
-        return {"comparison": str(data)}
-    return data
-
-
-def _coerce_optional_bool(value):
-    """把 LLM 返回的布尔值或常见布尔字符串规整为 bool。"""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"true", "yes", "1", "是", "存在", "有差异"}:
-            return True
-        if normalized in {"false", "no", "0", "否", "不存在", "无差异"}:
-            return False
-    return None
-
-
 def _call_compare_documents_llm(
     query: str,
     doc_a: str,
@@ -192,7 +159,7 @@ def _call_compare_documents_llm(
     doc_a_evidence: list[dict],
     doc_b_evidence: list[dict],
     trace_id: str = "",
-) -> dict:
+) -> CompareDocumentsLLMOutput:
     """调用 LLM 根据两份文档 evidence 生成差异总结。"""
     system_prompt = (
         "你是制度类文档差异对比助手。"
@@ -229,14 +196,14 @@ doc_b evidence：
         role="compare_documents",
         langchain_model=get_compare_model(),
     )
-    content = gateway.invoke_text(
+    return gateway.invoke_structured(
         [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
+        CompareDocumentsLLMOutput,
         trace_id=trace_id,
     )
-    return _parse_compare_llm_output(content)
 
 
 def compare_documents_tool(args: dict, trace_id: str = "") -> dict:
@@ -307,22 +274,15 @@ def compare_documents_tool(args: dict, trace_id: str = "") -> dict:
                 doc_b_evidence=doc_b_evidence,
                 trace_id=trace_id,
             )
-            comparison = str(llm_result.get("comparison") or "").strip()
-            summary = str(llm_result.get("summary") or "").strip()
-            llm_conflict = _coerce_optional_bool(llm_result.get("conflict_detected"))
+            comparison = llm_result.comparison
+            summary = llm_result.summary
+            llm_conflict = llm_result.conflict_detected
         except Exception as e:
             return tool_error(
                 tool_name,
                 tool_input,
                 f"LLM 对比生成失败：{str(e)[:200]}"
             )
-
-        if not comparison:
-            return tool_error(tool_name, tool_input, "LLM 返回缺少 comparison")
-        if llm_conflict is None:
-            return tool_error(tool_name, tool_input, "LLM 返回缺少合法 conflict_detected")
-        if not summary:
-            return tool_error(tool_name, tool_input, "LLM 返回缺少 summary")
 
         conflict_detected = llm_conflict
 
