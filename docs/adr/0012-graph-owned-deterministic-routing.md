@@ -4,6 +4,10 @@
 - 日期：2026-07-28
 - 决策者：Project Maintainer
 
+> 2026-08-21 Amended：Router “唯一生产所有者”的决策继续有效，但 Parent Graph 已删除；
+> 当前唯一调用点是 `app.agent.runtime.prepare_agent_runtime_invocation()` 中的普通 Python
+> Router。下文 Graph-owned 节点、边与 checkpoint 描述只记录当时实现。
+
 ## 背景
 
 PR10 后存在两个 Router 入口：正常 `/chat` 先由 ChatService 调用 Router，再把 decision 注入父图；直接调用 `run_agent_langgraph()` 时，父图只有在 decision 缺失时才执行 `route`。因此 Router 的所有权取决于调用方，评测、脚本和新入口可能绕过或重复路由。ChatService 还单独保存 action/decision、测量 route 耗时并推导 Router LLM 指标。

@@ -39,6 +39,48 @@ create_agent
 → Agent Result builder 归一化
 ```
 
+## Architecture Freeze（2026-08-21）
+
+架构状态：`frozen`。这表示本轮 Phase 1～6B 的结构整理已经结束；后续功能应落入以下
+现有边界，而不是继续以“瘦身”为理由改写 Runtime。
+
+### Stable Boundaries
+
+- FastAPI/API 只负责组合、协议转换、HTTP/SSE 与生命周期。
+- ChatService 拥有 Query Rewrite、session、Agent 调用、状态策略和 telemetry 编排。
+- Agent Runtime 以普通 Python 执行唯一 Router，并直接调用 `create_agent`。
+- LangChain `create_agent` 是唯一 Agent Loop；项目不再包裹 Parent Agent Graph。
+- Project Governance Middleware 拥有模型事件消费、Tool Hook、预算和 fail-closed 语义。
+- Tool Adapter 只把请求可见的本地 ToolSpec/MCP BaseTool 交给框架。
+- `execute_registered_tool → ToolRuntime.execute` 是唯一本地工具执行治理边界。
+- MCP Bridge / Interceptor 独立治理远端 MCP；MCP 不进入本地 ToolRuntime。
+- 独立 RAG Graph 只由知识库工具调用，是唯一专用业务工作流 Graph。
+- Framework State 只保存框架运行所需状态；`AgentRunResult` 是 Runtime 输出边界。
+- `ChatStatusPolicy` 唯一决定 HTTP、公开状态与 metrics 状态；同步和 SSE 共用它。
+
+### Explicitly Accepted Design
+
+Phase 6B 的正式结论是 `KEEP_CURRENT_MODEL_MARKER` / `PHASE6B_SKIPPED`。当前
+LangChain 1.3.14 的原生异步 Model Middleware 门禁无法可靠通过，因此保留
+`_DeferredAgentModel → _GovernedBoundModel → AIMessage private marker →
+after_model/aafter_model → FrameworkAgentState`。这是已接受的内部模型治理边界，不是
+待迁移技术债；只有依赖升级后重新通过 sync、async 和 streaming 三条门禁，才可复议。
+
+ToolNode 同批调用共享输入 State，因此 `_batch_events` 与 `max_concurrency=1` 继续承担
+terminal 后续调用的确定性 fail-closed。这也是明确保留的并发安全语义。
+
+### No Longer Exists
+
+- Parent Agent Graph、`Command.PARENT`、`pending_rag_result` 和父图事件游标；
+- `ToolRegistry.dispatch` 与 `dispatch_tool` 转发层；
+- 项目私有 Tool governance artifact bus；
+- ToolSpec 手写 `args_schema` 与 Pydantic `args_model` 的重复契约。
+
+### Do Not Refactor Without Evidence
+
+今后只有可复现测试失败、性能 profiling、Evaluation 数据、明确功能需求或真实维护痛点
+可以触发架构修改。文件尺寸、类数量或“看起来还能更简单”都不是修改这些边界的依据。
+
 ## HTTP 与应用服务
 
 `app.main` 只调用 `app.api.application.create_app()`。组合根创建 FastAPI、middleware、

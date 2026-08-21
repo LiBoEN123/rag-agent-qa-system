@@ -44,6 +44,7 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "runtime_invokes_create_agent_directly",
         "middleware_does_not_depend_on_runtime",
         "native_tool_middleware_hooks",
+        "accepted_model_governance_boundary",
         "no_tool_governance_artifact_protocol",
         "framework_tools_does_not_simulate_middleware",
         "mcp_tool_has_no_framework_rewrapper",
@@ -82,6 +83,15 @@ def test_runtime_report_preserves_direct_create_agent_contract(
     }
     assert report["agent_result_contract"]["model"] == "AgentRunResult"
     assert report["agent_result_contract"]["extra"] == "forbid"
+    assert report["model_governance"] == {
+        "decision": "KEEP_CURRENT_MODEL_MARKER",
+        "gate_result": "PHASE6B_SKIPPED",
+        "adapter_chain": ["_DeferredAgentModel", "_GovernedBoundModel"],
+        "marker": "_project_model_governance",
+        "state_hooks": ["after_model", "aafter_model"],
+        "model_wrap_hooks_overridden": False,
+        "status": "accepted_model_governance_boundary",
+    }
     assert report["mcp_client"] == {
         "enabled_by_default": False,
         "config_version": 1,

@@ -123,6 +123,39 @@ outputs/evaluation_baseline_v2/<run_id>/
 未启用的层可以没有对应子目录；`baseline_summary.json` 和 Markdown 报告会记录
 `skipped` 及原因。`outputs/` 整体被 Git 忽略。
 
+## Architecture Freeze Baseline（2026-08-21）
+
+Phase 7 以文档标签记录 `architecture_state: frozen`，没有为此修改 manifest schema。
+正式 clean-worktree 运行是 `architecture-freeze-bc96cb2`，commit 为
+`bc96cb2ef4c18d69b12cd2e43b04c9f720328e2f`；Core 26 条、Online 3 条跳过、RAG 65 条，
+Judge 关闭。产物位于
+`outputs/evaluation_baseline_v2/architecture-freeze-bc96cb2/`。
+
+| 指标 | Freeze baseline |
+| --- | ---: |
+| Core Agent pass rate | 76.92%（20/26） |
+| First tool accuracy / status accuracy | 75.00% / 88.46% |
+| Tool call success / source pass | 96.30% / 100.00% |
+| P50 / P95 latency | 12978.35 / 69698.78 ms |
+| RAG prediction coverage / final score | 100.00% / 48.74% |
+| RAG gold chunk hit@5 / recall@5 | 100.00% / 92.44% |
+| RAG context / reference gold recall | 92.44% / 87.31% |
+| RAG behavior / forbidden rate | 90.85% / 0.00% |
+
+最近的重构前结果是 `initial-core-f498a49`。比较报告已生成，但结论必须标记为
+`NOT_STRICTLY_COMPARABLE`：两轮的 RAG 数据、索引、Embedding、Reranker、回答模型、
+temperature、top-k 相同；Agent dataset hash、Agent budgets、Tool contract hash、Prompt
+组合 hash 不同，外部模型与运行时延迟也不具备固定快照。方向性结果为 Agent pass rate
+84.62% → 76.92%、RAG final score 49.06% → 48.74%；这些差值不能归因于架构重构。
+
+本轮 8 个失败中，`D002/D003/D004` 均成功完成
+`list_documents → search_knowledge_base`，答案、状态、来源和工具执行全部正确，只违反
+首工具效率期望，归为 `MODEL_VARIANCE`；`N001/N002/F002` 与旧基线相同，归为
+`KNOWN_PRODUCT_LIMITATION`；`q053` 在 gold chunk 已进入 Context 时引用了错误 chunk，
+归为 `MODEL_VARIANCE`；`q061` 延续旧基线的跨适用范围未拒答，归为
+`KNOWN_PRODUCT_LIMITATION`。当前没有 `SYSTEM_REGRESSION` 或 `DATASET_ISSUE` 证据；旧
+`agent-tool-recovery-001` 假失败已由 `tool_status_sequence` 修正，本轮正常通过。
+
 ## Manifest
 
 `manifest.json` 记录：

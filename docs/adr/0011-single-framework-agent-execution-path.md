@@ -7,6 +7,11 @@
 > 2026-08-16 修订：旧 `ToolRegistry.dispatch` plumbing 已按
 > [ADR 0004 修订说明](0004-registry-driven-tool-discovery.md#2026-08-16-修订说明)
 > 收口为 `execute_registered_tool → ToolRuntime.execute`；下文保留当时决策原文。
+>
+> 2026-08-21 Amended by ADR 0006 Phase 6A：父图、`Command.PARENT` 和
+> `pending_rag_result` 已删除。`create_agent` 仍是唯一 Agent Loop；知识库工具在本地
+> ToolRuntime 后调用独立 RAG Graph，并以原生 Tool Middleware `Command(update=...)`
+> 写入 `knowledge_base_result`。下文父图流程仅作历史记录。
 
 ## 背景
 

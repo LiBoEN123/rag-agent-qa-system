@@ -18,9 +18,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.agent.framework_agent import (  # noqa: E402
     FrameworkAgentState,
+    _DeferredAgentModel,
+    _GovernedBoundModel,
     build_framework_agent,
 )
 from app.agent.framework_middleware import (  # noqa: E402
+    _MODEL_GOVERNANCE_KEY,
     ProjectToolGovernanceMiddleware,
 )
 from app.agent.framework_tools import build_framework_tools  # noqa: E402
@@ -208,6 +211,9 @@ def inspect_runtime(
     runtime_source = (
         PROJECT_ROOT / "app" / "agent" / "runtime.py"
     ).read_text(encoding="utf-8")
+    framework_agent_source = (
+        PROJECT_ROOT / "app" / "agent" / "framework_agent.py"
+    ).read_text(encoding="utf-8")
     middleware_source = (
         PROJECT_ROOT / "app" / "agent" / "framework_middleware.py"
     ).read_text(encoding="utf-8")
@@ -243,6 +249,9 @@ def inspect_runtime(
     )
     current_architecture = (
         PROJECT_ROOT / "docs" / "architecture" / "current-system.md"
+    ).read_text(encoding="utf-8")
+    framework_runtime_adr = (
+        PROJECT_ROOT / "docs" / "adr" / "0006-framework-native-agent-runtime.md"
     ).read_text(encoding="utf-8")
     result_extra = AgentRunResult.model_config.get("extra")
     result_fields = list(AgentRunResult.model_fields)
@@ -289,6 +298,22 @@ def inspect_runtime(
             "def wrap_tool_call(" in middleware_source
             and "def awrap_tool_call(" in middleware_source,
             "project governance overrides LangChain native tool hooks",
+        ),
+        _check(
+            "accepted_model_governance_boundary",
+            _DeferredAgentModel.__name__ in framework_agent_source
+            and _GovernedBoundModel.__name__ in framework_agent_source
+            and _MODEL_GOVERNANCE_KEY == "_project_model_governance"
+            and "_MODEL_GOVERNANCE_KEY" in framework_agent_source
+            and "after_model" in ProjectToolGovernanceMiddleware.__dict__
+            and "aafter_model" in ProjectToolGovernanceMiddleware.__dict__
+            and "wrap_model_call" not in ProjectToolGovernanceMiddleware.__dict__
+            and "awrap_model_call"
+            not in ProjectToolGovernanceMiddleware.__dict__
+            and "KEEP_CURRENT_MODEL_MARKER" in framework_runtime_adr
+            and "PHASE6B_SKIPPED" in framework_runtime_adr
+            and "KEEP_CURRENT_MODEL_MARKER" in current_architecture,
+            "Phase 6B model marker is an accepted architecture boundary",
         ),
         _check(
             "no_tool_governance_artifact_protocol",
@@ -423,6 +448,18 @@ def inspect_runtime(
         "state_schema": {
             "model": "FrameworkAgentState",
             "fields": state_fields,
+        },
+        "model_governance": {
+            "decision": "KEEP_CURRENT_MODEL_MARKER",
+            "gate_result": "PHASE6B_SKIPPED",
+            "adapter_chain": [
+                _DeferredAgentModel.__name__,
+                _GovernedBoundModel.__name__,
+            ],
+            "marker": _MODEL_GOVERNANCE_KEY,
+            "state_hooks": ["after_model", "aafter_model"],
+            "model_wrap_hooks_overridden": False,
+            "status": "accepted_model_governance_boundary",
         },
         "agent_result_contract": {
             "model": "AgentRunResult",

@@ -4,6 +4,8 @@
 
 当前实现的职责、调用链和持久化边界见
 [当前系统架构](docs/architecture/current-system.md)。
+架构演进见 [2026 年 Agent 演进归档](docs/history/agent-evolution-2026.md)，已接受的
+Model Governance 边界见 [ADR 0006](docs/adr/0006-framework-native-agent-runtime.md)。
 受治理的业务数据库接入见
 [只读 SQL 工具](docs/tools/sql-readonly.md)。
 外部只读工具接入见
@@ -29,90 +31,30 @@
 - bad case 日志：对模型格式异常、引用异常、工具异常、索引未就绪等失败样例做结构化记录。
 - 离线评测闭环：支持批量生成预测结果，并从答案质量、检索命中、行为约束和可选 LLM Judge 语义判断等维度评测。
 
-## 系统架构
+## 系统架构（已冻结）
 
-```mermaid
-flowchart TD
-    User[用户问题] --> API[FastAPI /chat 或 /chat/stream]
-    API --> Service[ChatService]
-    Service --> History[(SQLite Session History)]
-    History --> Rewrite[Query Rewrite]
+Phase 7 起架构状态为 `frozen`，当前唯一主链是：
 
-    Rewrite --> AgentRuntime[Agent Runtime<br/>准备请求与同步/流式执行]
-    AgentRuntime --> Router[确定性 Router]
-    Router -->|agent| FrameworkAgent[LangChain create_agent<br/>唯一 model ↔ tools 循环]
-    Router -->|direct_answer / clarify| Results[Result Builder<br/>AgentRunResult]
-
-    subgraph ToolRuntime[受治理工具执行链]
-        Provider[LocalToolProvider]
-        Registry[ToolRegistry]
-        StructuredTool[请求级 StructuredTool]
-        Execution[execute_registered_tool]
-        Runtime[ToolRuntime.execute]
-        Handler[ToolSpec.handler]
-
-        Middleware[Framework Middleware<br/>生命周期 Hook]
-        Guardrails[Guardrails<br/>治理规则与预算]
-
-        Registry --> Provider
-        Provider --> Middleware
-        Middleware --> StructuredTool
-        StructuredTool --> Execution
-        Registry --> Execution
-        Execution --> Runtime
-        Runtime --> Handler
-        Middleware --> Guardrails
-    end
-
-    FrameworkAgent -. 请求级模型与工具 hook .-> Middleware
-    Handler -. 统一工具结果 .-> FrameworkAgent
-    FrameworkAgent --> Events[Tool Events<br/>observation / trace / metrics]
-    Events --> Results
-
-    subgraph RAGGraph[LangGraph RAG Subgraph]
-        Decompose[Query Decompose]
-        Retrieval[Hybrid Retrieval<br/>BM25 + Embedding]
-        Rerank[CrossEncoder Rerank]
-        Evidence[Evidence Gate]
-        Context[Context Build]
-        Generation[LLM Generation]
-        Citations[Reference Binding<br/>Citation Verification]
-
-        Decompose --> Retrieval
-        Retrieval --> Rerank
-        Rerank --> Evidence
-        Evidence --> Context
-        Context --> Generation
-        Generation --> Citations
-    end
-
-    Handler -. search_knowledge_base .-> Decompose
-    Citations -. 权威 RAG 结果 .-> FrameworkAgent
-
-    subgraph Indexing[索引构建流程]
-        Loader[Document Loader<br/>txt / md / pdf / docx]
-        Clean[Clean Documents]
-        Splitter[Chunk Splitter<br/>Markdown 按标题层级切分]
-        Embedding[Embedding]
-        Chroma[(ChromaDB)]
-        BM25[(BM25 Index)]
-        Manifest[Manifest]
-
-        Loader --> Clean
-        Clean --> Splitter
-        Splitter --> Embedding
-        Embedding --> Chroma
-        Splitter --> BM25
-        Chroma --> Manifest
-        BM25 --> Manifest
-    end
-
-    Chroma --> Retrieval
-    BM25 --> Retrieval
-    Results --> Policy[ChatStatusPolicy]
-    Policy --> Store[Session / Metrics]
-    Store --> Response[统一 ChatResponse]
+```text
+FastAPI / Chat Router
+→ ChatService / Query Rewrite
+→ Agent Runtime（普通 Python Router）
+→ LangChain create_agent（唯一 Agent Loop）
+→ Project Governance Middleware
+→ 请求级 Tool Adapter
+→ Local ToolRuntime 或独立 MCP Bridge
+→ Tool Handler；知识库工具可调用独立 RAG Graph
+→ Framework State → AgentRunResult
+→ ChatStatusPolicy → HTTP JSON / SSE
 ```
+
+本地工具固定经过 `execute_registered_tool → ToolRuntime.execute → ToolSpec.handler`；MCP
+保持 adapter/bridge/interceptor 边界，不进入本地 ToolRuntime。LangGraph 只存在于
+`create_agent` 内部循环和独立 RAG Graph，不存在项目 Parent Agent Graph。
+
+Phase 6B 的 Model private marker 是已接受设计，不是待迁移 TODO。详细当前事实、稳定边界
+与禁止无证据重构的规则见[当前系统架构](docs/architecture/current-system.md)；历史原因只在
+[演进归档](docs/history/agent-evolution-2026.md)和 [ADR](docs/adr/) 中维护。
 
 ## 核心能力
 
@@ -190,68 +132,6 @@ flowchart TD
 - bad case 日志用于定位失败样例，包括模型 JSON 解析失败、引用异常、工具异常、内部异常和索引未就绪。
 
 模型客户端、`create_agent` Agent Loop 和独立 RAG Graph 彼此分层；本次 Agent Runtime 瘦身不改变 RAG 检索、Rerank、ChromaDB 数据结构和引用机制。
-
-## Chat 应用服务层
-
-`app/api/application.py` 是 FastAPI 组合根；`app/api/chat.py` 只负责读取 HTTP
-请求上下文、调用已注入的 `ChatService`、设置状态码，并委托
-`app/api/responses.py` 的具体函数构造响应。Query Rewrite、Runtime 调用、状态策略
-和 session 由 `app/services/chat_service.py` 编排，metrics、bad case 与
-`tool_call_chain` 收尾位于 `app/services/chat_telemetry.py`。同步与流式入口共享同一套
-请求准备（Settings 参数、Session History、Query Rewrite）和 Result 收尾（rewrite
-trace、Agent 耗时、trace metrics、`ChatStatusPolicy`、`ChatServiceOutcome`）；两条路径
-只在 `run_agent()` 与 `stream_agent()` 的执行方式及中间 SSE 事件上不同。流式事件数、
-首事件/首答案增量、增量字符数、工具完成状态、最终答案一致性和客户端断连也统一由
-`chat_telemetry.py` 记账。Router 只由
-`app.agent.runtime.prepare_agent_runtime_invocation()` 调用，因此聊天业务可脱离
-FastAPI 测试且不会形成第二个路由入口。
-
-`ChatServiceDependencies` 只保留 Settings、Session、Query Rewrite、Agent Runtime、
-持久化和时钟等可替换外部边界；构造/附加 rewrite trace 与汇总 trace metrics 的稳定
-纯函数由 Service 直接调用，不作为依赖函数表暴露。
-
-同步 API 请求/响应 Schema、HTTP 状态和 trace/total-cost 响应头保持不变；流式入口复用同一个 ChatService，完整 SSE 合同见 [聊天流式 API](docs/api/chat-streaming.md)。
-
-FastAPI middleware 与 Uvicorn access-log 适配分别位于
-`app/api/middleware.py` 和 `app/api/http_logging.py`。Uvicorn filter 只在
-FastAPI lifespan 启动时显式、幂等安装；导入 `app.common.logging` 不再修改全局
-logger。完整依赖规则见
-[模块依赖边界](docs/architecture/module-boundaries.md)。
-
-最终结果只经过一条状态链：
-
-```text
-Router short-circuit 或 create_agent final state
-→ app/agent/tool_events.py 的 framework event 投影（agent 路径）
-→ app/agent/results.py 的答案/状态/LLM usage 归一化
-→ AgentRunResult（Pydantic 校验后 dump 为普通 dict）
-→ app/contracts/chat.py 的 ChatStatusPolicy
-→ ChatServiceOutcome / HTTP、API data.status 与 metrics status
-```
-
-RAG 状态由 Result builder 通过 `answer.py` 的 RAG-to-Agent mapper 写入普通结果快照。
-`AgentRunResult` 只在 `results.py` 构造边界校验一次，返回 ChatService 的值始终是
-JSON-compatible 普通字典；ChatService 只附加受控的 Query Rewrite trace，不再次构造或
-校验 Agent Result。
-HTTP code/message、公开小写状态和 metrics 状态由唯一
-`CHAT_STATUS_POLICIES` 决定，API response adapter 不再读取业务状态表或依赖
-Agent Runtime。
-
-## LangChain Tool 适配层
-
-Agent Runtime 在请求入口从同一 `ToolProvider` 解析稳定有序的 `ToolSpec`，再构造并绑定请求级 LangChain governed `StructuredTool`。`ToolRuntime` 注入参数不会出现在模型 Schema 中；适配函数从 `runtime.context` 取得 trace、session、principal、permissions、source、RAG 参数和 idempotency key，再调用唯一公共本地执行入口 `execute_registered_tool()`。该入口按 Registry 取得共享项目 `ToolRuntime` 并调用 `ToolRuntime.execute()`，参数治理、权限、审批、超时、重试、审计、脱敏和错误码均未绕过；Registry 自身只负责注册、查找、稳定顺序和契约导出。
-
-`args_model` 是本地工具参数契约的单一事实来源：Runtime 参数校验、LangChain 模型可见 Schema 和 Registry 契约导出都由它驱动，不再手写重复 `args_schema`。输出存在 `output_model` 时同样由模型校验并派生 Schema；没有输出模型时才声明显式 `output_schema` fallback。该 Schema 只描述 handler 的 payload，不包含 `ToolResult` Runtime envelope。
-
-新增普通本地工具只需创建合法 `ToolSpec` 并注册到 Registry，不需要修改 Router、`create_agent` 或 Middleware。`LocalToolProvider` 复用精确、区分大小写的 `has_permission()`，仅当 Context 满足全部 `required_permissions` 时才向模型暴露工具；空权限要求始终可见。过滤保持 Registry 顺序，不执行完整 Policy、handler、Runtime 或审计，也不会因审批、风险等级或暂缺幂等键隐藏工具。
-
-模型伪造未绑定的隐藏名称时沿用框架未知工具路径，只返回 `unknown_tool`，不证明工具是否存在，也不泄漏 description、参数 Schema 或缺失权限。模型可见性不是授权替代：本地真实调用仍进入 `execute_registered_tool() → ToolRuntime.execute()` 做最终权限与执行期治理；MCP Provider 和官方 adapter interceptor 复用同一个 Server Access Policy，并保持独立于本地 ToolRuntime。多工具源合并保持稳定顺序并拒绝重名。
-
-模型—工具循环由 `langchain.agents.create_agent` 构建；其内部使用 LangGraph 标准 model/tools 节点处理 Pydantic 校验、同轮调用和基础 ToolMessage。动态工具通过 Middleware 覆盖请求。`ModelCallLimitMiddleware` 和 `ToolCallLimitMiddleware` 分别执行单次 run 的模型与工具调用上限，直接 Runtime 调用还设置 `recursion_limit` 作为框架级最终兜底。
-
-`ProjectToolGovernanceMiddleware` 只保留框架无法决定的项目语义：错误码分类、累计错误、连续相同调用/错误、协作式总耗时预算以及 terminal error 同批 fail-closed。已注册工具的调用指纹复用 `app.tools.policy.build_tool_args_fingerprint()`；未知模型 JSON 只做小型 JSON-compatible fallback。它不执行 handler、不复制 ToolRuntime 重试，也不自行实现参数校验或工具循环。
-
-两个项目 Middleware 同时实现同步 `wrap_model_call` / `wrap_tool_call` 和异步 `awrap_model_call` / `awrap_tool_call`；`/chat` 与 `/chat/stream` 因此共享完全相同的动态工具可见性、模型事件、工具治理、停止条件和 RAG handoff，而不是由异步路径绕过治理。
 
 ## 只读 SQL 工具
 
@@ -372,52 +252,6 @@ python scripts/smoke_test_online_tools.py pdf \
 
 脚本默认经过 `ToolRegistry → ToolRuntime → requests-hardened → pypdf`，只显示安全有限 URL、页码、长度和正文预览，不显示代理、headers、PDF bytes 或完整正文。
 
-## Agent Runtime
-
-项目当前唯一 Agent Runtime 是 LangChain `create_agent` 返回的 CompiledStateGraph。旧手写循环和 Parent Agent Graph 都已删除，不提供双实现或运行时回滚开关；需要回滚版本时使用 Git commit、tag 或 release。
-
-同步请求链路为 `FastAPI application → Chat Router → ChatService prepare → run_agent → 普通 Python Router → create_agent.invoke → Result 归一化 → ChatService finish → Session / Telemetry → API Response`。流式入口只把执行段替换为 `stream_agent → create_agent.astream → 安全事件投影 → SSE`，最终 Result 仍回到同一个 finish、状态策略和 Response mapper。正常 `/chat`、`/chat/stream`、离线评测和其他 Runtime 调用方共享 `app.agent.runtime` 中的同一个 Router 调用点。Router 不枚举工具意图，也不调用模型；它把普通请求交给能看到动态工具 Schema 的 Agent Model。
-
-核心结构为：
-
-```text
-普通 Python Router
-  ├─ direct_answer / clarify / 不支持动作 → Result 归一化
-  └─ agent → create_agent（model ↔ tools）
-       ├─ search_knowledge_base → ToolRuntime → 独立 RAG Graph → Result 归一化
-       ├─ Web / SQL / MCP 等普通工具 → ToolMessage → Agent Model
-       ├─ 无工具最终回答 → Result 归一化
-       └─ 治理或调用预算终止 → Result 归一化
-```
-
-`agent` 路径的模型不可用或调用失败会写入 `agent_model_call_failed` 治理事件并受控返回 `MODEL_ERROR`，不会进入第二套执行架构。成功的知识库检索继续进入原 RAG 子图，以保留问题拆分、重排、证据门控、拒答、引用绑定和验证能力。
-
-旧手写 Agent 编排入口、Planner/Executor 兼容链和 Parent Graph 节点已删除。Runtime
-只在普通 Python 中完成参数校验、路由、请求 Context、Agent 构建/缓存与 invoke；
-`guardrails.py` 保存治理规则，`tool_events.py` 投影 observation/trace/metrics，
-`results.py` 把短路或 Framework 输出构造成唯一 AgentResult 并保存同一 trace 快照。
-框架内部只保存 messages、append-only 治理事件、停止原因和可选知识库结构化结果。
-
-### LangGraph RAG 子图
-
-知识库问答由独立 RAG Graph 依次执行问题歧义判断、Query Decompose、检索与重排、Evidence Gate、Context Build、回答生成、JSON 解析、引用绑定与验证。`search_knowledge_base` handler 通过请求级 Tool Context 取得改写后问题和 RAG 参数，调用该图并返回带答案、引用、状态、置信度、timings 与 trace 的结构化 ToolResult；Middleware 生成配对 ToolMessage，随后 Result builder 采用 RAG 权威结果。不存在 `Command.PARENT` 或 Parent Graph 条件边。SSE 会流出 RAG 进度和安全工具状态，但不会流出 RAG JSON token；完整回答位于 `final`。
-
-### Checkpointer 边界
-
-当前没有 Interrupt/Resume、Replay、Time Travel 或跨请求图恢复消费者，因此 Phase 1 删除了 Parent Graph Checkpointer 配置、依赖和存储。应用级聊天历史仍由 `SQLITE_DB_PATH` 指定的 session 数据库保存并供 Query Rewrite 使用；这与图 checkpoint 不是同一职责。
-
-### Tool Calling 自动测试与真实模型冒烟
-
-Fake Model 自动测试验证直接 Agent Loop、错误分类、治理链、预算和 ToolMessage 轨迹；真实模型冒烟脚本验证供应商实际返回的 Tool Calling 协议。两者不能互相替代。
-
-在已配置真实 OpenAI-compatible 模型的本地环境中，可手动运行：
-
-```bash
-python scripts/smoke_test_agent_tool_calling.py
-```
-
-脚本会显示实际绑定的工具名、`search_knowledge_base` 与 `simple_calculator` 参数 Schema，以及两种强制工具场景返回的 AIMessage 类型、`tool_calls`、工具名、参数、`tool_call_id` 和 `additional_kwargs`。脚本不打印 API Key，不属于默认 Pytest/CI；自动回归不会运行它。
-
 ## Agent Runtime 检查
 
 以下命令通过 LangGraph/LangChain 公开 introspection 与 Schema API 查看当前 Runtime，不调用模型、工具或网络，也不会创建 Checkpoint 数据库：
@@ -431,6 +265,9 @@ lint-imports
 ```
 
 图结构、维护路径、文件职责和常见问题定位见 [Agent Runtime 维护指南](docs/agent-runtime-maintenance.md)。Runtime inspection 只确认 `.importlinter` 及关键合同声明存在；真实 import graph 由独立 `lint-imports` 验证。CI 会同时运行二者，阻止模块反向依赖、旧自定义循环节点回归、关键框架节点消失、工具契约失效或核心文件超过架构预算。
+
+真实模型 Tool Calling、MCP、Online 与 SQL 冒烟命令见维护指南及对应工具文档；这些
+环境相关检查不会进入默认 Pytest/CI。
 
 ## 文档入口
 

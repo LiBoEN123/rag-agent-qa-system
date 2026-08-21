@@ -4,6 +4,10 @@
 - 日期：2026-07-19
 - 决策者：Project Maintainer
 
+> 2026-08-21 Superseded in implementation：单 Agent 迭代式模型—工具循环的目标保留，
+> 但下文手写父图节点和兼容路径已由 ADR 0006、0011 及 Phase 1 删除。当前唯一循环是
+> LangChain `create_agent`；确定性 Router 位于 Agent Runtime 的普通 Python 入口。
+
 ## 背景
 
 项目当前唯一 Agent Runtime 是 LangGraph。FastAPI `/chat` 经 `ChatService` 完成会话历史读取、Query Rewrite 和 Router 决策后调用主图；主图复用既有 Router、Planner、Executor、RAG 子图和 Answer Composer。该架构已经统一运行入口并保留 RAG 行为，但 Agent 决策仍以一次路由和预先生成的固定计划为中心。

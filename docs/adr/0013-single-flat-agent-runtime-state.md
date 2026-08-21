@@ -4,6 +4,10 @@
 - 日期：2026-07-28
 - 决策者：Project Maintainer
 
+> 2026-08-21 Superseded in implementation：消除重复业务状态的目标继续有效，但完整
+> `AgentGraphState`、Parent Graph Checkpointer 和事件重放游标已删除。当前仅保留最小
+> `FrameworkAgentState` 与由 `results.py` 一次性归一化的普通 Python Result 快照。
+
 ## 背景
 
 PR11 后，LangGraph 父图保存请求输入、Router、框架消息与治理字段、RAG handoff 和最终 result，同时还嵌套一个可变 Pydantic 业务状态。问题语义、检索参数、trace/session 和业务结果因此分布在两层；节点既返回 LangGraph update，又原地修改嵌套对象。该模式让节点输入输出、checkpoint payload、重放语义和测试构造都不清晰。

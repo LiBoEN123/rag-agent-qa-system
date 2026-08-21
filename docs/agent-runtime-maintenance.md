@@ -76,6 +76,19 @@ Router 只决定 `agent`、`direct_answer` 或 `clarify`，不决定具体工具
 项目 Middleware 必须成对提供同步和异步 hook。同步入口调用 `wrap_*`，流式入口
 调用 `awrap_*`；只实现一套会导致另一条传输路径绕开治理或直接失败。
 
+## Model Governance：已接受边界
+
+模型事件没有迁移到 `wrap_model_call/awrap_model_call`。Phase 6B 在当前
+`langchain==1.3.14` 上验证了同步可行性，但最小异步 Model Hook 会使
+`ainvoke/astream` 在模型已返回后无法可靠结束，因此正式结论为
+`KEEP_CURRENT_MODEL_MARKER` / `PHASE6B_SKIPPED`。
+
+当前固定链为 `_DeferredAgentModel → _GovernedBoundModel → AIMessage private marker →
+after_model/aafter_model → FrameworkAgentState`。Inspection 应把它报告为
+`accepted_model_governance_boundary`，不能把 private marker 当作残留协议或 TODO。
+未来只有升级依赖并重新通过 sync、async、streaming 三条隔离门禁后才重新评估；不要用
+ContextVar、thread-local、pending event dict、全局缓存或额外 Model Graph Node 替代它。
+
 ## 工具与 RAG 边界
 
 普通本地工具固定经过：
