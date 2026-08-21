@@ -19,12 +19,37 @@
 项目私有 `_project_tool_governance` artifact marker、手工 `ToolCallRequest`、
 `govern_tool_call/agovern_tool_call` 和 MCP framework 二次 wrapper 已删除；第三方或框架
 自身的真实 ToolMessage artifact 语义不受限制。模型侧 `_project_model_governance` marker
-暂时保留，留待后续独立决策。
+继续保留；Phase 6B 已对这条边界作出独立决策，见下节。
 
 同批 ToolNode task 仍从同一 State 快照开始，因此 `_batch_events` 与
 `max_concurrency=1` 继续负责 terminal 后续调用 fail-closed；它们没有被 Command State
 Update 取代。下文 Parent Graph、Registry dispatch 和旧 RAG handoff 描述仅记录本 ADR
 最初决策时的历史实现，以本修订和当前架构文档为准。
+
+## Phase 6B Model Middleware 可行性门禁（2026-08-21）
+
+结论：`KEEP_CURRENT_MODEL_MARKER`，`PHASE6B_SKIPPED`。
+
+当前虚拟环境中的 `langchain==1.3.14` 确实提供同步与异步
+`wrap_model_call/awrap_model_call`。普通 `ModelResponse` 只有 `result` 和
+`structured_response`；额外的 `ExtendedModelResponse` 可以携带
+`Command(update=...)`，同步隔离试验也证明该 Command 能把模型事件直接合并进
+`FrameworkAgentState`，无需修改 AIMessage。
+
+但是，同一虚拟环境中的异步门禁不通过：无 Model Hook 的最小 `create_agent.ainvoke`
+能够正常完成并退出；只增加一个原样执行 `return await handler(request)` 的最小
+`awrap_model_call` 后，`ainvoke/astream` 会在模型结果已经产生后停在异步 Model Hook
+组合路径，现有 `asyncio.run(...astream...)` 回归测试也会超时。这个现象不依赖
+`ExtendedModelResponse`、Command 或项目治理逻辑。依赖周期性 timer 才能唤醒执行不属于
+可接受的 Runtime 合同，也会引入本阶段明确禁止的新协调机制。
+
+因此，LangChain 1.3.14 当前不能同时满足同步、异步和 streaming 的可靠 Model
+Middleware 门禁。现有
+`_DeferredAgentModel → _GovernedBoundModel → AIMessage private marker → after_model → State`
+是该生命周期限制下最小且局部的内部协议；继续重构会增加而不是减少复杂度。这是已接受的
+架构边界，不是未完成 TODO。只有未来升级依赖并重新通过同一 sync/async/streaming 门禁后，
+才重新评估该 transport。Tool Governance 的原生 `wrap_tool_call/awrap_tool_call + Command`
+路径不受此决定影响。
 
 ## 背景
 
