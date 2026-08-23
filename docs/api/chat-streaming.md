@@ -73,7 +73,7 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
 且不属于 RAG 命名空间后才作为原始增量释放。
 
 增量事件不会公开 reasoning/thinking、tool call JSON、工具参数、`ToolMessage` 正文、
-原始 `ToolResult`、RAG JSON、网页/PDF/chunk 正文、系统 Prompt、provider/usage
+原始工具结果、RAG JSON、网页/PDF/chunk 正文、系统 Prompt、provider/usage
 metadata、内部 State、认证头、Cookie、API Key、数据库凭据、本地敏感路径或异常
 堆栈。`final` 复用现有 `ChatResponse` 映射和公开字段合同，不另建第二套响应。
 

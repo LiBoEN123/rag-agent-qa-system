@@ -8,73 +8,74 @@ from app.llm.schemas import CompareDocumentsLLMOutput
 from app.tools.context import build_default_tool_context
 from app.tools.registry import get_tool_registry
 from app.tools.runtime import execute_registered_tool
+from app.tools.schemas import CompareDocumentsArgs
 
 
 compare_documents_tool = compare_documents_module.compare_documents_tool
 
 
-def test_compare_documents_query_empty_returns_error():
-    """验证 query 为空时返回工具错误。"""
-    result = compare_documents_tool({
-        "query": "",
-        "doc_a": "old.md",
-        "doc_b": "new.md",
-    })
+def _validated_compare_args(values: dict | None = None, **overrides) -> dict:
+    """为 handler 业务单测构造已经过 Runtime 同款 Schema 校验的参数。"""
+    payload = dict(values or {})
+    payload.update(overrides)
+    return CompareDocumentsArgs.model_validate(payload).model_dump(mode="json")
+
+
+@pytest.mark.parametrize(
+    "tool_args",
+    [
+        {"query": "", "doc_a": "old.md", "doc_b": "new.md"},
+        {"query": "   ", "doc_a": "old.md", "doc_b": "new.md"},
+        {"query": "对比主题", "doc_a": "", "doc_b": "new.md"},
+        {"query": "对比主题", "doc_a": "   ", "doc_b": "new.md"},
+        {"query": "对比主题", "doc_a": "old.md", "doc_b": ""},
+        {"query": "对比主题", "doc_a": "old.md", "doc_b": "   "},
+        {
+            "query": "对比主题",
+            "doc_a": "old.md",
+            "doc_b": "new.md",
+            "top_k": 0,
+        },
+        {
+            "query": "对比主题",
+            "doc_a": "old.md",
+            "doc_b": "new.md",
+            "top_k": 11,
+        },
+        {
+            "query": "对比主题",
+            "doc_a": "old.md",
+            "doc_b": "new.md",
+            "top_k": "bad",
+        },
+    ],
+)
+def test_compare_documents_rejects_invalid_args_at_runtime(tool_args):
+    """基础字段和范围错误统一由 Runtime 参数边界拒绝。"""
+    result = execute_registered_tool(
+        registry=get_tool_registry(),
+        tool_name="compare_documents",
+        tool_args=tool_args,
+    )
 
     assert result["ok"] is False
-    assert result["status"] == "error"
-    assert "query" in result["error"]
-
-
-def test_compare_documents_doc_a_empty_returns_error():
-    """验证 doc_a 为空时返回工具错误。"""
-    result = compare_documents_tool({
-        "query": "\u6700\u957f\u5b66\u4e60\u5e74\u9650",
-        "doc_a": "",
-        "doc_b": "new.md",
-    })
-
-    assert result["ok"] is False
-    assert "doc_a" in result["error"]
-
-
-def test_compare_documents_doc_b_empty_returns_error():
-    """验证 doc_b 为空时返回工具错误。"""
-    result = compare_documents_tool({
-        "query": "\u6700\u957f\u5b66\u4e60\u5e74\u9650",
-        "doc_a": "old.md",
-        "doc_b": "",
-    })
-
-    assert result["ok"] is False
-    assert "doc_b" in result["error"]
+    assert result["error_code"] == "invalid_arguments"
+    assert result["runtime"]["attempt_count"] == 0
 
 
 def test_compare_documents_same_docs_returns_error():
     """验证两个文档名相同时返回工具错误。"""
-    result = compare_documents_tool({
-        "query": "\u6700\u957f\u5b66\u4e60\u5e74\u9650",
-        "doc_a": "old.md",
-        "doc_b": "old",
-    })
+    result = compare_documents_tool(
+        _validated_compare_args(
+            query="\u6700\u957f\u5b66\u4e60\u5e74\u9650",
+            doc_a="old.md",
+            doc_b="old",
+        )
+    )
 
     assert result["ok"] is False
     assert "doc_a" in result["error"]
     assert "doc_b" in result["error"]
-
-
-def test_compare_documents_invalid_top_k_returns_tool_error():
-    """验证 top_k 非整数时返回工具错误且不抛异常。"""
-    result = compare_documents_tool({
-        "query": "\u6700\u957f\u5b66\u4e60\u5e74\u9650",
-        "doc_a": "old.md",
-        "doc_b": "new.md",
-        "top_k": "bad",
-    })
-
-    assert result["ok"] is False
-    assert result["status"] == "error"
-    assert "top_k" in result["error"]
 
 
 def test_compare_documents_success(monkeypatch):
@@ -107,12 +108,16 @@ def test_compare_documents_success(monkeypatch):
         ),
     )
 
-    result = compare_documents_tool({
-        "query": "\u666e\u901a\u672c\u79d1\u56db\u5e74\u5236\u5b66\u4e60\u5e74\u9650",
-        "doc_a": "old.md",
-        "doc_b": "new.md",
-        "top_k": 2,
-    })
+    result = compare_documents_tool(
+        _validated_compare_args(
+            {
+                "query": "\u666e\u901a\u672c\u79d1\u56db\u5e74\u5236\u5b66\u4e60\u5e74\u9650",
+                "doc_a": "old.md",
+                "doc_b": "new.md",
+                "top_k": 2,
+            }
+        )
+    )
 
     assert result["ok"] is True
     assert result["status"] == "success"
@@ -155,11 +160,15 @@ def test_compare_documents_same_numeric_terms_not_conflict(monkeypatch):
         ),
     )
 
-    result = compare_documents_tool({
-        "query": "\u666e\u901a\u672c\u79d1\u56db\u5e74\u5236\u6700\u957f\u5b66\u4e60\u5e74\u9650",
-        "doc_a": "old.md",
-        "doc_b": "new.md",
-    })
+    result = compare_documents_tool(
+        _validated_compare_args(
+            {
+                "query": "\u666e\u901a\u672c\u79d1\u56db\u5e74\u5236\u6700\u957f\u5b66\u4e60\u5e74\u9650",
+                "doc_a": "old.md",
+                "doc_b": "new.md",
+            }
+        )
+    )
 
     assert result["ok"] is True
     assert result["output"]["conflict_detected"] is False
@@ -192,11 +201,15 @@ def test_compare_documents_returns_error_when_llm_fails(monkeypatch):
         fake_llm,
     )
 
-    result = compare_documents_tool({
-        "query": "\u666e\u901a\u672c\u79d1\u56db\u5e74\u5236\u6700\u957f\u5b66\u4e60\u5e74\u9650",
-        "doc_a": "old.md",
-        "doc_b": "new.md",
-    })
+    result = compare_documents_tool(
+        _validated_compare_args(
+            {
+                "query": "\u666e\u901a\u672c\u79d1\u56db\u5e74\u5236\u6700\u957f\u5b66\u4e60\u5e74\u9650",
+                "doc_a": "old.md",
+                "doc_b": "new.md",
+            }
+        )
+    )
 
     assert result["ok"] is False
     assert result["status"] == "error"
@@ -305,12 +318,19 @@ def test_execution_entry_propagates_compare_documents_trace_id(
         registry=get_tool_registry(),
         tool_name="compare_documents",
         tool_args={
-            "query": "普通本科四年制最长学习年限",
-            "doc_a": "old.md",
-            "doc_b": "new.md",
+            "query": "  普通本科四年制最长学习年限  ",
+            "doc_a": "  old.md  ",
+            "doc_b": "  new.md  ",
+            "top_k": "2",
         },
         context=build_default_tool_context(trace_id="trace-tool"),
     )
 
     assert result["ok"] is True
+    assert result["tool_input"] == {
+        "query": "普通本科四年制最长学习年限",
+        "doc_a": "old.md",
+        "doc_b": "new.md",
+        "top_k": 2,
+    }
     assert received["trace_id"] == "trace-tool"

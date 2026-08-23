@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from app.tools.context import ToolInvocationContext
 from app.tools.registry import ToolRegistry, ToolSpec
 from app.tools.runtime import execute_registered_tool
@@ -148,8 +150,8 @@ def test_execute_registered_tool_runs_search_knowledge_base(
         registry=tool_registry,
         tool_name="search_knowledge_base",
         tool_args={
-            "query": "普通本科四年制专业最长学习年限是多少？",
-            "top_k": 5,
+            "query": "  普通本科四年制专业最长学习年限是多少？  ",
+            "top_k": "5",
         },
     )
 
@@ -165,6 +167,100 @@ def test_execute_registered_tool_runs_search_knowledge_base(
     assert result["output"]["top_chunk_ids"] == [1]
     assert result["output"]["top_scores"] == [0.91]
     assert result["output"]["rag_result"]["answer"] == "测试 RAG 回答"
+
+
+@pytest.mark.parametrize(
+    "tool_args",
+    [
+        {"query": "", "top_k": 5},
+        {"query": "   ", "top_k": 5},
+        {"query": "测试", "top_k": 0},
+        {"query": "测试", "top_k": 11},
+    ],
+)
+def test_search_knowledge_base_rejects_invalid_args_at_runtime(
+    tool_registry,
+    tool_args,
+):
+    """知识库参数非法时由 Runtime 拒绝且不进入 handler。"""
+    result = execute_registered_tool(
+        registry=tool_registry,
+        tool_name="search_knowledge_base",
+        tool_args=tool_args,
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "invalid_arguments"
+    assert result["runtime"]["attempt_count"] == 0
+
+
+@pytest.mark.parametrize("chunk_id", [0, 1, " chunk-abc "])
+def test_get_chunk_text_keeps_integer_and_string_ids(
+    monkeypatch,
+    tool_registry,
+    chunk_id,
+):
+    """合法整数和字符串 ID 经 Schema 规范化后进入真实 handler。"""
+    import app.rag as rag
+
+    received = []
+
+    def fake_get_chunk_full_text(value):
+        received.append(value)
+        return {"found": True, "chunk_id": value, "text": "测试正文"}
+
+    monkeypatch.setattr(rag, "get_chunk_full_text", fake_get_chunk_full_text)
+    result = execute_registered_tool(
+        registry=tool_registry,
+        tool_name="get_chunk_text",
+        tool_args={"chunk_id": chunk_id},
+    )
+
+    expected = chunk_id.strip() if isinstance(chunk_id, str) else chunk_id
+    assert result["ok"] is True
+    assert received == [expected]
+    assert result["tool_input"] == {"chunk_id": expected}
+
+
+@pytest.mark.parametrize("chunk_id", ["", "   "])
+def test_get_chunk_text_rejects_blank_string_at_runtime(tool_registry, chunk_id):
+    """空白字符串 ID 在提交 handler 前返回 invalid_arguments。"""
+    result = execute_registered_tool(
+        registry=tool_registry,
+        tool_name="get_chunk_text",
+        tool_args={"chunk_id": chunk_id},
+    )
+
+    assert result["error_code"] == "invalid_arguments"
+    assert result["runtime"]["attempt_count"] == 0
+
+
+@pytest.mark.parametrize("expression", ["", "   "])
+def test_simple_calculator_rejects_blank_expression_at_runtime(
+    tool_registry,
+    expression,
+):
+    """空白表达式由参数模型拒绝，计算器只处理已校验表达式。"""
+    result = execute_registered_tool(
+        registry=tool_registry,
+        tool_name="simple_calculator",
+        tool_args={"expression": expression},
+    )
+
+    assert result["error_code"] == "invalid_arguments"
+    assert result["runtime"]["attempt_count"] == 0
+
+
+def test_simple_calculator_keeps_ast_safety_rules(tool_registry):
+    """表达式结构合法后仍由计算器 AST 白名单拒绝代码执行。"""
+    result = execute_registered_tool(
+        registry=tool_registry,
+        tool_name="simple_calculator",
+        tool_args={"expression": "__import__('os').getcwd()"},
+    )
+
+    assert result["error_code"] == "execution_error"
+    assert "只支持简单数字四则运算" in result["error"]
 
 
 def test_execute_registered_tool_rejects_unknown_tool(tool_registry):

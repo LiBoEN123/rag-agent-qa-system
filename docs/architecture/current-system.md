@@ -189,7 +189,7 @@ create_agent ToolNode
 手写第二份 `args_schema`。输出契约按真实能力非对称处理：存在 `output_model` 时由该
 模型负责 Runtime 校验并派生导出 Schema；没有输出模型时才要求显式 `output_schema`
 作为 handler payload 的展示契约。两者不能同时声明。这里的输出仅指 handler 的
-`output` payload，不包含 `ToolResult` 外层状态、治理、attempt、耗时或审计元数据。
+`output` payload，不包含 Runtime result envelope 的外层状态、治理、attempt、耗时或审计元数据。
 
 ```text
 StructuredTool

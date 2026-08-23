@@ -49,7 +49,7 @@ class QueryDecomposeOutput(BaseModel):
 
 
 class CompareDocumentsLLMOutput(BaseModel):
-    """双文档对比模型的内部业务输出，不包含 ToolResult 外层协议。"""
+    """双文档对比模型的内部业务输出，不包含 Runtime 结果外层协议。"""
 
     model_config = ConfigDict(strict=True, str_strip_whitespace=True)
 

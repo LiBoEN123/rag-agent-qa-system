@@ -98,7 +98,7 @@ StructuredTool
 → execute_registered_tool
 → ToolRuntime.execute
 → ToolSpec.handler
-→ 标准 ToolResult
+→ 标准工具结果字典
 → 配对 ToolMessage
 → Command(update={messages, governance_events, ...})
 ```
@@ -109,7 +109,7 @@ StructuredTool
 
 `search_knowledge_base` 也遵守这条链。其 handler 先取得候选 chunks，再使用 Context 中
 的 `effective_question`、`top_k`、`decompose_top_k` 和 `trace_id` 调用独立
-`run_rag_subgraph()`。成功 ToolResult 包含 `rag_result`；Middleware 通过同一个原生
+`run_rag_subgraph()`。成功工具结果包含 `rag_result`；Middleware 通过同一个原生
 Command 写入配对 ToolMessage、治理事件和内部 `knowledge_base_result`，在下一轮模型前
 结束 Agent，Result builder 将 RAG 状态映射为权威 AgentRunResult。项目不再通过
 `ToolMessage.artifact` 回传 Tool Governance；不存在 `Command.PARENT`、父图或事件投影
@@ -202,7 +202,7 @@ Agent trace 仍可按 `ENABLE_AGENT_TRACE_STORE` 单独保存。
 | 工具可见但执行被拒绝 | ToolRuntime 权限、审批、幂等和策略 |
 | 工具错误后未恢复 | error code 分类、stop reason、同批 fail-closed |
 | 重复调用未停止 | governance event 指纹与连续计数 |
-| 知识库未返回引用 | ToolResult 是否含合法 `rag_result`，RAG 状态和引用验证 |
+| 知识库未返回引用 | 工具结果是否含合法 `rag_result`，RAG 状态和引用验证 |
 | 流式泄漏参数或正文 | `project_agent_stream_part()` 白名单与 tainted buffer |
 | 同步/流式结果不一致 | 两入口的最终 `build_framework_agent_result()` 输入 |
 | MCP 工具不存在 | 启动期 discovery、Server allowlist、默认主体/请求权限 |

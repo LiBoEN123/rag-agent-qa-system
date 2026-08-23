@@ -90,7 +90,7 @@ def _result_runtime(
     timed_out: bool,
     error_code: str = "",
 ) -> dict[str, Any]:
-    """构造与本地 ToolResult 兼容的单次 MCP 执行信息。"""
+    """构造与本地工具结果字典兼容的单次 MCP 执行信息。"""
     elapsed = _elapsed_ms(started_at)
     attempts = []
     if attempt_count:
@@ -163,7 +163,7 @@ def _standard_result(
     approval_required: bool = False,
     policy_decision: str = "",
 ) -> dict[str, Any]:
-    """把 MCP 成功或失败统一封装为项目标准 ToolResult。"""
+    """把 MCP 成功或失败统一封装为项目标准工具结果字典。"""
     runtime = _result_runtime(
         started_at=started_at,
         settings=settings,

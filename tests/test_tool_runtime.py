@@ -128,6 +128,23 @@ def test_runtime_executes_validated_args_once(runtime_factory):
     assert result["runtime"]["max_attempts"] == 1
     assert result["runtime"]["timed_out"] is False
     assert result["runtime"]["elapsed_ms"] >= 0
+    assert {
+        "status",
+        "ok",
+        "tool_name",
+        "tool_input",
+        "output",
+        "error",
+        "error_code",
+        "retryable",
+        "runtime",
+        "governance",
+        "tool_call_id",
+        "audit",
+    } <= result.keys()
+    assert result["tool_call_id"]
+    assert isinstance(result["governance"], dict)
+    assert isinstance(result["audit"], dict)
 
 
 def test_runtime_rejects_unknown_tool_without_attempt(runtime_factory):
@@ -141,6 +158,9 @@ def test_runtime_rejects_unknown_tool_without_attempt(runtime_factory):
     assert result["runtime"]["attempt_count"] == 0
     assert result["runtime"]["max_attempts"] == 0
     assert result["runtime"]["attempts"] == []
+    assert result["tool_call_id"]
+    assert isinstance(result["governance"], dict)
+    assert isinstance(result["audit"], dict)
 
 
 def test_runtime_rejects_invalid_args_before_handler(runtime_factory):

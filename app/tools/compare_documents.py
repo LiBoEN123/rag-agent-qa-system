@@ -209,32 +209,14 @@ doc_b evidence：
 def compare_documents_tool(args: dict, trace_id: str = "") -> dict:
     """对比两个知识库文档中关于同一问题的相关证据差异。"""
     tool_name = "compare_documents"
-    args = args or {}
     try:
-        query = str(args.get("query") or "").strip()
-        doc_a = str(args.get("doc_a") or "").strip()
-        doc_b = str(args.get("doc_b") or "").strip()
-        raw_top_k = args.get("top_k", 3)
-        try:
-            top_k = int(raw_top_k)
-        except (TypeError, ValueError):
-            return tool_error(
-                tool_name,
-                {"query": query, "doc_a": doc_a, "doc_b": doc_b, "top_k": raw_top_k},
-                "top_k 必须是整数"
-            )
-
-        top_k = max(1, min(top_k, 10))
+        query = args["query"]
+        doc_a = args["doc_a"]
+        doc_b = args["doc_b"]
+        top_k = args["top_k"]
         tool_input = {"query": query, "doc_a": doc_a, "doc_b": doc_b, "top_k": top_k}
-        if not query:
-            return tool_error(tool_name, tool_input, "query 不能为空")
-        if not doc_a:
-            return tool_error(tool_name, tool_input, "doc_a 不能为空")
-        if not doc_b:
-            return tool_error(tool_name, tool_input, "doc_b 不能为空")
-        if (
-            _strip_known_suffix(_normalize_doc_label(doc_a))
-            == _strip_known_suffix(_normalize_doc_label(doc_b))
+        if _strip_known_suffix(_normalize_doc_label(doc_a)) == _strip_known_suffix(
+            _normalize_doc_label(doc_b)
         ):
             return tool_error(tool_name, tool_input, "doc_a 和 doc_b 不能相同")
 

@@ -31,8 +31,6 @@ def get_chunk_text(chunk_id: int | str) -> dict:
     try:
         from app.rag import get_chunk_full_text
 
-        if not chunk_id or not str(chunk_id).strip():
-            return tool_error(tool_name, tool_input, "chunk_id 不能为空")
         chunk = get_chunk_full_text(chunk_id)
         if not chunk.get("found"):
             return tool_error(
@@ -79,21 +77,9 @@ def search_knowledge_base(
         from app.rag import search_relevant_chunks
         from app.rag.graph import run_rag_subgraph
 
-        args = args or {}
-        query = str(args.get("query") or "").strip()
-        raw_top_k = args.get("top_k", get_settings().top_k)
-        try:
-            top_k = int(raw_top_k)
-        except (TypeError, ValueError):
-            return tool_error(
-                tool_name,
-                {"query": query, "top_k": raw_top_k},
-                "top_k 必须是整数",
-            )
-        top_k = max(1, min(top_k, 20))
+        query = args["query"]
+        top_k = args["top_k"]
         tool_input = {"query": query, "top_k": top_k}
-        if not query:
-            return tool_error(tool_name, tool_input, "query 不能为空")
 
         chunks = search_relevant_chunks(query, top_k=top_k)
         effective_question = (

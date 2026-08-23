@@ -104,7 +104,7 @@ cp config/mcp_servers.example.json config/mcp_servers.local.json
 本地开发推荐把真实 Header 放在 gitignored local JSON 的 `headers` 中。字段值进入
 `SecretStr`，配置对象的 `repr` / `str` / JSON 表示不会显示原文；只有在构造官方
 adapter connection config 的边界才会解开。完整配置、连接配置和 Header 不写日志，
-不进入 Tool metadata、Agent State、ToolResult、审计或 SSE。
+不进入 Tool metadata、Agent State、工具结果字典、审计或 SSE。
 
 生产部署可选择 `headers_env`，其值只是部署环境变量名：
 

@@ -59,7 +59,7 @@ TOOL_DEFAULT_PERMISSIONS=knowledge_base:read,database:read
 持久化目录或 `outputs/` 评测目录。配置构造会解析、展开并 `resolve()`
 SQLite 文件路径后拒绝这些内部目标；没有绕过开关。完整数据库 URL 是
 `SecretStr`，不得进入日志、
-ToolResult、Tool Audit、metrics、bad case、Agent trace 或 SSE。
+工具结果字典、Tool Audit、metrics、bad case、Agent trace 或 SSE。
 
 ## 安全边界
 
@@ -93,7 +93,7 @@ LangChain create_agent
 → ToolRuntime.execute
 → SQL service
 → sqlglot / SQLAlchemy
-→ ToolResult / ToolMessage
+→ Runtime 工具结果 / ToolMessage
 → Agent
 ```
 

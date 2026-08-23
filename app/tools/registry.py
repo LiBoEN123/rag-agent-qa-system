@@ -72,7 +72,7 @@ def _handle_simple_calculator(
     context: ToolInvocationContext,
 ) -> dict:
     """适配计算器工具的参数格式。"""
-    return simple_calculator(args.get("expression", ""))
+    return simple_calculator(args["expression"])
 
 
 def _handle_list_documents(
@@ -88,7 +88,7 @@ def _handle_get_chunk_text(
     context: ToolInvocationContext,
 ) -> dict:
     """适配 chunk 原文工具的参数格式。"""
-    return get_chunk_text(args.get("chunk_id"))
+    return get_chunk_text(args["chunk_id"])
 
 
 def _handle_search_knowledge_base(

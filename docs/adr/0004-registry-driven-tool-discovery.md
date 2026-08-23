@@ -97,5 +97,5 @@ Phase 5 将本地 ToolSpec 的参数契约收敛为 Pydantic `args_model` 单一
 `ToolRegistry.contract_specs()` 导出均由该模型驱动，ToolSpec 构造器不再接收手写
 `args_schema`。输出侧不强求形式对称：存在 `output_model` 时由它校验并派生 Schema；
 没有输出模型时保留显式 `output_schema` 作为 handler payload 的展示 fallback，且禁止
-两种来源同时声明。本修订不改变 ToolResult Runtime envelope、Provider、MCP 或 RAG
+两种来源同时声明。本修订不改变 Runtime result envelope、Provider、MCP 或 RAG
 边界。
