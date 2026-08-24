@@ -7,12 +7,11 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import ConfigDict, create_model
 
-from app.agent.model import get_agent_tool_provider
 from app.tools import runtime as tool_runtime
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from app.tools.mcp.provider import list_mcp_tools_for_context
-from app.tools.providers import ToolProvider
+from app.tools.providers import ToolProvider, get_default_tool_provider
 from app.tools.registry import ToolRegistry
 
 
@@ -114,6 +113,6 @@ def build_agent_framework_tools(
 def resolve_agent_tools(context: ToolInvocationContext) -> list[BaseTool]:
     """从唯一 Provider 入口解析本次请求可见的完整工具集合。"""
     return build_agent_framework_tools(
-        get_agent_tool_provider(),
+        get_default_tool_provider(),
         context=context,
     )

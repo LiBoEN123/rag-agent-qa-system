@@ -48,7 +48,7 @@ def test_runtime_routes_once_with_effective_question_and_records_cost(monkeypatc
         return original_route(question)
 
     monkeypatch.setattr(agent_runtime, "route_agent_action", recording_route)
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
 
     result = _run(original="它是什么？", effective="奖学金是什么？")
 
@@ -60,7 +60,7 @@ def test_runtime_routes_once_with_effective_question_and_records_cost(monkeypatc
 
 def test_framework_no_tool_answer_uses_effective_question(monkeypatch):
     model = FakeModel(AIMessage(content="基于有效问题回答"))
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
 
     result = _run(original="它呢？", effective="奖学金申请条件是什么？")
 
@@ -72,7 +72,7 @@ def test_framework_no_tool_answer_uses_effective_question(monkeypatch):
 def test_framework_model_exception_fails_closed(monkeypatch):
     monkeypatch.setattr(
         framework_agent,
-        "get_agent_chat_model",
+        "get_answer_model",
         lambda: FakeModel(RuntimeError("provider secret")),
     )
 

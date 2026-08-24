@@ -350,7 +350,7 @@ def test_consecutive_requests_keep_web_visibility_isolated_and_execute_graph(
     current_model = {"value": hidden_model}
     monkeypatch.setattr(
         framework_agent,
-        "get_agent_chat_model",
+        "get_answer_model",
         lambda: current_model["value"],
     )
 
@@ -432,7 +432,7 @@ def test_forged_hidden_web_search_is_unknown_without_ddgs_or_runtime(
             AIMessage(content="隐藏工具调用已安全处理。"),
         ]
     )
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
 
     def forbidden_execute(*args, **kwargs):
         raise AssertionError(f"hidden web_search reached ToolRuntime: {args} {kwargs}")
@@ -484,7 +484,7 @@ def test_agent_searches_then_fetches_through_registry_runtime(monkeypatch):
         ),
     )
     model = SearchFetchModel()
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     runtime_calls = []
     original_execute = tool_runtime.ToolRuntime.execute
 
@@ -567,7 +567,7 @@ def test_agent_searches_then_reads_pdf_through_registry_runtime(monkeypatch):
         ),
     )
     model = SearchPdfModel()
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     runtime_calls = []
     original_execute = tool_runtime.ToolRuntime.execute
 
@@ -639,7 +639,7 @@ def test_agent_recovers_from_web_fetch_pdf_content_type_error(monkeypatch):
         ),
     )
     model = FetchThenPdfModel()
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     output = _invoke(
         model,
         ToolInvocationContext(
@@ -697,7 +697,7 @@ def test_forged_hidden_web_fetch_is_unknown_without_http_manager(monkeypatch):
             AIMessage(content="隐藏正文工具调用已安全处理。"),
         ]
     )
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     output = _invoke(
         model,
         ToolInvocationContext(
@@ -752,7 +752,7 @@ def test_forged_hidden_web_pdf_fetch_is_unknown_without_dependencies(
             AIMessage(content="隐藏 PDF 工具调用已安全处理。"),
         ]
     )
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
 
     output = _invoke(
         model,

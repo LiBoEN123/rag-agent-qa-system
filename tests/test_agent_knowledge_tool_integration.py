@@ -92,10 +92,10 @@ def _invoke_knowledge_graph(
         return dict(rag_result)
 
     monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", recording_execute)
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_agent_tool_provider",
+        "get_default_tool_provider",
         lambda: provider,
     )
     context = ToolInvocationContext(
@@ -256,10 +256,10 @@ def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
         )
     )
     model = RecoveringModel()
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_agent_tool_provider",
+        "get_default_tool_provider",
         lambda: LocalToolProvider(registry),
     )
     context = ToolInvocationContext(

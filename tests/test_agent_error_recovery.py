@@ -90,10 +90,10 @@ def _invoke(
 ):
     """按指定错误预算组装并调用受控 Agent 图。"""
     provider = LocalToolProvider(registry)
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_agent_tool_provider",
+        "get_default_tool_provider",
         lambda: provider,
     )
     settings = get_settings().model_copy(

@@ -186,10 +186,10 @@ def test_framework_agent_calls_all_sql_tools_through_registry_runtime(
     sql_settings,
 ):
     model = SqlToolCallingModel()
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_agent_tool_provider",
+        "get_default_tool_provider",
         lambda: LocalToolProvider(sql_registry),
     )
     context = ToolInvocationContext(

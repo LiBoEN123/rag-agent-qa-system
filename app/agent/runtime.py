@@ -112,7 +112,7 @@ def get_compiled_agent_runtime(
 ) -> CompiledAgentRuntime:
     """返回与当前请求可见工具集合一致的 CompiledStateGraph。"""
     resolved_settings = settings or get_settings()
-    provider = framework_tools.get_agent_tool_provider()
+    provider = framework_tools.get_default_tool_provider()
     if tool_context is None:
         return _get_cached_framework_agent(resolved_settings, provider)
     if (

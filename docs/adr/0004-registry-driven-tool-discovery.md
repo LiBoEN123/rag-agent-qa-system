@@ -40,7 +40,7 @@ Router 只允许 `agent`、`rag_fast_path`、`direct_answer` 和 `clarify` 四�
 - `collect_tool_specs()` 按 Provider 顺序合并定义，保持各 Provider 内部顺序，并在重复名称出现时明确报错。
 - LangChain Adapter 校验每个 ToolSpec 确实属于用于分发的 Registry，然后从 `name`、`description` 和 `args_model` 构造 StructuredTool。
 - StructuredTool 闭包调用所属 Registry 的 `dispatch()`，不直接调用 `ToolSpec.handler`，因此 Runtime 仍是唯一执行和治理入口。
-- `get_agent_tool_provider()` 是可替换的薄工厂。测试可以注入独立 Registry/Provider，而不修改全局生产 Registry，也不把 Provider 放入可持久化 Graph State。
+- `framework_tools` 在请求编译时解析 `get_default_tool_provider()`。测试可以在消费者模块替换该工厂并注入独立 Registry/Provider，而不修改全局生产 Registry，也不把 Provider 放入可持久化 Graph State。
 - Provider 复用 `has_permission()` 做最小权限可见性过滤；模型伪造未绑定的隐藏名称按未知工具处理。模型可见性不替代授权，Runtime 始终执行最终精确权限与执行期策略校验。
 - 显式或旧协议 RAG Fast Path 继续通过已注册的 `search_knowledge_base` 和原 RAG 子图保留问题拆分、重排、证据门控、拒答及引用绑定；正常 Agent 选择该检索工具后也进入同一 RAG 子图。
 

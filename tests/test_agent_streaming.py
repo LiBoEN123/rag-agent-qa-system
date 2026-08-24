@@ -213,7 +213,7 @@ def test_stream_executes_create_agent_and_returns_authoritative_result(
 ):
     monkeypatch.setattr(
         framework_agent,
-        "get_agent_chat_model",
+        "get_answer_model",
         lambda: AsyncAnswerModel(),
     )
 
@@ -245,7 +245,7 @@ def test_stream_projects_native_command_tool_completion(monkeypatch):
     model = AsyncToolAnswerModel()
     monkeypatch.setattr(
         framework_agent,
-        "get_agent_chat_model",
+        "get_answer_model",
         lambda: model,
     )
 

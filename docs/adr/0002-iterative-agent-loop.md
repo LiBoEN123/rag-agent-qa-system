@@ -107,7 +107,7 @@ START
 PR1 已完成本 ADR 的最小迭代循环：
 
 - `AgentGraphState.messages` 使用 LangGraph `add_messages` reducer，保存 Human、AI 和 Tool 消息。
-- `agent_model` 使用现有 OpenAI-compatible 回答模型工厂和请求级 StructuredTool 执行 `bind_tools()`，测试可通过 `get_agent_chat_model()` 注入确定性模型。
+- `agent_model` 使用现有 OpenAI-compatible 回答模型工厂和请求级 StructuredTool 执行 `bind_tools()`。PR1 最初通过 `get_agent_chat_model()` 注入确定性模型；当前薄门面已删除，测试直接替换 `framework_agent` 消费的 `get_answer_model()`。
 - `governed_tools` 支持同一 AIMessage 的全部 `tool_calls`，每次结果都生成带正确模型调用 ID 和工具名的标准 `ToolMessage`。
 - 普通工具错误会返回模型继续决策；权限拒绝、策略拒绝、审计写入失败和非法调用上下文会受控停止。
 - `AGENT_MAX_ITERATIONS` 与 `AGENT_MAX_TOOL_CALLS` 分别限制模型轮次和工具执行总数，预算耗尽会设置明确 `stop_reason` 并正常进入 Composer/Finalize。

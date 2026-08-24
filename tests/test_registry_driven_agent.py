@@ -102,10 +102,10 @@ def _invoke_dynamic_graph(
 ):
     """把独立 Provider 注入现有 Graph，不修改任何编排分支。"""
     provider = LocalToolProvider(registry)
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_agent_tool_provider",
+        "get_default_tool_provider",
         lambda: provider,
     )
     graph_input = {

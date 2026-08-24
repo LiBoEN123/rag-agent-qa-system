@@ -121,10 +121,10 @@ def _setup(monkeypatch, settings, model, calls, *, server_config=None):
     )
     monkeypatch.setattr(
         framework_tools,
-        "get_agent_tool_provider",
+        "get_default_tool_provider",
         lambda: LocalToolProvider(ToolRegistry()),
     )
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     return build_agent_harness(settings), tool
 
 

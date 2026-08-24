@@ -213,10 +213,10 @@ def test_chat_service_runs_real_create_agent_provider_and_runtime(
         return original_route(question)
 
     monkeypatch.setattr(agent_runtime, "route_agent_action", recording_route)
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_agent_tool_provider",
+        "get_default_tool_provider",
         lambda: LocalToolProvider(registry),
     )
     settings = settings_env(
@@ -396,7 +396,7 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
     model = ChatWebSearchModel()
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     monkeypatch.setattr(web_download_module, "Manager", FakeManager)
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     settings = settings_env(
         agent_max_iterations=6,
         agent_max_tool_calls=10,
@@ -581,7 +581,7 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
     model = ChatWebPdfModel()
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     monkeypatch.setattr(web_download_module, "Manager", FakeManager)
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         rag_graph,
         "run_rag_subgraph",

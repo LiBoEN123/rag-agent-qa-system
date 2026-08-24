@@ -19,8 +19,8 @@ from app.agent.framework_middleware import (
     ProjectToolGovernanceMiddleware,
 )
 from app.agent.framework_tools import resolve_agent_tools
-from app.agent.model import get_agent_chat_model
 from app.config import AppSettings, get_settings
+from app.llm.factory import get_answer_model
 from app.tools.context import ToolInvocationContext, build_default_tool_context
 
 
@@ -59,7 +59,7 @@ class _DeferredAgentModel:
     @staticmethod
     def _model():
         """延迟取得当前请求使用的 Agent 模型。"""
-        model = get_agent_chat_model()
+        model = get_answer_model()
         if model is None:
             raise RuntimeError("Agent model is unavailable")
         return model

@@ -72,7 +72,7 @@ def _invoke_graph(
     context=None,
 ):
     """使用确定性模型和独立图执行一次 Agent 请求。"""
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     settings = get_settings().model_copy(
         update={
             "agent_max_iterations": max_iterations,
@@ -107,7 +107,7 @@ def _astream_graph(
     max_tool_calls=10,
 ):
     """用确定性异步模型执行真实 create_agent 并返回最终快照。"""
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     settings = get_settings().model_copy(
         update={
             "agent_max_iterations": max_iterations,
@@ -723,7 +723,7 @@ def test_agent_selected_knowledge_search_keeps_rag_citation_path(
 
     monkeypatch.setattr(
         framework_tools,
-        "get_agent_tool_provider",
+        "get_default_tool_provider",
         lambda: LocalToolProvider(registry),
     )
 
