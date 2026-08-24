@@ -43,8 +43,6 @@ def simple_calculator(expression: str) -> dict:
     tool_name = "simple_calculator"
     tool_input = {"expression": expression}
     try:
-        if not expression or not str(expression).strip():
-            return tool_error(tool_name, tool_input, "expression 不能为空")
         return tool_success(
             tool_name,
             tool_input,

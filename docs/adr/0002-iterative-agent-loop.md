@@ -4,6 +4,10 @@
 - 日期：2026-07-19
 - 决策者：Project Maintainer
 
+> 2026-08-21 Superseded in implementation：单 Agent 迭代式模型—工具循环的目标保留，
+> 但下文手写父图节点和兼容路径已由 ADR 0006、0011 及 Phase 1 删除。当前唯一循环是
+> LangChain `create_agent`；确定性 Router 位于 Agent Runtime 的普通 Python 入口。
+
 ## 背景
 
 项目当前唯一 Agent Runtime 是 LangGraph。FastAPI `/chat` 经 `ChatService` 完成会话历史读取、Query Rewrite 和 Router 决策后调用主图；主图复用既有 Router、Planner、Executor、RAG 子图和 Answer Composer。该架构已经统一运行入口并保留 RAG 行为，但 Agent 决策仍以一次路由和预先生成的固定计划为中心。
@@ -103,7 +107,7 @@ START
 PR1 已完成本 ADR 的最小迭代循环：
 
 - `AgentGraphState.messages` 使用 LangGraph `add_messages` reducer，保存 Human、AI 和 Tool 消息。
-- `agent_model` 使用现有 OpenAI-compatible 回答模型工厂和请求级 StructuredTool 执行 `bind_tools()`，测试可通过 `get_agent_chat_model()` 注入确定性模型。
+- `agent_model` 使用现有 OpenAI-compatible 回答模型工厂和请求级 StructuredTool 执行 `bind_tools()`。PR1 最初通过 `get_agent_chat_model()` 注入确定性模型；当前薄门面已删除，测试直接替换 `framework_agent` 消费的 `get_answer_model()`。
 - `governed_tools` 支持同一 AIMessage 的全部 `tool_calls`，每次结果都生成带正确模型调用 ID 和工具名的标准 `ToolMessage`。
 - 普通工具错误会返回模型继续决策；权限拒绝、策略拒绝、审计写入失败和非法调用上下文会受控停止。
 - `AGENT_MAX_ITERATIONS` 与 `AGENT_MAX_TOOL_CALLS` 分别限制模型轮次和工具执行总数，预算耗尽会设置明确 `stop_reason` 并正常进入 Composer/Finalize。

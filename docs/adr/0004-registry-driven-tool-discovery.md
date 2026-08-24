@@ -40,7 +40,7 @@ Router 只允许 `agent`、`rag_fast_path`、`direct_answer` 和 `clarify` 四�
 - `collect_tool_specs()` 按 Provider 顺序合并定义，保持各 Provider 内部顺序，并在重复名称出现时明确报错。
 - LangChain Adapter 校验每个 ToolSpec 确实属于用于分发的 Registry，然后从 `name`、`description` 和 `args_model` 构造 StructuredTool。
 - StructuredTool 闭包调用所属 Registry 的 `dispatch()`，不直接调用 `ToolSpec.handler`，因此 Runtime 仍是唯一执行和治理入口。
-- `get_agent_tool_provider()` 是可替换的薄工厂。测试可以注入独立 Registry/Provider，而不修改全局生产 Registry，也不把 Provider 放入可持久化 Graph State。
+- `framework_tools` 在请求编译时解析 `get_default_tool_provider()`。测试可以在消费者模块替换该工厂并注入独立 Registry/Provider，而不修改全局生产 Registry，也不把 Provider 放入可持久化 Graph State。
 - Provider 复用 `has_permission()` 做最小权限可见性过滤；模型伪造未绑定的隐藏名称按未知工具处理。模型可见性不替代授权，Runtime 始终执行最终精确权限与执行期策略校验。
 - 显式或旧协议 RAG Fast Path 继续通过已注册的 `search_knowledge_base` 和原 RAG 子图保留问题拆分、重排、证据门控、拒答及引用绑定；正常 Agent 选择该检索工具后也进入同一 RAG 子图。
 
@@ -69,3 +69,33 @@ Router 只允许 `agent`、`rag_fast_path`、`direct_answer` 和 `clarify` 四�
 2. 外部 Provider 必须定义自己的请求级可见性规则，同时保留本地 Runtime 最终授权边界。
 3. 后续独立 PR 再评估删除旧具体工具 decision 和 legacy Planner/Executor 入口。
 4. 在引入任何写工具前完成持久化幂等、人工审批 interrupt 与恢复语义。
+
+## 2026-08-16 修订说明
+
+Phase 4 保留本 ADR 关于 Registry 事实来源、Provider 请求级可见性、测试隔离和 Runtime
+最终授权的决策，但收口了其后逐步形成的纯转发 plumbing。当前本地执行链修订为：
+
+```text
+LocalToolProvider
+→ ToolRegistry 中已注册的 ToolSpec
+→ 请求级 StructuredTool
+→ execute_registered_tool
+→ ToolRuntime.execute
+→ ToolSpec.handler
+```
+
+`ToolRegistry.dispatch()` 与旧 `dispatch_tool()` 门面已经删除。Registry 只负责注册、
+重名拒绝、查找、稳定顺序和契约导出；`execute_registered_tool()` 是唯一公共本地执行
+入口，继续按 Registry 复用 ToolRuntime。Provider 不执行工具，MCP 仍使用独立的 adapter
+interceptor 安全边界。本修订同时取代 ADR 0003 和 ADR 0011 中对旧 dispatch 链路的当前
+实现描述，不改变那些 ADR 记录的历史背景。
+
+## 2026-08-20 修订说明
+
+Phase 5 将本地 ToolSpec 的参数契约收敛为 Pydantic `args_model` 单一事实来源。
+`ToolRuntime` 参数校验、LangChain StructuredTool 的模型可见 Schema 与
+`ToolRegistry.contract_specs()` 导出均由该模型驱动，ToolSpec 构造器不再接收手写
+`args_schema`。输出侧不强求形式对称：存在 `output_model` 时由它校验并派生 Schema；
+没有输出模型时保留显式 `output_schema` 作为 handler payload 的展示 fallback，且禁止
+两种来源同时声明。本修订不改变 Runtime result envelope、Provider、MCP 或 RAG
+边界。

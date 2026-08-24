@@ -5,11 +5,6 @@ import pytest
 
 from app.agent.results import build_internal_error_result
 from app.contracts.chat import get_chat_status_policy
-from app.observability.metrics import (
-    attach_query_rewrite_trace,
-    build_query_rewrite_trace,
-    collect_trace_metrics,
-)
 from app.services.chat_service import (
     ChatService,
     ChatServiceDependencies,
@@ -69,6 +64,7 @@ def build_service(
     *,
     history=None,
     rewrite_result=None,
+    rewrite_error: Exception | None = None,
     runtime_result=None,
     append_error=False,
     metrics_error=False,
@@ -77,7 +73,7 @@ def build_service(
     calls = {
         "history": [],
         "rewrite": [],
-        "langgraph": [],
+        "agent": [],
         "bad_cases": [],
         "messages": [],
         "metrics": [],
@@ -109,6 +105,8 @@ def build_service(
         calls["rewrite"].append(
             {"question": question, "history": list(history), "trace_id": trace_id}
         )
+        if rewrite_error is not None:
+            raise rewrite_error
         result = dict(rewrite_result)
         result["original_question"] = result.get("original_question") or question
         result["rewritten_question"] = (
@@ -138,10 +136,7 @@ def build_service(
         settings_provider=lambda: settings,
         get_history=fake_get_history,
         rewrite_query_with_history=fake_rewrite,
-        run_agent_langgraph=lambda **kwargs: run_runtime("langgraph", kwargs),
-        build_query_rewrite_trace=build_query_rewrite_trace,
-        attach_query_rewrite_trace=attach_query_rewrite_trace,
-        collect_trace_metrics=collect_trace_metrics,
+        run_agent=lambda **kwargs: run_runtime("agent", kwargs),
         log_and_write_metrics=fake_metrics,
         write_bad_cases=lambda record: calls["bad_cases"].append(dict(record)),
         append_message=fake_append,
@@ -188,7 +183,7 @@ def test_empty_question_skips_business_dependencies_and_writes_metrics_once():
     assert outcome.result["need_clarification"] is True
     assert calls["history"] == []
     assert calls["rewrite"] == []
-    assert calls["langgraph"] == []
+    assert calls["agent"] == []
     assert calls["messages"] == []
     assert len(calls["metrics"]) == 1
     assert calls["metrics"][0]["status"] == "clarify"
@@ -215,13 +210,13 @@ def test_rewrite_routes_and_runs_once_with_original_question_preserved():
 
     assert calls["history"] == ["session-1"]
     assert len(calls["rewrite"]) == 1
-    assert "question" not in calls["langgraph"][0]
-    assert calls["langgraph"][0]["original_question"] == "原始问题"
+    assert "question" not in calls["agent"][0]
+    assert calls["agent"][0]["original_question"] == "原始问题"
     assert (
-        calls["langgraph"][0]["effective_question"]
+        calls["agent"][0]["effective_question"]
         == rewritten_question
     )
-    assert "decision" not in calls["langgraph"][0]
+    assert "decision" not in calls["agent"][0]
     assert outcome.question == "原始问题"
     assert outcome.http_status == 200
     assert outcome.code == 0
@@ -244,9 +239,9 @@ def test_question_without_rewrite_is_passed_through_without_extra_llm_count():
 
     service.handle(make_request())
 
-    assert "question" not in calls["langgraph"][0]
-    assert calls["langgraph"][0]["original_question"] == "原始问题"
-    assert calls["langgraph"][0]["effective_question"] == "原始问题"
+    assert "question" not in calls["agent"][0]
+    assert calls["agent"][0]["original_question"] == "原始问题"
+    assert calls["agent"][0]["effective_question"] == "原始问题"
     assert calls["metrics"][0]["llm_call_count"] == 0
 
 
@@ -257,8 +252,8 @@ def test_agent_tool_task_has_no_router_level_rag_preflight():
 
     outcome = service.handle(make_request())
 
-    assert len(calls["langgraph"]) == 1
-    assert "decision" not in calls["langgraph"][0]
+    assert len(calls["agent"]) == 1
+    assert "decision" not in calls["agent"][0]
     assert outcome.http_status == 200
 
 
@@ -270,18 +265,18 @@ def test_current_route_actions_do_not_emit_retired_rag_ready_metric(action):
 
     outcome = service.handle(make_request())
 
-    assert len(calls["langgraph"]) == 1
+    assert len(calls["agent"]) == 1
     assert outcome.http_status == 200
     assert "rag_ready_check" + "_cost_ms" not in calls["metrics"][0]
 
 
-def test_langgraph_runtime_receives_complete_existing_protocol_once():
+def test_agent_runtime_receives_complete_existing_protocol_once():
     service, calls = build_service()
 
     service.handle(make_request())
 
-    assert len(calls["langgraph"]) == 1
-    kwargs = calls["langgraph"][0]
+    assert len(calls["agent"]) == 1
+    kwargs = calls["agent"][0]
     assert "question" not in kwargs
     assert kwargs["original_question"] == "原始问题"
     assert kwargs["effective_question"] == "原始问题"
@@ -303,7 +298,7 @@ def test_langgraph_runtime_receives_complete_existing_protocol_once():
     }.isdisjoint(kwargs)
 
 
-def test_langgraph_runtime_start_is_logged_once_with_trace_id(monkeypatch):
+def test_create_agent_runtime_start_is_logged_once_with_trace_id(monkeypatch):
     """每次业务请求只记录一次带 trace_id 的 Runtime 启动日志。"""
     service, _ = build_service()
     messages = []
@@ -320,7 +315,7 @@ def test_langgraph_runtime_start_is_logged_once_with_trace_id(monkeypatch):
         if "runtime_start agent_runtime=" in message
     ]
     assert runtime_logs == [
-        "[trace_id=trace-1] [agent] runtime_start agent_runtime=langgraph"
+        "[trace_id=trace-1] [agent] runtime_start agent_runtime=create_agent"
     ]
 
 
@@ -428,7 +423,7 @@ def test_unknown_runtime_status_fails_closed_across_response_and_metrics():
     assert calls["metrics"][0]["status"] == "internal_error"
 
 
-def test_langgraph_internal_error_result_maps_to_http_500():
+def test_agent_internal_error_result_maps_to_http_500():
     result = build_internal_error_result(
         RuntimeError("sensitive runtime failure"),
         runtime_label="LangGraph Agent",
@@ -440,8 +435,8 @@ def test_langgraph_internal_error_result_maps_to_http_500():
 
     outcome = service.handle(make_request())
 
-    assert len(calls["langgraph"]) == 1
-    assert "decision" not in calls["langgraph"][0]
+    assert len(calls["agent"]) == 1
+    assert "decision" not in calls["agent"][0]
     assert outcome.http_status == 500
     assert outcome.code == "INTERNAL_ERROR"
     assert outcome.response_status == "error"
@@ -469,20 +464,19 @@ def test_runtime_exception_returns_compatible_error_and_writes_bad_case_once():
     assert calls["metrics"][0]["status"] == "internal_error"
 
 
-def test_unknown_exception_returns_internal_error_with_error_status(monkeypatch):
-    service, calls = build_service()
-
-    def fail_rewrite(_context):
-        raise RuntimeError("unexpected chat failure")
-
-    monkeypatch.setattr(service, "_rewrite_question", fail_rewrite)
+def test_service_exception_returns_internal_error_with_error_status():
+    service, calls = build_service(
+        rewrite_error=RuntimeError("unexpected chat failure")
+    )
 
     outcome = service.handle(make_request())
 
     assert outcome.http_status == 500
     assert outcome.code == "INTERNAL_ERROR"
     assert outcome.response_status == "error"
-    assert calls["langgraph"] == []
+    assert calls["agent"] == []
+    assert len(calls["bad_cases"]) == 1
+    assert calls["bad_cases"][0]["error_type"] == "internal_error"
     assert calls["metrics"][0]["status"] == "internal_error"
 
 

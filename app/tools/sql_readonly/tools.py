@@ -91,13 +91,6 @@ def build_sql_readonly_tool_specs(
                 "列出部署者显式 allowlist 中、指定允许 Schema 内确实存在的普通物理表；"
                 "不枚举系统表、View 或未授权表。" + untrusted_warning
             ),
-            args_schema={
-                "schema": "string|null, 可选，只能是默认或 allowlist 明示 Schema"
-            },
-            output_schema={
-                "dialect/schema/count/tables": "有限表清单",
-                "content_is_untrusted": "true",
-            },
             handler=partial(_handle_list_sql_tables, service=service),
             args_model=ListSqlTablesArgs,
             output_model=ListSqlTablesOutput,
@@ -109,11 +102,6 @@ def build_sql_readonly_tool_specs(
                 "查看一个 allowlist 普通物理表的有限列名、可移植类型、可空性和主键"
                 "标记；不返回默认表达式、索引 SQL、触发器或建表 SQL。" + untrusted_warning
             ),
-            args_schema={"table_name": "string, 必填，allowlist 表名"},
-            output_schema={
-                "table_name/columns/column_count": "有限表结构",
-                "content_is_untrusted": "true",
-            },
             handler=partial(_handle_describe_sql_table, service=service),
             args_model=DescribeSqlTableArgs,
             output_model=DescribeSqlTableOutput,
@@ -126,15 +114,6 @@ def build_sql_readonly_tool_specs(
                 "只读 SELECT/WITH 查询；不支持写入、管理、事务或锁定语句。"
                 + untrusted_warning
             ),
-            args_schema={
-                "sql": "string, 必填，单条只读查询，最长 20000 字符",
-                "max_rows": "integer|null, 可选，不得超过部署上限",
-            },
-            output_schema={
-                "columns/rows/row_count/truncated": "有限二维结果",
-                "dialect/execution_ms": "安全执行元数据",
-                "content_is_untrusted": "true",
-            },
             handler=partial(_handle_query_sql_readonly, service=service),
             args_model=QuerySqlReadonlyArgs,
             output_model=QuerySqlReadonlyOutput,

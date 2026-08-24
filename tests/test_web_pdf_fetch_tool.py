@@ -22,7 +22,7 @@ from app.tools.context import ToolInvocationContext
 from app.tools.errors import ToolErrorCode, ToolExecutionError
 from app.tools.registry import ToolRegistry, get_tool_registry
 from app.tools.result import tool_success
-from app.tools.runtime import ToolRuntime
+from app.tools.runtime import ToolRuntime, execute_registered_tool
 from app.tools.schemas import WebPdfFetchArgs, WebPdfFetchOutput
 from tests.support.pdf_fixture import build_text_pdf
 
@@ -521,9 +521,10 @@ def test_registry_runtime_executes_real_pdf_spec_and_pypdf(monkeypatch):
     registry = ToolRegistry()
     registry.register(_pdf_spec())
 
-    result = registry.dispatch(
-        "web_pdf_fetch",
-        _args(),
+    result = execute_registered_tool(
+        registry=registry,
+        tool_name="web_pdf_fetch",
+        tool_args=_args(),
         context=ToolInvocationContext(permissions=("web:fetch",)),
     )
 
@@ -547,9 +548,10 @@ def test_permission_denial_prevents_download_and_pdf_reader(monkeypatch):
     registry = ToolRegistry()
     registry.register(_pdf_spec())
 
-    result = registry.dispatch(
-        "web_pdf_fetch",
-        _args(),
+    result = execute_registered_tool(
+        registry=registry,
+        tool_name="web_pdf_fetch",
+        tool_args=_args(),
         context=ToolInvocationContext(),
     )
 

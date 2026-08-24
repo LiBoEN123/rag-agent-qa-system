@@ -1,11 +1,10 @@
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
+from pydantic import ValidationError
 
+from app.llm.schemas import QueryDecomposeOutput
 from app.rag import decomposition
-from app.rag.decomposition import (
-    parse_decompose_llm_json,
-    should_decompose_query,
-)
+from app.rag.decomposition import normalize_decompose_result, should_decompose_query
 from app.rag.retrieval import should_refuse
 
 
@@ -105,13 +104,23 @@ def test_should_decompose_query_triggers_for_multi_intent_keywords():
         assert should_decompose is True, (question, reason)
 
 
-def test_parse_decompose_llm_json_accepts_valid_compact_json():
-    """验证拆分模型返回标准 JSON 时能解析并规整。"""
-    result = parse_decompose_llm_json(
-        '{"need_decompose":true,"reason":"多证据",'
-        '"sub_queries":[{"id":1,"sub_question":"入口是什么？",'
-        '"search_query":"缓考 免考 线上填报 入口",'
-        '"must_answer":true}]}'
+def test_normalize_decompose_result_preserves_business_fields():
+    """经过 Schema 校验后继续保留拆分字段和业务规整。"""
+    result = normalize_decompose_result(
+        QueryDecomposeOutput.model_validate(
+            {
+                "need_decompose": True,
+                "reason": "多证据",
+                "sub_queries": [
+                    {
+                        "id": 1,
+                        "sub_question": "入口是什么？",
+                        "search_query": "缓考 免考 线上填报 入口",
+                        "must_answer": True,
+                    }
+                ],
+            }
+        )
     )
 
     assert result["need_decompose"] is True
@@ -126,12 +135,14 @@ def test_parse_decompose_llm_json_accepts_valid_compact_json():
     ]
 
 
-def test_parse_decompose_llm_json_extracts_object_from_extra_text():
-    """验证模型在 JSON 前后输出多余文本时仍能提取 JSON 对象。"""
-    result = parse_decompose_llm_json(
-        '下面是结果：\n```json\n'
-        '{"need_decompose":false,"reason":"单一问题","sub_queries":[]}'
-        '\n```\n请使用。'
+def test_normalize_decompose_result_keeps_no_decomposition_decision():
+    """模型判定无需拆分时继续返回单查询结果。"""
+    result = normalize_decompose_result(
+        QueryDecomposeOutput(
+            need_decompose=False,
+            reason="单一问题",
+            sub_queries=[],
+        )
     )
 
     assert result == {
@@ -141,45 +152,74 @@ def test_parse_decompose_llm_json_extracts_object_from_extra_text():
     }
 
 
-def test_parse_decompose_llm_json_compacts_unescaped_newlines_in_fields():
-    """验证模型把换行放进字符串字段时可容错并压回单行。"""
-    result = parse_decompose_llm_json(
-        '{"need_decompose":true,"reason":"多方面",'
-        '"sub_queries":[{"id":1,"sub_question":"缓考\\n免考入口是什么？",'
-        '"search_query":"学生\n缓考 免考 线上填报",'
-        '"must_answer":"true"}]}'
+def test_normalize_decompose_result_compacts_text_and_limits_to_five():
+    """业务 normalization 保留单行压缩和最多五条语义。"""
+    result = normalize_decompose_result(
+        QueryDecomposeOutput(
+            need_decompose=True,
+            reason="多方面",
+            sub_queries=[
+                {
+                    "id": index,
+                    "sub_question": f"问题 {index}\n详情",
+                    "search_query": f"查询 {index}\n关键词",
+                    "must_answer": True,
+                }
+                for index in range(1, 7)
+            ],
+        )
     )
 
     assert result["need_decompose"] is True
-    assert result["sub_queries"][0]["sub_question"] == "缓考 免考入口是什么？"
-    assert result["sub_queries"][0]["search_query"] == "学生 缓考 免考 线上填报"
+    assert len(result["sub_queries"]) == 5
+    assert result["sub_queries"][0]["sub_question"] == "问题 1 详情"
+    assert result["sub_queries"][0]["search_query"] == "查询 1 关键词"
     assert result["sub_queries"][0]["must_answer"] is True
 
 
-def test_parse_decompose_llm_json_reports_truncated_object():
-    """验证真正被截断的 JSON 会给出明确错误。"""
-    with pytest.raises(ValueError, match="不完整"):
-        parse_decompose_llm_json(
-            '{"need_decompose":true,"reason":"多方面",'
-            '"sub_queries":[{"id":1,"sub_question":"入口是什么？",'
-            '"search_query":"学生'
-        )
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"need_decompose": True, "sub_queries": "bad"},
+        {
+            "need_decompose": True,
+            "sub_queries": [{"sub_question": "问题", "must_answer": True}],
+        },
+        {
+            "need_decompose": True,
+            "sub_queries": [
+                {
+                    "sub_question": "问题",
+                    "search_query": "查询",
+                    "must_answer": "true",
+                }
+            ],
+        },
+    ],
+)
+def test_query_decompose_schema_rejects_malformed_sub_queries(payload):
+    """拆分 Schema 拒绝错误列表、缺字段和字符串 bool。"""
+    with pytest.raises(ValidationError):
+        QueryDecomposeOutput.model_validate(payload)
 
 
-def test_decompose_query_with_llm_uses_role_factory_and_parses_result(monkeypatch):
-    """拆分模型通过对应工厂调用，并保留消息顺序与业务解析。"""
+def test_decompose_query_with_llm_uses_native_structured_result(monkeypatch):
+    """拆分模型通过对应工厂取得原生结构化结果并保留消息顺序。"""
 
     class FakeDecomposeModel:
         def __init__(self):
             self.calls = []
 
+        def with_structured_output(self, schema):
+            assert schema is QueryDecomposeOutput
+            return self
+
         def invoke(self, messages):
             self.calls.append(messages)
-            return AIMessage(
-                content=(
-                    '{"need_decompose":false,'
-                    '"reason":"单一问题","sub_queries":[]}'
-                )
+            return QueryDecomposeOutput(
+                need_decompose=False,
+                reason="单一问题",
+                sub_queries=[],
             )
 
     model = FakeDecomposeModel()

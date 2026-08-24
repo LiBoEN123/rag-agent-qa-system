@@ -1,9 +1,11 @@
 import json
 
-from app.tools.registry import ToolRegistry, ToolSpec
+import pytest
+
 from app.tools.context import ToolInvocationContext
+from app.tools.registry import ToolRegistry, ToolSpec
+from app.tools.runtime import execute_registered_tool
 from app.tools.schemas import SearchKnowledgeBaseArgs
-from app.tools.dispatch import dispatch_tool
 
 
 def test_tool_registry_names_include_builtin_tools(tool_registry):
@@ -35,7 +37,7 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
         "web_pdf_fetch": ["web:fetch"],
     }
     expected_timeouts = {
-        "search_knowledge_base": 10.0,
+        "search_knowledge_base": 120.0,
         "compare_documents": 20.0,
         "simple_calculator": 3.0,
         "list_documents": 5.0,
@@ -51,6 +53,8 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
     json.dumps(specs)
 
     for name, spec in specs_by_name.items():
+        registered = tool_registry.get(name)
+        assert registered is not None
         assert spec["version"] == "1.0.0"
         assert spec["risk_level"] == "read_only"
         assert spec["required_permissions"] == expected_permissions[name]
@@ -67,6 +71,14 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
                 "web_pdf_fetch": "WebPdfFetchOutput",
             }.get(name)
         )
+        assert spec["args_schema"] == registered.args_model.model_json_schema()
+        if registered.output_model is not None:
+            assert (
+                spec["output_schema"]
+                == registered.output_model.model_json_schema()
+            )
+        else:
+            assert spec["output_schema"] == registered.output_schema
         assert "handler" not in spec
 
     web = specs_by_name["web_search"]
@@ -80,11 +92,12 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
     assert pdf["audit_output_mode"] == "summary"
 
 
-def test_tool_registry_dispatch_simple_calculator(tool_registry):
-    """验证注册中心可以调用计算器工具。"""
-    result = tool_registry.dispatch(
-        "simple_calculator",
-        {"expression": "1 + 2 * 3"}
+def test_execute_registered_tool_runs_simple_calculator(tool_registry):
+    """验证唯一执行入口可以调用已注册计算器工具。"""
+    result = execute_registered_tool(
+        registry=tool_registry,
+        tool_name="simple_calculator",
+        tool_args={"expression": "1 + 2 * 3"},
     )
 
     assert result["ok"] is True
@@ -92,7 +105,7 @@ def test_tool_registry_dispatch_simple_calculator(tool_registry):
     assert result["output"]["result"] == 7
 
 
-def test_tool_registry_dispatch_search_knowledge_base(
+def test_execute_registered_tool_runs_search_knowledge_base(
     monkeypatch,
     tool_registry,
 ):
@@ -117,13 +130,29 @@ def test_tool_registry_dispatch_search_knowledge_base(
         fake_search_relevant_chunks,
         raising=False
     )
+    monkeypatch.setattr(
+        "app.rag.graph.run_rag_subgraph",
+        lambda **kwargs: {
+            "status": "OK",
+            "answer": "测试 RAG 回答",
+            "references": [],
+            "retrieval_confidence": 0.91,
+            "answer_confidence": 0.8,
+            "need_clarification": False,
+            "clarification_question": "",
+            "reason": "测试证据充分",
+            "tool_trace": [],
+            "timings": {},
+        },
+    )
 
-    result = tool_registry.dispatch(
-        "search_knowledge_base",
-        {
-            "query": "普通本科四年制专业最长学习年限是多少？",
-            "top_k": 5,
-        }
+    result = execute_registered_tool(
+        registry=tool_registry,
+        tool_name="search_knowledge_base",
+        tool_args={
+            "query": "  普通本科四年制专业最长学习年限是多少？  ",
+            "top_k": "5",
+        },
     )
 
     assert result["ok"] is True
@@ -137,11 +166,110 @@ def test_tool_registry_dispatch_search_knowledge_base(
     assert result["output"]["chunks"][0]["chunk_id"] == 1
     assert result["output"]["top_chunk_ids"] == [1]
     assert result["output"]["top_scores"] == [0.91]
+    assert result["output"]["rag_result"]["answer"] == "测试 RAG 回答"
 
 
-def test_tool_registry_dispatch_unknown_tool(tool_registry):
+@pytest.mark.parametrize(
+    "tool_args",
+    [
+        {"query": "", "top_k": 5},
+        {"query": "   ", "top_k": 5},
+        {"query": "测试", "top_k": 0},
+        {"query": "测试", "top_k": 11},
+    ],
+)
+def test_search_knowledge_base_rejects_invalid_args_at_runtime(
+    tool_registry,
+    tool_args,
+):
+    """知识库参数非法时由 Runtime 拒绝且不进入 handler。"""
+    result = execute_registered_tool(
+        registry=tool_registry,
+        tool_name="search_knowledge_base",
+        tool_args=tool_args,
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "invalid_arguments"
+    assert result["runtime"]["attempt_count"] == 0
+
+
+@pytest.mark.parametrize("chunk_id", [0, 1, " chunk-abc "])
+def test_get_chunk_text_keeps_integer_and_string_ids(
+    monkeypatch,
+    tool_registry,
+    chunk_id,
+):
+    """合法整数和字符串 ID 经 Schema 规范化后进入真实 handler。"""
+    import app.rag as rag
+
+    received = []
+
+    def fake_get_chunk_full_text(value):
+        received.append(value)
+        return {"found": True, "chunk_id": value, "text": "测试正文"}
+
+    monkeypatch.setattr(rag, "get_chunk_full_text", fake_get_chunk_full_text)
+    result = execute_registered_tool(
+        registry=tool_registry,
+        tool_name="get_chunk_text",
+        tool_args={"chunk_id": chunk_id},
+    )
+
+    expected = chunk_id.strip() if isinstance(chunk_id, str) else chunk_id
+    assert result["ok"] is True
+    assert received == [expected]
+    assert result["tool_input"] == {"chunk_id": expected}
+
+
+@pytest.mark.parametrize("chunk_id", ["", "   "])
+def test_get_chunk_text_rejects_blank_string_at_runtime(tool_registry, chunk_id):
+    """空白字符串 ID 在提交 handler 前返回 invalid_arguments。"""
+    result = execute_registered_tool(
+        registry=tool_registry,
+        tool_name="get_chunk_text",
+        tool_args={"chunk_id": chunk_id},
+    )
+
+    assert result["error_code"] == "invalid_arguments"
+    assert result["runtime"]["attempt_count"] == 0
+
+
+@pytest.mark.parametrize("expression", ["", "   "])
+def test_simple_calculator_rejects_blank_expression_at_runtime(
+    tool_registry,
+    expression,
+):
+    """空白表达式由参数模型拒绝，计算器只处理已校验表达式。"""
+    result = execute_registered_tool(
+        registry=tool_registry,
+        tool_name="simple_calculator",
+        tool_args={"expression": expression},
+    )
+
+    assert result["error_code"] == "invalid_arguments"
+    assert result["runtime"]["attempt_count"] == 0
+
+
+def test_simple_calculator_keeps_ast_safety_rules(tool_registry):
+    """表达式结构合法后仍由计算器 AST 白名单拒绝代码执行。"""
+    result = execute_registered_tool(
+        registry=tool_registry,
+        tool_name="simple_calculator",
+        tool_args={"expression": "__import__('os').getcwd()"},
+    )
+
+    assert result["error_code"] == "execution_error"
+    assert "只支持简单数字四则运算" in result["error"]
+
+
+def test_execute_registered_tool_rejects_unknown_tool(tool_registry):
     """验证未知工具返回兼容错误结构。"""
-    result = tool_registry.dispatch("unknown_tool", {})
+    result = execute_registered_tool(
+        registry=tool_registry,
+        tool_name="unknown_tool",
+        tool_args={},
+    )
 
     assert result["ok"] is False
     assert result["status"] == "error"
@@ -154,8 +282,8 @@ def test_tool_registry_dispatch_unknown_tool(tool_registry):
     assert result["runtime"]["attempt_count"] == 0
 
 
-def test_dispatch_validates_args_before_handler():
-    """验证 dispatch 在调用 handler 前执行参数校验。"""
+def test_execution_entry_validates_args_before_handler():
+    """验证唯一执行入口在调用 handler 前执行参数校验。"""
     registry = ToolRegistry()
     seen = {}
 
@@ -176,7 +304,6 @@ def test_dispatch_validates_args_before_handler():
             name="search_knowledge_base",
             version="1.0.0",
             description="检索知识库",
-            args_schema={"query": "string", "top_k": "integer"},
             output_schema={},
             handler=fake_handler,
             args_model=SearchKnowledgeBaseArgs,
@@ -184,9 +311,10 @@ def test_dispatch_validates_args_before_handler():
     )
 
     context = ToolInvocationContext(trace_id="trace-registry")
-    result = registry.dispatch(
-        "search_knowledge_base",
-        {"query": "测试", "top_k": 5},
+    result = execute_registered_tool(
+        registry=registry,
+        tool_name="search_knowledge_base",
+        tool_args={"query": "测试", "top_k": 5},
         context=context,
     )
 
@@ -195,7 +323,7 @@ def test_dispatch_validates_args_before_handler():
     assert seen["context"] is context
 
 
-def test_dispatch_returns_tool_error_when_args_invalid():
+def test_execution_entry_returns_tool_error_when_args_invalid():
     """验证参数非法时返回工具错误且不调用 handler。"""
     registry = ToolRegistry()
     called = {"count": 0}
@@ -209,16 +337,16 @@ def test_dispatch_returns_tool_error_when_args_invalid():
             name="search_knowledge_base",
             version="1.0.0",
             description="检索知识库",
-            args_schema={"query": "string", "top_k": "integer"},
             output_schema={},
             handler=fake_handler,
             args_model=SearchKnowledgeBaseArgs,
         )
     )
 
-    result = registry.dispatch(
-        "search_knowledge_base",
-        {"query": "测试", "top_k": 999},
+    result = execute_registered_tool(
+        registry=registry,
+        tool_name="search_knowledge_base",
+        tool_args={"query": "测试", "top_k": 999},
     )
 
     assert called["count"] == 0
@@ -229,12 +357,14 @@ def test_dispatch_returns_tool_error_when_args_invalid():
     assert result["runtime"]["attempt_count"] == 0
 
 
-def test_dispatch_tool_keeps_compatible_entrypoint():
-    """验证旧的 dispatch_tool 入口仍可调用注册工具。"""
-    result = dispatch_tool(
-        "simple_calculator",
-        {"expression": "2 + 3"},
-        trace_id="test_trace"
+def test_execution_entry_accepts_explicit_context(tool_registry):
+    """验证唯一执行入口保留显式请求上下文。"""
+    context = ToolInvocationContext(trace_id="test-trace")
+    result = execute_registered_tool(
+        registry=tool_registry,
+        tool_name="simple_calculator",
+        tool_args={"expression": "2 + 3"},
+        context=context,
     )
 
     assert result["ok"] is True

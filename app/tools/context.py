@@ -82,6 +82,11 @@ class ToolInvocationContext:
     source: str = ""
     idempotency_key: str = ""
 
+    # Agent Runtime 传给知识库工具的请求级 RAG 参数；普通工具不会使用。
+    effective_question: str = ""
+    top_k: int = 0
+    decompose_top_k: int = 0
+
     def __post_init__(self) -> None:
         """清理请求字段并冻结集合型数据。"""
         for field_name in (
@@ -90,6 +95,7 @@ class ToolInvocationContext:
             "principal_id",
             "source",
             "idempotency_key",
+            "effective_question",
         ):
             raw_value = getattr(self, field_name)
             if not isinstance(raw_value, str):
@@ -118,6 +124,9 @@ def build_default_tool_context(
     trace_id: str = "",
     session_id: str = "",
     source: str = "direct_dispatch",
+    effective_question: str = "",
+    top_k: int = 0,
+    decompose_top_k: int = 0,
     settings: AppSettings | None = None,
 ) -> ToolInvocationContext:
     """构造无认证架构下权限最小化的服务级只读主体。"""
@@ -129,6 +138,9 @@ def build_default_tool_context(
         principal_type=PrincipalType.SERVICE,
         permissions=resolved.tool_default_permissions,
         source=source,
+        effective_question=effective_question,
+        top_k=top_k,
+        decompose_top_k=decompose_top_k,
     )
 
 

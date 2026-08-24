@@ -9,13 +9,21 @@
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.agent.framework_tools import build_framework_tools
-from app.agent.model import get_agent_chat_model, get_agent_tool_provider
-from app.tools.context import build_default_tool_context
-from app.tools.redaction import redact_sensitive_data
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from app.agent.framework_tools import build_framework_tools  # noqa: E402
+from app.llm.factory import get_answer_model  # noqa: E402
+from app.tools.context import build_default_tool_context  # noqa: E402
+from app.tools.providers import get_default_tool_provider  # noqa: E402
+from app.tools.redaction import redact_sensitive_data  # noqa: E402
 
 
 SCENARIOS = (
@@ -45,19 +53,19 @@ def _print_json(label: str, value: object) -> None:
 
 def main() -> int:
     """绑定真实工具 Schema 并验证两类真实模型 tool_calls。"""
-    model = get_agent_chat_model()
+    model = get_answer_model()
     if model is None:
         raise RuntimeError("回答模型不可用，请先配置 LLM_API_KEY 和模型地址")
 
     context = build_default_tool_context(source="manual_tool_calling_smoke")
-    tools = build_framework_tools(get_agent_tool_provider(), context=context)
+    tools = build_framework_tools(get_default_tool_provider(), context=context)
     tool_map = {tool.name: tool for tool in tools}
     print("bound_tool_names:", sorted(tool_map))
     for required_name in ("search_knowledge_base", "simple_calculator"):
         tool = tool_map.get(required_name)
         if tool is None:
             raise RuntimeError(f"模型工具列表缺少 {required_name}")
-        schema = tool.args_schema.model_json_schema()
+        schema = tool.tool_call_schema.model_json_schema()
         _print_json(f"{required_name}.args_schema", schema)
 
     bound_model = model.bind_tools(tools)

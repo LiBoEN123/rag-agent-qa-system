@@ -15,6 +15,7 @@ from app.tools.registry import ToolRegistry
 from app.tools.result import tool_error, tool_success
 from app.tools.runtime import (
     ToolRuntime,
+    execute_registered_tool,
     get_tool_runtime,
     reset_tool_runtime,
 )
@@ -41,7 +42,6 @@ def make_spec(
         "name": "runtime_echo",
         "version": "2.1.0",
         "description": "Runtime 测试工具",
-        "args_schema": {"value": "integer"},
         "output_schema": {"value": "integer"},
         "handler": handler,
         "args_model": RuntimeArgs,
@@ -49,6 +49,11 @@ def make_spec(
         "max_retries": 0,
         "idempotent": True,
     }
+    if (
+        overrides.get("output_model") is not None
+        and "output_schema" not in overrides
+    ):
+        values.pop("output_schema")
     values.update(overrides)
     return ToolSpec(**values)
 
@@ -123,6 +128,23 @@ def test_runtime_executes_validated_args_once(runtime_factory):
     assert result["runtime"]["max_attempts"] == 1
     assert result["runtime"]["timed_out"] is False
     assert result["runtime"]["elapsed_ms"] >= 0
+    assert {
+        "status",
+        "ok",
+        "tool_name",
+        "tool_input",
+        "output",
+        "error",
+        "error_code",
+        "retryable",
+        "runtime",
+        "governance",
+        "tool_call_id",
+        "audit",
+    } <= result.keys()
+    assert result["tool_call_id"]
+    assert isinstance(result["governance"], dict)
+    assert isinstance(result["audit"], dict)
 
 
 def test_runtime_rejects_unknown_tool_without_attempt(runtime_factory):
@@ -136,6 +158,9 @@ def test_runtime_rejects_unknown_tool_without_attempt(runtime_factory):
     assert result["runtime"]["attempt_count"] == 0
     assert result["runtime"]["max_attempts"] == 0
     assert result["runtime"]["attempts"] == []
+    assert result["tool_call_id"]
+    assert isinstance(result["governance"], dict)
+    assert isinstance(result["audit"], dict)
 
 
 def test_runtime_rejects_invalid_args_before_handler(runtime_factory):
@@ -469,8 +494,8 @@ def test_legacy_result_helpers_keep_positional_calls():
     assert error["runtime"] == {}
 
 
-def test_registry_dispatch_uses_runtime_protocol():
-    """Registry 兼容入口不会绕过 Runtime。"""
+def test_execution_entry_uses_runtime_protocol():
+    """唯一执行入口不会绕过 Runtime。"""
     registry = ToolRegistry()
     registry.register(
         make_spec(
@@ -482,17 +507,22 @@ def test_registry_dispatch_uses_runtime_protocol():
         )
     )
 
-    result = registry.dispatch("runtime_echo", {"value": "4"})
+    result = execute_registered_tool(
+        registry=registry,
+        tool_name="runtime_echo",
+        tool_args={"value": "4"},
+    )
 
     assert result["tool_input"] == {"value": 4}
     assert result["runtime"]["attempt_count"] == 1
 
 
-def test_registry_dispatch_returns_runtime_extensions(tool_registry):
-    """直接测试通过 Registry 分发并获得 Runtime 扩展字段。"""
-    result = tool_registry.dispatch(
-        "simple_calculator",
-        {"expression": "1 + 2"},
+def test_execution_entry_returns_runtime_extensions(tool_registry):
+    """直接测试唯一执行入口返回 Runtime 扩展字段。"""
+    result = execute_registered_tool(
+        registry=tool_registry,
+        tool_name="simple_calculator",
+        tool_args={"expression": "1 + 2"},
         context=ToolInvocationContext(trace_id="runtime-trace"),
     )
 

@@ -33,7 +33,6 @@ def _runtime(handler, *, sink, **spec_overrides) -> ToolRuntime:
         "name": "audited_tool",
         "version": "1.0.0",
         "description": "审计测试工具",
-        "args_schema": {"value": "integer"},
         "output_schema": {},
         "handler": handler,
         "args_model": AuditArgs,

@@ -10,6 +10,10 @@ from app.services.chat_telemetry import (
     build_initial_chat_metrics,
     finalize_chat_telemetry,
     format_tool_call_chain,
+    initialize_stream_metrics,
+    record_stream_completion,
+    record_stream_event,
+    record_stream_termination,
     safe_write_bad_case,
 )
 
@@ -137,6 +141,58 @@ def test_apply_result_metrics_merges_timings_without_mutating_result():
     assert context.metrics["rerank_cost_ms"] == 13
     assert context.metrics["rag_answer_cost_ms"] == 14
     assert context.metrics["llm_call_count"] == 2
+
+
+def test_stream_events_update_accounting_and_completion_state():
+    context = make_context()
+    context.metrics = build_initial_chat_metrics(
+        context,
+        request_enter_time=context.request.request_enter_time,
+        queue_wait_ms=500,
+    )
+    initialize_stream_metrics(context.metrics)
+    answer_parts = []
+
+    first = record_stream_event(
+        context,
+        "start",
+        {"session_id_present": True},
+        perf_counter=lambda: 10.025,
+    )
+    record_stream_event(
+        context,
+        "answer_delta",
+        {"text": "完整"},
+        perf_counter=lambda: 10.050,
+        streamed_answer_parts=answer_parts,
+    )
+    record_stream_event(
+        context,
+        "tool",
+        {
+            "tool_name": "web_search",
+            "phase": "completed",
+            "status": "success",
+        },
+        perf_counter=lambda: 10.075,
+    )
+    record_stream_completion(
+        context.metrics,
+        streamed_answer_parts=answer_parts,
+        final_answer="完整",
+    )
+    record_stream_termination(context.metrics, completed=True)
+
+    assert first.event == "start"
+    assert context.metrics["stream_event_count"] == 3
+    assert context.metrics["first_event_ms"] == 25
+    assert context.metrics["first_answer_delta_ms"] == 50
+    assert context.metrics["answer_delta_count"] == 1
+    assert context.metrics["streamed_answer_chars"] == 2
+    assert context.metrics["tool_name"] == "web_search"
+    assert context.metrics["tool_success"] is True
+    assert context.metrics["streamed_answer_matches_final"] is True
+    assert context.metrics["client_disconnected"] is False
 
 
 def test_finalize_calculates_latency_total_cost_and_writes_once():

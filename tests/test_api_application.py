@@ -134,8 +134,8 @@ def test_lifespan_awaits_mcp_startup_and_closes_it_before_other_runtimes(
     async def close_mcp():
         calls.append("mcp_close")
 
-    async def close_graph():
-        calls.append("graph_close")
+    async def close_agent():
+        calls.append("agent_close")
 
     monkeypatch.setattr(api_application, "configure_uvicorn_access_log", lambda: None)
     monkeypatch.setattr(
@@ -157,8 +157,8 @@ def test_lifespan_awaits_mcp_startup_and_closes_it_before_other_runtimes(
     )
     monkeypatch.setattr(
         api_application,
-        "aclose_agent_graph_runtime",
-        close_graph,
+        "aclose_agent_runtime",
+        close_agent,
     )
 
     async def run_lifespan():
@@ -174,7 +174,7 @@ def test_lifespan_awaits_mcp_startup_and_closes_it_before_other_runtimes(
         "mcp_close",
         "tool_close",
         "sql_close",
-        "graph_close",
+        "agent_close",
     ]
 
 

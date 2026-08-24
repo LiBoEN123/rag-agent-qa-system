@@ -3,11 +3,11 @@
 通过规则判断拆分必要性，调用拆分模型，并规范化模型返回的子查询结构。
 """
 
-import json
 import re
 
 from app.llm.factory import get_decompose_model
 from app.llm.gateway import ModelGateway
+from app.llm.schemas import QueryDecomposeOutput
 from app.prompts import DECOMPOSE_PROMPT
 
 
@@ -56,45 +56,31 @@ def should_decompose_query(question: str) -> tuple[bool, str]:
     return False, "single-intent query"
 
 
-def parse_decompose_bool(value) -> bool:
-    """将模型返回的常见布尔表示转换为 bool。"""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
+def compact_text(value: str) -> str:
+    """把已经通过 Schema 校验的文本压缩为单行。"""
+    return re.sub(r"\s+", " ", value).strip()
 
 
-def compact_text(value) -> str:
-    """把任意模型字段压缩为单行文本。"""
-    return re.sub(r"\s+", " ", str(value or "")).strip()
-
-
-def normalize_decompose_result(result: dict) -> dict:
-    """校验并规范化问题拆分模型的结构化结果。"""
-    if not isinstance(result, dict):
-        raise ValueError(f"拆分模型返回值必须是 dict，实际为 {type(result)}")
-    need_decompose = parse_decompose_bool(result.get("need_decompose", False))
-    reason = compact_text(result.get("reason", ""))
-    if not need_decompose:
+def normalize_decompose_result(result: QueryDecomposeOutput) -> dict:
+    """应用最多五条和单行文本等拆分业务规则。"""
+    reason = compact_text(result.reason)
+    if not result.need_decompose:
         return default_decompose_result(reason or "decompose model decided single query")
-    raw_queries = result.get("sub_queries", [])
-    if not isinstance(raw_queries, list):
-        raise ValueError("拆分模型返回的 sub_queries 必须是 list")
     sub_queries = []
-    for item in raw_queries[:5]:
-        if not isinstance(item, dict):
-            continue
-        sub_question = compact_text(item.get("sub_question", ""))
-        search_query = compact_text(item.get("search_query", ""))
-        if not sub_question or not search_query:
-            continue
+    for item in result.sub_queries[:5]:
+        sub_question = compact_text(item.sub_question)
+        search_query = compact_text(item.search_query)
+        item_id = (
+            item.id
+            if "id" in item.model_fields_set
+            else len(sub_queries) + 1
+        )
         sub_queries.append(
             {
-                "id": item.get("id", len(sub_queries) + 1),
+                "id": item_id,
                 "sub_question": sub_question,
                 "search_query": search_query,
-                "must_answer": parse_decompose_bool(item.get("must_answer", True)),
+                "must_answer": item.must_answer,
             }
         )
     if not sub_queries:
@@ -106,74 +92,18 @@ def normalize_decompose_result(result: dict) -> dict:
     }
 
 
-def compact_error_preview(text: str, max_len: int = 500) -> str:
-    """生成适合错误日志记录的单行截断预览。"""
-    preview = re.sub(r"\s+", " ", (text or "")).strip()
-    return preview[:max_len] + "..." if len(preview) > max_len else preview
-
-
-def strip_json_code_fence(content: str) -> str:
-    """移除模型输出外层可能存在的 Markdown JSON 代码块。"""
-    content = (content or "").strip()
-    content = re.sub(r"^```(?:json)?\s*", "", content, flags=re.IGNORECASE)
-    return re.sub(r"\s*```$", "", content).strip()
-
-
-def extract_first_json_object(content: str) -> str:
-    """从混合文本中提取第一个完整 JSON 对象。"""
-    start = content.find("{")
-    if start < 0:
-        raise ValueError("拆分模型未返回 JSON 对象")
-    in_string = False
-    escaped = False
-    depth = 0
-    for index in range(start, len(content)):
-        char = content[index]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            continue
-        if char == '"':
-            in_string = True
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return content[start : index + 1]
-    raise ValueError("拆分模型返回的 JSON 对象不完整，可能被 max_tokens 截断")
-
-
-def parse_decompose_llm_json(content: str) -> dict:
-    """解析并规范化拆分模型返回的 JSON 内容。"""
-    content = strip_json_code_fence(content)
-    try:
-        result = json.loads(content, strict=False)
-    except json.JSONDecodeError:
-        try:
-            result = json.loads(extract_first_json_object(content), strict=False)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"LLM 返回的不是合法 JSON: {compact_error_preview(content)}"
-            ) from exc
-    return normalize_decompose_result(result)
-
-
 def decompose_query_with_llm(question: str, trace_id: str = ""):
     """调用问题拆分模型并返回规范化的子查询结果。"""
     gateway = ModelGateway(
         role="decompose",
         langchain_model=get_decompose_model(),
     )
-    content = gateway.invoke_text(
+    result = gateway.invoke_structured(
         [
             {"role": "system", "content": DECOMPOSE_PROMPT},
             {"role": "user", "content": question},
         ],
+        QueryDecomposeOutput,
         trace_id=trace_id,
     )
-    return parse_decompose_llm_json(content)
+    return normalize_decompose_result(result)

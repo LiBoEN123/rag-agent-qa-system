@@ -8,15 +8,20 @@ import pytest
 from app.agent.results import create_agent_result
 from app.api.responses import build_chat_response_from_outcome
 from app.contracts.chat import AgentResultStatus
-from app.graph.streaming import AgentRuntimeStreamEvent
-from app.observability.metrics import (
-    attach_query_rewrite_trace,
-    build_query_rewrite_trace,
-    collect_trace_metrics,
-)
+from app.agent.streaming import AgentRuntimeStreamEvent
 from app.services.chat_models import ChatServiceRequest
 from app.services.chat_service import ChatService, ChatServiceDependencies
 from app.services.chat_stream_models import ChatStreamEvent
+
+
+@pytest.fixture(autouse=True)
+def run_blocking_calls_inline_in_sandbox(monkeypatch):
+    """隔离沙箱默认 executor 关闭挂起，不改变流式业务断言。"""
+
+    async def run_inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", run_inline)
 
 
 class IncrementingClock:
@@ -60,7 +65,7 @@ def _request(**overrides):
     return ChatServiceRequest(**values)
 
 
-def _build_service(runtime_events, *, sync_result=None):
+def _build_service(runtime_events, *, sync_result=None, stream_error=None):
     calls = {
         "messages": [],
         "metrics": [],
@@ -83,6 +88,8 @@ def _build_service(runtime_events, *, sync_result=None):
         try:
             for event in runtime_events:
                 yield event
+            if stream_error is not None:
+                raise stream_error
         finally:
             calls["runtime_closed"] = True
 
@@ -104,10 +111,7 @@ def _build_service(runtime_events, *, sync_result=None):
         settings_provider=lambda: SimpleNamespace(top_k=5, decompose_top_k=10),
         get_history=lambda session_id: [],
         rewrite_query_with_history=fake_rewrite,
-        run_agent_langgraph=lambda **kwargs: dict(resolved_sync_result),
-        build_query_rewrite_trace=build_query_rewrite_trace,
-        attach_query_rewrite_trace=attach_query_rewrite_trace,
-        collect_trace_metrics=collect_trace_metrics,
+        run_agent=lambda **kwargs: dict(resolved_sync_result),
         log_and_write_metrics=lambda record: calls["metrics"].append(dict(record)),
         write_bad_cases=lambda record: calls["bad_cases"].append(dict(record)),
         append_message=lambda session_id, role, content: calls["messages"].append(
@@ -115,7 +119,7 @@ def _build_service(runtime_events, *, sync_result=None):
         ),
         now_iso=lambda: "2026-08-02T10:00:00.000",
         perf_counter=clock,
-        stream_agent_langgraph=fake_stream,
+        stream_agent=fake_stream,
     )
     return ChatService(dependencies), calls
 
@@ -164,6 +168,9 @@ def test_direct_answer_streams_ordered_deltas_final_and_done_once():
     assert metrics["streaming"] is True
     assert metrics["answer_delta_count"] == 2
     assert metrics["streamed_answer_chars"] == 4
+    assert metrics["stream_event_count"] == len(events)
+    assert metrics["first_event_ms"] is not None
+    assert metrics["first_answer_delta_ms"] is not None
     assert metrics["streamed_answer_matches_final"] is True
     assert metrics["client_disconnected"] is False
     assert calls["bad_cases"] == []
@@ -245,6 +252,47 @@ def test_closing_service_stream_marks_disconnect_and_does_not_save_partial_answe
     assert len(calls["metrics"]) == 1
     assert calls["metrics"][0]["client_disconnected"] is True
     assert calls["metrics"][0]["status"] == "client_disconnected"
+
+
+def test_cancelled_runtime_stream_propagates_and_finalizes_as_disconnect():
+    service, calls = _build_service(
+        [],
+        stream_error=asyncio.CancelledError(),
+    )
+
+    async def consume_until_cancelled():
+        seen = []
+        with pytest.raises(asyncio.CancelledError):
+            async for event in service.stream(_request()):
+                seen.append(event)
+        return seen
+
+    events = asyncio.run(consume_until_cancelled())
+
+    assert all(event.event not in {"final", "done"} for event in events)
+    assert calls["runtime_closed"] is True
+    assert calls["messages"] == []
+    assert calls["bad_cases"] == []
+    assert calls["metrics"][0]["client_disconnected"] is True
+    assert calls["metrics"][0]["status"] == "client_disconnected"
+
+
+def test_unconverted_runtime_stream_exception_uses_invocation_fallback():
+    service, calls = _build_service(
+        [],
+        stream_error=RuntimeError("stream infrastructure failed"),
+    )
+
+    events = _collect(service)
+    final = next(event for event in events if event.event == "final")
+
+    assert final.data["outcome"].http_status == 500
+    assert final.data["outcome"].code == "MODEL_ERROR"
+    assert calls["runtime_closed"] is True
+    assert calls["messages"] == []
+    assert len(calls["bad_cases"]) == 1
+    assert calls["bad_cases"][0]["error_type"] == "internal_error"
+    assert calls["metrics"][0]["client_disconnected"] is False
 
 
 def test_sync_and_stream_final_use_identical_response_mapping():

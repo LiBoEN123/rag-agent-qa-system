@@ -11,7 +11,6 @@ from app.agent.results import (
     build_internal_error_result,
     map_agent_status_to_result_status,
     map_rag_status_to_agent_status,
-    validate_agent_result_payload,
 )
 from app.contracts.chat import AgentResultStatus
 
@@ -163,4 +162,4 @@ def test_internal_error_result_has_the_complete_contract_and_is_sanitized():
     assert result["status"] == "INTERNAL_ERROR"
     assert result["timings"] == {}
     assert "secret" not in str(result)
-    assert validate_agent_result_payload(result) == result
+    assert AgentRunResult.model_validate(result).model_dump(mode="json") == result

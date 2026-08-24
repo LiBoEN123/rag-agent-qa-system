@@ -58,22 +58,12 @@ def initialize_rag(deps: StartupDependencies) -> None:
     logger.info("[startup] %s", message)
 
 
-def validate_agent_graph_configuration(settings: AppSettings) -> str:
-    """校验 Checkpointer，并预编译无副作用的 LangGraph 主图。"""
-    mode = settings.langgraph_checkpointer
-    from app.graph.builder import get_compiled_agent_graph
+def initialize_agent_runtime(settings: AppSettings) -> None:
+    """预编译无外部调用的唯一 ``create_agent`` Runtime。"""
+    from app.agent.runtime import get_compiled_agent_runtime
 
-    get_compiled_agent_graph(settings)
-    logger.info(
-        "[startup] agent_runtime=langgraph checkpointer_mode=%s validated",
-        mode,
-    )
-    return mode
-
-
-def initialize_agent_graph_runtime(settings: AppSettings) -> None:
-    """执行 Checkpointer 配置校验和 LangGraph 预编译。"""
-    validate_agent_graph_configuration(settings)
+    get_compiled_agent_runtime(settings)
+    logger.info("[startup] agent_runtime=create_agent initialized")
 
 
 async def initialize_mcp_runtime(settings: AppSettings) -> None:
@@ -83,30 +73,22 @@ async def initialize_mcp_runtime(settings: AppSettings) -> None:
     await initialize(settings)
 
 
-def close_agent_graph_runtime() -> None:
-    """关闭 Agent Graph Runtime；关闭异常只记录日志，不阻塞其他清理。"""
+def close_agent_runtime() -> None:
+    """失效 Agent Runtime 缓存；关闭异常不阻塞其他清理。"""
     try:
-        from app.graph.builder import reset_agent_graph_runtime
+        from app.agent.runtime import reset_agent_runtime
 
-        reset_agent_graph_runtime()
+        reset_agent_runtime()
     except Exception as exc:
         logger.warning(
-            "[shutdown] langgraph_runtime_close_failed error=%s",
+            "[shutdown] agent_runtime_close_failed error=%s",
             str(exc)[:200],
         )
 
 
-async def aclose_agent_graph_runtime() -> None:
-    """在应用事件循环中关闭同步与流式 Agent Graph Runtime。"""
-    try:
-        from app.graph.builder import areset_agent_graph_runtime
-
-        await areset_agent_graph_runtime()
-    except Exception as exc:
-        logger.warning(
-            "[shutdown] async_langgraph_runtime_close_failed error=%s",
-            str(exc)[:200],
-        )
+async def aclose_agent_runtime() -> None:
+    """为 FastAPI lifespan 提供一致的异步关闭入口。"""
+    close_agent_runtime()
 
 
 async def close_mcp_runtime() -> None:

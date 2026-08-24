@@ -10,7 +10,7 @@ RouteDecisionType = Literal["use_agent", "direct_answer", "clarify"]
 
 
 class RouteDecision(TypedDict):
-    """父图 Router 写入 Graph State 的最小内部协议。"""
+    """Agent Runtime 使用的最小确定性路由协议。"""
 
     decision: RouteDecisionType
     action: RouteAction

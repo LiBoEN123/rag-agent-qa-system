@@ -7,8 +7,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_tools
-from app.graph import nodes as graph_nodes
-from app.graph.builder import build_agent_graph
+from app.config import get_settings
 import app.tools.runtime as tool_runtime
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolRiskLevel, ToolSpec
@@ -16,6 +15,7 @@ from app.tools.errors import ToolErrorCode
 from app.tools.providers import LocalToolProvider
 from app.tools.registry import ToolRegistry
 from app.tools.result import tool_error, tool_success
+from tests.support.agent_runtime import build_agent_harness
 
 
 class ValueArgs(BaseModel):
@@ -68,7 +68,6 @@ def _spec(
         name=name,
         version="1.0.0",
         description=f"执行 {name} 的受控 Agent 错误恢复测试工具",
-        args_schema={"value": "integer"},
         output_schema={"value": "integer"},
         handler=handler,
         args_model=ValueArgs,
@@ -91,13 +90,13 @@ def _invoke(
 ):
     """按指定错误预算组装并调用受控 Agent 图。"""
     provider = LocalToolProvider(registry)
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_agent_tool_provider",
+        "get_default_tool_provider",
         lambda: provider,
     )
-    settings = graph_nodes.get_settings().model_copy(
+    settings = get_settings().model_copy(
         update={
             "agent_max_iterations": 10,
             "agent_max_tool_calls": 20,
@@ -115,7 +114,7 @@ def _invoke(
         source="agent_error_recovery_test",
         idempotency_key="idem-test",
     )
-    return build_agent_graph(settings).compile().invoke(
+    return build_agent_harness(settings).invoke(
         {
             "original_question": "执行测试工具",
             "effective_question": "执行测试工具",

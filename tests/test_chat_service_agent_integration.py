@@ -8,14 +8,9 @@ from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_tools
-from app.graph import builder as graph_builder
-from app.graph import nodes as graph_nodes
-from app.graph.runtime import run_agent_langgraph
-from app.observability.metrics import (
-    attach_query_rewrite_trace,
-    build_query_rewrite_trace,
-    collect_trace_metrics,
-)
+from app.agent import runtime as agent_runtime
+from app.agent.runtime import reset_agent_runtime, run_agent
+from app.rag import graph as rag_graph
 from app.services.chat_service import (
     ChatService,
     ChatServiceDependencies,
@@ -175,12 +170,12 @@ class IncrementingClock:
         return self.value
 
 
-def test_chat_service_runs_real_langgraph_provider_and_runtime(
+def test_chat_service_runs_real_create_agent_provider_and_runtime(
     monkeypatch,
     settings_env,
 ):
-    """ChatService 通过真实 LangGraph、Provider 与 Runtime 完成工具调用。"""
-    graph_builder.reset_agent_graph_runtime()
+    """ChatService 通过真实 create_agent、Provider 与 Runtime 完成工具调用。"""
+    reset_agent_runtime()
     tool_runtime.reset_tool_runtime()
     registry = ToolRegistry()
     handler_contexts: list[ToolInvocationContext] = []
@@ -198,7 +193,6 @@ def test_chat_service_runs_real_langgraph_provider_and_runtime(
             name="chat_echo",
             version="1.0.0",
             description="回显 ChatService 集成测试文本",
-            args_schema={"text": "string"},
             output_schema={"text": "string"},
             handler=handler,
             args_model=ChatEchoArgs,
@@ -212,17 +206,17 @@ def test_chat_service_runs_real_langgraph_provider_and_runtime(
         return original_execute(self, tool_name, tool_args, context=context)
 
     monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", recording_execute)
-    original_route = graph_nodes.route_agent_action
+    original_route = agent_runtime.route_agent_action
 
     def recording_route(question):
         routed_questions.append(question)
         return original_route(question)
 
-    monkeypatch.setattr(graph_nodes, "route_agent_action", recording_route)
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(agent_runtime, "route_agent_action", recording_route)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_agent_tool_provider",
+        "get_default_tool_provider",
         lambda: LocalToolProvider(registry),
     )
     settings = settings_env(
@@ -232,7 +226,6 @@ def test_chat_service_runs_real_langgraph_provider_and_runtime(
         agent_max_consecutive_same_tool_calls=2,
         agent_max_consecutive_same_tool_errors=2,
         agent_max_total_cost_ms=120000,
-        langgraph_checkpointer="disabled",
         tool_default_principal_id="chat-user",
         tool_default_permissions=("knowledge_base:read",),
         tool_audit_enabled=False,
@@ -260,10 +253,7 @@ def test_chat_service_runs_real_langgraph_provider_and_runtime(
         settings_provider=lambda: settings,
         get_history=lambda session_id: [],
         rewrite_query_with_history=rewrite,
-        run_agent_langgraph=run_agent_langgraph,
-        build_query_rewrite_trace=build_query_rewrite_trace,
-        attach_query_rewrite_trace=attach_query_rewrite_trace,
-        collect_trace_metrics=collect_trace_metrics,
+        run_agent=run_agent,
         log_and_write_metrics=lambda record: metric_writes.append(dict(record)),
         write_bad_cases=lambda record: bad_cases.append(dict(record)),
         append_message=lambda session_id, role, content: session_writes.append(
@@ -287,7 +277,7 @@ def test_chat_service_runs_real_langgraph_provider_and_runtime(
             )
         )
     finally:
-        graph_builder.reset_agent_graph_runtime()
+        reset_agent_runtime()
         tool_runtime.reset_tool_runtime()
 
     assert outcome.http_status == 200
@@ -338,7 +328,7 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
     """ChatService 通过生产调用链完成 Web 搜索与抓取。"""
     web_search_module = import_module("app.tools.web_search")
     web_download_module = import_module("app.tools.web_download")
-    graph_builder.reset_agent_graph_runtime()
+    reset_agent_runtime()
     tool_runtime.reset_tool_runtime()
     ddgs_calls = []
 
@@ -406,7 +396,7 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
     model = ChatWebSearchModel()
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     monkeypatch.setattr(web_download_module, "Manager", FakeManager)
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     settings = settings_env(
         agent_max_iterations=6,
         agent_max_tool_calls=10,
@@ -414,7 +404,6 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
         agent_max_consecutive_same_tool_calls=2,
         agent_max_consecutive_same_tool_errors=2,
         agent_max_total_cost_ms=120000,
-        langgraph_checkpointer="disabled",
         tool_default_principal_id="web-user",
         tool_default_permissions=(
             "knowledge_base:read",
@@ -447,10 +436,7 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
         settings_provider=lambda: settings,
         get_history=lambda session_id: [],
         rewrite_query_with_history=rewrite,
-        run_agent_langgraph=run_agent_langgraph,
-        build_query_rewrite_trace=build_query_rewrite_trace,
-        attach_query_rewrite_trace=attach_query_rewrite_trace,
-        collect_trace_metrics=collect_trace_metrics,
+        run_agent=run_agent,
         log_and_write_metrics=lambda record: metric_writes.append(dict(record)),
         write_bad_cases=lambda record: None,
         append_message=lambda session_id, role, content: session_writes.append(
@@ -473,7 +459,7 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
             )
         )
     finally:
-        graph_builder.reset_agent_graph_runtime()
+        reset_agent_runtime()
         tool_runtime.reset_tool_runtime()
 
     assert outcome.http_status == 200
@@ -533,7 +519,7 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
     pdf_bytes = (
         Path(__file__).parent / "fixtures" / "web_pdf_text.pdf"
     ).read_bytes()
-    graph_builder.reset_agent_graph_runtime()
+    reset_agent_runtime()
     tool_runtime.reset_tool_runtime()
     ddgs_calls = []
 
@@ -595,9 +581,9 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
     model = ChatWebPdfModel()
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     monkeypatch.setattr(web_download_module, "Manager", FakeManager)
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
-        graph_nodes,
+        rag_graph,
         "run_rag_subgraph",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError(f"web PDF must not enter RAG: {args} {kwargs}")
@@ -610,7 +596,6 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
         agent_max_consecutive_same_tool_calls=2,
         agent_max_consecutive_same_tool_errors=2,
         agent_max_total_cost_ms=120000,
-        langgraph_checkpointer="disabled",
         tool_default_principal_id="web-user",
         tool_default_permissions=(
             "knowledge_base:read",
@@ -642,10 +627,7 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
         settings_provider=lambda: settings,
         get_history=lambda session_id: [],
         rewrite_query_with_history=rewrite,
-        run_agent_langgraph=run_agent_langgraph,
-        build_query_rewrite_trace=build_query_rewrite_trace,
-        attach_query_rewrite_trace=attach_query_rewrite_trace,
-        collect_trace_metrics=collect_trace_metrics,
+        run_agent=run_agent,
         log_and_write_metrics=lambda record: metric_writes.append(dict(record)),
         write_bad_cases=lambda record: None,
         append_message=lambda session_id, role, content: session_writes.append(
@@ -676,7 +658,7 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
             )
         )
     finally:
-        graph_builder.reset_agent_graph_runtime()
+        reset_agent_runtime()
         tool_runtime.reset_tool_runtime()
 
     assert outcome.http_status == 200

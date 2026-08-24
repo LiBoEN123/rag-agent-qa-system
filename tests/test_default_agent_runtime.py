@@ -1,4 +1,4 @@
-"""唯一 LangGraph API 链路的单次调用与兼容协议回归。"""
+"""默认 Agent API 链路的单次调用与兼容协议回归。"""
 
 from dataclasses import replace
 
@@ -13,7 +13,7 @@ from app.services.chat_service import (
 
 
 class _RequestState:
-    trace_id = "trace-default-langgraph"
+    trace_id = "trace-default-agent"
     request_enter_time = "2026-07-14T12:00:00.000"
     request_enter_perf = 10.0
 
@@ -22,10 +22,10 @@ class _Request:
     state = _RequestState()
 
 
-def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
+def test_default_agent_api_path_executes_each_boundary_once(monkeypatch):
     calls = {
         "rewrite": 0,
-        "langgraph": 0,
+        "agent": 0,
         "session_turn": 0,
         "messages": [],
         "metrics": 0,
@@ -55,12 +55,12 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
             "error": "",
         }
 
-    def langgraph(**kwargs):
-        calls["langgraph"] += 1
+    def run_agent(**kwargs):
+        calls["agent"] += 1
         assert "decision" not in kwargs
         return {
             "status": "OK",
-            "answer": "LangGraph 默认回答",
+            "answer": "Agent 默认回答",
             "references": [reference],
             "retrieval_confidence": 0.9,
             "answer_confidence": 0.8,
@@ -101,7 +101,7 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
         get_default_chat_service_dependencies(),
         get_history=lambda session_id: [],
         rewrite_query_with_history=rewrite,
-        run_agent_langgraph=langgraph,
+        run_agent=run_agent,
         append_message=lambda session_id, role, content: calls[
             "messages"
         ].append((session_id, role, content)),
@@ -133,18 +133,18 @@ def test_default_langgraph_api_path_executes_each_boundary_once(monkeypatch):
     assert response.status_code == 200
     assert calls == {
         "rewrite": 1,
-        "langgraph": 1,
+        "agent": 1,
         "session_turn": 1,
         "messages": [
             ("session-default", "user", "默认问题"),
-            ("session-default", "assistant", "LangGraph 默认回答"),
+            ("session-default", "assistant", "Agent 默认回答"),
         ],
         "metrics": 1,
     }
     assert result["code"] == 0
     assert result["message"] == "success"
     assert result["data"]["status"] == "ok"
-    assert result["data"]["answer"] == "LangGraph 默认回答"
+    assert result["data"]["answer"] == "Agent 默认回答"
     assert result["data"]["references"] == [reference]
     assert result["data"]["retrieval_confidence"] == 0.9
     assert result["data"]["answer_confidence"] == 0.8

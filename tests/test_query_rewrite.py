@@ -1,7 +1,10 @@
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from pydantic import ValidationError
 
 from app.agent import query_rewrite
+from app.llm.errors import StructuredOutputError
+from app.llm.schemas import QueryRewriteOutput
 
 
 HISTORY = [
@@ -31,9 +34,9 @@ def test_query_rewrite_llm_uses_role_factory_and_preserves_messages(monkeypatch)
     monkeypatch.setattr(query_rewrite, "get_query_rewrite_model", lambda: model)
 
     output = query_rewrite.call_query_rewrite_llm("rewrite prompt", trace_id="rw")
-    parsed = query_rewrite._parse_rewrite_json(output)
 
-    assert parsed == {
+    assert isinstance(output, QueryRewriteOutput)
+    assert output.model_dump() == {
         "need_rewrite": False,
         "rewritten_question": "独立问题",
         "reason": "无需改写",
@@ -113,11 +116,13 @@ def test_rewrite_obvious_follow_up_from_llm(monkeypatch, settings_env):
     monkeypatch.setattr(
         query_rewrite,
         "call_query_rewrite_llm",
-        lambda prompt, trace_id="": (
-            '{"need_rewrite":true,'
-            '"rewritten_question":"普通本科四年制专业最长学习年限是否有遗漏？'
-            '请根据知识库继续核对并补充完整。",'
-            '"reason":"当前问题依赖上一轮主题"}'
+        lambda prompt, trace_id="": QueryRewriteOutput(
+            need_rewrite=True,
+            rewritten_question=(
+                "普通本科四年制专业最长学习年限是否有遗漏？"
+                "请根据知识库继续核对并补充完整。"
+            ),
+            reason="当前问题依赖上一轮主题",
         ),
     )
 
@@ -146,10 +151,10 @@ def test_standalone_new_question_is_not_forced_to_use_history(
     monkeypatch.setattr(
         query_rewrite,
         "call_query_rewrite_llm",
-        lambda prompt, trace_id="": (
-            '{"need_rewrite":false,'
-            f'"rewritten_question":"{question}",'
-            '"reason":"当前问题语义完整，不依赖历史"}'
+        lambda prompt, trace_id="": QueryRewriteOutput(
+            need_rewrite=False,
+            rewritten_question=question,
+            reason="当前问题语义完整，不依赖历史",
         ),
     )
 
@@ -163,8 +168,8 @@ def test_standalone_new_question_is_not_forced_to_use_history(
     assert result["rewrite_llm_used"] is True
 
 
-def test_no_history_and_simple_math_skip_rewrite(settings_env):
-    """验证无历史和简单数学仍由硬规则直接跳过。"""
+def test_no_history_math_and_system_question_skip_rewrite(settings_env):
+    """验证无历史、简单数学和系统能力问题仍由硬规则直接跳过。"""
     settings_env(enable_query_rewrite=True)
 
     no_history_result = query_rewrite.rewrite_query_with_history(
@@ -172,6 +177,7 @@ def test_no_history_and_simple_math_skip_rewrite(settings_env):
         [],
     )
     math_result = query_rewrite.rewrite_query_with_history("1+1", HISTORY)
+    system_result = query_rewrite.rewrite_query_with_history("你能做什么？", HISTORY)
 
     assert no_history_result["rewritten"] is False
     assert no_history_result["reason"] == "no history"
@@ -179,6 +185,10 @@ def test_no_history_and_simple_math_skip_rewrite(settings_env):
     assert math_result["need_check"] is False
     assert math_result["rewrite_llm_used"] is False
     assert math_result["reason"] == "simple math question"
+    assert system_result["rewritten"] is False
+    assert system_result["need_check"] is False
+    assert system_result["rewrite_llm_used"] is False
+    assert system_result["reason"] == "system capability question"
 
 
 def test_ambiguous_short_question_without_llm_is_not_force_concatenated(
@@ -201,12 +211,51 @@ def test_ambiguous_short_question_without_llm_is_not_force_concatenated(
     )
 
 
-def test_parse_rewrite_json_requires_need_rewrite():
-    """验证新协议必须明确返回布尔类型 need_rewrite。"""
-    with pytest.raises(ValueError, match="invalid need_rewrite"):
-        query_rewrite._parse_rewrite_json(
-            '{"rewritten_question":"完整的新问题","reason":"缺少字段"}',
+def test_query_rewrite_schema_requires_strict_need_rewrite():
+    """改写协议拒绝缺失或非 bool 的 need_rewrite。"""
+    for payload in [
+        {"rewritten_question": "完整的新问题", "reason": "缺少字段"},
+        {
+            "need_rewrite": "true",
+            "rewritten_question": "完整的新问题",
+            "reason": "类型错误",
+        },
+    ]:
+        with pytest.raises(ValidationError):
+            QueryRewriteOutput.model_validate(payload)
+
+
+def test_rewrite_query_fallback_when_structured_result_is_invalid(
+    monkeypatch,
+    settings_env,
+):
+    """结构化输出无效时沿用明显追问的现有 fallback。"""
+    settings_env(
+        enable_query_rewrite=True,
+        query_rewrite_api_key="test-key",
+        query_rewrite_api_url="http://test.invalid",
+        query_rewrite_model_name="test-model",
+    )
+
+    def fail_validation(prompt, trace_id=""):
+        raise StructuredOutputError(
+            "模型返回的结构化内容不符合预期。",
+            schema_name="QueryRewriteOutput",
         )
+
+    monkeypatch.setattr(
+        query_rewrite,
+        "call_query_rewrite_llm",
+        fail_validation,
+    )
+
+    result = query_rewrite.rewrite_query_with_history("那休学创业呢？", HISTORY)
+
+    assert result["need_rewrite"] is True
+    assert result["history_used"] is True
+    assert result["rewrite_llm_used"] is True
+    assert result["reason"] == "fallback rewrite after llm error"
+    assert "结构化内容不符合预期" in result["error"]
 
 
 

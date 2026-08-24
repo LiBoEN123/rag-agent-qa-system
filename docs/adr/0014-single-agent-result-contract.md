@@ -4,6 +4,11 @@
 - 日期：2026-07-28
 - 决策者：Project Maintainer
 
+> 2026-08-21 Current implementation note：`AgentRunResult` 与唯一
+> `ChatStatusPolicy` 决策仍完整生效；下文对 `AgentGraphState`/Checkpointer 的描述是
+> 历史背景。当前 `results.py` 独占 Framework State 到 Result 的构造边界，ChatService
+> 不重新构造或验证该 Result。
+
 ## 背景
 
 PR12 已把一次请求的内部运行状态统一为平铺 `AgentGraphState`，但最终结果仍由

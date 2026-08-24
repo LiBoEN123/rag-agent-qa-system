@@ -54,12 +54,12 @@ DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "outputs" / "evaluation_baseline_v2"
 
 def _clear_runtime_caches() -> None:
     """清理会持有 Settings 或副作用边界的进程内缓存。"""
-    from app.graph.builder import reset_agent_graph_runtime
+    from app.agent.runtime import reset_agent_runtime
     from app.llm.factory import clear_model_factory_cache
     from app.tools.registry import clear_tool_registry_cache
     from app.tools.runtime import close_tool_runtime
 
-    reset_agent_graph_runtime()
+    reset_agent_runtime()
     close_tool_runtime()
     clear_tool_registry_cache()
     clear_model_factory_cache()
@@ -110,13 +110,9 @@ def build_evaluation_settings(
     """从当前真实配置复制只读评测快照。"""
     return settings.model_copy(
         update={
-            "langgraph_checkpointer": "disabled",
             "enable_agent_trace_store": False,
             "tool_audit_enabled": False,
             "sqlite_db_path": output_dir / ".isolated" / "app.sqlite",
-            "langgraph_checkpoint_db_path": (
-                output_dir / ".isolated" / "checkpoints.sqlite3"
-            ),
             "metrics_path": output_dir / ".isolated" / "metrics.jsonl",
             "bad_cases_path": output_dir / ".isolated" / "bad_cases.jsonl",
             "tool_audit_path": output_dir / ".isolated" / "tool_audit.jsonl",

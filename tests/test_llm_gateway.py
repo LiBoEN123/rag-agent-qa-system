@@ -3,7 +3,7 @@
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from app.llm.errors import ModelCallError
+from app.llm.errors import ModelCallError, StructuredOutputError
 from app.llm.gateway import ModelGateway
 from app.llm.schemas import AnswerOutput
 from app.rag import generation
@@ -19,8 +19,8 @@ MESSAGES = [
 class FakeStatusError(Exception):
     """模拟 OpenAI SDK 携带 status_code 的异常。"""
 
-    def __init__(self, status_code: int):
-        super().__init__(f"HTTP {status_code}")
+    def __init__(self, status_code: int, message: str = ""):
+        super().__init__(message or f"HTTP {status_code}")
         self.status_code = status_code
 
 
@@ -207,6 +207,33 @@ def test_structured_incompatibility_degrades_to_same_model_text_json():
     assert len(model.calls) == 1
 
 
+def test_provider_capability_error_during_invoke_degrades_to_text_json():
+    """供应商在请求阶段明确拒绝 response_format 时才执行文本 fallback。"""
+
+    class UnsupportedStructuredRunnable:
+        def invoke(self, messages):
+            raise FakeStatusError(
+                400,
+                "response_format json_schema is not supported by this model",
+            )
+
+    class TextFallbackModel(RecordingModel):
+        def with_structured_output(self, schema):
+            return UnsupportedStructuredRunnable()
+
+    model = TextFallbackModel(
+        response=AIMessage(
+            content='{"answer":"request fallback","references":[]}'
+        )
+    )
+    gateway = ModelGateway(role="answer", langchain_model=model)
+
+    result = gateway.invoke_structured(MESSAGES, AnswerOutput)
+
+    assert result.answer == "request fallback"
+    assert len(model.calls) == 1
+
+
 def test_missing_structured_method_degrades_to_same_model_text_json():
     """模型缺少 structured 方法时退回同一模型的文本 JSON。"""
     model = RecordingModel(
@@ -223,7 +250,9 @@ def test_missing_structured_method_degrades_to_same_model_text_json():
 @pytest.mark.parametrize(
     "exception",
     [
+        FakeStatusError(400),
         FakeStatusError(401),
+        FakeStatusError(403),
         FakeStatusError(429),
         FakeStatusError(503),
         TimeoutError("slow"),
@@ -233,9 +262,13 @@ def test_missing_structured_method_degrades_to_same_model_text_json():
 def test_structured_transport_errors_do_not_retry_as_text(exception):
     """认证、限流、服务端和网络错误不会重复发送文本请求。"""
 
+    class FailingStructuredRunnable:
+        def invoke(self, messages):
+            raise exception
+
     class StructuredModel(RecordingModel):
         def with_structured_output(self, schema):
-            raise exception
+            return FailingStructuredRunnable()
 
     model = StructuredModel(response=AIMessage(content="must not run"))
     gateway = ModelGateway(role="answer", langchain_model=model)
@@ -260,14 +293,15 @@ def test_invalid_native_structured_result_does_not_retry_as_text():
     model = StructuredModel(response=AIMessage(content="must not run"))
     gateway = ModelGateway(role="answer", langchain_model=model)
 
-    with pytest.raises(ModelCallError):
+    with pytest.raises(StructuredOutputError) as error:
         gateway.invoke_structured(MESSAGES, AnswerOutput)
 
     assert model.calls == []
+    assert error.value.schema_name == "AnswerOutput"
 
 
-def test_invalid_structured_text_maps_to_model_call_error():
-    """文本 fallback 的非法 JSON 继续转换为统一结构化输出错误。"""
+def test_invalid_structured_text_maps_to_structured_output_error():
+    """文本 fallback 的非法 JSON 转换为独立结构化输出错误。"""
 
     class TextFallbackModel(RecordingModel):
         def with_structured_output(self, schema):
@@ -278,11 +312,40 @@ def test_invalid_structured_text_maps_to_model_call_error():
         langchain_model=TextFallbackModel(response=AIMessage(content="not-json")),
     )
 
-    with pytest.raises(ModelCallError, match="结构化内容不符合预期") as error:
+    with pytest.raises(
+        StructuredOutputError,
+        match="结构化内容不符合预期",
+    ) as error:
         gateway.invoke_structured(MESSAGES, AnswerOutput)
 
-    assert error.value.provider == "langchain"
-    assert error.value.retryable is False
+    assert error.value.schema_name == "AnswerOutput"
+    assert error.value.detail == "ValueError"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        '{"references":[]}',
+        '{"answer":"ok","references":"Reference 1"}',
+        '{"answer":123,"references":[]}',
+    ],
+)
+def test_text_fallback_requires_all_fields_and_valid_types(content):
+    """文本 fallback 仍由 Pydantic 拒绝缺字段和错误字段类型。"""
+
+    class TextFallbackModel(RecordingModel):
+        def with_structured_output(self, schema):
+            raise NotImplementedError
+
+    gateway = ModelGateway(
+        role="answer",
+        langchain_model=TextFallbackModel(response=AIMessage(content=content)),
+    )
+
+    with pytest.raises(StructuredOutputError) as error:
+        gateway.invoke_structured(MESSAGES, AnswerOutput)
+
+    assert error.value.detail == "ValidationError"
 
 
 def test_model_call_error_redacts_api_key_from_user_and_debug_messages(monkeypatch):
@@ -300,24 +363,18 @@ def test_model_call_error_redacts_api_key_from_user_and_debug_messages(monkeypat
 
 
 def test_generation_call_llm_uses_answer_factory_and_keeps_prompt(monkeypatch):
-    """Answer 调用使用对应工厂，Prompt 内容和返回字符串保持不变。"""
-    model = RecordingModel(AIMessage(content="answer content"))
+    """Answer 调用使用对应工厂，并返回经过校验的 Pydantic 实例。"""
+    model = RecordingModel(
+        AIMessage(content='{"answer":"answer content","references":[]}')
+    )
     monkeypatch.setattr(generation, "get_answer_model", lambda: model)
 
     result = generation.call_llm("question", "context", trace_id="answer-trace")
 
-    assert result == "answer content"
-    assert isinstance(result, str)
+    assert result == AnswerOutput(answer="answer content", references=[])
+    assert isinstance(result, AnswerOutput)
     assert len(model.calls) == 1
     assert [message.content for message in model.calls[0]] == [
         message["content"]
         for message in generation._build_answer_messages("question", "context")
     ]
-
-
-def test_parse_llm_output_keeps_existing_fallback_behavior():
-    """统一调用层不改变现有回答 JSON 解析规则。"""
-    assert generation.parse_llm_output(
-        '```json\n{"answer":"ok","references":"invalid"}\n```'
-    ) == {"ok": True, "answer": "ok", "references": []}
-    assert generation.parse_llm_output("not-json")["ok"] is False

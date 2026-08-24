@@ -1,4 +1,4 @@
-"""LangGraph 原始流的异步执行与安全事件投影。"""
+"""直接执行 ``create_agent.astream`` 并投影安全流式事件。"""
 
 from __future__ import annotations
 
@@ -10,13 +10,15 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
-from app.agent.results import validate_agent_result_payload
-from app.common.logging import get_logger
-from app.graph.runtime import (
+from app.agent.results import (
     build_agent_runtime_error_result,
-    log_agent_runtime_start,
-    prepare_async_agent_runtime_invocation,
+    build_framework_agent_result,
+    build_short_circuit_result,
 )
+from app.agent.runtime import (
+    prepare_agent_runtime_invocation,
+)
+from app.common.logging import get_logger
 from app.tools.context import ToolInvocationContext
 
 
@@ -24,12 +26,12 @@ logger = get_logger("chat_service")
 
 _TOOL_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,99}$")
 _SAFE_TEXT_BLOCK_TYPES = frozenset({"text", "text_delta"})
-_STREAM_MODES = ("updates", "messages")
+_STREAM_MODES = ("updates", "messages", "values")
 
 
 @dataclass(frozen=True)
 class AgentRuntimeStreamEvent:
-    """Graph 层向 ChatService 暴露的最小流式事件。"""
+    """Agent Runtime 向 ChatService 暴露的最小流式事件。"""
 
     event: str
     data: dict[str, Any]
@@ -52,11 +54,11 @@ def _safe_non_negative_int(value: object) -> int:
         return 0
 
 
-def _namespace_is_direct_agent(namespace: tuple[str, ...]) -> bool:
-    """仅允许 create_agent 子图模型文本，显式排除 RAG 子图。"""
+def _namespace_is_agent(namespace: tuple[str, ...]) -> bool:
+    """接受根 ``create_agent``，同时显式拒绝任何 RAG 子图 namespace。"""
     if any(part.split(":", 1)[0] == "rag_subgraph" for part in namespace):
         return False
-    return any(
+    return not namespace or any(
         part.split(":", 1)[0] == "framework_agent"
         for part in namespace
     )
@@ -68,7 +70,6 @@ def _safe_message_text(content: object) -> tuple[str, bool]:
         return content, True
     if not isinstance(content, list):
         return "", False
-
     parts: list[str] = []
     for block in content:
         if not isinstance(block, Mapping):
@@ -100,7 +101,7 @@ def _project_message_part(
     namespace: tuple[str, ...],
 ) -> list[AgentRuntimeStreamEvent]:
     """按消息类型、block、namespace 和 metadata 白名单投影模型消息。"""
-    if not _namespace_is_direct_agent(namespace):
+    if not _namespace_is_agent(namespace):
         return []
     if not isinstance(data, tuple) or len(data) != 2:
         return []
@@ -200,63 +201,35 @@ def _project_tool_completions(
     return projected
 
 
-def _project_update_part(
-    data: object,
-    namespace: tuple[str, ...],
-) -> list[AgentRuntimeStreamEvent]:
-    """从 updates 中投影父图阶段、工具完成状态和最终结果。"""
+def _project_nested_update(value: object) -> list[AgentRuntimeStreamEvent]:
+    """递归寻找原生 Command 更新，到达治理事件字段后停止深入。"""
+    if isinstance(value, Mapping):
+        if "governance_events" in value:
+            return _project_tool_completions(value)
+        projected: list[AgentRuntimeStreamEvent] = []
+        for nested in value.values():
+            projected.extend(_project_nested_update(nested))
+        return projected
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        projected: list[AgentRuntimeStreamEvent] = []
+        for nested in value:
+            projected.extend(_project_nested_update(nested))
+        return projected
+    return []
+
+
+def _project_update_part(data: object) -> list[AgentRuntimeStreamEvent]:
+    """从 ``create_agent`` updates 中投影工具完成状态。"""
     if not isinstance(data, Mapping):
         return []
     projected: list[AgentRuntimeStreamEvent] = []
-    for raw_node_name, raw_update in data.items():
-        node_name = str(raw_node_name or "")
-        update = raw_update if isinstance(raw_update, Mapping) else {}
-        projected.extend(_project_tool_completions(update))
-
-        if namespace:
-            continue
-        if node_name == "route":
-            projected.append(
-                AgentRuntimeStreamEvent(
-                    event="progress",
-                    data={"stage": "routing", "status": "completed"},
-                    key="progress:routing:completed",
-                )
-            )
-        elif node_name == "framework_agent" and update.get(
-            "pending_rag_result"
-        ):
-            projected.append(
-                AgentRuntimeStreamEvent(
-                    event="progress",
-                    data={"stage": "rag", "status": "started"},
-                    key="progress:rag:started",
-                )
-            )
-        elif node_name == "rag_subgraph":
-            projected.append(
-                AgentRuntimeStreamEvent(
-                    event="progress",
-                    data={"stage": "rag", "status": "completed"},
-                    key="progress:rag:completed",
-                )
-            )
-        elif node_name == "finalize" and isinstance(
-            update.get("result"),
-            dict,
-        ):
-            projected.append(
-                AgentRuntimeStreamEvent(
-                    event="result",
-                    data={"result": update["result"]},
-                    key="result:final",
-                )
-            )
+    for raw_update in data.values():
+        projected.extend(_project_nested_update(raw_update))
     return projected
 
 
-def project_graph_stream_part(part: object) -> list[AgentRuntimeStreamEvent]:
-    """适配当前 LangGraph v2 part，拒绝未知模式和未知结构。"""
+def project_agent_stream_part(part: object) -> list[AgentRuntimeStreamEvent]:
+    """适配 LangGraph v2 part，拒绝未知模式和未知结构。"""
     if not isinstance(part, Mapping):
         return []
     stream_type = part.get("type")
@@ -269,18 +242,18 @@ def project_graph_stream_part(part: object) -> list[AgentRuntimeStreamEvent]:
     if stream_type == "messages":
         return _project_message_part(part.get("data"), namespace)
     if stream_type == "updates":
-        return _project_update_part(part.get("data"), namespace)
+        return _project_update_part(part.get("data"))
     return []
 
 
 async def _close_async_iterator(iterator: object) -> None:
-    """尽最大努力关闭图流，使断开和取消向下传播。"""
+    """尽最大努力关闭 Agent 流，使断开和取消向下传播。"""
     close = getattr(iterator, "aclose", None)
     if callable(close):
         await close()
 
 
-async def stream_agent_langgraph(
+async def stream_agent(
     *,
     write_bad_cases: Callable[[dict[str, Any]], None] | None,
     top_k: int,
@@ -292,40 +265,55 @@ async def stream_agent_langgraph(
     effective_question: str,
     tool_context: ToolInvocationContext | None = None,
 ) -> AsyncIterator[AgentRuntimeStreamEvent]:
-    """用原生 ``graph.astream`` 执行，并仅产出安全投影与最终结果。"""
-    resolved_original_question = (original_question or "").strip()
-    resolved_effective_question = (effective_question or "").strip()
-    graph_stream: object | None = None
+    """路由后直接流式执行 ``create_agent`` 并产出安全事件。"""
+    resolved_original = (original_question or "").strip()
+    resolved_effective = (effective_question or "").strip()
+    agent_stream: object | None = None
+    agent_stream_completed = False
     try:
-        invocation = await prepare_async_agent_runtime_invocation(
+        invocation = prepare_agent_runtime_invocation(
             top_k=top_k,
             decompose_top_k=decompose_top_k,
             trace_id=trace_id,
             session_id=session_id,
-            original_question=resolved_original_question,
-            effective_question=resolved_effective_question,
+            original_question=resolved_original,
+            effective_question=resolved_effective,
             tool_context=tool_context,
         )
-        log_agent_runtime_start(
-            invocation,
-            trace_id=trace_id,
-            session_id=session_id,
+        yield AgentRuntimeStreamEvent(
+            event="progress",
+            data={"stage": "routing", "status": "completed"},
+            key="progress:routing:completed",
         )
-        graph_stream = invocation.graph.astream(
-            invocation.graph_input,
-            config=invocation.graph_config,
+        if invocation.agent is None:
+            result = build_short_circuit_result(invocation)
+            yield AgentRuntimeStreamEvent(
+                event="result",
+                data={"result": result},
+                key="result:final",
+            )
+            return
+
+        agent_stream = invocation.agent.astream(
+            invocation.agent_input,
+            config=invocation.agent_config,
             context=invocation.tool_context,
             stream_mode=list(_STREAM_MODES),
-            subgraphs=True,
+            subgraphs=False,
             version="v2",
         )
-        final_result: dict[str, Any] | None = None
+        final_state: Mapping[str, Any] | None = None
         seen_event_keys: set[str] = set()
         message_buffers: dict[str, list[str]] = {}
         tainted_message_ids: set[str] = set()
 
-        async for part in graph_stream:
-            for event in project_graph_stream_part(part):
+        async for part in agent_stream:
+            if isinstance(part, Mapping) and part.get("type") == "values":
+                value = part.get("data")
+                if isinstance(value, Mapping):
+                    final_state = value
+                continue
+            for event in project_agent_stream_part(part):
                 if event.event == "_message_chunk":
                     message_id = str(event.data.get("message_id") or "")
                     if event.data.get("tainted"):
@@ -344,44 +332,54 @@ async def stream_agent_langgraph(
                                 )
                         tainted_message_ids.discard(message_id)
                     continue
-                if event.event == "result":
-                    final_result = validate_agent_result_payload(
-                        event.data.get("result")
-                    )
-                    continue
                 if event.key and event.key in seen_event_keys:
                     continue
                 if event.key:
                     seen_event_keys.add(event.key)
                 yield event
+                if (
+                    event.event == "tool"
+                    and event.data.get("tool_name") == "search_knowledge_base"
+                ):
+                    phase = str(event.data.get("phase") or "")
+                    if phase in {"started", "completed"}:
+                        progress = AgentRuntimeStreamEvent(
+                            event="progress",
+                            data={"stage": "rag", "status": phase},
+                            key=f"progress:rag:{phase}",
+                        )
+                        if progress.key not in seen_event_keys:
+                            seen_event_keys.add(progress.key)
+                            yield progress
 
-        if final_result is None:
-            raise RuntimeError("LangGraph stream did not produce a valid result")
+        agent_stream_completed = True
+        if final_state is None:
+            raise RuntimeError("create_agent stream did not produce final state")
+        result = build_framework_agent_result(invocation, final_state)
         logger.info(
-            "[trace_id=%s] [agent] langgraph_graph_end status=%s streaming=true",
+            "[trace_id=%s] [agent] runtime_end status=%s streaming=true",
             trace_id,
-            final_result.get("status", ""),
+            result.get("status", ""),
         )
         yield AgentRuntimeStreamEvent(
             event="result",
-            data={"result": final_result},
+            data={"result": result},
             key="result:final",
         )
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         logger.exception(
-            "[trace_id=%s] [agent] langgraph_graph_failed streaming=true",
+            "[trace_id=%s] [agent] runtime_failed streaming=true",
             trace_id,
         )
-        result = await asyncio.to_thread(
-            build_agent_runtime_error_result,
+        result = build_agent_runtime_error_result(
             write_bad_cases=write_bad_cases,
             bad_case=bad_case,
             trace_id=trace_id,
             session_id=session_id,
-            original_question=resolved_original_question,
-            effective_question=resolved_effective_question,
+            original_question=resolved_original,
+            effective_question=resolved_effective,
             exc=exc,
         )
         yield AgentRuntimeStreamEvent(
@@ -390,12 +388,12 @@ async def stream_agent_langgraph(
             key="result:error",
         )
     finally:
-        if graph_stream is not None:
-            await _close_async_iterator(graph_stream)
+        if agent_stream is not None and not agent_stream_completed:
+            await _close_async_iterator(agent_stream)
 
 
 __all__ = [
     "AgentRuntimeStreamEvent",
-    "project_graph_stream_part",
-    "stream_agent_langgraph",
+    "project_agent_stream_part",
+    "stream_agent",
 ]

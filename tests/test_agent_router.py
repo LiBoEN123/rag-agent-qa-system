@@ -96,7 +96,6 @@ def test_registered_tool_does_not_require_router_change(monkeypatch, tool_regist
             name="pr9_test_tool",
             version="1.0.0",
             description="仅用于验证新增工具不要求修改 Router。",
-            args_schema={"value": "string"},
             output_schema={"value": "string"},
             args_model=NewToolArgs,
             handler=lambda args, context: {"value": args.get("value", "")},

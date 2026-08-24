@@ -4,6 +4,11 @@
 - 日期：2026-07-19
 - 决策者：Project Maintainer
 
+> 2026-08-21 Current implementation note：开源、可替换模型和不重写 RAG/ToolRuntime
+> 的原则继续有效；“Agent 主图”、SQLite Checkpointer 和“全部第三方工具进入本地
+> ToolRuntime”的实现描述已分别由 ADR 0006、0011 及当前架构修订。当前只有
+> `create_agent` 内部循环与独立 RAG Graph，MCP 保持独立 Bridge/Interceptor 治理。
+
 ## 背景
 
 项目当前以 FastAPI 提供 API，以 LangGraph 编排 Agent 主图和 RAG 子图，以 LangChain Core 适配结构化工具，并保留了既有的混合检索、重排、引用校验、工具治理和 SQLite 状态存储能力。后续需要引入迭代式 Agent Loop、更多工具类型和更完整的可观测与评测能力，因此需要先确定技术选型原则，避免演进过程中形成模型厂商锁定、重复治理链路或不必要的整体重写。

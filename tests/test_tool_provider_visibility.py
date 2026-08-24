@@ -7,7 +7,6 @@ from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_tools
-from app.graph.builder import build_agent_graph
 import app.tools.runtime as tool_runtime
 from app.tools.context import ToolInvocationContext, has_permission
 from app.tools.contracts import ToolRiskLevel, ToolSpec
@@ -15,6 +14,8 @@ from app.tools.providers import LocalToolProvider
 from app.tools.providers.base import is_tool_visible
 from app.tools.registry import ToolRegistry
 from app.tools.result import tool_success
+from app.tools.runtime import execute_registered_tool
+from tests.support.agent_runtime import build_agent_harness
 
 
 class TextArgs(BaseModel):
@@ -62,7 +63,6 @@ def _spec(
         name=name,
         version="1.0.0",
         description=description,
-        args_schema={"text": "string"},
         output_schema={"text": "string"},
         handler=handler,
         args_model=TextArgs,
@@ -82,13 +82,13 @@ def _call(name: str, text: str, call_id: str) -> dict:
 
 
 def _invoke_graph(monkeypatch, registry, model, context):
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_agent_tool_provider",
+        "get_default_tool_provider",
         lambda: LocalToolProvider(registry),
     )
-    return build_agent_graph().compile().invoke(
+    return build_agent_harness().invoke(
         {
             "original_question": "验证权限感知工具可见性",
             "effective_question": "验证权限感知工具可见性",
@@ -247,8 +247,13 @@ def test_agent_binds_visible_tools_and_executes_authorized_tool(monkeypatch):
     monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", recording_execute)
     output = _invoke_graph(monkeypatch, registry, model, context)
     assert model.bound_tool_names == ["public_tool", "private_tool"]
-    assert runtime_calls == [("private_tool", context)]
-    assert calls == [("private_tool", {"text": "allowed"}, context)]
+    assert len(runtime_calls) == 1
+    assert runtime_calls[0][0] == "private_tool"
+    execution_context = runtime_calls[0][1]
+    assert execution_context.trace_id == context.trace_id
+    assert execution_context.permissions == context.permissions
+    assert execution_context.effective_question
+    assert calls == [("private_tool", {"text": "allowed"}, execution_context)]
     assert output["result"]["answer"] == "authorized tool complete"
 
 
@@ -292,16 +297,17 @@ def test_forged_hidden_tool_is_unknown_without_metadata_leak(monkeypatch):
     assert output["result"]["answer"] == "hidden tool handled safely"
 
 
-def test_direct_registry_dispatch_remains_runtime_authorized():
+def test_direct_execution_entry_remains_runtime_authorized():
     registry = ToolRegistry()
     calls: list = []
     registry.register(
         _spec("private_tool", calls, required_permissions=("documents:read",))
     )
 
-    result = registry.dispatch(
-        "private_tool",
-        {"text": "blocked"},
+    result = execute_registered_tool(
+        registry=registry,
+        tool_name="private_tool",
+        tool_args={"text": "blocked"},
         context=ToolInvocationContext(trace_id="trace-direct"),
     )
     assert result["error_code"] == "permission_denied"

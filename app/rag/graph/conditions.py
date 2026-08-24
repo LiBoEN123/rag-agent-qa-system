@@ -27,14 +27,14 @@ def after_evidence_gate_condition(
 def after_generate_condition(
     state: RAGGraphState,
 ) -> Literal["parse_output", "end"]:
-    """模型调用失败时结束，否则解析模型输出。"""
+    """模型调用失败时结束，否则规范化结构化输出。"""
     return "end" if _has_result(state) else "parse_output"
 
 
 def after_parse_condition(
     state: RAGGraphState,
 ) -> Literal["bind_and_verify", "end"]:
-    """模型输出不合法时结束，否则绑定并验证引用。"""
+    """结构化输出不合法时结束，否则绑定并验证引用。"""
     return "end" if _has_result(state) else "bind_and_verify"
 
 

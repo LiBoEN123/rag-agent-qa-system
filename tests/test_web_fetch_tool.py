@@ -28,7 +28,7 @@ from app.tools.context import ToolInvocationContext
 from app.tools.errors import ToolErrorCode, ToolExecutionError
 from app.tools.registry import ToolRegistry, get_tool_registry
 from app.tools.result import tool_success
-from app.tools.runtime import ToolRuntime
+from app.tools.runtime import ToolRuntime, execute_registered_tool
 from app.tools.schemas import WebFetchArgs, WebFetchOutput
 
 
@@ -678,9 +678,10 @@ def test_registry_runtime_executes_production_web_fetch_spec(monkeypatch):
     registry = ToolRegistry()
     registry.register(_web_fetch_spec())
 
-    result = registry.dispatch(
-        "web_fetch",
-        _args(),
+    result = execute_registered_tool(
+        registry=registry,
+        tool_name="web_fetch",
+        tool_args=_args(),
         context=ToolInvocationContext(permissions=("web:fetch",)),
     )
 
@@ -700,9 +701,10 @@ def test_permission_denial_prevents_manager_construction(monkeypatch):
     registry = ToolRegistry()
     registry.register(_web_fetch_spec())
 
-    result = registry.dispatch(
-        "web_fetch",
-        _args(),
+    result = execute_registered_tool(
+        registry=registry,
+        tool_name="web_fetch",
+        tool_args=_args(),
         context=ToolInvocationContext(),
     )
 

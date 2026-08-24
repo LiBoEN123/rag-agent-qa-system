@@ -20,7 +20,6 @@ def _spec(**overrides) -> ToolSpec:
         "name": "policy_tool",
         "version": "1.2.3",
         "description": "策略测试工具",
-        "args_schema": {"value": "integer"},
         "output_schema": {},
         "handler": lambda args, context: {},
         "args_model": PolicyArgs,
@@ -119,4 +118,3 @@ def test_policy_rejects_anonymous_write_context():
         args_fingerprint="sha256:test",
     )
     assert decision.error_code.value == "invalid_invocation_context"
-

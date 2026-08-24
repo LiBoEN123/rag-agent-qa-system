@@ -113,6 +113,8 @@ def test_discovery_filters_extras_prefixes_names_and_limits_metadata(
         "mcp_server": "weather",
         "remote_tool_name": "get_weather",
         "tool_version": "1.0.0",
+        "risk_level": "read_only",
+        "approval_required": False,
     }
     assert "runtime" not in tool.tool_call_schema.model_fields
 
@@ -191,6 +193,35 @@ def test_explicit_non_read_only_annotations_fail_closed(
                 local_tool_names=set(),
             )
         )
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"destructiveHint": True},
+        {"readOnlyHint": False},
+    ],
+)
+def test_explicit_approval_allows_only_named_non_read_only_tool(
+    metadata,
+    settings_factory,
+):
+    client = FakeClient(
+        {"weather": [_raw_tool("weather", "get_weather", metadata=metadata)]}
+    )
+
+    entries = asyncio.run(
+        discover_mcp_tools(
+            client,
+            config=_config(approval_required_tools=["get_weather"]),
+            settings=settings_factory(),
+            local_tool_names=set(),
+        )
+    )
+
+    assert len(entries) == 1
+    assert entries[0].tool.metadata["risk_level"] == "external_write"
+    assert entries[0].tool.metadata["approval_required"] is True
 
 
 def test_missing_allowlisted_tool_duplicate_and_local_collision_fail_closed(
@@ -433,9 +464,12 @@ def test_disabled_mcp_is_invisible_even_with_server_permission(
     mcp_provider.clear_mcp_tool_provider()
 
     assert mcp_provider.list_mcp_tools_for_context(ToolInvocationContext()) == []
-    assert mcp_provider.list_mcp_tools_for_context(
-        ToolInvocationContext(permissions=("mcp:weather",))
-    ) == []
+    assert (
+        mcp_provider.list_mcp_tools_for_context(
+            ToolInvocationContext(permissions=("mcp:weather",))
+        )
+        == []
+    )
 
 
 def test_initialize_uses_official_client_options_and_caches_discovery(
@@ -520,9 +554,7 @@ def test_initialize_merges_direct_and_env_headers_for_adapter(
                         "url": "https://weather.example.com/mcp",
                         "allowed_tools": ["get_weather"],
                         "headers": {"X-Api-Key": "local-adapter-test-key"},
-                        "headers_env": {
-                            "Authorization": "DEPLOYMENT_AUTHORIZATION"
-                        },
+                        "headers_env": {"Authorization": "DEPLOYMENT_AUTHORIZATION"},
                     }
                 },
             }
@@ -599,6 +631,9 @@ def test_initialize_all_disabled_servers_builds_empty_cache_without_client(
     assert runtime is not None
     assert runtime.client is None
     assert runtime.provider.catalog() == []
-    assert runtime.provider.list_tools(
-        context=ToolInvocationContext(permissions=("mcp:weather",))
-    ) == []
+    assert (
+        runtime.provider.list_tools(
+            context=ToolInvocationContext(permissions=("mcp:weather",))
+        )
+        == []
+    )

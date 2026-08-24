@@ -3,7 +3,7 @@
 使用 Pydantic 定义并校验各内置工具接收的结构化参数和稳定输出。
 """
 
-from typing import Any, Literal
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -45,26 +45,10 @@ def _validate_web_fetch_http_url(value: str) -> str:
     return value
 
 
-class ToolResult(BaseModel):
-    """Agent 统一工具调用结果。"""
-
-    status: str = Field(..., description="工具状态，例如 success / error")
-    ok: bool = Field(..., description="工具是否执行成功")
-    tool_name: str = Field(..., description="工具名称")
-    tool_input: dict[str, Any] = Field(default_factory=dict, description="工具输入参数")
-    output: Any | None = Field(default=None, description="工具输出")
-    error: str = Field(default="", description="错误信息")
-    error_code: str = Field(default="", description="稳定的工具错误码")
-    retryable: bool = Field(default=False, description="错误本身是否可重试")
-    runtime: dict[str, Any] = Field(
-        default_factory=dict,
-        description="工具运行时元数据",
-    )
-    cost_ms: int = Field(default=0, ge=0, description="工具执行耗时，单位毫秒")
-
-
 class SearchKnowledgeBaseArgs(BaseModel):
     """search_knowledge_base 工具参数。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
 
     query: str = Field(..., min_length=1, description="用户问题或检索查询")
     top_k: int = Field(default=5, ge=1, le=10, description="返回候选 chunk 数量")
@@ -72,6 +56,8 @@ class SearchKnowledgeBaseArgs(BaseModel):
 
 class CompareDocumentsArgs(BaseModel):
     """compare_documents 工具参数。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
 
     query: str = Field(..., min_length=1, description="对比主题或问题")
     doc_a: str = Field(..., min_length=1, description="第一个文档名或文档名关键词")
@@ -82,11 +68,18 @@ class CompareDocumentsArgs(BaseModel):
 class GetChunkTextArgs(BaseModel):
     """get_chunk_text 工具参数。"""
 
-    chunk_id: int | str = Field(..., description="要查看的 chunk_id")
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    chunk_id: int | Annotated[str, Field(min_length=1)] = Field(
+        ...,
+        description="要查看的 chunk_id",
+    )
 
 
 class SimpleCalculatorArgs(BaseModel):
     """simple_calculator 工具参数。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
 
     expression: str = Field(..., min_length=1, description="安全的四则运算表达式")
 

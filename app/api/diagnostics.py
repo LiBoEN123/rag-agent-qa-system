@@ -30,7 +30,7 @@ class DiagnosticsDependencies:
     rerank: Callable
     should_refuse: Callable
     safe_float: Callable
-    route_node: Callable
+    route_agent_action: Callable
     read_recent_metrics: Callable
 
 
@@ -213,8 +213,7 @@ def create_diagnostics_router(
                     "reason": "用户未输入问题",
                 },
             }
-        route_output = deps.route_node({"effective_question": question})
-        decision = route_output["decision"]
+        decision = deps.route_agent_action(question)
         return {
             "code": 0,
             "message": "success",

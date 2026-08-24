@@ -8,6 +8,7 @@ from typing import Any
 from app.common.logging import get_logger
 from app.contracts.chat import ChatStatusPolicy
 from app.services.chat_models import ChatRequestContext
+from app.services.chat_stream_models import ChatStreamEvent
 
 
 logger = get_logger("chat_service")
@@ -161,6 +162,87 @@ def apply_result_metrics(
     metrics["reason"] = result.get("reason") or policy.default_reason
 
 
+def initialize_stream_metrics(metrics: dict[str, Any]) -> None:
+    """初始化流式请求特有的指标；默认按尚未完整交付处理。"""
+    metrics.update(
+        {
+            "streaming": True,
+            "stream_event_count": 0,
+            "answer_delta_count": 0,
+            "streamed_answer_chars": 0,
+            "first_event_ms": None,
+            "first_answer_delta_ms": None,
+            "client_disconnected": True,
+            "streamed_answer_matches_final": None,
+        }
+    )
+
+
+def record_stream_event(
+    context: ChatRequestContext,
+    event: str,
+    data: dict[str, Any],
+    *,
+    perf_counter: Callable[[], float],
+    streamed_answer_parts: list[str] | None = None,
+) -> ChatStreamEvent:
+    """记录一个服务流事件对指标和答案拼接状态的影响。"""
+    metrics = context.metrics
+    metrics["stream_event_count"] = int(
+        metrics.get("stream_event_count", 0) or 0
+    ) + 1
+    elapsed_ms = max(
+        0,
+        int((perf_counter() - context.process_start_perf) * 1000),
+    )
+    if metrics.get("first_event_ms") is None:
+        metrics["first_event_ms"] = elapsed_ms
+
+    if event == "answer_delta":
+        text = str(data.get("text") or "")
+        metrics["answer_delta_count"] = int(
+            metrics.get("answer_delta_count", 0) or 0
+        ) + 1
+        metrics["streamed_answer_chars"] = int(
+            metrics.get("streamed_answer_chars", 0) or 0
+        ) + len(text)
+        if metrics.get("first_answer_delta_ms") is None:
+            metrics["first_answer_delta_ms"] = elapsed_ms
+        if streamed_answer_parts is not None:
+            streamed_answer_parts.append(text)
+    elif event == "tool" and data.get("phase") == "completed":
+        metrics["tool_called"] = True
+        metrics["tool_name"] = str(data.get("tool_name") or "")
+        metrics["tool_success"] = data.get("status") == "success"
+
+    return ChatStreamEvent(event=event, data=data)
+
+
+def record_stream_completion(
+    metrics: dict[str, Any],
+    *,
+    streamed_answer_parts: list[str],
+    final_answer: str,
+) -> None:
+    """在 final 前记录增量答案与权威最终答案是否一致。"""
+    if streamed_answer_parts:
+        metrics["streamed_answer_matches_final"] = (
+            "".join(streamed_answer_parts) == final_answer
+        )
+
+
+def record_stream_termination(
+    metrics: dict[str, Any],
+    *,
+    completed: bool,
+) -> None:
+    """区分完整交付和客户端中断，并维护终态指标。"""
+    metrics["client_disconnected"] = not completed
+    if not completed:
+        metrics["status"] = "client_disconnected"
+        metrics["reason"] = "client_disconnected"
+
+
 def safe_write_bad_case(
     record: dict[str, Any],
     *,
@@ -176,6 +258,42 @@ def safe_write_bad_case(
             trace_id,
             str(exc)[:200],
         )
+
+
+def record_chat_failure(
+    context: ChatRequestContext,
+    exc: Exception,
+    *,
+    stage: str,
+    write_bad_cases: Callable[[dict], None],
+) -> None:
+    """登记服务或 Runtime 调用边界异常，并安全写入 bad case。"""
+    context.metrics.update(
+        {
+            "status": "internal_error",
+            "action": "",
+            "tool_name": "",
+            "tool_called": False,
+            "tool_success": False,
+            "router_llm_used": False,
+            "llm_call_count": int(
+                context.metrics.get("query_rewrite_llm_used", False)
+            ),
+            "reason": str(exc),
+        }
+    )
+    context.bad_case.update(
+        {
+            "route": "",
+            "error_type": "internal_error",
+            "note": f"{stage}：{exc}",
+        }
+    )
+    safe_write_bad_case(
+        context.bad_case,
+        trace_id=context.request.trace_id,
+        write_bad_cases=write_bad_cases,
+    )
 
 
 def finalize_chat_telemetry(
@@ -226,4 +344,3 @@ def finalize_chat_telemetry(
             context.request.trace_id,
             exc,
         )
-

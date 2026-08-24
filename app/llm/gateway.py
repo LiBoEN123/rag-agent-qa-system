@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, TypeVar
 
+from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from app.common.logging import get_logger
-from app.llm.errors import ModelCallError
+from app.llm.errors import ModelCallError, StructuredOutputError
 
 
 logger = get_logger("chat_service")
+SchemaT = TypeVar("SchemaT", bound=BaseModel)
 
 
 def _status_code(exc: BaseException) -> int | None:
@@ -85,23 +87,44 @@ def _build_model_call_error(exc: BaseException, model: Any) -> ModelCallError:
 
 def _is_structured_output_unsupported(exc: BaseException) -> bool:
     """仅识别明确的 structured output 能力不兼容错误。"""
-    if _status_code(exc) is not None or _is_timeout_or_connection_error(exc):
+    status = _status_code(exc)
+    if _is_timeout_or_connection_error(exc):
         return False
-    if isinstance(exc, NotImplementedError):
+    if status is not None and status not in {400, 422}:
+        return False
+    if status is None and isinstance(exc, NotImplementedError):
         return True
 
     message = str(exc).strip().lower()
-    if isinstance(exc, AttributeError) and "with_structured_output" in message:
+    if (
+        status is None
+        and isinstance(exc, AttributeError)
+        and "with_structured_output" in message
+    ):
         return True
 
     normalized = re.sub(r"[\s_-]+", " ", message)
-    return bool(
-        "structured output" in normalized
-        and any(
-            marker in normalized
-            for marker in ("unsupported", "not supported", "unavailable")
-        )
+    capability_markers = (
+        "structured output",
+        "response format",
+        "json schema",
     )
+    unsupported_markers = (
+        "unsupported",
+        "not supported",
+        "does not support",
+        "unavailable",
+        "not implemented",
+        "unknown parameter",
+        "unrecognized parameter",
+    )
+    explicitly_unsupported = bool(
+        any(marker in normalized for marker in capability_markers)
+        and any(marker in normalized for marker in unsupported_markers)
+    )
+    if status is None:
+        return explicitly_unsupported
+    return status in {400, 422} and explicitly_unsupported
 
 
 def _extract_text_content(response: Any) -> str:
@@ -147,7 +170,7 @@ def _to_langchain_messages(messages: list[dict[str, str]]) -> list[Any]:
     return converted
 
 
-def _validate_schema(schema: type[BaseModel], value: Any) -> BaseModel:
+def _validate_schema(schema: type[SchemaT], value: Any) -> SchemaT:
     """兼容 Pydantic v1/v2 地校验结构化模型输出。"""
     if isinstance(value, schema):
         return value
@@ -155,6 +178,26 @@ def _validate_schema(schema: type[BaseModel], value: Any) -> BaseModel:
     if callable(validator):
         return validator(value)
     return schema.parse_obj(value)
+
+
+def _build_structured_output_error(
+    exc: BaseException,
+    schema: type[BaseModel],
+) -> StructuredOutputError:
+    """把解析或 Schema 校验失败转换成独立的结构化输出错误。"""
+    return StructuredOutputError(
+        "模型返回的结构化内容不符合预期。",
+        detail=type(exc).__name__,
+        schema_name=schema.__name__,
+    )
+
+
+def _is_native_output_validation_error(exc: BaseException) -> bool:
+    """识别发生在原生结构化响应解析阶段的错误。"""
+    return isinstance(
+        exc,
+        (json.JSONDecodeError, OutputParserException, ValidationError),
+    )
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:
@@ -250,23 +293,15 @@ class ModelGateway:
     def invoke_structured(
         self,
         messages: list[dict[str, str]],
-        schema: type[BaseModel],
+        schema: type[SchemaT],
         *,
         trace_id: str = "",
-    ) -> BaseModel:
+    ) -> SchemaT:
         """优先使用 LangChain 结构化输出，不兼容时降级为文本 JSON 解析。"""
         if self.langchain_model is not None:
             prompt_chars = sum(len(str(item.get("content", ""))) for item in messages)
             try:
                 structured_model = self.langchain_model.with_structured_output(schema)
-                self._log_call(
-                    trace_id=trace_id,
-                    invocation="structured",
-                    prompt_chars=prompt_chars,
-                    fallback=False,
-                )
-                value = structured_model.invoke(_to_langchain_messages(messages))
-                return _validate_schema(schema, value)
             except Exception as exc:
                 fallback = _is_structured_output_unsupported(exc)
                 self._log_call(
@@ -281,15 +316,39 @@ class ModelGateway:
                         exc,
                         self.langchain_model,
                     ) from exc
+            else:
+                self._log_call(
+                    trace_id=trace_id,
+                    invocation="structured",
+                    prompt_chars=prompt_chars,
+                    fallback=False,
+                )
+                try:
+                    value = structured_model.invoke(_to_langchain_messages(messages))
+                except Exception as exc:
+                    fallback = _is_structured_output_unsupported(exc)
+                    self._log_call(
+                        trace_id=trace_id,
+                        invocation="structured",
+                        prompt_chars=prompt_chars,
+                        fallback=fallback,
+                        error=exc,
+                    )
+                    if not fallback:
+                        if _is_native_output_validation_error(exc):
+                            raise _build_structured_output_error(exc, schema) from exc
+                        raise _build_model_call_error(
+                            exc,
+                            self.langchain_model,
+                        ) from exc
+                else:
+                    try:
+                        return _validate_schema(schema, value)
+                    except Exception as exc:
+                        raise _build_structured_output_error(exc, schema) from exc
 
         raw_text = self.invoke_text(messages, trace_id=trace_id)
         try:
             return _validate_schema(schema, _parse_json_object(raw_text))
         except Exception as exc:
-            raise ModelCallError(
-                "模型返回的结构化内容不符合预期。",
-                detail=type(exc).__name__,
-                provider="langchain",
-                model_name=_model_name(self.langchain_model),
-                retryable=False,
-            ) from exc
+            raise _build_structured_output_error(exc, schema) from exc

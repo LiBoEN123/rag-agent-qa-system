@@ -4,6 +4,10 @@
 - 日期：2026-07-19
 - 决策者：Project Maintainer
 
+> 2026-08-16 修订：旧 `ToolRegistry.dispatch` / `dispatch_tool` plumbing 已按
+> [ADR 0004 修订说明](0004-registry-driven-tool-discovery.md#2026-08-16-修订说明)
+> 收口为 `execute_registered_tool → ToolRuntime.execute`；下文保留当时决策原文。
+
 ## 背景
 
 项目已经围绕 `ToolSpec`、`ToolRegistry` 和 `ToolRuntime` 建立统一工具契约与执行治理。当前 `LocalToolProvider` 提供已注册 ToolSpec，LangChain Adapter 构造请求级 `StructuredTool`，其适配函数再调用定义所属的 Registry 和 Runtime。后续引入 Tool Calling、LangGraph `ToolNode`、MCP、搜索、数据库或浏览器工具时，必须保留这条边界，防止模型或第三方框架绕过权限、审计和运行时限制。

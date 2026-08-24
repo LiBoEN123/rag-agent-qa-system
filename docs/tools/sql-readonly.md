@@ -54,12 +54,12 @@ TOOL_DEFAULT_PERMISSIONS=knowledge_base:read,database:read
 `SQL_DEFAULT_SCHEMA` 或 allowlist 中明示的 Schema。View 即使误写入 allowlist 也
 不会被列出、描述或查询。
 
-示例数据库不能是 `./data/app.sqlite`、
-`./data/langgraph_checkpoints.sqlite3`，也不能位于项目 RAG 索引清单目录、Chroma
+示例数据库不能是 `./data/app.sqlite` 或 Tool Audit 数据库，也不能位于项目 RAG
+索引清单目录、Chroma
 持久化目录或 `outputs/` 评测目录。配置构造会解析、展开并 `resolve()`
 SQLite 文件路径后拒绝这些内部目标；没有绕过开关。完整数据库 URL 是
 `SecretStr`，不得进入日志、
-ToolResult、Tool Audit、metrics、bad case、Agent trace 或 SSE。
+工具结果字典、Tool Audit、metrics、bad case、Agent trace 或 SSE。
 
 ## 安全边界
 
@@ -88,13 +88,12 @@ AST 检查不能替代数据库权限。SQLite 由文件级 `mode=ro` + `query_o
 
 ```text
 LangChain create_agent
-→ RegistryToolsMiddleware
-→ 请求级 StructuredTool
-→ ToolRegistry.dispatch
+→ 请求级 governed StructuredTool
+→ execute_registered_tool
 → ToolRuntime.execute
 → SQL service
 → sqlglot / SQLAlchemy
-→ ToolResult / ToolMessage
+→ Runtime 工具结果 / ToolMessage
 → Agent
 ```
 

@@ -9,7 +9,7 @@ from typing import Any
 
 from app.common.logging import get_logger
 from app.config import get_settings
-from app.llm.errors import ModelCallError
+from app.llm.errors import ModelCallError, StructuredOutputError
 from app.prompts import NO_ANSWER_FALLBACK
 from app.rag.citations import verify_answer_citations
 from app.rag.decomposition import (
@@ -23,7 +23,6 @@ from app.rag.generation import (
     estimate_answer_confidence,
     estimate_retrieval_confidence,
     format_reference,
-    parse_llm_output,
 )
 from app.rag.graph.state import RAGGraphState
 from app.rag.pipeline import (
@@ -281,16 +280,25 @@ def build_context_node(state: RAGGraphState) -> dict[str, Any]:
 
 
 def generate_node(state: RAGGraphState) -> dict[str, Any]:
-    """通过统一回答模型入口生成 JSON 文本，并兼容现有模型错误。"""
+    """通过统一回答模型入口生成并校验结构化回答。"""
     start = time.perf_counter()
     timings = _timings(state)
     updates: dict[str, Any] = {"answer_llm_used": True}
     try:
-        llm_output = call_llm(
+        answer_output = call_llm(
             state.get("question", ""),
             state.get("context", ""),
             state.get("trace_id", ""),
         )
+    except StructuredOutputError:
+        timings["llm_cost_ms"] = int((time.perf_counter() - start) * 1000)
+        updates.update(
+            {
+                "answer_output_invalid": True,
+                "timings": timings,
+            }
+        )
+        return updates
     except ModelCallError as exc:
         timings["llm_cost_ms"] = int((time.perf_counter() - start) * 1000)
         updates.update(
@@ -317,18 +325,43 @@ def generate_node(state: RAGGraphState) -> dict[str, Any]:
 
     timings["llm_cost_ms"] = int((time.perf_counter() - start) * 1000)
     logger.info(
-        "[trace_id=%s] [rag_graph] node=generate output_len=%s",
+        "[trace_id=%s] [rag_graph] node=generate answer_chars=%s "
+        "reference_count=%s",
         state.get("trace_id", ""),
-        len(llm_output or ""),
+        len(answer_output.answer),
+        len(answer_output.references),
     )
-    updates.update({"llm_output": llm_output, "timings": timings})
+    updates.update(
+        {
+            "answer_output": answer_output.model_dump(mode="json"),
+            "answer_output_invalid": False,
+            "timings": timings,
+        }
+    )
     return updates
 
 
 def parse_output_node(state: RAGGraphState) -> dict[str, Any]:
-    """复用现有 JSON 解析协议，并将坏输出转换为兼容业务状态。"""
+    """规范化已校验结果，并将结构化坏输出映射为兼容业务状态。"""
     start = time.perf_counter()
-    parsed_output = parse_llm_output(state.get("llm_output", ""))
+    answer_output = state.get("answer_output")
+    output_is_valid = (
+        not state.get("answer_output_invalid", False)
+        and isinstance(answer_output, dict)
+    )
+    parsed_output = (
+        {
+            "ok": True,
+            "answer": answer_output["answer"],
+            "references": answer_output["references"],
+        }
+        if output_is_valid
+        else {
+            "ok": False,
+            "answer": NO_ANSWER_FALLBACK,
+            "references": [],
+        }
+    )
     cost_ms = int((time.perf_counter() - start) * 1000)
     timings = _timings(state)
     timings["parse_cost_ms"] = cost_ms

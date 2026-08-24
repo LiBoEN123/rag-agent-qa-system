@@ -1,7 +1,7 @@
 # `/chat/stream` SSE 接口
 
 `POST /chat/stream` 是现有 `POST /chat` 的流式补充，不替代同步接口。两者复用同一个
-`ChatService`、Query Rewrite、LangGraph 父图、Agent/Tool/RAG Runtime、
+`ChatService`、Query Rewrite、直接 `create_agent`、Agent/Tool/RAG Runtime、
 `AgentRunResult`、`ChatStatusPolicy`、Session 和 telemetry；区别只在传输方式。
 
 ## HTTP 语义
@@ -66,13 +66,14 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
 
 ## 安全投影
 
-`updates` 只投影父图阶段、工具名/状态/耗时和最终结果；不序列化内部 State。
-`messages` 只接受 `framework_agent` 模型命名空间中的 `AIMessage`/`AIMessageChunk`
+`updates` 只投影工具名、状态和耗时；`values` 只在 Runtime 内捕获最终状态，不向 SSE
+序列化。`messages` 只接受 `create_agent` 模型节点中的
+`AIMessage`/`AIMessageChunk`
 普通字符串或显式 text block。一次模型调用的 chunk 会先缓冲，确认没有 tool call
 且不属于 RAG 命名空间后才作为原始增量释放。
 
 增量事件不会公开 reasoning/thinking、tool call JSON、工具参数、`ToolMessage` 正文、
-原始 `ToolResult`、RAG JSON、网页/PDF/chunk 正文、系统 Prompt、provider/usage
+原始工具结果、RAG JSON、网页/PDF/chunk 正文、系统 Prompt、provider/usage
 metadata、内部 State、认证头、Cookie、API Key、数据库凭据、本地敏感路径或异常
 堆栈。`final` 复用现有 `ChatResponse` 映射和公开字段合同，不另建第二套响应。
 
@@ -83,7 +84,7 @@ metrics；不会保存 delta、progress、tool event 或中间 State。流式 me
 之外记录事件数、delta 数/字符数、首事件/首 delta 耗时、客户端断开和 delta 与最终
 答案一致性；不会为每个 token 单独写 metrics。
 
-客户端断开后，HTTP adapter 停止读取并关闭 Service/Graph async generator，取消会
+客户端断开后，HTTP adapter 停止读取并关闭 Service/Agent async generator，取消会
 尽可能向下传播。不再发送 `final`/`done`，不保存部分 assistant 文本，不把断开转换成
 `MODEL_ERROR`，也不写伪 bad case；metrics 记录 `client_disconnected=true`。已经进入
 第三方同步 handler 的调用不保证立刻终止，但断开后不会继续向客户端输出。

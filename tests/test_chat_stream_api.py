@@ -5,7 +5,7 @@ import json
 
 import pytest
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient, Response
 
 from app.agent.results import create_agent_result
 from app.api.chat import create_chat_router
@@ -14,6 +14,16 @@ from app.api.streaming import ChatStreamSSEEncoder
 from app.contracts.chat import AgentResultStatus
 from app.services.chat_models import ChatServiceOutcome
 from app.services.chat_stream_models import ChatStreamEvent
+
+
+@pytest.fixture(autouse=True)
+def run_blocking_calls_inline_in_sandbox(monkeypatch):
+    """隔离沙箱默认 executor 关闭挂起，不改变 HTTP/SSE 业务断言。"""
+
+    async def run_inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", run_inline)
 
 
 def _outcome(*, answer="完整回答", status=AgentResultStatus.OK):
@@ -174,20 +184,33 @@ def _app(service):
     return application
 
 
+def _post(application: FastAPI, path: str, **kwargs) -> Response:
+    """通过异步 ASGI transport 调用接口，避免同步 portal 线程。"""
+
+    async def send() -> Response:
+        async with AsyncClient(
+            transport=ASGITransport(app=application),
+            base_url="http://testserver",
+        ) as client:
+            return await client.post(path, **kwargs)
+
+    return asyncio.run(send())
+
+
 def test_stream_route_returns_sse_headers_and_ordered_final():
     service = FakeStreamingService()
 
-    with TestClient(_app(service)) as client:
-        response = client.post(
-            "/chat/stream",
-            headers={"X-Trace-Id": "caller-trace"},
-            json={
-                "question": "测试问题",
-                "top_k": 4,
-                "decompose_top_k": 8,
-                "session_id": "session-1",
-            },
-        )
+    response = _post(
+        _app(service),
+        "/chat/stream",
+        headers={"X-Trace-Id": "caller-trace"},
+        json={
+            "question": "测试问题",
+            "top_k": 4,
+            "decompose_top_k": 8,
+            "session_id": "session-1",
+        },
+    )
 
     events = _parse_sse(response.text)
     assert response.status_code == 200
@@ -213,15 +236,17 @@ def test_stream_route_returns_sse_headers_and_ordered_final():
 def test_empty_question_is_json_400_before_sse_and_schema_error_is_json_422():
     service = FakeStreamingService()
 
-    with TestClient(_app(service)) as client:
-        empty = client.post(
-            "/chat/stream",
-            json={"question": "   "},
-        )
-        invalid = client.post(
-            "/chat/stream",
-            json={"top_k": 5},
-        )
+    application = _app(service)
+    empty = _post(
+        application,
+        "/chat/stream",
+        json={"question": "   "},
+    )
+    invalid = _post(
+        application,
+        "/chat/stream",
+        json={"top_k": 5},
+    )
 
     assert empty.status_code == 400
     assert empty.headers["content-type"].startswith("application/json")
@@ -256,11 +281,11 @@ def test_stream_protocol_failure_emits_generic_error_and_contiguous_done():
 
     service = InvalidEventService()
 
-    with TestClient(_app(service)) as client:
-        response = client.post(
-            "/chat/stream",
-            json={"question": "测试协议错误"},
-        )
+    response = _post(
+        _app(service),
+        "/chat/stream",
+        json={"question": "测试协议错误"},
+    )
 
     events = _parse_sse(response.text)
     assert [event["event"] for event in events] == [

@@ -33,7 +33,6 @@ def _build_spec(name: str, calls: list[str]) -> ToolSpec:
         name=name,
         version="1.0.0",
         description=f"返回 {name} 收到的测试文本",
-        args_schema={"text": "string"},
         output_schema={"text": "string"},
         handler=handler,
         args_model=TextArgs,

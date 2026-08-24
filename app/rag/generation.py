@@ -1,15 +1,15 @@
 """RAG 答案生成模块。
 
-负责上下文组装、回答模型调用、JSON 解析、引用绑定和置信度估算。
+负责上下文组装、回答模型调用、引用绑定和置信度估算。
 """
 
-import json
 from typing import Any, List
 
 from app.config import get_settings
 from app.llm.factory import get_answer_model
 from app.llm.gateway import ModelGateway
-from app.prompts import SYSTEM_PROMPT_B, USER_PROMPT, NO_ANSWER_FALLBACK
+from app.llm.schemas import AnswerOutput
+from app.prompts import SYSTEM_PROMPT_B, USER_PROMPT
 from app.rag.retrieval import clamp01, make_snippet, safe_float
 
 
@@ -71,46 +71,17 @@ def _build_answer_messages(question: str, context: str) -> list[dict[str, str]]:
     ]
 
 
-def call_llm(question: str, context: str, trace_id: str = "") -> str:
-    """通过统一 Gateway 调用回答模型。"""
+def call_llm(question: str, context: str, trace_id: str = "") -> AnswerOutput:
+    """通过统一 Gateway 获取经过校验的回答结构。"""
     gateway = ModelGateway(
         role="answer",
         langchain_model=get_answer_model(),
     )
-    return gateway.invoke_text(
+    return gateway.invoke_structured(
         _build_answer_messages(question, context),
+        AnswerOutput,
         trace_id=trace_id,
     )
-
-
-# =========================
-# 模型输出处理
-# =========================
-def parse_llm_output(llm_output: str):
-    """解析模型返回的 JSON，提取 answer 和 references。"""
-    llm_output = llm_output.strip()
-
-    if llm_output.startswith("```"):
-        llm_output = llm_output.replace("```json", "").replace("```", "").strip()
-
-    try:
-        data = json.loads(llm_output)
-        answer = data.get("answer", NO_ANSWER_FALLBACK)
-        references = data.get("references", [])
-        if not isinstance(references, list):
-            references = []
-
-        return {
-            "ok": True,
-            "answer": answer,
-            "references": references
-        }
-    except Exception:
-        return {
-            "ok": False,
-            "answer": NO_ANSWER_FALLBACK,
-            "references": []
-        }
 
 
 def format_reference(retrieved_chunks, selected_reference: list):

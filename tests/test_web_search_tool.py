@@ -16,7 +16,7 @@ from app.tools.context import ToolInvocationContext
 from app.tools.errors import ToolErrorCode, ToolExecutionError
 from app.tools.registry import ToolRegistry, get_tool_registry
 from app.tools.result import tool_success
-from app.tools.runtime import ToolRuntime
+from app.tools.runtime import ToolRuntime, execute_registered_tool
 from app.tools.schemas import WebSearchArgs, WebSearchOutput
 
 
@@ -313,11 +313,11 @@ def test_runtime_executes_production_web_search_spec_with_permission(monkeypatch
     assert len(calls) == 2
 
 
-def test_registry_dispatch_uses_web_runtime_and_output_model(
+def test_execution_entry_uses_web_runtime_and_output_model(
     monkeypatch,
     settings_env,
 ):
-    """注册表分发经过 Web Runtime，并返回符合模型的输出。"""
+    """唯一执行入口经过 Web Runtime，并返回符合模型的输出。"""
     class FakeDDGS:
         def __init__(self, **kwargs):
             del kwargs
@@ -337,9 +337,10 @@ def test_registry_dispatch_uses_web_runtime_and_output_model(
     registry = ToolRegistry()
     registry.register(_web_spec())
 
-    result = registry.dispatch(
-        "web_search",
-        _args(),
+    result = execute_registered_tool(
+        registry=registry,
+        tool_name="web_search",
+        tool_args=_args(),
         context=ToolInvocationContext(permissions=("web:search",)),
     )
 
@@ -349,11 +350,11 @@ def test_registry_dispatch_uses_web_runtime_and_output_model(
     assert result["governance"]["decision"] == "allow"
 
 
-def test_direct_registry_dispatch_denies_permission_before_ddgs(
+def test_direct_execution_entry_denies_permission_before_ddgs(
     monkeypatch,
     settings_env,
 ):
-    """直接分发在调用 DDGS 前先拒绝缺少权限的请求。"""
+    """唯一执行入口在调用 DDGS 前先拒绝缺少权限的请求。"""
     class ForbiddenDDGS:
         def __init__(self, **kwargs):
             raise AssertionError(f"DDGS must not run: {kwargs}")
@@ -362,9 +363,10 @@ def test_direct_registry_dispatch_denies_permission_before_ddgs(
     settings_env(tool_audit_enabled=False)
     registry = ToolRegistry()
     registry.register(_web_spec())
-    result = registry.dispatch(
-        "web_search",
-        _args(),
+    result = execute_registered_tool(
+        registry=registry,
+        tool_name="web_search",
+        tool_args=_args(),
         context=ToolInvocationContext(),
     )
     assert result["error_code"] == "permission_denied"

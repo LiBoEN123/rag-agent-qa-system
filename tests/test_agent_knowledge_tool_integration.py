@@ -5,8 +5,6 @@ import json
 from langchain_core.messages import AIMessage, ToolMessage
 
 from app.agent import framework_agent, framework_tools
-from app.graph import nodes as graph_nodes
-from app.graph.builder import build_agent_graph
 import app.tools.runtime as tool_runtime
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
@@ -15,6 +13,7 @@ from app.tools.providers import LocalToolProvider
 from app.tools.registry import ToolRegistry
 from app.tools.result import tool_success
 from app.tools.schemas import SearchKnowledgeBaseArgs
+from tests.support.agent_runtime import build_agent_harness
 
 
 class KnowledgeModel:
@@ -56,14 +55,24 @@ def _invoke_knowledge_graph(
     def handler(args, context):
         seen_args.append(dict(args))
         seen_contexts.append(context)
-        return tool_success("search_knowledge_base", args, output)
+        resolved_rag = fake_rag_subgraph(
+            question=context.effective_question,
+            top_k=context.top_k,
+            decompose_top_k=context.decompose_top_k,
+            retrieved_chunks=output["chunks"],
+            trace_id=context.trace_id,
+        )
+        return tool_success(
+            "search_knowledge_base",
+            args,
+            {**output, "rag_result": resolved_rag},
+        )
 
     registry.register(
         ToolSpec(
             name="search_knowledge_base",
             version="1.0.0",
             description="检索本地测试知识库并返回受控证据 chunk",
-            args_schema={"query": "string", "top_k": "integer"},
             output_schema={"count": "integer", "chunks": "list"},
             handler=handler,
             args_model=SearchKnowledgeBaseArgs,
@@ -83,13 +92,12 @@ def _invoke_knowledge_graph(
         return dict(rag_result)
 
     monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", recording_execute)
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_agent_tool_provider",
+        "get_default_tool_provider",
         lambda: provider,
     )
-    monkeypatch.setattr(graph_nodes, "run_rag_subgraph", fake_rag_subgraph)
     context = ToolInvocationContext(
         trace_id="trace-knowledge-strict",
         session_id="session-knowledge-strict",
@@ -98,7 +106,7 @@ def _invoke_knowledge_graph(
         source="knowledge_tool_integration_test",
     )
 
-    graph_output = build_agent_graph().compile().invoke(
+    graph_output = build_agent_harness().invoke(
         {
             "original_question": "奖学金申请条件是什么？",
             "effective_question": "奖学金申请条件是什么？",
@@ -156,7 +164,14 @@ def test_search_knowledge_base_uses_real_structured_tool_registry_and_runtime(
     assert result["seen_args"] == [
         {"query": "奖学金申请条件", "top_k": 5}
     ]
-    assert result["seen_contexts"] == [result["context"]]
+    assert len(result["seen_contexts"]) == 1
+    seen_context = result["seen_contexts"][0]
+    assert seen_context.trace_id == result["context"].trace_id
+    assert seen_context.session_id == result["context"].session_id
+    assert seen_context.permissions == result["context"].permissions
+    assert seen_context.effective_question == "奖学金申请条件是什么？"
+    assert seen_context.top_k == 5
+    assert seen_context.decompose_top_k == 10
     assert result["rag_calls"][0]["retrieved_chunks"] == [chunk]
     assert result["output"]["result"]["references"] == [
         {"reference_id": "Reference 1"}
@@ -234,7 +249,6 @@ def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
             name="search_knowledge_base",
             version="1.0.0",
             description="检索本地测试知识库",
-            args_schema={"query": "string", "top_k": "integer"},
             output_schema={"count": "integer", "chunks": "list"},
             handler=unavailable_handler,
             args_model=SearchKnowledgeBaseArgs,
@@ -242,10 +256,10 @@ def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
         )
     )
     model = RecoveringModel()
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_agent_tool_provider",
+        "get_default_tool_provider",
         lambda: LocalToolProvider(registry),
     )
     context = ToolInvocationContext(
@@ -254,7 +268,7 @@ def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
         source="knowledge_tool_integration_test",
     )
 
-    output = build_agent_graph().compile().invoke(
+    output = build_agent_harness().invoke(
         {
             "original_question": "知识库问题",
             "effective_question": "知识库问题",
@@ -273,4 +287,4 @@ def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
     assert payload["error_code"] == "dependency_unavailable"
     assert output["result"]["status"] == "OK"
     assert output["result"]["answer"] == "知识库暂时不可用，请稍后重试。"
-    assert output["pending_rag_result"] == {}
+    assert "knowledge_base_result" not in output

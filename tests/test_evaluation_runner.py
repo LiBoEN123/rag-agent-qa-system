@@ -9,12 +9,8 @@ import pytest
 from app.agent.results import create_agent_result
 from app.config import AppSettings
 from app.contracts.chat import AgentResultStatus
-from app.observability.metrics import (
-    attach_query_rewrite_trace,
-    build_query_rewrite_trace,
-    collect_trace_metrics,
-)
 from app.services.chat_service import ChatServiceDependencies
+from app.tools import runtime as tool_runtime
 from app.tools.registry import ToolRegistry
 from scripts.evaluation import agent as agent_evaluation
 from scripts.evaluation import runner
@@ -36,7 +32,6 @@ def _settings(tmp_path: Path) -> AppSettings:
         metrics_path=tmp_path / "production-metrics.jsonl",
         bad_cases_path=tmp_path / "production-bad.jsonl",
         tool_audit_path=tmp_path / "production-audit.jsonl",
-        langgraph_checkpointer="disabled",
     )
 
 
@@ -74,19 +69,27 @@ def test_validate_only_never_runs_agent_rag_or_creates_output(
 
 
 def test_capture_tool_output_keys_never_keeps_values(monkeypatch):
-    def fake_dispatch(registry, name, args=None, *, context=None):
-        del registry, args, context
+    def fake_execute(*, registry, tool_name, tool_args=None, context=None):
+        del registry, tool_args, context
         return {
             "status": "success",
             "ok": True,
-            "tool_name": name,
+            "tool_name": tool_name,
             "output": {"result": 7, "private_value": "must-not-persist"},
         }
 
-    monkeypatch.setattr(ToolRegistry, "dispatch", fake_dispatch)
+    monkeypatch.setattr(
+        tool_runtime,
+        "execute_registered_tool",
+        fake_execute,
+    )
 
     with agent_evaluation.capture_tool_output_keys() as records:
-        ToolRegistry().dispatch("simple_calculator", {"expression": "1+2"})
+        tool_runtime.execute_registered_tool(
+            registry=ToolRegistry(),
+            tool_name="simple_calculator",
+            tool_args={"expression": "1+2"},
+        )
 
     assert records == [
         {
@@ -103,7 +106,7 @@ def test_in_memory_multi_turn_uses_chat_service_history_and_isolation(
     tmp_path,
     monkeypatch,
 ):
-    from app.graph import runtime as graph_runtime
+    from app.agent import runtime as agent_runtime
     from app.services import chat_service
 
     settings = _settings(tmp_path)
@@ -144,10 +147,7 @@ def test_in_memory_multi_turn_uses_chat_service_history_and_isolation(
         settings_provider=lambda: settings,
         get_history=lambda session_id: [],
         rewrite_query_with_history=fake_rewrite,
-        run_agent_langgraph=fake_runtime,
-        build_query_rewrite_trace=build_query_rewrite_trace,
-        attach_query_rewrite_trace=attach_query_rewrite_trace,
-        collect_trace_metrics=collect_trace_metrics,
+        run_agent=fake_runtime,
         log_and_write_metrics=lambda item: None,
         write_bad_cases=lambda item: None,
         append_message=lambda session_id, role, content: None,
@@ -160,8 +160,8 @@ def test_in_memory_multi_turn_uses_chat_service_history_and_isolation(
         lambda: dependencies,
     )
     monkeypatch.setattr(
-        graph_runtime,
-        "run_agent_langgraph",
+        agent_runtime,
+        "run_agent",
         fake_runtime,
     )
     dataset = AgentEvaluationDataset.model_validate(

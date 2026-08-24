@@ -6,13 +6,13 @@ from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_middleware, framework_tools
-from app.graph import nodes as graph_nodes
-from app.graph.builder import build_agent_graph
+from app.config import get_settings
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from app.tools.providers import LocalToolProvider
 from app.tools.registry import ToolRegistry
 from app.tools.result import tool_success
+from tests.support.agent_runtime import build_agent_harness
 
 
 class BudgetArgs(BaseModel):
@@ -40,19 +40,18 @@ def _setup(monkeypatch, *, model, handler, max_tool_calls=10, max_elapsed_ms=120
             name="budget_tool",
             version="1.0.0",
             description="用于验证 Agent 预算消息完整性的测试工具",
-            args_schema={"value": "integer"},
             output_schema={"value": "integer"},
             handler=handler,
             args_model=BudgetArgs,
         )
     )
-    monkeypatch.setattr(framework_agent, "get_agent_chat_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_agent_tool_provider",
+        "get_default_tool_provider",
         lambda: LocalToolProvider(registry),
     )
-    settings = graph_nodes.get_settings().model_copy(
+    settings = get_settings().model_copy(
         update={
             "agent_max_iterations": 6,
             "agent_max_tool_calls": max_tool_calls,
@@ -62,7 +61,7 @@ def _setup(monkeypatch, *, model, handler, max_tool_calls=10, max_elapsed_ms=120
             "agent_max_total_cost_ms": max_elapsed_ms,
         }
     )
-    return build_agent_graph(settings).compile()
+    return build_agent_harness(settings)
 
 
 def _invoke(graph):

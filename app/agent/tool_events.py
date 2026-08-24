@@ -1,5 +1,6 @@
-"""把框架工具事件转换为兼容的 observation 和 tool trace。"""
+"""把框架治理事件投影为 observation、tool trace 与指标。"""
 
+from collections.abc import Mapping
 from typing import Any
 
 from app.agent.state import AgentObservation
@@ -163,8 +164,147 @@ def build_tool_trace(
     return trace
 
 
+def _model_trace(event: Mapping[str, Any], index: int) -> dict[str, Any]:
+    """把一次模型治理事件转换为稳定迭代 trace。"""
+    return {
+        "step": "agent_iteration",
+        "iteration_index": index,
+        "status": "success" if event.get("ok") else "fallback",
+        "model_has_tool_calls": bool(event.get("has_tool_calls")),
+        "requested_tool_call_count": int(
+            event.get("requested_tool_call_count", 0) or 0
+        ),
+        "model_cost_ms": max(0, int(event.get("cost_ms", 0) or 0)),
+        "available_tool_names": list(event.get("available_tool_names", []))[:50],
+        "error_type": str(event.get("error_type") or ""),
+    }
+
+
+def _guardrail_trace(event: Mapping[str, Any]) -> dict[str, Any]:
+    """为未执行的治理拦截生成兼容 trace。"""
+    raw_result = event.get("result")
+    result = raw_result if isinstance(raw_result, dict) else {}
+    return {
+        "step": "tool_call",
+        "action": "tool_call",
+        "tool_name": str(event.get("name") or ""),
+        "tool_status": "error",
+        "success": False,
+        "error": str(
+            result.get("error") or "Agent governance stopped tool execution"
+        ),
+        "error_code": str(event.get("error_code") or ""),
+        "tool_call_id": str(event.get("tool_call_id") or ""),
+        "cost_ms": 0,
+        "handler_executed": False,
+        "will_return_to_agent_model": False,
+        "stop_reason": str(event.get("stop_reason") or ""),
+        "call_fingerprint": str(event.get("call_fingerprint") or ""),
+    }
+
+
+def _normalize_tool_event(
+    event: Mapping[str, Any],
+    *,
+    step_id: int,
+) -> tuple[AgentObservation, dict[str, Any]]:
+    """把一次已执行工具事件归一化为 observation 与公开 trace。"""
+    raw_result = event.get("result")
+    result = raw_result if isinstance(raw_result, dict) else {}
+    tool_name = str(event.get("name") or "")
+    raw_args = event.get("args")
+    tool_args = raw_args if isinstance(raw_args, dict) else {}
+    observation = build_tool_observation(
+        step_id=step_id,
+        tool_name=tool_name,
+        result=result,
+        cost_ms=max(0, int(event.get("cost_ms", 0) or 0)),
+    )
+    trace = build_tool_trace(
+        step_id=step_id,
+        tool_name=tool_name,
+        tool_args=tool_args,
+        result=result,
+        observation=observation,
+    )
+    trace.update(
+        {
+            "failure_kind": str(event.get("failure_kind") or ""),
+            "handler_executed": bool(event.get("handler_executed")),
+            "will_return_to_agent_model": not bool(event.get("stop_reason")),
+            "stop_reason": str(event.get("stop_reason") or ""),
+            "call_fingerprint": str(event.get("call_fingerprint") or ""),
+        }
+    )
+    return observation, trace
+
+
+def normalize_governance_events(
+    events: list[dict[str, Any]],
+) -> tuple[list[AgentObservation], list[dict[str, Any]]]:
+    """把 append-only framework 事件一次性投影为稳定公开数据。"""
+    observations: list[AgentObservation] = []
+    tool_trace: list[dict[str, Any]] = []
+    model_index = 0
+    for event in events:
+        if event.get("kind") == "model":
+            model_index += 1
+            tool_trace.append(_model_trace(event, model_index))
+            continue
+        if event.get("counted_call"):
+            observation, trace = _normalize_tool_event(
+                event,
+                step_id=len(observations) + 1,
+            )
+            observations.append(observation)
+        else:
+            trace = _guardrail_trace(event)
+        tool_trace.append(trace)
+    return observations, tool_trace
+
+
+def framework_metrics(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """从治理事件计算兼容计数和连续指纹。"""
+    calls = [
+        item
+        for item in events
+        if item.get("kind") == "tool"
+        and item.get("error_code") != "agent_batch_aborted"
+    ]
+    tools = [item for item in calls if item.get("counted_call")]
+    errors = [item for item in tools if not item.get("ok")]
+
+    def tail(key: str) -> tuple[str, int]:
+        value = str(calls[-1].get(key) or "") if calls else ""
+        count = 0
+        for item in reversed(calls):
+            if not value or str(item.get(key) or "") != value:
+                break
+            count += 1
+        return value, count
+
+    last_call, call_count = tail("call_fingerprint")
+    last_error = str(errors[-1].get("error_fingerprint") or "") if errors else ""
+    error_count = 0
+    for item in reversed(tools):
+        if item.get("ok") or str(item.get("error_fingerprint") or "") != last_error:
+            break
+        error_count += 1
+    return {
+        "iteration_count": sum(item.get("kind") == "model" for item in events),
+        "tool_call_count": len(tools),
+        "tool_error_count": len(errors),
+        "last_tool_call_fingerprint": last_call,
+        "consecutive_same_tool_call_count": call_count,
+        "last_tool_error_fingerprint": last_error,
+        "consecutive_same_tool_error_count": error_count,
+    }
+
+
 __all__ = [
     "build_tool_observation",
     "build_tool_trace",
+    "framework_metrics",
+    "normalize_governance_events",
     "summarize_tool_result",
 ]

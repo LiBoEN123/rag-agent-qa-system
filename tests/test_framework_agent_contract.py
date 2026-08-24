@@ -1,24 +1,14 @@
-"""LangChain/LangGraph Agent 子图的关键版本契约。"""
+"""LangChain ``create_agent`` 唯一 Agent Loop 的关键版本契约。"""
 
 from copy import deepcopy
-from typing import Annotated, TypedDict
-
-from langchain.agents import create_agent
-from langchain.tools import ToolRuntime, tool
-from langchain_core.messages import (
-    AIMessage,
-    AnyMessage,
-    HumanMessage,
-    ToolMessage,
-)
-from langgraph.graph import END, START, StateGraph
-from langgraph.graph.message import add_messages
-from langgraph.types import Command
+from langchain.agents.middleware import AgentMiddleware
+from langchain_core.messages import AIMessage
 
 from app.agent.framework_agent import (
     build_framework_agent,
-    project_framework_events,
 )
+from app.agent.framework_middleware import ProjectToolGovernanceMiddleware
+from app.agent.tool_events import normalize_governance_events
 
 
 class _ProbeModel:
@@ -43,14 +33,8 @@ class _ProbeModel:
         )
 
 
-class _ParentState(TypedDict, total=False):
-    messages: Annotated[list[AnyMessage], add_messages]
-    handoff_value: int
-    reached_rag: bool
-
-
 def test_production_agent_is_framework_model_tool_graph():
-    """生产子图实际包含 create_agent 的标准 model/tools 节点与调用限制。"""
+    """生产 Runtime 直接包含 create_agent 标准节点与调用限制。"""
     node_names = set(build_framework_agent().get_graph().nodes)
 
     assert {"model", "tools"} <= node_names
@@ -58,58 +42,19 @@ def test_production_agent_is_framework_model_tool_graph():
     assert "ToolCallLimitMiddleware.after_model" in node_names
 
 
-def test_create_agent_tool_command_handoff_to_parent():
-    """工具的 Command.PARENT 可携带配对消息并跳入父图 RAG 节点。"""
+def test_project_governance_uses_native_tool_middleware_hooks():
+    """项目工具治理直接覆盖 LangChain 同步与异步原生 Hook。"""
+    middleware_type = ProjectToolGovernanceMiddleware
 
-    @tool
-    def handoff_probe(value: int, runtime: ToolRuntime) -> Command:
-        """验证 Agent 子图到父图的公开 Command 交接。"""
-        ai_message = runtime.state["messages"][-1]
-        return Command(
-            graph=Command.PARENT,
-            goto="rag",
-            update={
-                "messages": [
-                    ai_message,
-                    ToolMessage(
-                        content="handoff",
-                        tool_call_id=runtime.tool_call_id,
-                    ),
-                ],
-                "handoff_value": value,
-            },
-        )
-
-    agent = create_agent(
-        _ProbeModel(),
-        [handoff_probe],
-        name="handoff_contract_agent",
-    )
-    builder = StateGraph(_ParentState)
-    builder.add_node("agent", agent)
-    builder.add_node("rag", lambda state: {"reached_rag": True})
-    builder.add_edge(START, "agent")
-    builder.add_edge("rag", END)
-
-    output = builder.compile().invoke(
-        {"messages": [HumanMessage(content="handoff")]}
-    )
-
-    assert output["handoff_value"] == 7
-    assert output["reached_rag"] is True
-    assert isinstance(output["messages"][-2], AIMessage)
-    assert output["messages"][-2].tool_calls[0]["id"] == "handoff-probe-call"
-    assert isinstance(output["messages"][-1], ToolMessage)
-    assert output["messages"][-1].tool_call_id == "handoff-probe-call"
+    assert middleware_type.wrap_tool_call is not AgentMiddleware.wrap_tool_call
+    assert middleware_type.awrap_tool_call is not AgentMiddleware.awrap_tool_call
+    assert not hasattr(middleware_type, "govern_tool_call")
+    assert not hasattr(middleware_type, "agovern_tool_call")
 
 
-def test_framework_event_projection_is_pure_stable_and_idempotent():
-    """事件投影返回新列表，重复调用不会重复 observation 或 trace。"""
-    state = {
-        "observations": [],
-        "tool_trace": [{"step": "decide"}],
-        "framework_events_applied": 0,
-        "governance_events": [
+def test_governance_event_normalization_is_pure_and_stable():
+    """Runtime 出口的一次性事件归一化不修改治理事件。"""
+    events = [
             {
                 "kind": "model",
                 "ok": True,
@@ -141,15 +86,14 @@ def test_framework_event_projection_is_pure_stable_and_idempotent():
                 "stop_reason": "repeated_tool_call",
                 "tool_call_id": "calc-2",
             },
-        ],
-    }
-    original = deepcopy(state)
+    ]
+    original = deepcopy(events)
 
-    projection = project_framework_events(state)
-    repeated = project_framework_events({**state, **projection})
+    observations, trace = normalize_governance_events(events)
+    repeated = normalize_governance_events(events)
 
-    assert state == original
-    assert projection["observations"] == [
+    assert events == original
+    assert observations == [
         {
             "step_id": 1,
             "tool_name": "simple_calculator",
@@ -160,12 +104,9 @@ def test_framework_event_projection_is_pure_stable_and_idempotent():
             "cost_ms": 3,
         }
     ]
-    assert projection["tool_trace"] is not state["tool_trace"]
-    assert [item["step"] for item in projection["tool_trace"]] == [
-        "decide",
+    assert [item["step"] for item in trace] == [
         "agent_iteration",
         "tool_call",
         "tool_call",
     ]
-    assert projection["framework_events_applied"] == 3
-    assert repeated == projection
+    assert repeated == (observations, trace)

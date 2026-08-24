@@ -3,9 +3,11 @@
 集中定义工具元数据、风险等级、创建期校验和安全序列化能力。
 """
 
+import json
 import math
 import re
 from collections.abc import Callable, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -57,11 +59,10 @@ class ToolSpec:
     version: str
     description: str
 
-    args_schema: dict[str, Any]
-    output_schema: dict[str, Any]
     handler: ToolHandler
     args_model: type[BaseModel]
 
+    output_schema: dict[str, Any] | None = None
     output_model: type[BaseModel] | None = None
 
     risk_level: ToolRiskLevel = ToolRiskLevel.READ_ONLY
@@ -105,10 +106,6 @@ class ToolSpec:
             self._raise_field_error("version", "必须是合法的基础 SemVer")
         object.__setattr__(self, "version", normalized_version)
 
-        if not isinstance(self.args_schema, dict):
-            self._raise_field_error("args_schema", "必须是 dict")
-        if not isinstance(self.output_schema, dict):
-            self._raise_field_error("output_schema", "必须是 dict")
         if not callable(self.handler):
             self._raise_field_error("handler", "必须可调用")
         if not self._is_base_model_subclass(self.args_model):
@@ -120,6 +117,39 @@ class ToolSpec:
             self._raise_field_error(
                 "output_model",
                 "非空时必须是 BaseModel 子类",
+            )
+        if self.output_schema is not None and not isinstance(
+            self.output_schema,
+            dict,
+        ):
+            self._raise_field_error("output_schema", "非空时必须是 dict")
+        if self.output_schema is not None:
+            try:
+                json.dumps(
+                    self.output_schema,
+                    allow_nan=False,
+                    sort_keys=True,
+                )
+            except (TypeError, ValueError) as exc:
+                self._raise_field_error(
+                    "output_schema",
+                    "必须可稳定序列化为 JSON",
+                    cause=exc,
+                )
+            object.__setattr__(
+                self,
+                "output_schema",
+                deepcopy(self.output_schema),
+            )
+        if self.output_model is None and self.output_schema is None:
+            self._raise_field_error(
+                "output_schema",
+                "缺少 output_model 时必须显式声明",
+            )
+        if self.output_model is not None and self.output_schema is not None:
+            self._raise_field_error(
+                "output_schema",
+                "不能与 output_model 同时声明，避免重复输出契约",
             )
 
         try:
@@ -209,6 +239,18 @@ class ToolSpec:
                 f"风险等级 {self.risk_level.value!r} 必须要求人工审批",
             )
 
+    @property
+    def args_schema(self) -> dict[str, Any]:
+        """从唯一权威 args_model 派生参数 JSON Schema。"""
+        return self.args_model.model_json_schema()
+
+    def resolved_output_schema(self) -> dict[str, Any]:
+        """优先从 output_model 派生，否则返回显式输出契约副本。"""
+        if self.output_model is not None:
+            return self.output_model.model_json_schema()
+        assert self.output_schema is not None
+        return deepcopy(self.output_schema)
+
     def to_contract_dict(self) -> dict[str, Any]:
         """返回不含运行时对象且可 JSON 序列化的完整契约。"""
         return {
@@ -216,7 +258,7 @@ class ToolSpec:
             "version": self.version,
             "description": self.description,
             "args_schema": self.args_schema,
-            "output_schema": self.output_schema,
+            "output_schema": self.resolved_output_schema(),
             "args_model": self.args_model.__name__,
             "output_model": (
                 self.output_model.__name__
