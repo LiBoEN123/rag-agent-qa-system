@@ -1,6 +1,7 @@
 """LangGraph RAG 子图运行时与业务分支测试。"""
 
 import pytest
+from pydantic import ValidationError
 
 from app.llm.errors import ModelCallError, StructuredOutputError
 from app.llm.schemas import AnswerOutput
@@ -9,6 +10,8 @@ from app.rag.graph import builder as rag_graph_builder
 from app.rag.graph import nodes as rag_graph_nodes
 from app.rag.graph import runtime as rag_graph_runtime
 from app.rag.graph.runtime import RAGGraphError, run_rag_subgraph
+from app.rag.results import build_rag_result
+from app.rag.schemas import RAGResult
 
 
 def make_chunk(index: int = 1, **overrides) -> dict:
@@ -50,6 +53,62 @@ def configure_success_path(monkeypatch) -> None:
             references=["Reference 1"],
         ),
     )
+
+
+def test_build_rag_result_returns_complete_plain_dict_defaults():
+    """构造边界返回普通 dict，并补齐 Contract 的全部必填字段。"""
+    result = build_rag_result(status="OK")
+
+    assert type(result) is dict
+    assert set(result) == {
+        name for name, field in RAGResult.model_fields.items() if field.is_required()
+    }
+    assert result["answer"] == ""
+    assert result["references"] == []
+    assert result["final_chunks"] == []
+    assert result["timings"] == {}
+    assert result["decompose_llm_used"] is False
+    assert result["answer_llm_used"] is False
+    assert result["llm_call_count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("decompose_llm_used", "answer_llm_used", "expected"),
+    [(False, False, 0), (True, False, 1), (False, True, 1), (True, True, 2)],
+)
+def test_build_rag_result_derives_llm_call_count(
+    decompose_llm_used,
+    answer_llm_used,
+    expected,
+):
+    result = build_rag_result(
+        status="OK",
+        decompose_llm_used=decompose_llm_used,
+        answer_llm_used=answer_llm_used,
+    )
+
+    assert result["llm_call_count"] == expected
+
+
+def test_build_rag_result_accepts_declared_optional_contract_fields():
+    evidence_gate = {"refused": True, "reason": "weak evidence"}
+    citation_verification = {"supported": False, "reason": "no overlap"}
+
+    result = build_rag_result(
+        status="NO_RELEVANT_INFO",
+        evidence_gate=evidence_gate,
+        citation_verification=citation_verification,
+    )
+
+    assert result["evidence_gate"] == evidence_gate
+    assert result["citation_verification"] == citation_verification
+
+
+def test_rag_result_rejects_undeclared_extra_field():
+    result = build_rag_result(status="OK")
+
+    with pytest.raises(ValidationError):
+        RAGResult.model_validate({**result, "undeclared": "not allowed"})
 
 
 def test_single_query_reuses_retrieved_chunks_without_retrieve(monkeypatch):
@@ -589,6 +648,79 @@ def test_success_result_contains_compatible_fields(monkeypatch):
     assert result["answer_llm_used"] is True
     assert result["llm_call_count"] == 1
     assert result["citation_verification"]["supported"] is True
+
+
+def test_runtime_validates_legal_result_and_returns_plain_dict(monkeypatch):
+    """Runtime 通过唯一 Contract 校验合法结果并保持 dict wire contract。"""
+    graph_result = build_rag_result(
+        status="OK",
+        answer="validated answer",
+        citation_verification={"supported": True},
+    )
+
+    class ValidGraph:
+        def invoke(self, graph_input):
+            return {"result": graph_result}
+
+    monkeypatch.setattr(
+        rag_graph_runtime,
+        "get_compiled_rag_graph",
+        lambda: ValidGraph(),
+    )
+
+    result = run_rag_subgraph(question="测试政策如何申请退款？")
+
+    assert type(result) is dict
+    assert result == graph_result
+
+
+def test_runtime_maps_missing_required_field_to_sanitized_error(monkeypatch):
+    """缺失必填字段时只暴露统一编排错误，不返回字段级内部详情。"""
+    graph_result = build_rag_result(status="OK")
+    del graph_result["answer"]
+
+    class MissingFieldGraph:
+        def invoke(self, graph_input):
+            return {"result": graph_result}
+
+    monkeypatch.setattr(
+        rag_graph_runtime,
+        "get_compiled_rag_graph",
+        lambda: MissingFieldGraph(),
+    )
+
+    with pytest.raises(RAGGraphError) as exc_info:
+        run_rag_subgraph(question="测试政策如何申请退款？")
+
+    assert str(exc_info.value) == "RAG subgraph produced an invalid result"
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+
+
+def test_runtime_maps_wrong_field_type_without_leaking_raw_result(monkeypatch):
+    """字段类型错误不泄漏 ValidationError 或结果中的原始证据。"""
+    graph_result = build_rag_result(status="OK")
+    graph_result["answer"] = {"raw": "SENSITIVE_CHUNK_TEXT"}
+
+    class WrongTypeGraph:
+        def invoke(self, graph_input):
+            return {"result": graph_result}
+
+    monkeypatch.setattr(
+        rag_graph_runtime,
+        "get_compiled_rag_graph",
+        lambda: WrongTypeGraph(),
+    )
+
+    with pytest.raises(RAGGraphError) as exc_info:
+        run_rag_subgraph(question="测试政策如何申请退款？")
+
+    exposed = str(exc_info.value)
+    assert exposed == "RAG subgraph produced an invalid result"
+    assert "ValidationError" not in exposed
+    assert "SENSITIVE_CHUNK_TEXT" not in exposed
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
 
 
 @pytest.mark.parametrize("output", [None, {}, {"result": None}, {"result": {}}])

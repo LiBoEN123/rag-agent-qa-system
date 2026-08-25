@@ -2,30 +2,24 @@
 
 from typing import Any
 
+from pydantic import ValidationError
+
 from app.config import get_settings
 from app.rag.graph.builder import get_compiled_rag_graph
 from app.rag.results import build_default_timings
-
-
-REQUIRED_RAG_RESULT_FIELDS = {
-    "status",
-    "answer",
-    "references",
-    "final_chunks",
-    "retrieval_confidence",
-    "answer_confidence",
-    "need_clarification",
-    "clarification_question",
-    "reason",
-    "timings",
-    "decompose_llm_used",
-    "answer_llm_used",
-    "llm_call_count",
-}
+from app.rag.schemas import RAGResult
 
 
 class RAGGraphError(RuntimeError):
     """RAG 子图未能生成合法业务结果时抛出的统一编排错误。"""
+
+
+def _validate_rag_result(result: dict[str, Any]) -> RAGResult | None:
+    """校验结果且不把 Pydantic 错误或原始证据泄漏到编排边界。"""
+    try:
+        return RAGResult.model_validate(result)
+    except ValidationError:
+        return None
 
 
 def run_rag_subgraph(
@@ -56,13 +50,10 @@ def run_rag_subgraph(
     if not isinstance(result, dict):
         raise RAGGraphError("RAG subgraph did not produce a valid result")
 
-    missing_fields = REQUIRED_RAG_RESULT_FIELDS.difference(result)
-    if missing_fields:
-        missing = ", ".join(sorted(missing_fields))
-        raise RAGGraphError(
-            f"RAG subgraph result is missing required fields: {missing}"
-        )
-    return result
+    validated = _validate_rag_result(result)
+    if validated is None:
+        raise RAGGraphError("RAG subgraph produced an invalid result")
+    return validated.model_dump(mode="json", exclude_none=True)
 
 
 __all__ = ["RAGGraphError", "run_rag_subgraph"]
