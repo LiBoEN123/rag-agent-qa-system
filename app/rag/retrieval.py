@@ -10,26 +10,16 @@ import numpy as np
 
 from app.rag.chroma import ChromaUnavailableError, query_chroma
 from app.common.logging import get_logger
-from app.rag.policy import (
-    build_clarification_question,
-    is_ambiguous_question,
-    should_refuse,
-)
-from app.rag.scoring import safe_float
 
 
 __all__ = [
-    "build_clarification_question",
     "clamp01",
-    "is_ambiguous_question",
     "make_snippet",
     "minmax_score",
     "rerank",
     "retrieve",
     "retrieve_with_sub_queries",
-    "safe_float",
     "search_relevant_chunks",
-    "should_refuse",
     "tokenize",
 ]
 

@@ -2,7 +2,7 @@
 
 from app.api.schemas import ChatData, ChatResponse
 from app.observability.metrics import extract_llm_usage
-from app.rag.retrieval import safe_float
+from app.rag.scoring import safe_float
 from app.services.chat_models import ChatServiceOutcome
 
 

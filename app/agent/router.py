@@ -2,7 +2,7 @@
 
 from typing import Literal, NotRequired, TypedDict
 
-from app.agent.rules import normalize_question
+from app.agent.rules import is_system_capability_question, normalize_question
 
 
 RouteAction = Literal["agent", "direct_answer", "clarify"]
@@ -37,12 +37,7 @@ def route_agent_action(question: str) -> RouteDecision:
             "router_confidence": 1.0,
         }
 
-    if normalized_question in [
-        "你是谁?",
-        "你能做什么?",
-        "你可以做什么?",
-        "你有什么功能?",
-    ]:
+    if is_system_capability_question(question):
         return {
             "decision": "direct_answer",
             "action": "direct_answer",

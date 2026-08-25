@@ -39,7 +39,8 @@ from app.rag import (
     rerank,
     search_relevant_chunks,
 )
-from app.rag.retrieval import safe_float, should_refuse
+from app.rag.policy import should_refuse
+from app.rag.scoring import safe_float
 from app.services.chat_service import (
     ChatService,
     create_default_chat_service,

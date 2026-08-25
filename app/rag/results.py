@@ -5,8 +5,8 @@
 
 from typing import Any
 
-from app.rag.retrieval import safe_float
 from app.rag.schemas import RAGResult
+from app.rag.scoring import safe_float
 
 
 def build_default_timings() -> dict[str, int | bool | str]:

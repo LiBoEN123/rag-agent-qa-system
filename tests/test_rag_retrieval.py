@@ -5,7 +5,20 @@ from pydantic import ValidationError
 from app.llm.schemas import QueryDecomposeOutput
 from app.rag import decomposition
 from app.rag.decomposition import normalize_decompose_result, should_decompose_query
-from app.rag.retrieval import should_refuse
+from app.rag import retrieval
+from app.rag.policy import should_refuse
+
+
+def test_retrieval_does_not_reexport_policy_or_scoring_symbols():
+    """检索模块不再代理 policy 或 scoring 的公共符号。"""
+    for symbol in [
+        "build_clarification_question",
+        "is_ambiguous_question",
+        "should_refuse",
+        "safe_float",
+    ]:
+        assert symbol not in retrieval.__all__
+        assert not hasattr(retrieval, symbol)
 
 
 def test_should_refuse_empty_results():

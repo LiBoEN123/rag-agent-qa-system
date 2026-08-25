@@ -3,6 +3,7 @@ import inspect
 import pytest
 from pydantic import BaseModel
 
+from app.agent.rules import is_system_capability_question
 from app.agent.router import route_agent_action
 from app.llm import factory as model_factory
 from app.llm.gateway import ModelGateway
@@ -29,7 +30,18 @@ def test_empty_question_returns_clarify_without_router_model(monkeypatch):
 
 @pytest.mark.parametrize(
     "question",
-    ["你是谁？", "你能做什么？", "你可以做什么？", "你有什么功能？"],
+    [
+        "你是谁",
+        "你是谁?",
+        "你是谁？",
+        "你能做什么",
+        "你能做什么?",
+        "你能做什么？",
+        "你可以做什么",
+        "你可以做什么？",
+        "你有什么功能",
+        "你有什么功能？",
+    ],
 )
 def test_capability_questions_return_direct_answer(question):
     """少量稳定的系统能力问题继续走 direct_answer。"""
@@ -38,6 +50,12 @@ def test_capability_questions_return_direct_answer(question):
     assert decision["decision"] == "direct_answer"
     assert decision["action"] == "direct_answer"
     assert decision["router_source"] == "rule_based"
+
+
+def test_capability_question_marks_have_equivalent_semantics():
+    """中文问号与英文问号命中同一份系统能力规则。"""
+    assert is_system_capability_question("你是谁？") is True
+    assert is_system_capability_question("你是谁?") is True
 
 
 @pytest.mark.parametrize(
