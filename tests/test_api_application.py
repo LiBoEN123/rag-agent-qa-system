@@ -1,7 +1,8 @@
 """FastAPI 组合根、路由和生命周期隔离测试。"""
 
 import asyncio
-from dataclasses import replace
+from dataclasses import fields, replace
+from types import SimpleNamespace
 
 from fastapi import Response
 
@@ -12,7 +13,7 @@ from app.agent.results import (
     create_agent_result,
 )
 from app.api.diagnostics import create_diagnostics_router
-from app.api.schemas import ChatRequest
+from app.api.schemas import ChatRequest, SearchResponse
 from app.contracts.chat import AgentResultStatus
 from app.services.chat_models import ChatServiceOutcome
 
@@ -39,6 +40,34 @@ def success_outcome(answer: str = "测试回答") -> ChatServiceOutcome:
             reason="正常回答",
         ),
     )
+
+
+def build_diagnostics_dependencies(**overrides):
+    """构造不访问真实 RAG 状态或 metrics 的诊断 Router 依赖。"""
+    replacements = {
+        "settings_provider": lambda: SimpleNamespace(top_k=2),
+        "preview_docs": lambda: [],
+        "preview_chunks": lambda max_len, limit, file_name: [],
+        "get_rag_status": lambda: {
+            "ready": True,
+            "message": "ready",
+            "doc_count": 0,
+            "chunk_count": 0,
+        },
+        "search_relevant_chunks": lambda question, top_k: [],
+        "rerank": lambda chunks, question: chunks,
+        "should_refuse": lambda chunks: False,
+        "read_recent_metrics": lambda limit: [],
+    }
+    replacements.update(overrides)
+    return replace(
+        api_application.get_default_diagnostics_dependencies(),
+        **replacements,
+    )
+
+
+def get_diagnostics_endpoint(router, path):
+    return next(route.endpoint for route in router.routes if route.path == path)
 
 
 def test_create_app_returns_independent_instances_and_services(monkeypatch):
@@ -104,6 +133,161 @@ def test_application_registers_middleware_and_all_routes():
         item.cls.__name__ == "BaseHTTPMiddleware"
         for item in application.user_middleware
     )
+
+
+def test_diagnostics_dependencies_only_expose_replaceable_runtime_boundaries():
+    dependencies = build_diagnostics_dependencies()
+
+    assert [field.name for field in fields(dependencies)] == [
+        "settings_provider",
+        "preview_docs",
+        "preview_chunks",
+        "get_rag_status",
+        "search_relevant_chunks",
+        "rerank",
+        "should_refuse",
+        "read_recent_metrics",
+    ]
+
+    def replacement(limit):
+        return [{"status": "success"}]
+
+    assert replace(
+        dependencies,
+        read_recent_metrics=replacement,
+    ).read_recent_metrics is replacement
+
+
+def test_search_response_model_and_empty_question_behavior_are_unchanged():
+    router = create_diagnostics_router(build_diagnostics_dependencies())
+    route = next(route for route in router.routes if route.path == "/search")
+    response = Response()
+
+    result = route.endpoint(ChatRequest(question="  "), response)
+
+    assert route.response_model is SearchResponse
+    assert response.status_code == 400
+    assert result.model_dump() == {
+        "code": "EMPTY_QUESTION",
+        "message": "问题不能为空",
+        "data": {
+            "question": "",
+            "status": "error",
+            "reason": "用户未输入问题",
+            "results": [],
+        },
+    }
+
+
+def test_search_empty_index_behavior_is_unchanged():
+    dependencies = build_diagnostics_dependencies(
+        get_rag_status=lambda: {
+            "ready": False,
+            "message": "知识库索引为空",
+        },
+    )
+    endpoint = get_diagnostics_endpoint(
+        create_diagnostics_router(dependencies),
+        "/search",
+    )
+    response = Response()
+
+    result = endpoint(ChatRequest(question="测试问题"), response)
+
+    assert response.status_code == 503
+    assert result.model_dump() == {
+        "code": "EMPTY_INDEX",
+        "message": "知识库索引为空",
+        "data": {
+            "question": "测试问题",
+            "status": "empty_index",
+            "reason": "知识库未准备完成",
+            "results": [],
+        },
+    }
+
+
+def test_search_success_shape_and_default_top_k_are_unchanged():
+    calls = []
+    retrieved = [
+        {
+            "source_path": "docs/example.md",
+            "file_name": "example.md",
+            "chunk_id": "chunk-1",
+            "position": 3,
+            "snippet": "示例内容",
+            "hybrid_score": 0.8,
+            "bm25_score": 0.7,
+            "vector_score": 0.9,
+            "rerank_score": 0.95,
+        }
+    ]
+
+    def search(question, top_k):
+        calls.append((question, top_k))
+        return retrieved
+
+    dependencies = build_diagnostics_dependencies(
+        search_relevant_chunks=search,
+    )
+    endpoint = get_diagnostics_endpoint(
+        create_diagnostics_router(dependencies),
+        "/search",
+    )
+    response = Response()
+
+    result = endpoint(ChatRequest(question="测试问题"), response)
+
+    assert calls == [("测试问题", 2)]
+    assert response.status_code == 200
+    assert result.model_dump() == {
+        "code": 0,
+        "message": "success",
+        "data": {
+            "question": "测试问题",
+            "status": "ok",
+            "reason": "检索成功",
+            "results": [
+                {
+                    "reference_id": "Reference 1",
+                    "source_path": "docs/example.md",
+                    "file_name": "example.md",
+                    "chunk_id": "chunk-1",
+                    "position": 3,
+                    "snippet": "示例内容",
+                    "score": 0.8,
+                    "bm25_score": 0.7,
+                    "vector_score": 0.9,
+                    "rerank_score": 0.95,
+                }
+            ],
+        },
+    }
+
+
+def test_decide_behavior_uses_the_deterministic_router_unchanged():
+    endpoint = get_diagnostics_endpoint(
+        create_diagnostics_router(build_diagnostics_dependencies()),
+        "/decide",
+    )
+    response = Response()
+
+    result = endpoint(ChatRequest(question="你能做什么？"), response)
+
+    assert result == {
+        "code": 0,
+        "message": "success",
+        "data": {
+            "question": "你能做什么？",
+            "decision": {
+                "decision": "direct_answer",
+                "action": "direct_answer",
+                "reason": "用户询问系统能力，可以直接回答",
+                "router_source": "rule_based",
+                "router_confidence": 1.0,
+            },
+        },
+    }
 
 
 def test_create_app_does_not_run_lifespan_at_import_or_construction(monkeypatch):

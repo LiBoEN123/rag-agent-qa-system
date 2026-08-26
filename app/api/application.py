@@ -24,9 +24,7 @@ from app.api.lifecycle import (
     initialize_rag,
 )
 from app.api.middleware import trace_and_timing_middleware
-from app.api.schemas import SearchData, SearchResponse, SearchResult
 from app.config import get_settings, validate_startup_environment
-from app.agent.router import route_agent_action
 from app.observability.metrics import read_recent_metrics
 from app.rag import (
     get_rag_status,
@@ -40,7 +38,6 @@ from app.rag import (
     search_relevant_chunks,
 )
 from app.rag.policy import should_refuse
-from app.rag.scoring import safe_float
 from app.services.chat_service import (
     ChatService,
     create_default_chat_service,
@@ -51,17 +48,12 @@ def get_default_diagnostics_dependencies() -> DiagnosticsDependencies:
     """组装诊断 Router 的默认依赖，不执行检索或持久化调用。"""
     return DiagnosticsDependencies(
         settings_provider=get_settings,
-        search_result=SearchResult,
-        search_data=SearchData,
-        search_response=SearchResponse,
         preview_docs=preview_docs,
         preview_chunks=preview_chunks,
         get_rag_status=get_rag_status,
         search_relevant_chunks=search_relevant_chunks,
         rerank=rerank,
         should_refuse=should_refuse,
-        safe_float=safe_float,
-        route_agent_action=route_agent_action,
         read_recent_metrics=read_recent_metrics,
     )
 

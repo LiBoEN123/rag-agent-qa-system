@@ -9,9 +9,16 @@ from typing import Callable
 
 from fastapi import APIRouter, Query, Response
 
-from app.api.schemas import ChatRequest
+from app.agent.router import route_agent_action
+from app.api.schemas import (
+    ChatRequest,
+    SearchData,
+    SearchResponse,
+    SearchResult,
+)
 from app.common.logging import get_logger
 from app.config import AppSettings
+from app.rag.scoring import safe_float
 
 
 logger = get_logger("chat_service")
@@ -20,17 +27,12 @@ logger = get_logger("chat_service")
 @dataclass(frozen=True)
 class DiagnosticsDependencies:
     settings_provider: Callable[[], AppSettings]
-    search_result: type
-    search_data: type
-    search_response: type
     preview_docs: Callable
     preview_chunks: Callable
     get_rag_status: Callable
     search_relevant_chunks: Callable
     rerank: Callable
     should_refuse: Callable
-    safe_float: Callable
-    route_agent_action: Callable
     read_recent_metrics: Callable
 
 
@@ -56,7 +58,7 @@ def create_diagnostics_router(
         data = deps.preview_chunks(max_len, limit, file_name)
         return {"count": len(data), "data": data}
 
-    @router.post("/search", response_model=deps.search_response)
+    @router.post("/search", response_model=SearchResponse)
     def search_api(req: ChatRequest, response: Response):
         """执行知识库检索、重排和证据门控并返回候选片段。"""
         question = (req.question or "").strip()
@@ -68,10 +70,10 @@ def create_diagnostics_router(
         try:
             if not question:
                 response.status_code = 400
-                return deps.search_response(
+                return SearchResponse(
                     code="EMPTY_QUESTION",
                     message="问题不能为空",
-                    data=deps.search_data(
+                    data=SearchData(
                         question=question,
                         status="error",
                         reason="用户未输入问题",
@@ -82,10 +84,10 @@ def create_diagnostics_router(
             rag_status = deps.get_rag_status()
             if not rag_status["ready"]:
                 response.status_code = 503
-                return deps.search_response(
+                return SearchResponse(
                     code="EMPTY_INDEX",
                     message=rag_status["message"],
-                    data=deps.search_data(
+                    data=SearchData(
                         question=question,
                         status="empty_index",
                         reason="知识库未准备完成",
@@ -97,10 +99,10 @@ def create_diagnostics_router(
             top_k = req.top_k if req.top_k is not None else settings.top_k
             retrieved = deps.search_relevant_chunks(question, top_k)
             if not retrieved:
-                return deps.search_response(
+                return SearchResponse(
                     code=0,
                     message="success",
-                    data=deps.search_data(
+                    data=SearchData(
                         question=question,
                         status="no_evidence",
                         reason="未检索到结果",
@@ -110,10 +112,10 @@ def create_diagnostics_router(
 
             final_chunks = deps.rerank(retrieved, question)[:top_k]
             if not final_chunks:
-                return deps.search_response(
+                return SearchResponse(
                     code=0,
                     message="success",
-                    data=deps.search_data(
+                    data=SearchData(
                         question=question,
                         status="no_evidence",
                         reason="重排后没有可用结果",
@@ -123,13 +125,13 @@ def create_diagnostics_router(
 
             if deps.should_refuse(final_chunks):
                 max_vector_score = max(
-                    deps.safe_float(item.get("vector_score"))
+                    safe_float(item.get("vector_score"))
                     for item in final_chunks
                 )
-                return deps.search_response(
+                return SearchResponse(
                     code=0,
                     message="success",
-                    data=deps.search_data(
+                    data=SearchData(
                         question=question,
                         status="no_evidence",
                         reason=f"证据分数低于阈值：max_vector={max_vector_score:.4f}",
@@ -140,7 +142,7 @@ def create_diagnostics_router(
             for rank, item in enumerate(final_chunks, start=1):
                 item["reference_id"] = f"Reference {rank}"
             results = [
-                deps.search_result(
+                SearchResult(
                     reference_id=item["reference_id"],
                     source_path=item["source_path"],
                     file_name=item["file_name"],
@@ -155,10 +157,10 @@ def create_diagnostics_router(
                 for item in final_chunks
             ]
             response.status_code = 200
-            return deps.search_response(
+            return SearchResponse(
                 code=0,
                 message="success",
-                data=deps.search_data(
+                data=SearchData(
                     question=question,
                     status="ok",
                     reason="检索成功",
@@ -168,10 +170,10 @@ def create_diagnostics_router(
         except Exception as exc:
             logger.exception("[search] processing failed error=%s", exc)
             response.status_code = 500
-            return deps.search_response(
+            return SearchResponse(
                 code="INTERNAL_ERROR",
                 message="服务器内部错误",
-                data=deps.search_data(
+                data=SearchData(
                     question=question,
                     status="error",
                     reason="search 接口处理异常",
@@ -213,7 +215,7 @@ def create_diagnostics_router(
                     "reason": "用户未输入问题",
                 },
             }
-        decision = deps.route_agent_action(question)
+        decision = route_agent_action(question)
         return {
             "code": 0,
             "message": "success",
