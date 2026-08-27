@@ -21,10 +21,15 @@ from app.tools.knowledge_base import (
 )
 from app.tools.schemas import (
     CompareDocumentsArgs,
+    CompareDocumentsOutput,
     GetChunkTextArgs,
+    GetChunkTextOutput,
     ListDocumentsArgs,
+    ListDocumentsOutput,
     SearchKnowledgeBaseArgs,
+    SearchKnowledgeBaseOutput,
     SimpleCalculatorArgs,
+    SimpleCalculatorOutput,
     WebFetchArgs,
     WebFetchOutput,
     WebPdfFetchArgs,
@@ -122,13 +127,7 @@ def register_default_tools(
                 "候选数量，执行完整的本地 RAG 工作流并返回答案、引用和证据。"
                 "不用于互联网搜索。"
             ),
-            output_schema={
-                "count": "integer, RAG 最终候选 chunk 数量",
-                "chunks": "list, RAG 最终候选 chunk 列表",
-                "top_chunk_ids": "list, RAG 最终候选 chunk_id 列表",
-                "top_scores": "list, RAG 最终候选 hybrid_score 列表",
-                "rag_result": "object, RAG 答案、引用、置信度、状态和 trace",
-            },
+            output_model=SearchKnowledgeBaseOutput,
             handler=_handle_search_knowledge_base,
             args_model=SearchKnowledgeBaseArgs,
             risk_level=ToolRiskLevel.READ_ONLY,
@@ -223,16 +222,7 @@ def register_default_tools(
                 "用于比较两个已知知识库文档对同一主题的规定；传入主题、两个"
                 "文档名和候选数量，返回双方证据与差异摘要。不用于未知文档的泛检索。"
             ),
-            output_schema={
-                "query": "string, 对比主题",
-                "doc_a": "string, 第一个文档",
-                "doc_b": "string, 第二个文档",
-                "doc_a_evidence": "list, 第一个文档的证据片段",
-                "doc_b_evidence": "list, 第二个文档的证据片段",
-                "comparison": "string, 差异说明",
-                "conflict_detected": "boolean, 是否可能存在差异或冲突",
-                "summary": "string, 简要摘要",
-            },
+            output_model=CompareDocumentsOutput,
             handler=_handle_compare_documents,
             args_model=CompareDocumentsArgs,
             risk_level=ToolRiskLevel.READ_ONLY,
@@ -252,7 +242,7 @@ def register_default_tools(
                 "用于计算明确的数字四则运算表达式并返回数值结果；参数 expression"
                 " 是待计算表达式。不用于解释知识库中的数字含义或执行代码。"
             ),
-            output_schema={"expression": "string", "result": "number"},
+            output_model=SimpleCalculatorOutput,
             handler=_handle_simple_calculator,
             args_model=SimpleCalculatorArgs,
             risk_level=ToolRiskLevel.READ_ONLY,
@@ -272,7 +262,7 @@ def register_default_tools(
                 "用于查看当前本地知识库包含的文档名称和数量，无需参数；"
                 "返回文档列表，不返回文档全文或互联网内容。"
             ),
-            output_schema={"count": "integer", "documents": "list"},
+            output_model=ListDocumentsOutput,
             handler=_handle_list_documents,
             args_model=ListDocumentsArgs,
             risk_level=ToolRiskLevel.READ_ONLY,
@@ -292,7 +282,7 @@ def register_default_tools(
                 "用于在已知 chunk_id 时读取该知识库片段的完整原文；参数 chunk_id"
                 " 是片段标识。若不知道 chunk_id，应先检索知识库。"
             ),
-            output_schema={"chunk_id": "integer|string", "chunk": "dict"},
+            output_model=GetChunkTextOutput,
             handler=_handle_get_chunk_text,
             args_model=GetChunkTextArgs,
             risk_level=ToolRiskLevel.READ_ONLY,

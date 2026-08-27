@@ -1,11 +1,17 @@
 import json
+from dataclasses import replace
 
 import pytest
 
 from app.tools.context import ToolInvocationContext
 from app.tools.registry import ToolRegistry, ToolSpec
+from app.tools.result import tool_success
 from app.tools.runtime import execute_registered_tool
-from app.tools.schemas import SearchKnowledgeBaseArgs
+from app.tools.schemas import (
+    SearchKnowledgeBaseArgs,
+    SearchKnowledgeBaseOutput,
+    SimpleCalculatorOutput,
+)
 
 
 def test_tool_registry_names_include_builtin_tools(tool_registry):
@@ -64,13 +70,16 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
         )
         assert spec["idempotent"] is True
         assert spec["requires_approval"] is False
-        assert spec["output_model"] == (
-            {
-                "web_search": "WebSearchOutput",
-                "web_fetch": "WebFetchOutput",
-                "web_pdf_fetch": "WebPdfFetchOutput",
-            }.get(name)
-        )
+        assert spec["output_model"] == {
+            "search_knowledge_base": "SearchKnowledgeBaseOutput",
+            "compare_documents": "CompareDocumentsOutput",
+            "simple_calculator": "SimpleCalculatorOutput",
+            "list_documents": "ListDocumentsOutput",
+            "get_chunk_text": "GetChunkTextOutput",
+            "web_search": "WebSearchOutput",
+            "web_fetch": "WebFetchOutput",
+            "web_pdf_fetch": "WebPdfFetchOutput",
+        }[name]
         assert spec["args_schema"] == registered.args_model.model_json_schema()
         if registered.output_model is not None:
             assert (
@@ -91,15 +100,20 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
     assert pdf["sensitive_arg_fields"] == ["url"]
     assert pdf["audit_output_mode"] == "summary"
     knowledge = specs_by_name["search_knowledge_base"]
-    assert set(knowledge["output_schema"]) == {
+    knowledge_schema = knowledge["output_schema"]
+    assert set(knowledge_schema["properties"]) == {
         "count",
         "chunks",
         "top_chunk_ids",
         "top_scores",
         "rag_result",
     }
-    assert "最终候选" in knowledge["output_schema"]["top_scores"]
-    assert "hybrid_score" in knowledge["output_schema"]["top_scores"]
+    assert set(knowledge_schema["required"]) == set(
+        knowledge_schema["properties"]
+    )
+    assert knowledge_schema["properties"]["rag_result"] == {
+        "$ref": "#/$defs/RAGResult"
+    }
 
 
 def test_execute_registered_tool_runs_simple_calculator(tool_registry):
@@ -113,6 +127,36 @@ def test_execute_registered_tool_runs_simple_calculator(tool_registry):
     assert result["ok"] is True
     assert result["status"] == "success"
     assert result["output"]["result"] == 7
+
+
+def test_migrated_calculator_rejects_malformed_output(tool_registry):
+    """生产计算器契约会在 Runtime 拒绝结构错误的成功输出。"""
+    spec = tool_registry.get("simple_calculator")
+    assert spec is not None
+    assert spec.output_model is SimpleCalculatorOutput
+
+    registry = ToolRegistry()
+    registry.register(
+        replace(
+            spec,
+            handler=lambda args, context: tool_success(
+                "simple_calculator",
+                args,
+                {"expression": args["expression"], "result": {"invalid": True}},
+            ),
+        )
+    )
+
+    result = execute_registered_tool(
+        registry=registry,
+        tool_name="simple_calculator",
+        tool_args={"expression": "1 + 2"},
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "error"
+    assert result["error_code"] == "output_validation_error"
+    assert result["output"] is None
 
 
 def test_execute_registered_tool_runs_search_knowledge_base(
@@ -190,7 +234,7 @@ def test_execute_registered_tool_runs_search_knowledge_base(
     }
     assert rag_call["retrieved_chunks"] is prefetched_chunks
     assert result["output"]["count"] == 2
-    assert result["output"]["chunks"] is final_chunks
+    assert result["output"]["chunks"] == final_chunks
     assert result["output"]["top_chunk_ids"] == ["final-c", "final-d"]
     assert result["output"]["top_scores"] == [0.8765, 0.0]
     assert result["output"]["rag_result"]["answer"] == "测试 RAG 回答"
@@ -251,11 +295,60 @@ def test_search_knowledge_base_exposes_multi_query_final_chunks(
     assert result["ok"] is True
     assert result["status"] == "success"
     assert rag_call["retrieved_chunks"] is prefetched_chunks
-    assert result["output"]["chunks"] is final_chunks
+    assert result["output"]["chunks"] == final_chunks
     assert result["output"]["count"] == 2
     assert result["output"]["top_chunk_ids"] == ["final-b", "final-c"]
     assert result["output"]["top_scores"] == [0.82, 0.73]
     assert result["output"]["rag_result"]["status"] == "NO_RELEVANT_INFO"
+
+
+def test_search_knowledge_base_rejects_inconsistent_output_counts(tool_registry):
+    """知识库生产输出模型拒绝证据数量不一致的成功结果。"""
+    spec = tool_registry.get("search_knowledge_base")
+    assert spec is not None
+    assert spec.output_model is SearchKnowledgeBaseOutput
+    rag_result = {
+        "status": "OK",
+        "answer": "测试回答",
+        "references": [],
+        "final_chunks": [],
+        "retrieval_confidence": 0.0,
+        "answer_confidence": 0.0,
+        "need_clarification": False,
+        "clarification_question": "",
+        "reason": "测试",
+        "timings": {},
+        "decompose_llm_used": False,
+        "answer_llm_used": False,
+        "llm_call_count": 0,
+    }
+    registry = ToolRegistry()
+    registry.register(
+        replace(
+            spec,
+            handler=lambda args, context: tool_success(
+                "search_knowledge_base",
+                args,
+                {
+                    "count": 1,
+                    "chunks": [],
+                    "top_chunk_ids": [],
+                    "top_scores": [],
+                    "rag_result": rag_result,
+                },
+            ),
+        )
+    )
+
+    result = execute_registered_tool(
+        registry=registry,
+        tool_name="search_knowledge_base",
+        tool_args={"query": "测试", "top_k": 1},
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "output_validation_error"
+    assert result["output"] is None
 
 
 @pytest.mark.parametrize(
@@ -309,6 +402,33 @@ def test_get_chunk_text_keeps_integer_and_string_ids(
     assert result["ok"] is True
     assert received == [expected]
     assert result["tool_input"] == {"chunk_id": expected}
+    assert result["output"] == {
+        "chunk_id": expected,
+        "chunk": {"found": True, "chunk_id": expected, "text": "测试正文"},
+    }
+
+
+def test_list_documents_output_model_accepts_current_preview_shape(
+    monkeypatch,
+    tool_registry,
+):
+    """文档列表生产输出模型接受当前普通字典预览结构。"""
+    import app.rag as rag
+
+    documents = [
+        {"file_name": "a.md", "source_path": "data/a.md", "chunk_count": 2},
+        {"file_name": "b.md", "source_path": "data/b.md", "chunk_count": 1},
+    ]
+    monkeypatch.setattr(rag, "preview_docs", lambda: documents)
+
+    result = execute_registered_tool(
+        registry=tool_registry,
+        tool_name="list_documents",
+        tool_args={},
+    )
+
+    assert result["ok"] is True
+    assert result["output"] == {"count": 2, "documents": documents}
 
 
 @pytest.mark.parametrize("chunk_id", ["", "   "])

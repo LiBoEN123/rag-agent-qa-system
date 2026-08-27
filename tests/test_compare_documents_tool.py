@@ -333,4 +333,5 @@ def test_execution_entry_propagates_compare_documents_trace_id(
         "doc_b": "new.md",
         "top_k": 2,
     }
+    assert result["output"]["conflict_detected"] is True
     assert received["trace_id"] == "trace-tool"
