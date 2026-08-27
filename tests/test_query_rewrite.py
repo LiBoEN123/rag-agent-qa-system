@@ -191,6 +191,37 @@ def test_no_history_math_and_system_question_skip_rewrite(settings_env):
     assert system_result["reason"] == "system capability question"
 
 
+@pytest.mark.parametrize(
+    "question",
+    [
+        "你是谁",
+        "你是谁?",
+        "你是谁？",
+        "你能做什么",
+        "你能做什么?",
+        "你能做什么？",
+    ],
+)
+def test_system_capability_variants_skip_rewrite_llm(
+    question,
+    monkeypatch,
+    settings_env,
+):
+    """有历史时系统能力问题的标点变体仍不调用改写模型。"""
+    settings_env(enable_query_rewrite=True)
+
+    def fail_model_call(*args, **kwargs):
+        raise AssertionError("系统能力问题不应调用 Query Rewrite LLM")
+
+    monkeypatch.setattr(query_rewrite, "call_query_rewrite_llm", fail_model_call)
+
+    result = query_rewrite.rewrite_query_with_history(question, HISTORY)
+
+    assert result["need_check"] is False
+    assert result["rewrite_llm_used"] is False
+    assert result["reason"] == "system capability question"
+
+
 def test_ambiguous_short_question_without_llm_is_not_force_concatenated(
     settings_env,
 ):

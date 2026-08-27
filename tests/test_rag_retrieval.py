@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import ValidationError
@@ -5,7 +6,70 @@ from pydantic import ValidationError
 from app.llm.schemas import QueryDecomposeOutput
 from app.rag import decomposition
 from app.rag.decomposition import normalize_decompose_result, should_decompose_query
-from app.rag.retrieval import should_refuse
+from app.rag import retrieval
+from app.rag.policy import should_refuse
+
+
+@pytest.mark.parametrize(
+    "query_error",
+    [
+        retrieval.ChromaUnavailableError("ChromaDB unavailable"),
+        RuntimeError("generic ChromaDB query failure"),
+    ],
+    ids=["chroma-unavailable", "generic-query-error"],
+)
+def test_retrieve_falls_back_to_local_embeddings_after_chroma_error(
+    monkeypatch,
+    query_error,
+):
+    chunks = [
+        {"text": "first", "metadata": {"chunk_id": 1}},
+        {"text": "second", "metadata": {"chunk_id": 2}},
+    ]
+    doc_embeddings = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+
+    class FakeBm25:
+        def get_scores(self, _tokens):
+            return np.array([0.0, 2.0], dtype=np.float32)
+
+    class FakeModel:
+        def __init__(self):
+            self.encoded_texts = []
+
+        def encode(self, texts, **_kwargs):
+            self.encoded_texts.append(texts)
+            return np.array([[1.0, 0.0]], dtype=np.float32)
+
+    def fail_chroma_query(*_args, **_kwargs):
+        raise query_error
+
+    model = FakeModel()
+    monkeypatch.setattr(retrieval, "query_chroma", fail_chroma_query)
+
+    results = retrieval.retrieve(
+        question="question",
+        chunks=chunks,
+        bm25=FakeBm25(),
+        doc_embeddings=doc_embeddings,
+        model=model,
+        top_k=2,
+    )
+
+    assert results
+    assert {result["chunk_id"] for result in results} == {1, 2}
+    assert model.encoded_texts == [["question"], ["question"]]
+
+
+def test_retrieval_does_not_reexport_policy_or_scoring_symbols():
+    """检索模块不再代理 policy 或 scoring 的公共符号。"""
+    for symbol in [
+        "build_clarification_question",
+        "is_ambiguous_question",
+        "should_refuse",
+        "safe_float",
+    ]:
+        assert symbol not in retrieval.__all__
+        assert not hasattr(retrieval, symbol)
 
 
 def test_should_refuse_empty_results():

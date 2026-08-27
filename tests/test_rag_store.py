@@ -1,3 +1,6 @@
+import numpy as np
+import pytest
+
 from app.rag import store as rag_store
 
 
@@ -68,9 +71,14 @@ def test_load_index_cache_uses_chroma_metadata_for_docs_registry(monkeypatch):
             },
         }
     ]
+    doc_embeddings = np.array([[1.0, 0.0]], dtype=np.float32)
 
     monkeypatch.setattr(rag_store, "index_cache_exists", lambda: True)
-    monkeypatch.setattr(rag_store, "load_chunks_from_chroma", lambda: chunks)
+    monkeypatch.setattr(
+        rag_store,
+        "load_index_from_chroma",
+        lambda: (chunks, doc_embeddings),
+    )
     monkeypatch.setattr(rag_store, "_build_bm25", lambda texts: "bm25")
     monkeypatch.setattr(
         rag_store,
@@ -81,6 +89,7 @@ def test_load_index_cache_uses_chroma_metadata_for_docs_registry(monkeypatch):
     result = rag_store.load_index_cache()
 
     assert result["ok"] is True
+    assert result["doc_embeddings"] is doc_embeddings
     assert result["docs_registry"] == [
         {
             "doc_id": "doc_1",
@@ -90,6 +99,71 @@ def test_load_index_cache_uses_chroma_metadata_for_docs_registry(monkeypatch):
             "chunk_count": 1,
         }
     ]
+
+
+def test_load_index_cache_restores_embeddings_without_reencoding_documents(monkeypatch):
+    chunks = [
+        {"text": "first", "metadata": {"chunk_id": 1}},
+        {"text": "second", "metadata": {"chunk_id": 2}},
+    ]
+    doc_embeddings = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+
+    class ModelThatMustNotEncode:
+        def encode(self, *_args, **_kwargs):
+            pytest.fail("cache load 不应重新 encode 文档")
+
+    model = ModelThatMustNotEncode()
+    rerank_model = object()
+    monkeypatch.setattr(rag_store, "index_cache_exists", lambda: True)
+    monkeypatch.setattr(
+        rag_store,
+        "load_index_from_chroma",
+        lambda: (chunks, doc_embeddings),
+    )
+
+    result = rag_store.load_index_cache(model=model, rerank_model=rerank_model)
+
+    assert result["ok"] is True
+    assert result["chunks"] == chunks
+    assert result["doc_embeddings"] is doc_embeddings
+    assert result["doc_embeddings"].shape == (len(chunks), 2)
+    assert result["bm25"] is not None
+    assert result["model"] is model
+    assert result["rerank_model"] is rerank_model
+
+
+@pytest.mark.parametrize(
+    ("doc_embeddings", "error_message"),
+    [
+        (None, "ChromaDB 索引缓存中缺少 embeddings"),
+        (
+            np.array([[1.0, 0.0]], dtype=np.float32),
+            "ChromaDB 索引缓存中的 embedding 数量与 chunk 数量不一致",
+        ),
+    ],
+)
+def test_load_index_cache_rejects_corrupt_embeddings(
+    monkeypatch,
+    doc_embeddings,
+    error_message,
+):
+    chunks = [
+        {"text": "first", "metadata": {"chunk_id": 1}},
+        {"text": "second", "metadata": {"chunk_id": 2}},
+    ]
+    monkeypatch.setattr(rag_store, "index_cache_exists", lambda: True)
+    monkeypatch.setattr(
+        rag_store,
+        "load_index_from_chroma",
+        lambda: (chunks, doc_embeddings),
+    )
+
+    result = rag_store.load_index_cache(model=object(), rerank_model=object())
+
+    assert result["ok"] is False
+    assert error_message in result["message"]
+    assert result["chunks"] == []
+    assert result["doc_embeddings"] is None
 
 
 def test_load_models_uses_configured_model_cache_dir(

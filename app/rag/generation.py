@@ -10,7 +10,8 @@ from app.llm.factory import get_answer_model
 from app.llm.gateway import ModelGateway
 from app.llm.schemas import AnswerOutput
 from app.prompts import SYSTEM_PROMPT_B, USER_PROMPT
-from app.rag.retrieval import clamp01, make_snippet, safe_float
+from app.rag.retrieval import clamp01, make_snippet
+from app.rag.scoring import safe_float
 
 
 # =========================

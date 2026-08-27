@@ -9,6 +9,8 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from app.config import AppSettings, get_settings
 from app.common.logging import get_logger
 
@@ -184,34 +186,65 @@ def persist_chunks_to_chroma(
     return saved
 
 
-def load_chunks_from_chroma(
+def load_index_from_chroma(
     settings: AppSettings | None = None,
-) -> list[dict[str, Any]]:
-    """从 ChromaDB 加载所有 chunk，并恢复为内存中的 chunk 结构。"""
+) -> tuple[list[dict[str, Any]], np.ndarray]:
+    """从 ChromaDB 恢复按 chunk_id 对齐的 chunk 与 embedding 矩阵。"""
     collection = get_chroma_collection(create=False, settings=settings)
-    data = collection.get(include=["documents", "metadatas"])
+    data = collection.get(include=["documents", "metadatas", "embeddings"])
 
     documents = data.get("documents") or []
     metadatas = data.get("metadatas") or []
+    raw_embeddings = data.get("embeddings")
 
-    chunks = [
+    if not documents:
+        raise ValueError("ChromaDB 索引缓存中没有 documents")
+    if len(metadatas) != len(documents):
+        raise ValueError(
+            "ChromaDB 索引缓存中的 metadata 数量与 document 数量不一致"
+        )
+    if raw_embeddings is None:
+        raise ValueError("ChromaDB 索引缓存中缺少 embeddings")
+
+    try:
+        embedding_matrix = np.asarray(raw_embeddings, dtype=np.float32)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("ChromaDB 索引缓存中的 embeddings 不是有效数值矩阵") from exc
+
+    if embedding_matrix.ndim != 2 or embedding_matrix.shape[1] == 0:
+        raise ValueError("ChromaDB 索引缓存中的 embeddings 必须是非空二维矩阵")
+    if embedding_matrix.shape[0] != len(documents):
+        raise ValueError(
+            "ChromaDB 索引缓存中的 embedding 数量与 document 数量不一致"
+        )
+    if not np.isfinite(embedding_matrix).all():
+        raise ValueError("ChromaDB 索引缓存中的 embeddings 包含非有限数值")
+
+    records = [
         {
-            "text": document or "",
-            "metadata": metadata or {},
+            "chunk": {
+                "text": document or "",
+                "metadata": metadata or {},
+            },
+            "embedding": embedding_matrix[index],
         }
-        for document, metadata in zip(documents, metadatas)
+        for index, (document, metadata) in enumerate(zip(documents, metadatas))
     ]
 
-    def sort_key(chunk: dict[str, Any]):
+    def sort_key(record: dict[str, Any]):
         """按 chunk_id 生成排序键，缺失或非法时回退到 0。"""
-        metadata = chunk.get("metadata") or {}
+        metadata = record["chunk"].get("metadata") or {}
         try:
             return int(metadata.get("chunk_id", 0))
         except (TypeError, ValueError):
             return 0
 
-    chunks.sort(key=sort_key)
-    return chunks
+    records.sort(key=sort_key)
+    chunks = [record["chunk"] for record in records]
+    aligned_embeddings = np.stack(
+        [record["embedding"] for record in records]
+    ).astype(np.float32, copy=False)
+    return chunks, aligned_embeddings
 
 
 def query_chroma(query_embedding: Any, n_results: int) -> list[dict[str, Any]]:

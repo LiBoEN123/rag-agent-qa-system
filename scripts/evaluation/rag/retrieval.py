@@ -134,9 +134,9 @@ def load_chroma_index(chroma_persist_dir: Path | None, chroma_collection_name: s
             updates["chroma_collection_name"] = chroma_collection_name
         settings = settings.model_copy(update=updates)
 
-        from app.rag.chroma import load_chunks_from_chroma
+        from app.rag.chroma import load_index_from_chroma
 
-        chunks = load_chunks_from_chroma(settings)
+        chunks, _doc_embeddings = load_index_from_chroma(settings)
         return chunks_to_index(chunks, source="chroma")
     except Exception as exc:
         warn(f"failed to load chunks from ChromaDB: {exc}")

@@ -5,6 +5,7 @@
 
 import re
 
+from app.agent.rules import is_system_capability_question, normalize_question
 from app.config import AppSettings, get_settings
 from app.common.logging import get_logger
 from app.llm.factory import get_query_rewrite_model
@@ -35,21 +36,6 @@ OBVIOUS_FOLLOW_UP_MARKERS = [
     "入口呢",
 ]
 
-SYSTEM_QUESTIONS = {
-    "你是谁",
-    "你是谁?",
-    "你能做什么",
-    "你能做什么?",
-    "你可以做什么",
-    "你可以做什么?",
-    "你有什么功能",
-    "你有什么功能?",
-}
-def _normalize_question(question: str) -> str:
-    """清理问题文本并统一常见问号。"""
-    return (question or "").strip().replace("？", "?")
-
-
 def _has_usable_history(history: list[dict]) -> bool:
     """判断历史中是否存在可用于改写的消息。"""
     for message in history or []:
@@ -62,7 +48,7 @@ def _has_usable_history(history: list[dict]) -> bool:
 
 def _is_simple_math_question(question: str) -> bool:
     """判断当前输入是否只是简单四则运算。"""
-    compact = re.sub(r"\s+", "", _normalize_question(question))
+    compact = re.sub(r"\s+", "", normalize_question(question))
     compact = compact.rstrip("=?。")
 
     if not compact:
@@ -72,12 +58,6 @@ def _is_simple_math_question(question: str) -> bool:
         re.fullmatch(r"[0-9+\-*/().]+", compact)
         and re.search(r"[+\-*/]", compact)
     )
-
-
-def _is_system_capability_question(question: str) -> bool:
-    """判断是否为系统能力类问题。"""
-    compact = _normalize_question(question).rstrip("。")
-    return compact in SYSTEM_QUESTIONS
 
 
 def _last_user_question(history: list[dict]) -> str:
@@ -103,7 +83,7 @@ def _fallback_rewrite(question: str, history: list[dict]) -> str:
 
 def _has_obvious_follow_up_marker(question: str) -> bool:
     """判断问题是否包含明显追问标记。"""
-    q = _normalize_question(question)
+    q = normalize_question(question)
     return any(marker in q for marker in OBVIOUS_FOLLOW_UP_MARKERS)
 
 
@@ -112,7 +92,7 @@ def should_check_rewrite_with_history(
     history: list[dict],
 ) -> tuple[bool, str]:
     """判断是否需要让 LLM 检查问题对历史的依赖，不直接判定一定改写。"""
-    q = _normalize_question(question)
+    q = normalize_question(question)
 
     if not q:
         return False, "empty question"
@@ -123,7 +103,7 @@ def should_check_rewrite_with_history(
     if _is_simple_math_question(q):
         return False, "simple math question"
 
-    if _is_system_capability_question(q):
+    if is_system_capability_question(q):
         return False, "system capability question"
 
     if _has_obvious_follow_up_marker(q):

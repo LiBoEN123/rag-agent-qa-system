@@ -5,7 +5,8 @@
 
 from typing import Any
 
-from app.rag.retrieval import safe_float
+from app.rag.schemas import RAGResult
+from app.rag.scoring import safe_float
 
 
 def build_default_timings() -> dict[str, int | bool | str]:
@@ -63,33 +64,37 @@ def build_evidence_gate_step(
 def build_rag_result(
     status: str,
     answer: str = "",
-    references: list | None = None,
-    final_chunks: list | None = None,
+    references: list[dict[str, Any]] | None = None,
+    final_chunks: list[dict[str, Any]] | None = None,
     retrieval_confidence: float = 0.0,
     answer_confidence: float = 0.0,
     need_clarification: bool = False,
     clarification_question: str = "",
     reason: str = "",
-    timings: dict | None = None,
+    timings: dict[str, Any] | None = None,
     decompose_llm_used: bool = False,
     answer_llm_used: bool = False,
-    **extra,
-) -> dict:
+    evidence_gate: dict[str, Any] | None = None,
+    citation_verification: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """构造字段完整且状态统一的 RAG 问答结果。"""
-    result = {
-        "status": status,
-        "answer": answer,
-        "references": references or [],
-        "final_chunks": final_chunks or [],
-        "retrieval_confidence": retrieval_confidence,
-        "answer_confidence": answer_confidence,
-        "need_clarification": need_clarification,
-        "clarification_question": clarification_question,
-        "reason": reason,
-        "timings": timings or {},
-        "decompose_llm_used": bool(decompose_llm_used),
-        "answer_llm_used": bool(answer_llm_used),
-        "llm_call_count": int(bool(decompose_llm_used)) + int(bool(answer_llm_used)),
-    }
-    result.update(extra)
-    return result
+    result = RAGResult(
+        status=status,
+        answer=answer,
+        references=references or [],
+        final_chunks=final_chunks or [],
+        retrieval_confidence=retrieval_confidence,
+        answer_confidence=answer_confidence,
+        need_clarification=need_clarification,
+        clarification_question=clarification_question,
+        reason=reason,
+        timings=timings or {},
+        decompose_llm_used=bool(decompose_llm_used),
+        answer_llm_used=bool(answer_llm_used),
+        llm_call_count=(
+            int(bool(decompose_llm_used)) + int(bool(answer_llm_used))
+        ),
+        evidence_gate=evidence_gate,
+        citation_verification=citation_verification,
+    )
+    return result.model_dump(mode="json", exclude_none=True)

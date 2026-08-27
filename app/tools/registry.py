@@ -123,9 +123,10 @@ def register_default_tools(
                 "不用于互联网搜索。"
             ),
             output_schema={
-                "count": "integer, 命中的 chunk 数量",
-                "chunks": "list, 候选证据 chunk 列表",
-                "top_chunk_ids": "list, 命中的 chunk_id 列表",
+                "count": "integer, RAG 最终候选 chunk 数量",
+                "chunks": "list, RAG 最终候选 chunk 列表",
+                "top_chunk_ids": "list, RAG 最终候选 chunk_id 列表",
+                "top_scores": "list, RAG 最终候选 hybrid_score 列表",
                 "rag_result": "object, RAG 答案、引用、置信度、状态和 trace",
             },
             handler=_handle_search_knowledge_base,

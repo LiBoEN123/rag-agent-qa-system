@@ -81,7 +81,7 @@ def search_knowledge_base(
         top_k = args["top_k"]
         tool_input = {"query": query, "top_k": top_k}
 
-        chunks = search_relevant_chunks(query, top_k=top_k)
+        prefetched_chunks = search_relevant_chunks(query, top_k=top_k)
         effective_question = (
             (context.effective_question if context is not None else "").strip()
             or query
@@ -100,20 +100,23 @@ def search_knowledge_base(
             question=effective_question,
             top_k=rag_top_k,
             decompose_top_k=decompose_top_k,
-            retrieved_chunks=chunks,
+            retrieved_chunks=prefetched_chunks,
             trace_id=context.trace_id if context is not None else "",
         )
+        final_chunks = rag_result.get("final_chunks") or []
         return tool_success(
             tool_name,
             tool_input,
             {
-                "count": len(chunks),
-                "chunks": chunks,
+                "count": len(final_chunks),
+                "chunks": final_chunks,
                 "top_chunk_ids": [
-                    _get_chunk_value(chunk, "chunk_id") for chunk in chunks
+                    _get_chunk_value(chunk, "chunk_id")
+                    for chunk in final_chunks
                 ],
                 "top_scores": [
-                    _round_chunk_score(chunk, "hybrid_score") for chunk in chunks
+                    _round_chunk_score(chunk, "hybrid_score")
+                    for chunk in final_chunks
                 ],
                 "rag_result": rag_result,
             },

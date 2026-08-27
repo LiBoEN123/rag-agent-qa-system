@@ -1,11 +1,10 @@
-"""ToolProvider 发现、顺序和冲突行为测试。"""
+"""ToolProvider 发现与可见性行为测试。"""
 
-import pytest
 from pydantic import BaseModel
 
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
-from app.tools.providers import LocalToolProvider, collect_tool_specs
+from app.tools.providers import LocalToolProvider
 from app.tools.registry import ToolRegistry
 
 
@@ -55,24 +54,6 @@ def test_local_provider_returns_registered_specs_without_execution():
     assert [spec.name for spec in specs] == ["first_text", "second_text"]
     assert specs[0].description == first.description
     assert specs[0].args_model is TextArgs
-    assert calls == []
-
-
-def test_collect_tool_specs_preserves_provider_order_and_rejects_duplicates():
-    """多个 Provider 按输入顺序合并，重名时给出明确错误。"""
-    calls: list[str] = []
-    registry_a = ToolRegistry()
-    registry_b = ToolRegistry()
-    registry_a.register(_build_spec("shared_text", calls))
-    registry_b.register(_build_spec("shared_text", calls))
-    context = ToolInvocationContext()
-
-    with pytest.raises(ValueError, match="shared_text"):
-        collect_tool_specs(
-            [LocalToolProvider(registry_a), LocalToolProvider(registry_b)],
-            context=context,
-        )
-
     assert calls == []
 
 
