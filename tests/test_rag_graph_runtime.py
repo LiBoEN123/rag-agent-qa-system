@@ -452,10 +452,12 @@ def test_ambiguous_question_short_circuits_retrieval_and_model(monkeypatch):
     assert result["decompose_llm_used"] is False
     assert result["answer_llm_used"] is False
     assert result["llm_call_count"] == 0
+    assert result["final_chunks"] == []
 
 
 def test_evidence_refusal_does_not_call_answer_model(monkeypatch):
     """证据门控拒答保留 evidence_gate，且不调用回答模型。"""
+    chunks = [make_chunk(vector_score=0.1, rerank_score=0.1)]
     monkeypatch.setattr(rag_graph_nodes, "rerank", lambda candidates, question: candidates)
     monkeypatch.setattr(rag_graph_nodes, "should_refuse", lambda chunks: True)
     monkeypatch.setattr(
@@ -468,16 +470,18 @@ def test_evidence_refusal_does_not_call_answer_model(monkeypatch):
 
     result = run_rag_subgraph(
         question="测试政策如何申请退款？",
-        retrieved_chunks=[make_chunk(vector_score=0.1, rerank_score=0.1)],
+        retrieved_chunks=chunks,
     )
 
     assert result["status"] == "NO_RELEVANT_INFO"
     assert result["answer_llm_used"] is False
     assert result["evidence_gate"]["refused"] is True
+    assert result["final_chunks"] == chunks
 
 
 def test_model_error_keeps_answer_llm_usage(monkeypatch):
     """回答模型真正调用后失败返回 MODEL_ERROR，并保留用户可读消息。"""
+    chunks = [make_chunk()]
     configure_success_path(monkeypatch)
     monkeypatch.setattr(
         rag_graph_nodes,
@@ -489,17 +493,19 @@ def test_model_error_keeps_answer_llm_usage(monkeypatch):
 
     result = run_rag_subgraph(
         question="测试政策如何申请退款？",
-        retrieved_chunks=[make_chunk()],
+        retrieved_chunks=chunks,
     )
 
     assert result["status"] == "MODEL_ERROR"
     assert result["answer"] == "模型暂时不可用"
     assert result["answer_llm_used"] is True
     assert result["llm_call_count"] == 1
+    assert result["final_chunks"] == chunks
 
 
 def test_bad_model_output_stops_before_citation_binding(monkeypatch):
     """模型坏输出返回 MODEL_BAD_OUTPUT 和空引用，不继续绑定。"""
+    chunks = [make_chunk()]
     configure_success_path(monkeypatch)
     monkeypatch.setattr(
         rag_graph_nodes,
@@ -521,12 +527,13 @@ def test_bad_model_output_stops_before_citation_binding(monkeypatch):
 
     result = run_rag_subgraph(
         question="测试政策如何申请退款？",
-        retrieved_chunks=[make_chunk()],
+        retrieved_chunks=chunks,
     )
 
     assert result["status"] == "MODEL_BAD_OUTPUT"
     assert result["references"] == []
     assert result["answer_llm_used"] is True
+    assert result["final_chunks"] == chunks
 
 
 def test_invalid_answer_references_cannot_bypass_schema_validation(monkeypatch):
@@ -565,8 +572,9 @@ def test_invalid_answer_references_cannot_bypass_schema_validation(monkeypatch):
     assert result["answer_llm_used"] is True
 
 
-def test_citation_verification_failure_returns_no_evidence(monkeypatch):
-    """引用验证失败返回无证据状态并保留验证详情。"""
+def test_citation_verification_failure_keeps_final_candidates(monkeypatch):
+    """引用验证失败返回无证据状态，但保留最终候选和验证详情。"""
+    chunks = [make_chunk()]
     configure_success_path(monkeypatch)
     verification = {
         "supported": False,
@@ -584,12 +592,13 @@ def test_citation_verification_failure_returns_no_evidence(monkeypatch):
 
     result = run_rag_subgraph(
         question="测试政策如何申请退款？",
-        retrieved_chunks=[make_chunk()],
+        retrieved_chunks=chunks,
     )
 
     assert result["status"] == "NO_RELEVANT_INFO"
     assert result["citation_verification"] == verification
     assert result["answer_confidence"] == 0.0
+    assert result["final_chunks"] == chunks
 
 
 @pytest.mark.parametrize(
@@ -631,11 +640,12 @@ def test_missing_reference_or_stop_word_returns_no_evidence(
 
 def test_success_result_contains_compatible_fields(monkeypatch):
     """成功结果保留引用、置信度、timings 和准确 LLM 计数。"""
+    chunks = [make_chunk()]
     configure_success_path(monkeypatch)
 
     result = run_rag_subgraph(
         question="测试政策如何申请退款？",
-        retrieved_chunks=[make_chunk()],
+        retrieved_chunks=chunks,
     )
 
     assert result["status"] == "OK"
@@ -648,6 +658,7 @@ def test_success_result_contains_compatible_fields(monkeypatch):
     assert result["answer_llm_used"] is True
     assert result["llm_call_count"] == 1
     assert result["citation_verification"]["supported"] is True
+    assert result["final_chunks"] == chunks
 
 
 def test_runtime_validates_legal_result_and_returns_plain_dict(monkeypatch):

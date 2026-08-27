@@ -90,6 +90,16 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
     pdf = specs_by_name["web_pdf_fetch"]
     assert pdf["sensitive_arg_fields"] == ["url"]
     assert pdf["audit_output_mode"] == "summary"
+    knowledge = specs_by_name["search_knowledge_base"]
+    assert set(knowledge["output_schema"]) == {
+        "count",
+        "chunks",
+        "top_chunk_ids",
+        "top_scores",
+        "rag_result",
+    }
+    assert "最终候选" in knowledge["output_schema"]["top_scores"]
+    assert "hybrid_score" in knowledge["output_schema"]["top_scores"]
 
 
 def test_execute_registered_tool_runs_simple_calculator(tool_registry):
@@ -109,20 +119,47 @@ def test_execute_registered_tool_runs_search_knowledge_base(
     monkeypatch,
     tool_registry,
 ):
-    """验证注册中心可以调用知识库检索工具。"""
+    """Graph 输入保留预检索候选，对外 evidence 只使用最终候选。"""
     import app.rag as rag
 
+    prefetched_chunks = [
+        {"chunk_id": "initial-a", "text": "初始候选 A", "hybrid_score": 0.4},
+        {"chunk_id": "initial-b", "text": "初始候选 B", "hybrid_score": 0.3},
+    ]
+    final_chunks = [
+        {"chunk_id": "final-c", "text": "最终候选 C", "hybrid_score": 0.87654},
+        {
+            "metadata": {
+                "chunk_id": "final-d",
+                "hybrid_score": "invalid-score",
+            },
+            "text": "最终候选 D",
+        },
+    ]
+    rag_call = {}
+
     def fake_search_relevant_chunks(query, top_k=5):
-        """模拟知识库检索返回单个候选 chunk。"""
         assert query == "普通本科四年制专业最长学习年限是多少？"
         assert top_k == 5
-        return [
-            {
-                "chunk_id": 1,
-                "text": "测试 chunk",
-                "hybrid_score": 0.91,
-            }
-        ]
+        return prefetched_chunks
+
+    def fake_run_rag_subgraph(**kwargs):
+        rag_call.update(kwargs)
+        return {
+            "status": "OK",
+            "answer": "测试 RAG 回答",
+            "references": [],
+            "final_chunks": final_chunks,
+            "retrieval_confidence": 0.91,
+            "answer_confidence": 0.8,
+            "need_clarification": False,
+            "clarification_question": "",
+            "reason": "测试证据充分",
+            "timings": {},
+            "decompose_llm_used": False,
+            "answer_llm_used": True,
+            "llm_call_count": 1,
+        }
 
     monkeypatch.setattr(
         rag,
@@ -132,18 +169,7 @@ def test_execute_registered_tool_runs_search_knowledge_base(
     )
     monkeypatch.setattr(
         "app.rag.graph.run_rag_subgraph",
-        lambda **kwargs: {
-            "status": "OK",
-            "answer": "测试 RAG 回答",
-            "references": [],
-            "retrieval_confidence": 0.91,
-            "answer_confidence": 0.8,
-            "need_clarification": False,
-            "clarification_question": "",
-            "reason": "测试证据充分",
-            "tool_trace": [],
-            "timings": {},
-        },
+        fake_run_rag_subgraph,
     )
 
     result = execute_registered_tool(
@@ -162,11 +188,74 @@ def test_execute_registered_tool_runs_search_knowledge_base(
         "query": "普通本科四年制专业最长学习年限是多少？",
         "top_k": 5,
     }
-    assert result["output"]["count"] == 1
-    assert result["output"]["chunks"][0]["chunk_id"] == 1
-    assert result["output"]["top_chunk_ids"] == [1]
-    assert result["output"]["top_scores"] == [0.91]
+    assert rag_call["retrieved_chunks"] is prefetched_chunks
+    assert result["output"]["count"] == 2
+    assert result["output"]["chunks"] is final_chunks
+    assert result["output"]["top_chunk_ids"] == ["final-c", "final-d"]
+    assert result["output"]["top_scores"] == [0.8765, 0.0]
     assert result["output"]["rag_result"]["answer"] == "测试 RAG 回答"
+
+
+def test_search_knowledge_base_exposes_multi_query_final_chunks(
+    monkeypatch,
+    tool_registry,
+):
+    """模拟多查询改变候选集合后，公开 evidence 不回退到预检索结果。"""
+    import app.rag as rag
+
+    prefetched_chunks = [
+        {"chunk_id": "initial-a", "text": "初始候选 A", "hybrid_score": 0.4}
+    ]
+    final_chunks = [
+        {"chunk_id": "final-b", "text": "最终候选 B", "hybrid_score": 0.82},
+        {"chunk_id": "final-c", "text": "最终候选 C", "hybrid_score": 0.73},
+    ]
+    rag_call = {}
+
+    monkeypatch.setattr(
+        rag,
+        "search_relevant_chunks",
+        lambda query, top_k=5: prefetched_chunks,
+        raising=False,
+    )
+
+    def fake_run_rag_subgraph(**kwargs):
+        rag_call.update(kwargs)
+        return {
+            "status": "NO_RELEVANT_INFO",
+            "answer": "没有足够证据支持回答。",
+            "references": [],
+            "final_chunks": final_chunks,
+            "retrieval_confidence": 0.5,
+            "answer_confidence": 0.0,
+            "need_clarification": False,
+            "clarification_question": "",
+            "reason": "多查询候选不足以支持回答",
+            "timings": {},
+            "decompose_llm_used": True,
+            "answer_llm_used": False,
+            "llm_call_count": 1,
+        }
+
+    monkeypatch.setattr(
+        "app.rag.graph.run_rag_subgraph",
+        fake_run_rag_subgraph,
+    )
+
+    result = execute_registered_tool(
+        registry=tool_registry,
+        tool_name="search_knowledge_base",
+        tool_args={"query": "对比两个政策", "top_k": 1},
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "success"
+    assert rag_call["retrieved_chunks"] is prefetched_chunks
+    assert result["output"]["chunks"] is final_chunks
+    assert result["output"]["count"] == 2
+    assert result["output"]["top_chunk_ids"] == ["final-b", "final-c"]
+    assert result["output"]["top_scores"] == [0.82, 0.73]
+    assert result["output"]["rag_result"]["status"] == "NO_RELEVANT_INFO"
 
 
 @pytest.mark.parametrize(

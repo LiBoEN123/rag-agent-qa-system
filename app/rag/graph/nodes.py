@@ -245,6 +245,7 @@ def evidence_gate_node(state: RAGGraphState) -> dict[str, Any]:
             "result": build_rag_result(
                 status="NO_RELEVANT_INFO",
                 answer=NO_ANSWER_FALLBACK,
+                final_chunks=final_chunks,
                 retrieval_confidence=retrieval_confidence,
                 reason=refuse_reason,
                 timings=timings,
@@ -384,6 +385,7 @@ def parse_output_node(state: RAGGraphState) -> dict[str, Any]:
             "result": build_rag_result(
                 status="MODEL_BAD_OUTPUT",
                 answer=NO_ANSWER_FALLBACK,
+                final_chunks=state.get("final_chunks") or [],
                 retrieval_confidence=float(
                     state.get("retrieval_confidence", 0.0)
                 ),
