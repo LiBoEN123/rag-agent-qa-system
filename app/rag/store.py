@@ -11,7 +11,7 @@ from sentence_transformers import CrossEncoder, SentenceTransformer
 
 from app.rag.chroma import (
     chroma_collection_has_chunks,
-    load_chunks_from_chroma,
+    load_index_from_chroma,
     persist_chunks_to_chroma,
 )
 from app.config import ensure_model_cache_dir, get_settings
@@ -288,11 +288,25 @@ def load_index_cache(model=None, rerank_model=None):
         }
 
     try:
-        chunks = load_chunks_from_chroma()
+        chunks, doc_embeddings = load_index_from_chroma()
+        if doc_embeddings is None:
+            raise ValueError("ChromaDB 索引缓存中缺少 embeddings")
+        if getattr(doc_embeddings, "ndim", None) != 2:
+            raise ValueError("ChromaDB 索引缓存中的 embeddings 必须是二维矩阵")
+        if len(doc_embeddings) != len(chunks):
+            raise ValueError(
+                "ChromaDB 索引缓存中的 embedding 数量与 chunk 数量不一致"
+            )
+
         texts = [chunk["text"] for chunk in chunks]
         docs_registry = build_docs_registry_from_chunks(chunks)
         bm25 = _build_bm25(texts)
         model, rerank_model = _load_models(model=model, rerank_model=rerank_model)
+        logger.info(
+            "[index] loaded cache from ChromaDB "
+            f"chunk_count={len(chunks)} embedding_count={len(doc_embeddings)} "
+            f"embedding_shape={doc_embeddings.shape}"
+        )
 
         return {
             "ok": True,
@@ -301,7 +315,7 @@ def load_index_cache(model=None, rerank_model=None):
             "chunks": chunks,
             "texts": texts,
             "docs_registry": docs_registry,
-            "doc_embeddings": None,
+            "doc_embeddings": doc_embeddings,
             "bm25": bm25,
             "model": model,
             "rerank_model": rerank_model
