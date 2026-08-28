@@ -3,7 +3,7 @@
 使用 Pydantic 定义并校验各内置工具接收的结构化参数和稳定输出。
 """
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -14,6 +14,8 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+from app.rag.schemas import RAGResult
 
 
 _WEB_FETCH_URL_MAX_CHARS = 2048
@@ -88,6 +90,78 @@ class ListDocumentsArgs(BaseModel):
     """list_documents 工具参数。"""
 
     model_config = ConfigDict(extra="ignore")
+
+
+class SearchKnowledgeBaseOutput(BaseModel):
+    """知识库检索工具的稳定输出。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    count: int = Field(..., ge=0)
+    chunks: list[dict[str, Any]]
+    top_chunk_ids: list[int | str | None]
+    top_scores: list[float]
+    rag_result: RAGResult
+
+    @model_validator(mode="after")
+    def validate_evidence_counts(self) -> "SearchKnowledgeBaseOutput":
+        """确保公开证据列表与显式数量保持一致。"""
+        if self.count != len(self.chunks):
+            raise ValueError("count 必须等于 chunks 数量")
+        if len(self.top_chunk_ids) != self.count:
+            raise ValueError("top_chunk_ids 数量必须等于 count")
+        if len(self.top_scores) != self.count:
+            raise ValueError("top_scores 数量必须等于 count")
+        return self
+
+
+class CompareDocumentsOutput(BaseModel):
+    """双文档对比工具的稳定输出。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str
+    doc_a: str
+    doc_b: str
+    doc_a_evidence: list[dict[str, Any]]
+    doc_b_evidence: list[dict[str, Any]]
+    comparison: str
+    conflict_detected: bool
+    summary: str
+
+
+class SimpleCalculatorOutput(BaseModel):
+    """安全计算器工具的稳定输出。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expression: str
+    result: int | float
+
+
+class ListDocumentsOutput(BaseModel):
+    """文档列表工具的稳定输出。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    count: int = Field(..., ge=0)
+    documents: list[dict[str, Any]]
+
+    @model_validator(mode="after")
+    def validate_document_count(self) -> "ListDocumentsOutput":
+        """确保显式文档数量与列表长度一致。"""
+        if self.count != len(self.documents):
+            raise ValueError("count 必须等于 documents 数量")
+        return self
+
+
+class GetChunkTextOutput(BaseModel):
+    """chunk 原文工具的稳定输出。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    chunk_id: int | str
+    chunk: dict[str, Any]
 
 
 class WebSearchArgs(BaseModel):
