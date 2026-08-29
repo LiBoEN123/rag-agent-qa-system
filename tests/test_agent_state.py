@@ -1,6 +1,6 @@
 """无 Parent Graph 后的 Agent 状态与输入合同测试。"""
 
-import importlib.util
+from pathlib import Path
 from typing import is_typeddict
 
 import pytest
@@ -13,6 +13,9 @@ from app.agent.runtime import (
 )
 from app.agent.state import AgentObservation
 from app.agent.tool_events import build_tool_observation
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_agent_observation_is_plain_typed_dict():
@@ -33,8 +36,7 @@ def test_agent_observation_is_plain_typed_dict():
 
 def test_parent_agent_graph_state_module_is_removed():
     """生产状态只剩 create_agent 内部 Schema 与最终 Result。"""
-    with pytest.raises(ModuleNotFoundError):
-        importlib.util.find_spec("app.graph.state")
+    assert not (PROJECT_ROOT / "app" / "graph" / "state.py").is_file()
     fields = FrameworkAgentState.__annotations__
     assert "knowledge_base_result" in fields
     assert "framework_events_applied" not in fields

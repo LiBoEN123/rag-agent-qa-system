@@ -11,6 +11,7 @@ from app.config import AppSettings
 from app.contracts.chat import AgentResultStatus
 from app.services.chat_service import ChatServiceDependencies
 from app.tools import runtime as tool_runtime
+from app.tools.context import PrincipalType, ToolInvocationContext
 from app.tools.registry import ToolRegistry
 from scripts.evaluation import agent as agent_evaluation
 from scripts.evaluation import runner
@@ -33,6 +34,86 @@ def _settings(tmp_path: Path) -> AppSettings:
         bad_cases_path=tmp_path / "production-bad.jsonl",
         tool_audit_path=tmp_path / "production-audit.jsonl",
     )
+
+
+def test_core_evaluation_snapshot_explicitly_disables_production_mcp(tmp_path):
+    production = _settings(tmp_path).model_copy(
+        update={"mcp_tools_enabled": True}
+    )
+
+    evaluation = runner.build_evaluation_settings(
+        production,
+        tmp_path / "evaluation",
+    )
+
+    assert production.mcp_tools_enabled is True
+    assert evaluation.mcp_tools_enabled is False
+
+
+def test_core_agent_builds_when_environment_enables_mcp(
+    tmp_path,
+    settings_env,
+):
+    from app.agent.runtime import prepare_agent_runtime_invocation
+
+    production = settings_env(mcp_tools_enabled=True)
+    evaluation = runner.build_evaluation_settings(
+        production,
+        tmp_path / "evaluation",
+    )
+
+    with runner.evaluation_settings_scope(evaluation):
+        invocation = prepare_agent_runtime_invocation(
+            original_question="请计算 1+1",
+            effective_question="请计算 1+1",
+            top_k=5,
+            decompose_top_k=10,
+            trace_id="evaluation-mcp-disabled",
+            session_id="evaluation-mcp-disabled",
+            tool_context=ToolInvocationContext(
+                trace_id="evaluation-mcp-disabled",
+                session_id="evaluation-mcp-disabled",
+                principal_id="evaluation_baseline_v2",
+                principal_type=PrincipalType.SERVICE,
+                permissions=("knowledge_base:read",),
+                source="evaluation_baseline_v2",
+            ),
+            settings=evaluation,
+        )
+
+    assert invocation.agent is not None
+
+
+def test_core_evaluation_exposes_only_authorized_local_tools(
+    tmp_path,
+    settings_env,
+):
+    from app.agent.framework_tools import resolve_agent_tools
+
+    production = settings_env(mcp_tools_enabled=True)
+    evaluation = runner.build_evaluation_settings(
+        production,
+        tmp_path / "evaluation",
+    )
+    context = ToolInvocationContext(
+        principal_id="evaluation_baseline_v2",
+        principal_type=PrincipalType.SERVICE,
+        permissions=("knowledge_base:read",),
+        source="evaluation_baseline_v2",
+    )
+
+    with runner.evaluation_settings_scope(evaluation):
+        visible_names = [
+            tool.name for tool in resolve_agent_tools(context)
+        ]
+
+    assert visible_names == [
+        "search_knowledge_base",
+        "compare_documents",
+        "simple_calculator",
+        "list_documents",
+        "get_chunk_text",
+    ]
 
 
 def test_validate_only_never_runs_agent_rag_or_creates_output(

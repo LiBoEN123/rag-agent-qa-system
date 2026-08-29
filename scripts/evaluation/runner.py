@@ -107,11 +107,12 @@ def build_evaluation_settings(
     settings: AppSettings,
     output_dir: Path,
 ) -> AppSettings:
-    """从当前真实配置复制只读评测快照。"""
+    """从当前真实配置复制纯本地、无生产写入的 Core 评测快照。"""
     return settings.model_copy(
         update={
             "enable_agent_trace_store": False,
             "tool_audit_enabled": False,
+            "mcp_tools_enabled": False,
             "sqlite_db_path": output_dir / ".isolated" / "app.sqlite",
             "metrics_path": output_dir / ".isolated" / "metrics.jsonl",
             "bad_cases_path": output_dir / ".isolated" / "bad_cases.jsonl",
@@ -429,6 +430,7 @@ def main(argv: list[str] | None = None) -> int:
     manifest = build_manifest(
         run_id=run_id,
         settings=evaluation_settings,
+        production_mcp_tools_enabled=settings.mcp_tools_enabled,
         agent_cases_path=(
             None if args.rag_only else args.agent_cases
         ),

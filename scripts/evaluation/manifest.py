@@ -41,6 +41,7 @@ PROMPT_INPUT_FILES = (
 )
 CONTEXT_SELECTION_SOURCE = "app/rag/generation.py"
 PREDICTION_SCHEMA_VERSION = 2
+CORE_EVALUATION_MCP_MODE = "core_disabled"
 
 
 def sha256_file(path: str | Path | None) -> str:
@@ -212,6 +213,7 @@ def build_manifest(
     *,
     run_id: str,
     settings: AppSettings,
+    production_mcp_tools_enabled: bool,
     agent_cases_path: Path | None,
     rag_eval_path: Path | None,
     coverage_report: dict[str, Any],
@@ -312,6 +314,11 @@ def build_manifest(
             "registered_tool_names": tool_names,
             "tool_contract_sha256": contract_hash,
             "include_online": include_online,
+        },
+        "mcp": {
+            "production_enabled": bool(production_mcp_tools_enabled),
+            "evaluation_enabled": bool(settings.mcp_tools_enabled),
+            "mode": CORE_EVALUATION_MCP_MODE,
         },
         "prompts": {
             "files": _prompt_hashes(),

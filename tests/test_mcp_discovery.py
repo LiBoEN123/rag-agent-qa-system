@@ -472,6 +472,18 @@ def test_disabled_mcp_is_invisible_even_with_server_permission(
     )
 
 
+def test_enabled_mcp_without_initialized_runtime_still_fails_closed(
+    monkeypatch,
+    settings_factory,
+):
+    settings = settings_factory(mcp_tools_enabled=True)
+    monkeypatch.setattr(mcp_provider, "get_settings", lambda: settings)
+    mcp_provider.clear_mcp_tool_provider()
+
+    with pytest.raises(RuntimeError, match="MCP runtime is not initialized"):
+        mcp_provider.list_mcp_tools_for_context(ToolInvocationContext())
+
+
 def test_initialize_uses_official_client_options_and_caches_discovery(
     monkeypatch,
     settings_factory,
