@@ -24,6 +24,12 @@ FIXTURE = (
     / "evaluation"
     / "minimal_agent_cases_v2.json"
 )
+EXTENDED_DATASET = (
+    Path(__file__).parents[1]
+    / "data"
+    / "eval"
+    / "agent_eval_cases_extended_v2.json"
+)
 
 
 def _settings(tmp_path: Path) -> AppSettings:
@@ -147,6 +153,166 @@ def test_validate_only_never_runs_agent_rag_or_creates_output(
     assert code == 0
     assert not output.exists()
     assert "validation passed" in capsys.readouterr().out
+
+
+def test_extended_validate_only_never_initializes_mcp(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(runner, "get_settings", lambda: _settings(tmp_path))
+    monkeypatch.setattr(
+        runner,
+        "evaluation_runtime_scope",
+        lambda *args, **kwargs: pytest.fail("MCP runtime 不应初始化"),
+    )
+
+    code = runner.main(
+        [
+            "--validate-only",
+            "--include-mcp",
+            "--include-mixed",
+            "--agent-cases",
+            str(EXTENDED_DATASET),
+        ]
+    )
+
+    assert code == 0
+
+
+def test_suite_permissions_are_case_specific_and_mixed_adds_web():
+    permissions = agent_evaluation._permissions_for_suite
+
+    assert permissions("core") == ("knowledge_base:read",)
+    assert permissions("online") == (
+        "knowledge_base:read",
+        "web:search",
+        "web:fetch",
+    )
+    assert permissions("mcp", ("github",)) == (
+        "knowledge_base:read",
+        "mcp:github",
+    )
+    assert permissions("mixed", ("github", "firecrawl")) == (
+        "knowledge_base:read",
+        "web:search",
+        "web:fetch",
+        "mcp:github",
+        "mcp:firecrawl",
+    )
+
+
+def test_online_runtime_scope_does_not_initialize_mcp(
+    tmp_path,
+    monkeypatch,
+):
+    from app.tools.mcp import client as mcp_client
+
+    settings = runner.build_evaluation_settings(
+        _settings(tmp_path).model_copy(update={"mcp_tools_enabled": True}),
+        tmp_path / "online",
+        mcp_enabled=False,
+    )
+
+    async def forbidden_initialize(_settings):
+        pytest.fail("Online suite 不应初始化 MCP")
+
+    monkeypatch.setattr(mcp_client, "initialize_mcp_runtime", forbidden_initialize)
+
+    with runner.evaluation_runtime_scope(settings) as catalog:
+        assert catalog == []
+
+
+def test_mcp_runtime_initialize_and_close_are_paired_after_failure(
+    tmp_path,
+    monkeypatch,
+):
+    from app.tools.mcp import client as mcp_client
+    from app.tools.mcp import provider as mcp_provider
+
+    events = []
+    settings = runner.build_evaluation_settings(
+        _settings(tmp_path),
+        tmp_path / "mcp",
+        mcp_enabled=True,
+    )
+
+    @contextmanager
+    def no_scope(_settings):
+        yield
+
+    async def fake_initialize(_settings):
+        events.append("initialize")
+
+    async def fake_close():
+        events.append("close")
+
+    monkeypatch.setattr(runner, "evaluation_settings_scope", no_scope)
+    monkeypatch.setattr(mcp_client, "initialize_mcp_runtime", fake_initialize)
+    monkeypatch.setattr(mcp_client, "close_mcp_runtime", fake_close)
+    monkeypatch.setattr(
+        mcp_provider,
+        "get_mcp_tool_catalog",
+        lambda: [
+            {
+                "server": "github",
+                "tool_name": "github_get_file_contents",
+                "remote_tool": "get_file_contents",
+                "risk_level": "read_only",
+                "approval_required": False,
+                "enabled": True,
+                "enabled_for_default_principal": False,
+            }
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="case failed"):
+        with runner.evaluation_runtime_scope(settings) as catalog:
+            assert catalog[0]["server"] == "github"
+            raise RuntimeError("case failed")
+
+    assert events == ["initialize", "close"]
+
+
+@pytest.mark.parametrize(
+    "profiles",
+    [
+        (("core", False), ("mcp", True)),
+        (("mcp", True), ("core", False)),
+        (("mcp", True), ("online", False)),
+        (("mixed", True), ("core", False)),
+    ],
+    ids=["core-to-mcp", "mcp-to-core", "mcp-to-online", "mixed-to-core"],
+)
+def test_evaluation_profiles_do_not_share_mcp_provider_cache(
+    profiles,
+    tmp_path,
+    monkeypatch,
+):
+    from app.tools.mcp import client as mcp_client
+    from app.tools.mcp.provider import (
+        McpToolProvider,
+        get_mcp_tool_provider,
+        install_mcp_tool_provider,
+    )
+
+    async def fake_initialize(settings):
+        install_mcp_tool_provider(McpToolProvider([], settings=settings))
+
+    async def fake_close():
+        mcp_client.reset_mcp_runtime()
+
+    monkeypatch.setattr(mcp_client, "initialize_mcp_runtime", fake_initialize)
+    monkeypatch.setattr(mcp_client, "close_mcp_runtime", fake_close)
+
+    for suite, enabled in profiles:
+        settings = runner.build_evaluation_settings(
+            _settings(tmp_path),
+            tmp_path / f"profile-{suite}",
+            mcp_enabled=enabled,
+        )
+        with runner.evaluation_runtime_scope(settings):
+            assert (get_mcp_tool_provider() is not None) is enabled
+        assert get_mcp_tool_provider() is None
 
 
 def test_capture_tool_output_keys_never_keeps_values(monkeypatch):

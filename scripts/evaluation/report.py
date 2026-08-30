@@ -60,6 +60,12 @@ def write_agent_csv(
         "actual_status",
         "expected_first_tool",
         "actual_first_tool",
+        "expected_tool_origin",
+        "actual_tool_origin",
+        "expected_mcp_server",
+        "actual_mcp_server",
+        "classification",
+        "unnecessary_tool_call_count",
         "actual_tools",
         "tool_call_count",
         "llm_call_count",
@@ -89,6 +95,27 @@ def write_agent_csv(
                     "actual_first_tool": row.get(
                         "actual_first_tool",
                         "",
+                    ),
+                    "expected_tool_origin": row.get(
+                        "expected_tool_origin",
+                        "",
+                    ),
+                    "actual_tool_origin": row.get(
+                        "actual_tool_origin",
+                        "",
+                    ),
+                    "expected_mcp_server": row.get(
+                        "expected_mcp_server",
+                        "",
+                    ),
+                    "actual_mcp_server": row.get(
+                        "actual_mcp_server",
+                        "",
+                    ),
+                    "classification": row.get("classification", ""),
+                    "unnecessary_tool_call_count": row.get(
+                        "unnecessary_tool_call_count",
+                        0,
                     ),
                     "actual_tools": " -> ".join(
                         row.get("actual_tools") or []
@@ -220,6 +247,12 @@ def build_markdown_report(
         f"- Git commit: `{code['git_commit']}`",
         f"- Git branch: `{code['git_branch']}`",
         f"- Dirty worktree: `{str(code['git_dirty']).lower()}`",
+        f"- Evaluation type: "
+        f"`{manifest.get('evaluation_type', 'core_baseline')}`",
+        f"- Selected suites: "
+        f"`{json.dumps(manifest.get('selected_suites', []), ensure_ascii=False)}`",
+        f"- External network enabled: "
+        f"`{str(manifest.get('external_network_enabled', False)).lower()}`",
         "",
         "## 代码与环境",
         "",
@@ -259,17 +292,20 @@ def build_markdown_report(
             .get("suite", {})
             .get("core", {})
         )
-        lines.extend(
-            [
-                f"- Pass rate: {_format_rate(core.get('pass_rate', 0))}",
-                f"- First tool accuracy: "
-                f"{_format_rate(agent.get('first_tool_accuracy', 0))}",
-                f"- Status accuracy: "
-                f"{_format_rate(agent.get('status_accuracy', 0))}",
-                f"- Source pass rate: "
-                f"{_format_rate(agent.get('source_pass_rate', 0))}",
-            ]
-        )
+        if core:
+            lines.extend(
+                [
+                    f"- Pass rate: {_format_rate(core.get('pass_rate', 0))}",
+                    f"- First tool accuracy: "
+                    f"{_format_rate(agent.get('first_tool_accuracy', 0))}",
+                    f"- Status accuracy: "
+                    f"{_format_rate(agent.get('status_accuracy', 0))}",
+                    f"- Source pass rate: "
+                    f"{_format_rate(agent.get('source_pass_rate', 0))}",
+                ]
+            )
+        else:
+            lines.append("- skipped: 当前数据集未选择 Core case")
     else:
         lines.append(f"- skipped: {agent.get('reason', '') if agent else 'not run'}")
     lines.extend(["", "## Online Agent 指标", ""])
@@ -284,6 +320,46 @@ def build_markdown_report(
         )
     else:
         lines.append("- skipped: `--include-online` 未启用")
+    lines.extend(["", "## Extended Tool 指标", ""])
+    extended_suites = {
+        name: (
+            (agent or {}).get("groups", {})
+            .get("suite", {})
+            .get(name)
+        )
+        for name in ("mcp", "mixed")
+    }
+    if any(extended_suites.values()):
+        for name, values in extended_suites.items():
+            if values:
+                lines.append(
+                    f"- {name} pass rate: "
+                    f"{_format_rate(values.get('pass_rate', 0))}"
+                )
+        for name in (
+            "tool_origin_accuracy",
+            "mcp_server_accuracy",
+            "external_tool_success_rate",
+            "mcp_tool_success_rate",
+            "web_tool_success_rate",
+            "permission_boundary_pass_rate",
+            "approval_gate_pass_rate",
+            "recovery_pass_rate",
+            "cross_tool_selection_accuracy",
+        ):
+            lines.append(
+                f"- {name}: {_format_rate((agent or {}).get(name, 0))}"
+            )
+        lines.extend(["", "### Cross-Tool Confusion", ""])
+        confusion = (agent or {}).get("cross_tool_confusion", {})
+        lines.extend(
+            f"- `{route}`: {count}"
+            for route, count in confusion.items()
+        )
+        if not confusion:
+            lines.append("- 无可统计路由")
+    else:
+        lines.append("- skipped: MCP/Mixed 显式开关未启用")
     lines.extend(["", "## RAG 指标", ""])
     if rag and not rag.get("skipped"):
         overall = rag.get("overall", {})
@@ -382,15 +458,15 @@ def build_markdown_report(
     if failures:
         lines.extend(
             [
-                "| case_id | category | question | expected | actual | reasons | latency |",
-                "| --- | --- | --- | --- | --- | --- | ---: |",
+                "| case_id | category | question | expected | actual | class | reasons | latency |",
+                "| --- | --- | --- | --- | --- | --- | --- | ---: |",
             ]
         )
         for item in failures[:100]:
             expected = item.get("expected") or {}
             lines.append(
                 "| {case} | {category} | {question} | {expected} | "
-                "{actual} | {reasons} | {latency} |".format(
+                "{actual} | {classification} | {reasons} | {latency} |".format(
                     case=str(item.get("case_id") or "").replace("|", "\\|"),
                     category=str(item.get("category") or "").replace("|", "\\|"),
                     question=str(item.get("question") or "")[:100].replace(
@@ -405,6 +481,7 @@ def build_markdown_report(
                         f"{item.get('actual_status') or ''}/"
                         f"{','.join(item.get('actual_tools') or [])}"
                     ),
+                    classification=item.get("classification", ""),
                     reasons=",".join(item.get("failure_reasons") or []),
                     latency=item.get("latency_ms", ""),
                 )

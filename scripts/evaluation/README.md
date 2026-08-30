@@ -24,6 +24,8 @@ scripts/compare_evaluation_runs.py
 | 只诊断 Agent | `--agent-only` | 是 | 是 | 否 | 默认否 |
 | 只诊断 RAG | `--rag-only` | 是 | 否 | 是 | 否 |
 | 验证 Online 工具 | `--agent-only --include-online` | 是 | 是 | 否 | 是 |
+| 验证 MCP 工具 | `--agent-only --include-mcp` + Extended 数据集 | 是 | 是 | 否 | 是 |
+| 验证 Mixed 路由 | `--agent-only --include-mixed` + Extended 数据集 | 是 | 是 | 否 | 是 |
 | 增加 RAG 语义判断 | 默认或 `--rag-only` 加 `--use-llm-judge` | 是 | 取决于模式 | 是 | 不调用 Web 工具，但调用 Judge 模型 |
 | 比较两次完整运行 | `compare_evaluation_runs.py` | 否 | 否 | 否 | 否 |
 
@@ -37,6 +39,8 @@ scripts/compare_evaluation_runs.py
   `search_knowledge_base`，只是不会执行独立的 65 题 RAG 数据集。
 - `RAG-only` 只执行 RAG 数据集，不创建 Agent case 结果。
 - `--include-online` 只影响 Agent suite；与 `--rag-only` 一起使用没有实际意义。
+- `--include-mcp` 与 `--include-mixed` 才会初始化 MCP；二者都不改变
+  `--include-online` 的既有 Web-only 语义。
 - `--use-llm-judge` 只影响 RAG 语义指标；与 `--agent-only` 一起使用没有实际意义。
 
 ## 二、运行前准备
@@ -188,6 +192,32 @@ python scripts/run_evaluation_baseline.py \
 若只想检查 Web 工具连通性，而不是执行 Agent Baseline，应使用仓库根目录的
 `scripts/smoke_test_online_tools.py`，不要把 Smoke Test 结果计入 Core Baseline。
 
+### MCP 与 Mixed Extended Evaluation
+
+Extended live cases 使用独立数据集，先执行零网络校验，再分别运行 MCP 与 Mixed：
+
+```bash
+python scripts/run_evaluation_baseline.py \
+  --agent-cases data/eval/agent_eval_cases_extended_v2.json \
+  --validate-only
+
+python scripts/run_evaluation_baseline.py --agent-only \
+  --agent-cases data/eval/agent_eval_cases_extended_v2.json \
+  --include-mcp \
+  --output-dir outputs/evaluation_baseline_v2/extended-mcp-<short-sha>
+
+python scripts/run_evaluation_baseline.py --agent-only \
+  --agent-cases data/eval/agent_eval_cases_extended_v2.json \
+  --include-mixed \
+  --output-dir outputs/evaluation_baseline_v2/extended-mixed-<short-sha>
+```
+
+Runner 只给每条 case 声明的 Server 增加 `mcp:<server>` 权限。正式运行会在评测
+Settings scope 内完成 discovery、runtime catalog preflight 和成对 cleanup；Server
+或工具缺失会作为 `PRECHECK_FAILED` 停止，不记成普通 Agent failure。Manifest 只写
+安全 catalog 字段，MCP 正文不会进入逐 case trace，结束后还会用本地配置解析出的
+Secret 值逐值扫描文本产物。真实外部运行不属于普通 CI 门禁。
+
 ## 五、LLM Judge 的启动方式
 
 默认关闭 Judge：
@@ -235,6 +265,8 @@ Judge 是辅助语义判断，不替代以下确定性检查：
 | `--agent-only` | 跳过独立 RAG 题集 | Agent 的知识库工具仍可使用 RAG |
 | `--rag-only` | 跳过 Agent case | 不受 `--include-online` 影响 |
 | `--include-online` | 在 Core Agent 之外增加 Online Agent case | 只在显式联网运行中使用 |
+| `--include-mcp` | 增加 MCP suite 并初始化隔离 runtime | 只与 Extended 数据集 live run 一起使用 |
+| `--include-mixed` | 增加 Mixed suite，开放 Web 和 case 声明的 MCP Server | 只与 Extended 数据集 live run 一起使用 |
 | `--use-llm-judge` | 启用 RAG 关键点和 forbidden 语义判断 | 会增加模型调用和成本 |
 | `--judge-model` | 指定 Judge 模型 | 只有同时启用 Judge 才有实际意义 |
 | `--allow-dirty` | 允许脏工作区实验 | 不用于正式基线 |
@@ -259,6 +291,7 @@ outputs/evaluation_baseline_v2/<run-id>/
 ├── baseline_report.md
 ├── coverage_report.json
 ├── failure_cases.jsonl
+├── secret_scan.json
 ├── agent/
 │   ├── per_case.jsonl
 │   ├── per_case.csv

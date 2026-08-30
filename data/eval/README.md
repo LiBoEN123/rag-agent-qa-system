@@ -7,6 +7,7 @@
 | --- | --- |
 | `agent_eval_cases_nmgut_v1.json` | 历史 v1 cases，仅保留数据，不提供旧 CLI |
 | `agent_eval_cases_v2.json` | Evaluation Baseline v2 Agent cases |
+| `agent_eval_cases_extended_v2.json` | GitHub/Firecrawl MCP 与 Mixed 路由 live cases；不计入 Core |
 | `rag_eval_questions_nmgut_graduate_v1.json` | 旧 RAG 数据 |
 | `rag_eval_questions_v2_semantic_fixed.json` | 当前 RAG gold 数据 |
 | `evaluation_thresholds_v2.example.json` | 比较工具示例阈值，不是 CI 门禁 |
@@ -15,6 +16,10 @@
 
 ```bash
 python scripts/run_evaluation_baseline.py --validate-only
+
+python scripts/run_evaluation_baseline.py \
+  --agent-cases data/eval/agent_eval_cases_extended_v2.json \
+  --validate-only
 ```
 
 新增 Agent case 时必须使用唯一 ID、`version: 2`、合法 suite/status/工具名，并在

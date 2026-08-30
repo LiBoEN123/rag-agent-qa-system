@@ -222,6 +222,9 @@ def build_manifest(
     include_online: bool,
     use_llm_judge: bool,
     judge_model: str,
+    selected_suites: list[str] | tuple[str, ...] | None = None,
+    mcp_catalog: list[dict[str, str | bool]] | None = None,
+    selected_mcp_servers: list[str] | tuple[str, ...] = (),
     rag_status: dict[str, Any] | None = None,
     generated_at: str | None = None,
     effective_rag_parameters: Mapping[str, Any] | None = None,
@@ -245,10 +248,47 @@ def build_manifest(
             PREDICTION_SCHEMA_VERSION,
         )
     )
+    explicit_suites = selected_suites is not None
+    suites = sorted(
+        set(
+            selected_suites
+            or (["core", "online"] if include_online else ["core"])
+        )
+    )
+    mcp_extended = bool({"mcp", "mixed"} & set(suites))
+    web_enabled = bool({"online", "mixed"} & set(suites))
+    external_network_enabled = bool(web_enabled or mcp_extended)
+    if mcp_extended:
+        evaluation_type = "extended_tool_evaluation"
+    elif web_enabled:
+        evaluation_type = "online_web_evaluation"
+    else:
+        evaluation_type = "core_baseline"
+    safe_mcp_catalog = list(mcp_catalog or [])
+    mcp_metadata: dict[str, Any] = {
+        "production_enabled": bool(production_mcp_tools_enabled),
+        "evaluation_enabled": bool(settings.mcp_tools_enabled),
+        "mode": "extended_live" if mcp_extended else CORE_EVALUATION_MCP_MODE,
+    }
+    if explicit_suites:
+        mcp_metadata.update(
+            {
+                "discovered_server_count": len(
+                    {str(row.get("server") or "") for row in safe_mcp_catalog}
+                ),
+                "discovered_tool_count": len(safe_mcp_catalog),
+                "selected_servers": sorted(set(selected_mcp_servers)),
+                "tools": safe_mcp_catalog,
+            }
+        )
     manifest = {
         "schema_version": 2,
         "run_id": run_id,
         "generated_at": generated_at or datetime.now(UTC).isoformat(),
+        "evaluation_type": evaluation_type,
+        "selected_suites": suites,
+        "external_network_enabled": external_network_enabled,
+        "web": {"enabled": web_enabled},
         "code": {
             **git_state,
             "python_version": platform.python_version(),
@@ -315,11 +355,7 @@ def build_manifest(
             "tool_contract_sha256": contract_hash,
             "include_online": include_online,
         },
-        "mcp": {
-            "production_enabled": bool(production_mcp_tools_enabled),
-            "evaluation_enabled": bool(settings.mcp_tools_enabled),
-            "mode": CORE_EVALUATION_MCP_MODE,
-        },
+        "mcp": mcp_metadata,
         "prompts": {
             "files": _prompt_hashes(),
             "combined_sha256": sha256_json(_prompt_hashes()),

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 from contextlib import contextmanager
@@ -24,6 +25,16 @@ from scripts.evaluation.contracts import (
     build_coverage_report,
     load_agent_evaluation_dataset,
     validate_tool_names,
+)
+from scripts.evaluation.external import (
+    MCP_SUITES,
+    McpPreflightError,
+    build_tool_origin_catalog,
+    read_mcp_secret_values,
+    safe_mcp_catalog_rows,
+    scan_artifacts_for_secret_values,
+    selected_mcp_servers,
+    validate_mcp_runtime_catalog,
 )
 from scripts.evaluation.manifest import (
     build_manifest,
@@ -52,17 +63,23 @@ DEFAULT_RAG_EVAL = (
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "outputs" / "evaluation_baseline_v2"
 
 
+class McpRuntimeInitializationError(RuntimeError):
+    """表示 Extended preflight 在 MCP runtime 初始化阶段失败。"""
+
+
 def _clear_runtime_caches() -> None:
     """清理会持有 Settings 或副作用边界的进程内缓存。"""
     from app.agent.runtime import reset_agent_runtime
     from app.llm.factory import clear_model_factory_cache
     from app.tools.registry import clear_tool_registry_cache
     from app.tools.runtime import close_tool_runtime
+    from app.tools.mcp.client import reset_mcp_runtime
 
     reset_agent_runtime()
     close_tool_runtime()
     clear_tool_registry_cache()
     clear_model_factory_cache()
+    reset_mcp_runtime()
 
 
 @contextmanager
@@ -106,19 +123,80 @@ def evaluation_settings_scope(
 def build_evaluation_settings(
     settings: AppSettings,
     output_dir: Path,
+    *,
+    mcp_enabled: bool = False,
 ) -> AppSettings:
-    """从当前真实配置复制纯本地、无生产写入的 Core 评测快照。"""
+    """复制无生产写入的评测快照；MCP 只由显式 Extended profile 开启。"""
     return settings.model_copy(
         update={
             "enable_agent_trace_store": False,
-            "tool_audit_enabled": False,
-            "mcp_tools_enabled": False,
+            "tool_audit_enabled": mcp_enabled,
+            "mcp_tools_enabled": mcp_enabled,
             "sqlite_db_path": output_dir / ".isolated" / "app.sqlite",
             "metrics_path": output_dir / ".isolated" / "metrics.jsonl",
             "bad_cases_path": output_dir / ".isolated" / "bad_cases.jsonl",
             "tool_audit_path": output_dir / ".isolated" / "tool_audit.jsonl",
         }
     )
+
+
+@contextmanager
+def evaluation_runtime_scope(
+    settings: AppSettings,
+) -> Iterator[list[dict[str, str | bool]]]:
+    """让 Settings scope 与 MCP initialize/close 生命周期严格配对。"""
+    from app.tools.mcp.client import (
+        close_mcp_runtime,
+        initialize_mcp_runtime,
+        reset_mcp_runtime,
+    )
+    from app.tools.mcp.provider import get_mcp_tool_catalog
+
+    with evaluation_settings_scope(settings):
+        initialized = False
+        try:
+            if settings.mcp_tools_enabled:
+                try:
+                    asyncio.run(initialize_mcp_runtime(settings))
+                except Exception as exc:
+                    raise McpRuntimeInitializationError(
+                        "MCP_RUNTIME_INITIALIZATION_FAILED: "
+                        f"{type(exc).__name__}"
+                    ) from None
+                initialized = True
+                yield safe_mcp_catalog_rows(get_mcp_tool_catalog())
+            else:
+                reset_mcp_runtime()
+                yield []
+        finally:
+            if initialized:
+                asyncio.run(close_mcp_runtime())
+            else:
+                reset_mcp_runtime()
+
+
+def _requested_suites(args: argparse.Namespace) -> set[str]:
+    """保留 Core 默认语义，并为每类外部 suite 使用独立显式开关。"""
+    suites = {"core"}
+    if args.include_online:
+        suites.add("online")
+    if args.include_mcp:
+        suites.add("mcp")
+    if args.include_mixed:
+        suites.add("mixed")
+    return suites
+
+
+def _selected_suites(
+    dataset: AgentEvaluationDataset,
+    args: argparse.Namespace,
+) -> list[str]:
+    """返回本次数据集中真正会执行的 suite。"""
+    requested = _requested_suites(args)
+    available = {
+        case.suite for case in dataset.cases if not case.disabled
+    }
+    return sorted(requested & available)
 
 
 def validate_dataset(
@@ -275,6 +353,10 @@ def _reproduce_command(args: argparse.Namespace, output_dir: Path) -> str:
         parts.append("--rag-only")
     if args.include_online:
         parts.append("--include-online")
+    if args.include_mcp:
+        parts.append("--include-mcp")
+    if args.include_mixed:
+        parts.append("--include-mixed")
     if args.use_llm_judge:
         parts.append("--use-llm-judge")
     if args.judge_model:
@@ -310,6 +392,8 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--agent-only", action="store_true")
     mode.add_argument("--rag-only", action="store_true")
     parser.add_argument("--include-online", action="store_true")
+    parser.add_argument("--include-mcp", action="store_true")
+    parser.add_argument("--include-mixed", action="store_true")
     parser.add_argument("--use-llm-judge", action="store_true")
     parser.add_argument("--judge-model", default=None)
     parser.add_argument("--allow-dirty", action="store_true")
@@ -346,6 +430,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    selected_suites = _selected_suites(dataset, args)
+    mcp_evaluation_enabled = bool(MCP_SUITES & set(selected_suites))
+
     git_state = get_git_state()
     if git_state["git_dirty"] and not args.allow_dirty:
         parser.error(
@@ -359,7 +446,11 @@ def main(argv: list[str] | None = None) -> int:
     if output_dir.exists() and any(output_dir.iterdir()):
         parser.error(f"输出目录已存在且非空：{output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
-    evaluation_settings = build_evaluation_settings(settings, output_dir)
+    evaluation_settings = build_evaluation_settings(
+        settings,
+        output_dir,
+        mcp_enabled=mcp_evaluation_enabled,
+    )
 
     agent_rows: list[dict[str, Any]] = []
     rag_rows: list[dict[str, Any]] = []
@@ -378,51 +469,75 @@ def main(argv: list[str] | None = None) -> int:
     else:
         rag_summary = {}
 
-    with evaluation_settings_scope(evaluation_settings):
-        rag_result: dict[str, Any] | None = None
-        effective_rag_parameters: dict[str, Any] = {
-            "prediction_schema_version": 2,
-            "effective_top_k": args.top_k,
-            "effective_decompose_top_k": decompose_top_k,
-        }
-        if not args.agent_only:
-            rag_result = run_rag_baseline(
-                rag_eval_path=args.rag_eval_file,
-                output_dir=output_dir,
-                top_k=args.top_k,
-                decompose_top_k=decompose_top_k,
-                force_rebuild=args.force_rebuild,
-                use_llm_judge=args.use_llm_judge,
-                judge_model=args.judge_model,
-            )
-            rag_rows = rag_result["rows"]
-            effective_rag_parameters = dict(
-                rag_result["prediction_metadata"]
-            )
-            validate_effective_rag_parameters(
-                requested_top_k=args.top_k,
-                requested_decompose_top_k=decompose_top_k,
-                prediction_metadata=effective_rag_parameters,
-            )
-            rag_summary = {
-                **rag_result["summary"],
-                "metrics_source": (
-                    "scripts/evaluation/rag/evaluation.py"
-                ),
-                "judge_enabled": rag_result["judge_enabled"],
+    mcp_catalog: list[dict[str, str | bool]] = []
+    try:
+        with evaluation_runtime_scope(evaluation_settings) as runtime_catalog:
+            mcp_catalog = list(runtime_catalog)
+            if mcp_evaluation_enabled:
+                validate_mcp_runtime_catalog(
+                    dataset,
+                    mcp_catalog,
+                    selected_suites=set(selected_suites),
+                )
+            tool_catalog = build_tool_origin_catalog(mcp_catalog)
+            rag_result: dict[str, Any] | None = None
+            effective_rag_parameters: dict[str, Any] = {
+                "prediction_schema_version": 2,
+                "effective_top_k": args.top_k,
+                "effective_decompose_top_k": decompose_top_k,
             }
-        if not args.rag_only:
-            agent_rows, agent_summary = run_agent_baseline(
-                dataset,
-                settings=evaluation_settings,
-                include_online=args.include_online,
-                top_k=args.top_k,
-                decompose_top_k=decompose_top_k,
-                rag_already_initialized=rag_result is not None,
-                force_rebuild=(
-                    args.force_rebuild and rag_result is None
-                ),
-            )
+            if not args.agent_only:
+                rag_result = run_rag_baseline(
+                    rag_eval_path=args.rag_eval_file,
+                    output_dir=output_dir,
+                    top_k=args.top_k,
+                    decompose_top_k=decompose_top_k,
+                    force_rebuild=args.force_rebuild,
+                    use_llm_judge=args.use_llm_judge,
+                    judge_model=args.judge_model,
+                )
+                rag_rows = rag_result["rows"]
+                effective_rag_parameters = dict(
+                    rag_result["prediction_metadata"]
+                )
+                validate_effective_rag_parameters(
+                    requested_top_k=args.top_k,
+                    requested_decompose_top_k=decompose_top_k,
+                    prediction_metadata=effective_rag_parameters,
+                )
+                rag_summary = {
+                    **rag_result["summary"],
+                    "metrics_source": (
+                        "scripts/evaluation/rag/evaluation.py"
+                    ),
+                    "judge_enabled": rag_result["judge_enabled"],
+                }
+            if not args.rag_only:
+                agent_rows, agent_summary = run_agent_baseline(
+                    dataset,
+                    settings=evaluation_settings,
+                    include_online=args.include_online,
+                    include_mcp=args.include_mcp,
+                    include_mixed=args.include_mixed,
+                    top_k=args.top_k,
+                    decompose_top_k=decompose_top_k,
+                    rag_already_initialized=rag_result is not None,
+                    force_rebuild=(
+                        args.force_rebuild and rag_result is None
+                    ),
+                    tool_catalog=tool_catalog,
+                )
+    except (McpRuntimeInitializationError, McpPreflightError) as exc:
+        write_json(
+            output_dir / "preflight_failure.json",
+            {
+                "status": "PRECHECK_FAILED",
+                "classification": "BLOCKED_EXTERNAL_ENVIRONMENT",
+                "reason": str(exc),
+            },
+        )
+        print(f"Extended MCP preflight failed: {exc}", file=sys.stderr)
+        return 2
 
     from app.rag import get_rag_status
 
@@ -441,6 +556,12 @@ def main(argv: list[str] | None = None) -> int:
         top_k=args.top_k,
         decompose_top_k=decompose_top_k,
         include_online=args.include_online,
+        selected_suites=selected_suites,
+        mcp_catalog=mcp_catalog,
+        selected_mcp_servers=selected_mcp_servers(
+            dataset,
+            set(selected_suites),
+        ),
         use_llm_judge=args.use_llm_judge,
         judge_model=args.judge_model or settings.judge_model,
         rag_status=rag_status,
@@ -473,6 +594,8 @@ def main(argv: list[str] | None = None) -> int:
                 and bool(coverage["suite"].get("online"))
             ),
             "llm_judge": not args.use_llm_judge,
+            "mcp": "mcp" not in selected_suites,
+            "mixed": "mixed" not in selected_suites,
             "agent": bool(agent_summary.get("skipped")),
             "rag": bool(rag_summary.get("skipped")),
         },
@@ -498,6 +621,33 @@ def main(argv: list[str] | None = None) -> int:
         report,
         encoding="utf-8",
     )
+    secret_values = (
+        read_mcp_secret_values(evaluation_settings)
+        if mcp_evaluation_enabled
+        else ()
+    )
+    secret_scan = scan_artifacts_for_secret_values(
+        output_dir,
+        secret_values,
+    )
+    summary["secret_scan"] = {
+        key: secret_scan[key]
+        for key in (
+            "secret_values_scanned",
+            "artifacts_scanned",
+            "secret_leaks_found",
+        )
+    }
+    write_json(output_dir / "baseline_summary.json", summary)
+    secret_scan = scan_artifacts_for_secret_values(
+        output_dir,
+        secret_values,
+    )
+    write_json(output_dir / "secret_scan.json", secret_scan)
+    if secret_scan["secret_leaks_found"]:
+        raise RuntimeError(
+            "Extended Evaluation artifact Secret scan failed closed"
+        )
     print(f"Evaluation baseline written to: {output_dir}")
     print(f"Registered tools: {', '.join(tool_names)}")
     return 0

@@ -258,3 +258,70 @@ def test_static_tool_names_match_runtime_registry(tmp_path):
 
     assert static_names == runtime_names
     assert contract_hash
+
+
+def test_extended_manifest_records_only_safe_mcp_catalog_metadata(
+    tmp_path,
+    monkeypatch,
+):
+    settings = _settings(tmp_path).model_copy(
+        update={"mcp_tools_enabled": True}
+    )
+    monkeypatch.setattr(
+        evaluation_manifest,
+        "get_git_state",
+        lambda: {
+            "git_commit": "abc",
+            "git_branch": "extended",
+            "git_dirty": True,
+        },
+    )
+    monkeypatch.setattr(
+        evaluation_manifest,
+        "build_tool_contract",
+        lambda _settings: ([], [], "hash"),
+    )
+    catalog = [
+        {
+            "server": "github",
+            "tool_name": "github_get_file_contents",
+            "remote_tool": "get_file_contents",
+            "risk_level": "read_only",
+            "approval_required": False,
+            "enabled": True,
+            "enabled_for_default_principal": True,
+        }
+    ]
+
+    manifest = evaluation_manifest.build_manifest(
+        run_id="extended",
+        settings=settings,
+        production_mcp_tools_enabled=True,
+        agent_cases_path=None,
+        rag_eval_path=None,
+        coverage_report=_coverage(),
+        top_k=5,
+        decompose_top_k=10,
+        include_online=False,
+        use_llm_judge=False,
+        judge_model="",
+        selected_suites=["mcp", "mixed"],
+        mcp_catalog=catalog,
+        selected_mcp_servers=["github"],
+    )
+
+    assert manifest["evaluation_type"] == "extended_tool_evaluation"
+    assert manifest["external_network_enabled"] is True
+    assert manifest["web"] == {"enabled": True}
+    assert manifest["mcp"] == {
+        "production_enabled": True,
+        "evaluation_enabled": True,
+        "mode": "extended_live",
+        "discovered_server_count": 1,
+        "discovered_tool_count": 1,
+        "selected_servers": ["github"],
+        "tools": catalog,
+    }
+    serialized = json.dumps(manifest, ensure_ascii=False)
+    assert "Authorization" not in serialized
+    assert "do-not-leak" not in serialized
