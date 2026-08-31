@@ -11,6 +11,7 @@ app.api
   → app.agent
   → app.tools
   → app.rag
+  → app.ingestion
   → app.llm
   → app.storage / app.observability
   → app.contracts / app.config / app.common
@@ -34,6 +35,7 @@ app.api
 | `app.agent` | 直接 `create_agent` Runtime、Router、框架适配、治理事件和结果转换 | tools、rag、llm 及基础设施/基础层 | api、services |
 | `app.tools` | ToolSpec、Provider、Registry、Runtime 和具体工具 | rag、llm、storage 及基础层 | api、services、agent |
 | `app.rag` | 索引、检索、重排、生成、引用和独立 RAG Graph | llm、storage、observability 及基础层 | api、services、agent、tools |
+| `app.ingestion` | 永久知识进入前的 source、identity、provenance、trust、policy 与 approval domain | common | api、services、agent、tools、rag、llm、storage、observability |
 | `app.llm` | 模型传输、工厂、错误和模型 Schema | contracts、config、common | rag、tools、agent、services、api |
 | `app.storage` | SQLite、session、trace 持久化 | observability 及基础层 | 业务层 |
 | `app.observability` | 框架无关 metrics、trace ID 和日志数据处理 | storage 及基础层 | 业务层、FastAPI、Starlette |
@@ -83,15 +85,17 @@ Import Linter 2.13 的 `allow_indirect_imports = True`，只禁止 source packag
 
 ## 合同清单
 
-`.importlinter` 声明六项合同：
+`.importlinter` 声明七项合同：
 
 1. `application-layers`：固化总体单向层级；
 2. `top-level-acyclic`：禁止 `app` 顶层 package 形成循环；
 3. `framework-middleware-does-not-depend-on-runtime`：禁止 Middleware 反向依赖
    Agent Runtime，治理规则只能从 `guardrails.py` 等低耦合模块取得；
 4. `foundation-does-not-depend-on-application`：为基础层反向依赖提供明确错误；
-5. `http-framework-only-in-api`：限制 FastAPI/Starlette；
-6. `pydantic-settings-only-in-config`：限制 pydantic-settings 的直接导入。
+5. `ingestion-domain-is-independent`：禁止永久知识合同反向依赖 Runtime、Tool、
+   RAG、MCP 或基础设施实现；
+6. `http-framework-only-in-api`：限制 FastAPI/Starlette；
+7. `pydantic-settings-only-in-config`：限制 pydantic-settings 的直接导入。
 
 合同不包含 `ignore_imports`。函数内 import 和包级 re-export 都会进入 Import
 Linter 的图，不是规避手段；也不得用 `importlib`、Service Locator 或动态 Registry
@@ -124,7 +128,9 @@ python scripts/inspect_agent_runtime.py --check
 3. 跨层且框架无关的稳定类型放入 `app.contracts`；纯 helper 放入
    `app.common`；配置解析和语义留在 `app.config`。
 4. Agent Loop 与直接 Runtime 放入 `app.agent`，工具执行放入 `app.tools`；只有独立
-   RAG Graph、索引、检索和生成放入 `app.rag`。不要重新创建 Parent Agent Graph。
+   RAG Graph、索引、检索和生成放入 `app.rag`；进入永久知识前的 identity、
+   provenance、policy 和 approval 放入 `app.ingestion`。不要重新创建 Parent Agent
+   Graph。
 5. 更新 `.importlinter` 时把新 package 加到职责匹配的层，不通过调整顺序把偶然
    耦合合法化，也不添加 ignore。
 6. 运行 `lint-imports --verbose` 查看完整 importer/imported 链，再运行 focused

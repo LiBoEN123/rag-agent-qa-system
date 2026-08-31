@@ -11,6 +11,7 @@ layers =
     app.agent
     app.tools
     app.rag
+    app.ingestion
     app.llm
     app.storage : app.observability
     app.contracts | app.config | app.common
@@ -46,6 +47,22 @@ forbidden_modules =
     app.llm
     app.storage
     app.observability
+    app.ingestion
+
+[importlinter:contract:ingestion-domain-is-independent]
+name = Knowledge ingestion domain does not depend on runtime adapters
+type = forbidden
+source_modules =
+    app.ingestion
+forbidden_modules =
+    app.api
+    app.services
+    app.agent
+    app.tools
+    app.rag
+    app.llm
+    app.storage
+    app.observability
 
 [importlinter:contract:http-framework-only-in-api]
 name = FastAPI and Starlette are HTTP adapter dependencies
@@ -58,6 +75,7 @@ source_modules =
     app.llm
     app.storage
     app.observability
+    app.ingestion
     app.contracts
     app.config
     app.common
@@ -77,6 +95,7 @@ source_modules =
     app.llm
     app.storage
     app.observability
+    app.ingestion
     app.contracts
     app.common
 forbidden_modules =
