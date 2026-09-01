@@ -11,7 +11,7 @@ from app.rag.debug import (
     preview_chunks as preview_chunks_impl,
     preview_docs as preview_docs_impl,
 )
-from app.rag.ingest import clean_documents, load_files, split_chunks
+from app.rag.indexing import load_local_langchain_documents, sync_documents
 from app.rag.retrieval import (
     retrieve as retrieve_impl,
     rerank as rerank_impl,
@@ -20,12 +20,10 @@ from app.rag.retrieval import (
 )
 from app.rag.store import (
     build_current_manifest,
-    build_index,
-    get_index_cache_source as get_index_cache_source_impl,
+    _load_embedding_model,
     index_cache_exists as index_cache_exists_impl,
     load_index_cache as load_index_cache_impl,
     needs_rebuild as needs_rebuild_impl,
-    save_index_cache as save_index_cache_impl,
     save_manifest,
 )
 # 进程内索引状态。
@@ -62,91 +60,120 @@ def get_rag_status():
 # =========================
 # 初始化 / 构建
 # =========================
+def _publish_runtime_bundle(bundle: dict) -> None:
+    """只在 index、runtime rebuild 与验证全部成功后替换进程状态。"""
+    global chunks, texts, docs_registry, bm25, model, rerank_model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE, INDEX_SOURCE
+
+    chunks = bundle["chunks"]
+    texts = bundle["texts"]
+    docs_registry = bundle["docs_registry"]
+    doc_embeddings = bundle["doc_embeddings"]
+    bm25 = bundle["bm25"]
+    model = bundle["model"]
+    rerank_model = bundle["rerank_model"]
+    RAG_READY = bool(chunks)
+    RAG_INIT_MESSAGE = "OK" if chunks else NO_DOCUMENTS_MESSAGE
+    INDEX_SOURCE = bundle.get("source", "none") if chunks else "none"
+
+
+def _sync_and_build_runtime(
+    data_dir: str,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+    *,
+    force_rebuild: bool = False,
+) -> tuple[dict, dict[str, int]]:
+    """增量同步 Local corpus，并在发布前构建完整 runtime bundle。"""
+    settings = get_settings()
+    chunk_size = settings.chunk_size if chunk_size is None else chunk_size
+    chunk_overlap = (
+        settings.chunk_overlap if chunk_overlap is None else chunk_overlap
+    )
+    documents = load_local_langchain_documents(
+        data_dir,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+    )
+    embedding_model = (
+        _load_embedding_model()
+        if force_rebuild or model is None
+        else model
+    )
+    sync_result = sync_documents(
+        documents,
+        embedding_model,
+        settings=settings,
+        force_rebuild=force_rebuild,
+    )
+
+    if not documents:
+        return (
+            {
+                "ok": True,
+                "source": "none",
+                "chunks": [],
+                "texts": [],
+                "docs_registry": [],
+                "doc_embeddings": None,
+                "bm25": None,
+                "model": embedding_model,
+                "rerank_model": rerank_model,
+            },
+            sync_result,
+        )
+
+    bundle = load_index_cache_impl(
+        model=embedding_model,
+        rerank_model=rerank_model,
+    )
+    if not bundle["ok"]:
+        raise RuntimeError(bundle["message"])
+    return bundle, sync_result
+
+
 def rebuild_index(
     data_dir: str,
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
 ):
-    """从 data 目录重新加载文档、切分 chunk，并重建内存索引。"""
-    settings = get_settings()
-    chunk_size = settings.chunk_size if chunk_size is None else chunk_size
-    chunk_overlap = (
-        settings.chunk_overlap if chunk_overlap is None else chunk_overlap
-    )
-    global chunks, texts, docs_registry, bm25, model, rerank_model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE, INDEX_SOURCE
-
-    chunks = []
-    texts = []
-    docs_registry = []
-    bm25 = None
-    doc_embeddings = None
-    model = None
-    rerank_model = None
-    RAG_READY = False
-    RAG_INIT_MESSAGE = "RAG 尚未初始化"
-    INDEX_SOURCE = "none"
-
-    raw_docs, docs_registry_local = load_files(data_dir)
-    if not raw_docs:
-        docs_registry = []
-        RAG_INIT_MESSAGE = NO_DOCUMENTS_MESSAGE
-        return
-
-    cleaned_docs = clean_documents(raw_docs)
-
-    all_chunks, chunk_count_map = split_chunks(
-        cleaned_docs,
+    """通过 LangChain 增量同步并发布内存 RAG runtime。"""
+    bundle, sync_result = _sync_and_build_runtime(
+        data_dir=data_dir,
         chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap
+        chunk_overlap=chunk_overlap,
     )
-
-    for doc in docs_registry_local:
-        doc["chunk_count"] = chunk_count_map.get(doc["source_path"], 0)
-
-    index_bundle = build_index(all_chunks, model=model, rerank_model=rerank_model)
-
-    chunks = all_chunks
-    texts = index_bundle["texts"]
-    bm25 = index_bundle["bm25"]
-    doc_embeddings = index_bundle["doc_embeddings"]
-    docs_registry = docs_registry_local
-    model = index_bundle["model"]
-    rerank_model = index_bundle["rerank_model"]
-
-    if not chunks:
-        RAG_INIT_MESSAGE = "文档已加载，但切分后没有可用 chunk"
-        return
-
-    RAG_READY = True
-    RAG_INIT_MESSAGE = "OK"
-    INDEX_SOURCE = "memory"
+    _publish_runtime_bundle(bundle)
+    return sync_result
 
 def rebuild_and_persist_index(
     data_dir: str,
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
+    *,
+    force_rebuild: bool = False,
 ) -> tuple[bool, str]:
-    """重建内存索引并在成功后保存缓存和 manifest。"""
-    global INDEX_SOURCE
+    """增量同步 v2 索引，验证 runtime 后保存 manifest 并原子发布内存引用。"""
     settings = get_settings()
     chunk_size = settings.chunk_size if chunk_size is None else chunk_size
     chunk_overlap = (
         settings.chunk_overlap if chunk_overlap is None else chunk_overlap
     )
-    rebuild_index(
-        data_dir=data_dir,
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap
-    )
+    try:
+        bundle, sync_result = _sync_and_build_runtime(
+            data_dir=data_dir,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            force_rebuild=force_rebuild,
+        )
+        save_manifest(build_current_manifest(data_dir, chunk_size, chunk_overlap))
+    except Exception as exc:
+        return False, f"LangChain 增量索引失败：{exc}"
 
-    if not RAG_READY:
-        return False, RAG_INIT_MESSAGE
-
-    save_index_cache()
-    save_manifest(build_current_manifest(data_dir, chunk_size, chunk_overlap))
-    INDEX_SOURCE = get_index_cache_source_impl()
-
-    return True, "索引已重建，并已保存到磁盘"
+    _publish_runtime_bundle(bundle)
+    summary = ", ".join(f"{key}={value}" for key, value in sync_result.items())
+    if not bundle["chunks"]:
+        return True, f"Local corpus 已同步为空（{summary}）"
+    return True, f"LangChain 增量索引已同步并发布（{summary}）"
 
 
 # =========================
@@ -176,10 +203,9 @@ def index_cache_exists():
 
 
 def save_index_cache():
-    """将当前内存中的索引数据保存到磁盘缓存。"""
-    save_index_cache_impl(
-        chunks=chunks,
-        doc_embeddings=doc_embeddings
+    """拒绝旧 direct-write API；索引写入必须经过 LangChain sync。"""
+    raise RuntimeError(
+        "save_index_cache 已停用，请使用 rebuild_and_persist_index"
     )
 
 
@@ -195,23 +221,13 @@ def load_index_cache() -> tuple[bool, str]:
         INDEX_SOURCE = result.get("source", "none")
         return False, RAG_INIT_MESSAGE
 
-    chunks = result["chunks"]
-    texts = result["texts"]
-    docs_registry = result["docs_registry"]
-    doc_embeddings = result["doc_embeddings"]
-    bm25 = result["bm25"]
-    model = result["model"]
-    rerank_model = result["rerank_model"]
-
-    if not chunks:
+    if not result["chunks"]:
         RAG_READY = False
         RAG_INIT_MESSAGE = "索引缓存为空"
         INDEX_SOURCE = result.get("source", "none")
         return False, RAG_INIT_MESSAGE
 
-    RAG_READY = True
-    RAG_INIT_MESSAGE = "OK"
-    INDEX_SOURCE = result.get("source", get_index_cache_source_impl())
+    _publish_runtime_bundle(result)
     return True, result["message"]
 
 

@@ -155,9 +155,10 @@ Phase 9 不修改现有 `app/rag/ingest.py` 的读取、清洗、split、顺序 
 `chunk_id`，不修改 manifest、Chroma record 格式、Retrieval、Reranker、Prompt、
 Evidence Gate、Citation、Agent loop 或 Evaluation ground truth。
 
-Phase 10 才设计 source registry、stable chunk UID、增量 Chroma/BM25、tombstone、
-atomic swap、rollback 和 live reload。Phase 11 才连接 GitHub/Firecrawl MCP、recrawl、
-ETag polling 与 branch sync。
+Phase 10 由 RAG 侧薄适配消费 approved candidate，并使用 LangChain Indexing API、
+SQLRecordManager 和 langchain-chroma 管理增量 Vector 写入；Phase 9 domain 仍不依赖
+RAG。Phase 10 不建立 source/chunk registry、tombstone、事务协调器或持久整数 ID。
+Phase 11 才连接 GitHub/Firecrawl MCP、recrawl、ETag polling 与 branch sync。
 
 Phase 8B 的 GitHub MCP serializer 问题仍为已知项：
 

@@ -33,8 +33,6 @@ def init_rag_for_eval(force_rebuild: bool = False) -> None:
     from app.config import get_settings, validate_startup_environment
     from app.rag import (
         get_rag_status,
-        index_cache_exists,
-        load_index_cache,
         needs_rebuild,
         rebuild_and_persist_index,
     )
@@ -43,22 +41,18 @@ def init_rag_for_eval(force_rebuild: bool = False) -> None:
     validate_startup_environment(settings)
     data_dir = str(settings.rag_file_path)
     if force_rebuild:
-        ok, message = rebuild_and_persist_index(data_dir)
+        ok, message = rebuild_and_persist_index(data_dir, force_rebuild=True)
         print(f"[init] force_rebuild=True, ok={ok}, msg={message}")
     else:
         need, reason = needs_rebuild(data_dir)
-        if not need and index_cache_exists():
-            ok, message = load_index_cache()
-            print(f"[init] load_index_cache, ok={ok}, msg={message}")
-            if not ok:
-                ok, message = rebuild_and_persist_index(data_dir)
-                print(f"[init] cache failed, rebuild, ok={ok}, msg={message}")
-        else:
-            ok, message = rebuild_and_persist_index(data_dir)
-            print(
-                f"[init] rebuild, need={need}, reason={reason}, "
-                f"ok={ok}, msg={message}"
-            )
+        ok, message = rebuild_and_persist_index(
+            data_dir,
+            force_rebuild=need,
+        )
+        print(
+            f"[init] sync, force_rebuild={need}, reason={reason}, "
+            f"ok={ok}, msg={message}"
+        )
     status = get_rag_status()
     print(
         "[init] RAG status:",

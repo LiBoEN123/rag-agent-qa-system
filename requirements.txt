@@ -14,6 +14,9 @@ sentence-transformers
 chromadb
 charset-normalizer
 langchain==1.3.14
+langchain-classic==1.0.8
+langchain-chroma==1.1.0
+langchain-huggingface==1.2.2
 langchain-text-splitters
 langchain-core
 langchain-openai

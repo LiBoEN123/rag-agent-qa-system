@@ -15,6 +15,7 @@ def main():
         data_dir=str(settings.rag_file_path),
         chunk_size=settings.chunk_size,
         chunk_overlap=settings.chunk_overlap,
+        force_rebuild=True,
     )
     print(msg)
     if not ok:

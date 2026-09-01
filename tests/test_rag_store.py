@@ -176,12 +176,14 @@ def test_load_models_uses_configured_model_cache_dir(
     settings = settings_env(model_cache_dir_override=cache_dir)
     calls = {}
 
-    class FakeSentenceTransformer:
-        def __init__(self, model_name, device, cache_folder, **kwargs):
+    class FakeHuggingFaceEmbeddings:
+        def __init__(self, model, cache_folder, model_kwargs, encode_kwargs):
             calls["embedding"] = {
-                "model_name": model_name,
-                "device": device,
+                "model_name": model,
+                "device": model_kwargs["device"],
                 "cache_folder": cache_folder,
+                "local_files_only": model_kwargs["local_files_only"],
+                "normalize_embeddings": encode_kwargs["normalize_embeddings"],
             }
 
     class FakeCrossEncoder:
@@ -192,7 +194,11 @@ def test_load_models_uses_configured_model_cache_dir(
                 "cache_folder": cache_folder,
             }
 
-    monkeypatch.setattr(rag_store, "SentenceTransformer", FakeSentenceTransformer)
+    monkeypatch.setattr(
+        rag_store,
+        "HuggingFaceEmbeddings",
+        FakeHuggingFaceEmbeddings,
+    )
     monkeypatch.setattr(rag_store, "CrossEncoder", FakeCrossEncoder)
 
     rag_store._load_models()
@@ -201,4 +207,6 @@ def test_load_models_uses_configured_model_cache_dir(
     assert calls["embedding"]["cache_folder"] == str(cache_dir)
     assert calls["rerank"]["cache_folder"] == str(cache_dir)
     assert calls["embedding"]["model_name"] == settings.embedding_model_name
+    assert calls["embedding"]["local_files_only"] is True
+    assert calls["embedding"]["normalize_embeddings"] is True
     assert calls["rerank"]["model_name"] == settings.rerank_model_name

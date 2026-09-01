@@ -5,9 +5,11 @@
 
 import json
 
+import numpy as np
 import torch
+from langchain_huggingface import HuggingFaceEmbeddings
 from rank_bm25 import BM25Okapi
-from sentence_transformers import CrossEncoder, SentenceTransformer
+from sentence_transformers import CrossEncoder
 
 from app.rag.chroma import (
     chroma_collection_has_chunks,
@@ -16,6 +18,7 @@ from app.rag.chroma import (
 )
 from app.config import ensure_model_cache_dir, get_settings
 from app.rag.ingest import collect_supported_files
+from app.rag.indexing import LOCAL_RECORD_NAMESPACE, record_manager_path
 from app.rag.retrieval import tokenize
 from app.common.logging import get_logger
 
@@ -35,18 +38,21 @@ def _model_cache_folder() -> str:
 
 
 def _load_embedding_model():
-    """从本地缓存加载文本向量模型。"""
+    """通过官方 LangChain integration 从本地缓存加载 embedding。"""
     settings = get_settings()
     cache_folder = _model_cache_folder()
     logger.info(
         f"[models] loading embedding model={settings.embedding_model_name} "
         f"device={devcie} cache_dir={cache_folder}"
     )
-    return SentenceTransformer(
-        settings.embedding_model_name,
-        device=devcie,
+    return HuggingFaceEmbeddings(
+        model=settings.embedding_model_name,
         cache_folder=cache_folder,
-        local_files_only=True
+        model_kwargs={
+            "device": devcie,
+            "local_files_only": True,
+        },
+        encode_kwargs={"normalize_embeddings": True},
     )
 
 
@@ -86,11 +92,17 @@ def build_index(all_chunks: list[dict], model=None, rerank_model=None):
     if rerank_model is None:
         rerank_model = _load_rerank_model()
 
-    local_doc_embeddings = model.encode(
-        local_texts,
-        normalize_embeddings=True,
-        convert_to_numpy=True
-    )
+    if hasattr(model, "embed_documents"):
+        local_doc_embeddings = np.asarray(
+            model.embed_documents(local_texts),
+            dtype=np.float32,
+        )
+    else:
+        local_doc_embeddings = model.encode(
+            local_texts,
+            normalize_embeddings=True,
+            convert_to_numpy=True,
+        )
 
     local_bm25 = BM25Okapi(tokenized_texts)
 
@@ -132,9 +144,11 @@ def build_current_manifest(
         settings.chunk_overlap if chunk_overlap is None else chunk_overlap
     )
     return {
-        "pipeline_version": 1,
+        "pipeline_version": 2,
         "embedding_model": settings.embedding_model_name,
         "rerank_model": settings.rerank_model_name,
+        "record_manager_namespace": LOCAL_RECORD_NAMESPACE,
+        "chroma_collection": settings.chroma_index_collection_name,
         "build_config": {
             "chunk_size": chunk_size,
             "chunk_overlap": chunk_overlap,
@@ -170,32 +184,44 @@ def needs_rebuild(
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
 ) -> tuple[bool, str]:
-    """对比历史 manifest 与当前状态判断是否需要重建索引。"""
+    """判断是否需要清空 v2 索引；普通文件变化只做增量 sync。"""
+    settings = get_settings()
     old_manifest = load_manifest()
     current_manifest = build_current_manifest(data_dir, chunk_size, chunk_overlap)
 
     if old_manifest is None:
-        return True, "没有找到历史 manifest，需要首次构建"
+        return True, "没有找到 v2 manifest，需要首次 bootstrap"
 
     if old_manifest.get("pipeline_version") != current_manifest.get("pipeline_version"):
-        return True, "pipeline_version 变化，需要重建"
+        return True, "pipeline_version 变化，需要 force rebuild"
 
     if old_manifest.get("embedding_model") != current_manifest.get("embedding_model"):
-        return True, "embedding 模型变化，需要重建"
+        return True, "embedding 模型变化，需要 force rebuild"
 
-    if old_manifest.get("rerank_model") != current_manifest.get("rerank_model"):
-        return True, "rerank 模型变化，需要重建"
+    if (
+        old_manifest.get("record_manager_namespace")
+        != current_manifest.get("record_manager_namespace")
+        or old_manifest.get("chroma_collection")
+        != current_manifest.get("chroma_collection")
+    ):
+        return True, "index namespace 或 collection 变化，需要 force rebuild"
 
     if old_manifest.get("build_config") != current_manifest.get("build_config"):
-        return True, "chunk 参数变化，需要重建"
+        return True, "chunk 参数变化，需要 force rebuild"
 
-    if old_manifest.get("files") != current_manifest.get("files"):
-        return True, "data 目录文件变化，需要重建"
+    if not record_manager_path(settings).is_file():
+        return True, "SQLRecordManager 不存在，需要 force rebuild"
 
     if not chroma_collection_has_chunks():
-        return True, "ChromaDB collection 中未找到 chunk，需要重建"
+        return True, "v2 Chroma collection 中未找到 chunk，需要 force rebuild"
 
-    return False, "目录和参数都没有变化，无需重建"
+    if old_manifest.get("files") != current_manifest.get("files"):
+        return False, "Local corpus 变化，将执行 LangChain 增量同步"
+
+    if old_manifest.get("rerank_model") != current_manifest.get("rerank_model"):
+        return False, "仅 reranker 变化，不重新 embedding"
+
+    return False, "配置与 corpus 未变化，将验证 unchanged skip"
 
 
 def index_cache_exists() -> bool:

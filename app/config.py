@@ -168,6 +168,7 @@ class AppSettings(BaseSettings):
     index_store_dir: Path = BASE_DIR / "data" / "manifest"
     chroma_persist_dir: Path = BASE_DIR / "data" / "chroma"
     chroma_collection_name: str = "mini_rag_chunks"
+    chroma_index_collection_name: str = "mini_rag_chunks_v2"
     top_k: int = Field(default=5, ge=1, le=10)
     decompose_top_k: int = Field(default=10, ge=1, le=20)
     chunk_size: int = 600

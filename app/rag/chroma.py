@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -39,8 +38,8 @@ def _persist_dir(settings: AppSettings | None = None) -> Path:
 
 
 def _collection_name(settings: AppSettings | None = None) -> str:
-    """读取 ChromaDB collection 名称配置，未配置时使用默认名称。"""
-    return (settings or get_settings()).chroma_collection_name
+    """读取 LangChain-native v2 ChromaDB collection 名称。"""
+    return (settings or get_settings()).chroma_index_collection_name
 
 
 def get_chroma_client(settings: AppSettings | None = None):
@@ -69,19 +68,9 @@ def get_chroma_collection(
 
 
 def reset_chroma_collection():
-    """删除并重建 chunk collection，用于完整重建索引。"""
-    client = get_chroma_client()
-    name = _collection_name()
-
-    try:
-        client.delete_collection(name=name)
-    except Exception:
-        # collection 不存在时 ChromaDB 会抛异常，这里可以安全忽略。
-        pass
-
-    return client.get_or_create_collection(
-        name=name,
-        metadata={"hnsw:space": "cosine"},
+    """拒绝旧 direct-reset path；force rebuild 由 langchain-chroma 执行。"""
+    raise RuntimeError(
+        "direct Chroma reset 已停用，请使用 LangChain indexing force_rebuild"
     )
 
 
@@ -92,36 +81,6 @@ def chroma_collection_has_chunks() -> bool:
         return collection.count() > 0
     except Exception:
         return False
-
-
-def sanitize_metadata(metadata: dict[str, Any] | None) -> dict[str, str | int | float | bool]:
-    """将 chunk 元数据转换为 ChromaDB 可接受的标量类型。"""
-    clean: dict[str, str | int | float | bool] = {}
-
-    for key, value in (metadata or {}).items():
-        if value is None:
-            continue
-
-        if isinstance(value, bool):
-            clean[str(key)] = value
-        elif isinstance(value, (str, int, float)):
-            clean[str(key)] = value
-        else:
-            clean[str(key)] = str(value)
-
-    return clean
-
-
-def make_chroma_id(chunk: dict[str, Any]) -> str:
-    """根据来源路径、位置和正文内容生成稳定的 ChromaDB 记录 ID。"""
-    metadata = chunk.get("metadata") or {}
-    raw = "\n".join([
-        str(metadata.get("source_path", "")),
-        str(metadata.get("position", "")),
-        str(chunk.get("text", "")),
-    ])
-    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()
-    return f"chunk-{digest}"
 
 
 def _as_embedding_list(embedding: Any) -> list[float]:
@@ -137,59 +96,17 @@ def persist_chunks_to_chroma(
     reset: bool = True,
     batch_size: int = 500,
 ) -> int:
-    """将 chunk 文本、元数据和预先计算好的 embedding 写入 ChromaDB。"""
-    if embeddings is None:
-        raise ValueError("写入 ChromaDB 时必须提供 doc_embeddings")
-
-    collection = reset_chroma_collection() if reset else get_chroma_collection(create=True)
-    saved = 0
-
-    batch_ids: list[str] = []
-    batch_documents: list[str] = []
-    batch_metadatas: list[dict[str, str | int | float | bool]] = []
-    batch_embeddings: list[list[float]] = []
-
-    def flush_batch() -> None:
-        """将当前累计的 batch 写入 ChromaDB，并重置临时缓存。"""
-        nonlocal saved, batch_ids, batch_documents, batch_metadatas, batch_embeddings
-        if not batch_ids:
-            return
-
-        collection.upsert(
-            ids=batch_ids,
-            documents=batch_documents,
-            metadatas=batch_metadatas,
-            embeddings=batch_embeddings,
-        )
-        saved += len(batch_ids)
-        batch_ids = []
-        batch_documents = []
-        batch_metadatas = []
-        batch_embeddings = []
-
-    for idx, chunk in enumerate(chunks):
-        text = chunk.get("text", "") or ""
-        metadata = sanitize_metadata(chunk.get("metadata") or {})
-        record_id = make_chroma_id(chunk)
-        metadata["record_id"] = record_id
-        metadata["text_length"] = len(text)
-
-        batch_ids.append(record_id)
-        batch_documents.append(text)
-        batch_metadatas.append(metadata)
-        batch_embeddings.append(_as_embedding_list(embeddings[idx]))
-
-        if len(batch_ids) >= batch_size:
-            flush_batch()
-
-    flush_batch()
-    return saved
+    """拒绝旧 direct-upsert path；保留符号仅用于明确迁移错误。"""
+    del chunks, embeddings, reset, batch_size
+    raise RuntimeError(
+        "direct Chroma upsert 已停用，请使用 LangChain indexing sync_documents"
+    )
 
 
 def load_index_from_chroma(
     settings: AppSettings | None = None,
 ) -> tuple[list[dict[str, Any]], np.ndarray]:
-    """从 ChromaDB 恢复按 chunk_id 对齐的 chunk 与 embedding 矩阵。"""
+    """从 v2 Chroma 恢复 chunks，并重建 runtime compatibility IDs。"""
     collection = get_chroma_collection(create=False, settings=settings)
     data = collection.get(include=["documents", "metadatas", "embeddings"])
 
@@ -232,14 +149,32 @@ def load_index_from_chroma(
     ]
 
     def sort_key(record: dict[str, Any]):
-        """按 chunk_id 生成排序键，缺失或非法时回退到 0。"""
+        """优先按稳定 provenance 排序，兼容旧测试数据的 chunk_id。"""
         metadata = record["chunk"].get("metadata") or {}
+        source_path = str(metadata.get("source_path") or "")
         try:
-            return int(metadata.get("chunk_id", 0))
+            position = int(metadata.get("position", 0))
         except (TypeError, ValueError):
-            return 0
+            position = 0
+        if source_path:
+            return (0, source_path, position)
+        try:
+            chunk_id = int(metadata.get("chunk_id", 0))
+        except (TypeError, ValueError):
+            chunk_id = 0
+        return (1, "", chunk_id)
 
     records.sort(key=sort_key)
+    doc_ids: dict[str, str] = {}
+    for runtime_chunk_id, record in enumerate(records, start=1):
+        metadata = record["chunk"].setdefault("metadata", {})
+        source_path = str(metadata.get("source_path") or "")
+        if not source_path:
+            continue
+        if source_path not in doc_ids:
+            doc_ids[source_path] = f"doc_{len(doc_ids) + 1}"
+        metadata["doc_id"] = doc_ids[source_path]
+        metadata["chunk_id"] = runtime_chunk_id
     chunks = [record["chunk"] for record in records]
     aligned_embeddings = np.stack(
         [record["embedding"] for record in records]

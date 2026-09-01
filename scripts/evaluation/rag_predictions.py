@@ -94,7 +94,10 @@ def initialize_rag_for_predictions(force_rebuild: bool = False) -> None:
     """使用与 API 启动流程相同的索引生命周期初始化 RAG。"""
     settings = get_settings()
     if force_rebuild:
-        ok, message = rebuild_and_persist_index(str(settings.rag_file_path))
+        ok, message = rebuild_and_persist_index(
+            str(settings.rag_file_path),
+            force_rebuild=True,
+        )
         if not ok:
             raise RuntimeError(f"RAG 强制重建失败：{message}")
     else:

@@ -380,7 +380,8 @@ Tool Runtime 与 Agent Runtime 缓存；生产服务通常直接重启进程。�
 | `RAG_FILE_PATH` | 知识库目录，示例：`./data/kb` |
 | `INDEX_STORE_DIR` | 索引构建 manifest 目录，示例：`./data/manifest` |
 | `CHROMA_PERSIST_DIR` | ChromaDB 本地持久化目录，示例：`./data/chroma` |
-| `CHROMA_COLLECTION_NAME` | ChromaDB collection 名称，默认 `mini_rag_chunks` |
+| `CHROMA_COLLECTION_NAME` | 保留的旧 ChromaDB collection，默认 `mini_rag_chunks` |
+| `CHROMA_INDEX_COLLECTION_NAME` | LangChain 增量索引 collection，默认 `mini_rag_chunks_v2` |
 | `TOP_K` | `/chat` 和 `/search` 默认召回条数 |
 | `DECOMPOSE_TOP_K` | 多子问题召回合并后的候选上限 |
 | `CHUNK_SIZE` | chunk 最大长度 |
@@ -463,6 +464,7 @@ RAG_FILE_PATH=./data/kb
 INDEX_STORE_DIR=./data/manifest
 CHROMA_PERSIST_DIR=./data/chroma
 CHROMA_COLLECTION_NAME=mini_rag_chunks
+CHROMA_INDEX_COLLECTION_NAME=mini_rag_chunks_v2
 AUTO_REBUILD_ON_STARTUP=false
 
 TOP_K=5
@@ -655,25 +657,28 @@ Router 不调用独立模型，也不解析具体工具 action。普通问题进
 
 ## 索引构建与缓存
 
-服务启动时会检查当前知识库目录和构建参数：
+服务启动时会同步当前 Local Knowledge corpus：
 
 ```text
 启动服务
   -> get_settings()
   -> validate_startup_environment(settings)
-  -> 检查 manifest 和 ChromaDB 缓存
-  -> 文档或配置变化：重建索引并保存缓存
-  -> 无变化：从本地缓存加载索引
+  -> 检查 manifest、SQLRecordManager 和 v2 ChromaDB
+  -> 加载 Local 文件并经过 Phase 9 approved-only boundary
+  -> LangChain index(cleanup="full")
+  -> 未变化 chunks skip；新增/修改/删除增量写入
+  -> 从最终 corpus 全量重建 BM25 并发布 runtime
 ```
 
 缓存分为两部分：
 
-- `data/chroma/`：ChromaDB 向量库，保存 chunk 文本、chunk metadata、embedding 向量和文档注册信息。
-- `data/manifest/index_manifest.json`：索引构建账本，用于判断知识库或索引参数是否变化。
+- `data/chroma/`：`mini_rag_chunks_v2` 保存增量向量索引；旧 `mini_rag_chunks` 保留。
+- `data/manifest/record_manager.sqlite3`：官方 SQLRecordManager 的 hash/cleanup 记录。
+- `data/manifest/index_manifest.json`：判断配置变化是否需要 force rebuild。
 
-以下变化会触发重建：新增/删除/修改知识库文件、修改 `CHUNK_SIZE`、修改 `CHUNK_OVERLAP`、修改 embedding 模型、修改 rerank 模型、pipeline 版本变化。修改 `TOP_K`、Prompt、回答模型名称、温度等通常不需要重建索引。
+新增/删除/修改知识库文件走增量 sync。修改 `CHUNK_SIZE`、`CHUNK_OVERLAP`、embedding 模型或索引版本会 force rebuild v2；只修改 reranker 不重新 embedding。修改 `TOP_K`、Prompt、回答模型名称、温度等不需要重建向量索引。
 
-设置 `AUTO_REBUILD_ON_STARTUP=true` 会忽略可复用缓存并在每次服务启动时强制重建；默认 `false` 仍会在文档或索引参数变化时自动重建。
+设置 `AUTO_REBUILD_ON_STARTUP=true` 会在启动时强制重建 v2；默认 `false` 仍会执行增量 sync，相同 corpus 全部 skip。详细设计见 [LangChain-native Incremental Indexing](docs/ingestion/langchain-indexing.md)。
 
 如需在启动 API 前先下载模型权重，可以运行：
 
