@@ -252,18 +252,23 @@ Server description、文本、structured content、resource 和错误均属于�
 system/developer/tool-policy/permission 指令。结果固定带
 `content_is_untrusted=true`，不能修改 Prompt、权限、allowlist、Settings 或 Guardrail。
 
-第一版只把以下内容交给 Agent：
+当前 serializer 只把以下安全内容交给 Agent：
 
 - 有限普通文本；
+- `EmbeddedResource(TextResourceContents)` 中的有限文本；
+- `BlobResourceContents`、image 和 audio 的类型、MIME 与 payload 字符数摘要，绝不保留
+  base64/blob；
+- `ResourceLink` 的有限名称、MIME 和安全 URI 描述；URI 会移除 userinfo、query 和
+  fragment，也不会被自动 fetch；
 - 经现有 `redact_sensitive_data()` 脱敏、限制深度/项目/字符串和整体 JSON 体量的
   structured content；
 - JSON-compatible 标量、列表和字典中的有限值。
 
 文本超过 `MCP_MAX_TEXT_CHARS` 会在字符边界截断并标记 `truncated=true`。结构化结果
 超过 `MCP_MAX_STRUCTURED_CHARS` 会逐级收紧为完整 JSON value；不会把半截 JSON 放进
-模型上下文。image、audio、binary blob、resource link 和 embedded resource 第一版
-统一返回 `mcp_unsupported_content`，不会把 base64、资源正文或二进制写入 ToolMessage、
-日志或 SSE。
+模型上下文。混合出现的合法官方 MCP content blocks 不会导致整个结果失败；只有当前
+SDK 未知的未来 block 类型才返回 `mcp_unsupported_content`，错误中只包含 Python 类型名，
+不会使用 `repr(block)` 或记录 payload。
 
 ## 同步与流式执行
 
@@ -290,6 +295,10 @@ MCP 使用有限稳定错误码：`mcp_not_configured`、`mcp_permission_denied`
 `mcp_transport_error`、`mcp_execution_error`、`mcp_unsupported_content` 和
 `mcp_output_too_large`。模型只看到可操作的泛化消息，不会看到 traceback、HTTP client
 repr、完整 URL query 或远端异常中的凭据。
+
+`CallToolResult.isError=true` 仍保持 `status=error` 和
+`error_code=mcp_execution_error`；若远端同时返回文本错误，serializer 会把脱敏且最多
+2,000 字符（同时受 `MCP_MAX_TEXT_CHARS` 约束）的文本附在错误消息后，供 Agent 安全恢复。
 
 每次实际调用复用项目 `ToolAuditEvent` / audit sink，记录 trace、session、principal、
 带前缀工具名、Server alias、参数指纹、耗时、成功状态和错误码。MCP 审计输出固定为

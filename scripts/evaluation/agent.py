@@ -768,8 +768,21 @@ def score_agent_turn(
     ):
         failure_reasons.append("external_dependency_error")
     if any(
-        record.get("error_code")
-        in {"mcp_execution_error", "mcp_unsupported_content"}
+        record.get("server") == "github"
+        and record.get("error_code") == "mcp_execution_error"
+        and record.get("handler_executed") is True
+        for record in external_records
+    ):
+        failure_reasons.append("external_github_mcp_tool_error")
+    if any(
+        record.get("error_code") == "mcp_unsupported_content"
+        or (
+            record.get("error_code") == "mcp_execution_error"
+            and not (
+                record.get("server") == "github"
+                and record.get("handler_executed") is True
+            )
+        )
         for record in external_records
     ):
         failure_reasons.append("external_application_error")
@@ -792,6 +805,7 @@ def score_agent_turn(
         "untrusted_content_marker_mismatch",
         "external_output_mismatch",
         "external_dependency_error",
+        "external_github_mcp_tool_error",
         "external_application_error",
     }
     execution_pass = bool(
@@ -813,6 +827,8 @@ def score_agent_turn(
         classification = "TOOL_SELECTION_FAILURE"
     elif "external_dependency_error" in failure_reasons:
         classification = "EXTERNAL_DEPENDENCY_FAILURE"
+    elif "external_github_mcp_tool_error" in failure_reasons:
+        classification = "EXTERNAL_GITHUB_MCP_TOOL_FAILURE"
     elif "external_application_error" in failure_reasons:
         classification = "APPLICATION_REGRESSION"
     elif not failure_reasons:

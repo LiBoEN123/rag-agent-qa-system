@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
-from mcp.types import CallToolResult, TextContent
+from mcp import types
 
 from app.config import AppSettings
 from app.tools.errors import ToolErrorCode
@@ -25,6 +26,9 @@ class McpSerializationOutcome:
     output: dict[str, Any] | None = None
     error: str = ""
     error_code: str = ""
+
+
+_MAX_ERROR_TEXT_CHARS = 2_000
 
 
 def _truncate_text(value: str, limit: int) -> tuple[str, bool]:
@@ -92,6 +96,69 @@ def _bounded_structured(
     return {"truncated": True}, True
 
 
+def _safe_resource_uri(value: object) -> str:
+    """移除资源 URI 的 userinfo、query 和 fragment，避免凭据进入模型上下文。"""
+    try:
+        parsed = urlsplit(str(value))
+        port = parsed.port
+    except ValueError:
+        return "<invalid-resource-uri>"
+    hostname = parsed.hostname or ""
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    netloc = f"{hostname}:{port}" if port is not None else hostname
+    return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+
+
+def _content_summary(block_type: str, **metadata: object) -> str:
+    """把非文本 block 压缩为不含 payload 的 JSON 摘要。"""
+    payload = {"type": block_type}
+    payload.update({key: value for key, value in metadata.items() if value is not None})
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _serialize_content_block(block: object) -> str | None:  # noqa: PLR0911
+    """依据官方 MCP SDK 类型提取文本，或生成不含二进制的安全摘要。"""
+    if isinstance(block, types.TextContent):
+        return block.text
+    if isinstance(block, types.EmbeddedResource):
+        resource = block.resource
+        if isinstance(resource, types.TextResourceContents):
+            return resource.text
+        if isinstance(resource, types.BlobResourceContents):
+            return _content_summary(
+                "embedded_blob",
+                mime_type=resource.mimeType,
+                size_chars=len(resource.blob),
+            )
+        return None
+    if isinstance(block, types.ResourceLink):
+        return _content_summary(
+            "resource_link",
+            name=block.name,
+            uri=_safe_resource_uri(block.uri),
+            mime_type=block.mimeType,
+        )
+    if isinstance(block, types.ImageContent):
+        return _content_summary(
+            "image",
+            mime_type=block.mimeType,
+            data_chars=len(block.data),
+        )
+    if isinstance(block, types.AudioContent):
+        return _content_summary(
+            "audio",
+            mime_type=block.mimeType,
+            data_chars=len(block.data),
+        )
+    return None
+
+
 def serialize_mcp_call_result(
     result: object,
     *,
@@ -99,33 +166,46 @@ def serialize_mcp_call_result(
     server_alias: str,
     remote_tool_name: str,
 ) -> McpSerializationOutcome:
-    """只接受 MCP SDK 结果中的文本和 JSON-compatible structured content。"""
-    if not isinstance(result, CallToolResult):
+    """安全归一化 MCP SDK 结果中的官方 content blocks 和 structured content。"""
+    if not isinstance(result, types.CallToolResult):
         return McpSerializationOutcome(
             ok=False,
             error="MCP tool returned an invalid result",
             error_code=ToolErrorCode.MCP_EXECUTION_ERROR.value,
         )
-    if result.isError:
-        return McpSerializationOutcome(
-            ok=False,
-            error="MCP tool execution failed",
-            error_code=ToolErrorCode.MCP_EXECUTION_ERROR.value,
-        )
 
     text_parts: list[str] = []
     for block in result.content:
-        if not isinstance(block, TextContent):
+        serialized = _serialize_content_block(block)
+        if serialized is None:
+            block_type, _ = _truncate_text(
+                redact_sensitive_text(type(block).__name__),
+                128,
+            )
             return McpSerializationOutcome(
                 ok=False,
-                error="MCP tool returned unsupported content",
+                error=f"MCP tool returned unsupported content type: {block_type}",
                 error_code=ToolErrorCode.MCP_UNSUPPORTED_CONTENT.value,
             )
-        text_parts.append(block.text)
+        text_parts.append(serialized)
     text, text_truncated = _truncate_text(
         redact_sensitive_text("\n".join(text_parts)),
         settings.mcp_max_text_chars,
     )
+
+    if result.isError:
+        error = "MCP tool execution failed"
+        if text.strip():
+            error = f"{error}: {text}"
+        error, _ = _truncate_text(
+            error,
+            min(settings.mcp_max_text_chars, _MAX_ERROR_TEXT_CHARS),
+        )
+        return McpSerializationOutcome(
+            ok=False,
+            error=error,
+            error_code=ToolErrorCode.MCP_EXECUTION_ERROR.value,
+        )
 
     output: dict[str, Any] = {
         "content": text,

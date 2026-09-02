@@ -383,11 +383,12 @@ def test_mcp_scoring_uses_successful_output_after_prior_serialization_error():
     assert row["classification"] == "APPLICATION_REGRESSION"
 
 
-def test_mcp_remote_execution_error_is_not_classified_as_model_variance():
+def test_github_remote_execution_error_is_classified_as_external_tool_failure():
     result = _result(tool="github_pull_request_read", tool_status="error")
     result["tool_trace"][-1].update(
         {
             "error_code": "mcp_execution_error",
+            "handler_executed": True,
             "output_summary": {},
         }
     )
@@ -413,6 +414,40 @@ def test_mcp_remote_execution_error_is_not_classified_as_model_variance():
 
     assert row["selection_result"] == "PASS"
     assert row["execution_result"] == "FAIL"
+    assert "external_github_mcp_tool_error" in row["failure_reasons"]
+    assert "external_application_error" not in row["failure_reasons"]
+    assert row["classification"] == "EXTERNAL_GITHUB_MCP_TOOL_FAILURE"
+
+
+def test_mcp_execution_error_before_remote_handler_is_application_regression():
+    result = _result(tool="github_pull_request_read", tool_status="error")
+    result["tool_trace"][-1].update(
+        {
+            "error_code": "mcp_execution_error",
+            "handler_executed": False,
+            "output_summary": {},
+        }
+    )
+    expected = ExpectedOutcome.model_validate(
+        {
+            "status": "OK",
+            "first_tool": "github_pull_request_read",
+            "tool_origin": "mcp",
+            "mcp_server": "github",
+        }
+    )
+    row = _score(
+        expected=expected,
+        result=result,
+        tool_catalog={
+            "github_pull_request_read": {
+                "origin": "mcp",
+                "server": "github",
+            }
+        },
+        allowed_mcp_servers=("github",),
+    )
+
     assert "external_application_error" in row["failure_reasons"]
     assert row["classification"] == "APPLICATION_REGRESSION"
 

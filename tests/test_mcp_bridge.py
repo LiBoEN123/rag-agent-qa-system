@@ -7,7 +7,16 @@ from dataclasses import dataclass
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
 from langchain_mcp_adapters.interceptors import MCPToolCallRequest
-from mcp.types import CallToolResult, ImageContent, TextContent
+from mcp.types import (
+    AudioContent,
+    BlobResourceContents,
+    CallToolResult,
+    EmbeddedResource,
+    ImageContent,
+    ResourceLink,
+    TextContent,
+    TextResourceContents,
+)
 from pydantic import BaseModel
 
 from app.agent.framework_middleware import parse_tool_result
@@ -323,19 +332,31 @@ def test_timeout_transport_and_remote_errors_are_safe(settings_factory):
         del request
         return CallToolResult(
             isError=True,
-            content=[TextContent(type="text", text="cookie=remote-secret")],
+            content=[
+                TextContent(type="text", text="remote reason"),
+                EmbeddedResource(
+                    type="resource",
+                    resource=TextResourceContents(
+                        uri="github://owner/repo/error.txt",
+                        text="cookie=remote-secret " + "x" * 1000,
+                    ),
+                ),
+            ],
         )
 
     remote = _payload(
         asyncio.run(
             McpToolCallInterceptor(
-                settings_factory(),
+                settings_factory(mcp_max_text_chars=128),
                 server_configs=_server_configs(),
                 audit_sink=RecordingSink(),
             )(_request(runtime), remote_failure)
         )
     )
     assert remote["error_code"] == "mcp_execution_error"
+    assert remote["error"].startswith("MCP tool execution failed: remote reason")
+    assert "***REDACTED***" in remote["error"]
+    assert len(remote["error"]) <= 128
     assert "remote-secret" not in json.dumps(remote)
 
 
@@ -368,40 +389,121 @@ def test_plain_text_credentials_are_redacted(settings_factory):
     assert "***REDACTED***" in serialized
 
 
-def test_unsupported_binary_and_large_outputs_are_bounded(settings_factory):
+def test_official_mixed_content_is_safely_normalized_and_audited(settings_factory):
     runtime = _runtime("mcp:weather")
+    sink = RecordingSink()
 
-    async def image_handler(request):
+    async def mixed_handler(request):
         del request
         return CallToolResult(
             content=[
+                TextContent(type="text", text="plain text"),
+                EmbeddedResource(
+                    type="resource",
+                    resource=TextResourceContents(
+                        uri=(
+                            "https://alice:uri-password@example.com/readme"
+                            "?token=query-secret#fragment"
+                        ),
+                        mimeType="text/plain",
+                        text="embedded cookie=embedded-secret",
+                    ),
+                ),
+                EmbeddedResource(
+                    type="resource",
+                    resource=BlobResourceContents(
+                        uri="github://owner/repo/archive.bin",
+                        mimeType="application/octet-stream",
+                        blob="blob-raw-base64",
+                    ),
+                ),
+                ResourceLink(
+                    type="resource_link",
+                    name="README",
+                    uri=(
+                        "https://alice:uri-password@example.com/README.md"
+                        "?access_token=query-secret#fragment"
+                    ),
+                    mimeType="text/markdown",
+                ),
                 ImageContent(
                     type="image",
-                    data="base64-private-binary",
+                    data="image-raw-base64",
                     mimeType="image/png",
-                )
-            ]
+                ),
+                AudioContent(
+                    type="audio",
+                    data="audio-raw-base64",
+                    mimeType="audio/wav",
+                ),
+            ],
+            structuredContent={"token": "structured-secret", "count": 6},
         )
 
-    unsupported = _payload(
+    payload = _payload(
         asyncio.run(
             McpToolCallInterceptor(
                 settings_factory(),
                 server_configs=_server_configs(),
-                audit_sink=RecordingSink(),
-            )(_request(runtime), image_handler)
+                audit_sink=sink,
+            )(_request(runtime), mixed_handler)
         )
     )
-    assert unsupported["error_code"] == "mcp_unsupported_content"
-    assert "base64-private-binary" not in json.dumps(unsupported)
+    serialized = json.dumps(payload, ensure_ascii=False)
+    serialized_audit = json.dumps(
+        [event.to_dict() for event in sink.events],
+        ensure_ascii=False,
+    )
+
+    assert payload["ok"] is True
+    assert payload["output"]["content_is_untrusted"] is True
+    assert payload["output"]["structured_content"] == {
+        "token": "***REDACTED***",
+        "count": 6,
+    }
+    assert "plain text" in payload["output"]["content"]
+    assert "embedded cookie=***REDACTED***" in payload["output"]["content"]
+    assert '"type":"embedded_blob"' in payload["output"]["content"]
+    assert f'"size_chars":{len("blob-raw-base64")}' in payload["output"]["content"]
+    assert '"type":"resource_link"' in payload["output"]["content"]
+    assert '"type":"image"' in payload["output"]["content"]
+    assert f'"data_chars":{len("image-raw-base64")}' in payload["output"]["content"]
+    assert '"type":"audio"' in payload["output"]["content"]
+    assert f'"data_chars":{len("audio-raw-base64")}' in payload["output"]["content"]
+    assert "https://example.com/README.md" in payload["output"]["content"]
+    for secret in (
+        "uri-password",
+        "query-secret",
+        "structured-secret",
+        "blob-raw-base64",
+        "image-raw-base64",
+        "audio-raw-base64",
+    ):
+        assert secret not in serialized
+        assert secret not in serialized_audit
+
+
+def test_large_text_embedded_text_and_structured_outputs_are_bounded(
+    settings_factory,
+):
+    runtime = _runtime("mcp:weather")
 
     async def large_handler(request):
         del request
         return CallToolResult(
-            content=[TextContent(type="text", text="x" * 1000)],
+            content=[
+                TextContent(type="text", text="x" * 1000),
+                EmbeddedResource(
+                    type="resource",
+                    resource=TextResourceContents(
+                        uri="github://owner/repo/large.txt",
+                        text="y" * 1000,
+                    ),
+                ),
+            ],
             structuredContent={
                 "items": [
-                    {"value": "y" * 200, "api_key": "structured-secret"}
+                    {"value": "z" * 200, "api_key": "structured-secret"}
                     for _ in range(50)
                 ]
             },
@@ -434,6 +536,31 @@ def test_unsupported_binary_and_large_outputs_are_bounded(settings_factory):
         <= 256
     )
     assert "structured-secret" not in json.dumps(output)
+
+
+def test_unknown_future_content_fails_without_payload_repr(settings_factory):
+    class FutureContent:
+        def __repr__(self):
+            return "FutureContent(payload=unknown-secret)"
+
+    async def handler(request):
+        del request
+        return CallToolResult.model_construct(content=[FutureContent()])
+
+    payload = _payload(
+        asyncio.run(
+            McpToolCallInterceptor(
+                settings_factory(),
+                server_configs=_server_configs(),
+                audit_sink=RecordingSink(),
+            )(_request(_runtime("mcp:weather")), handler)
+        )
+    )
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["error_code"] == "mcp_unsupported_content"
+    assert "FutureContent" in payload["error"]
+    assert "unknown-secret" not in serialized
 
 
 def _governed_tool(settings):
