@@ -1,11 +1,12 @@
 import numpy as np
 import pytest
+from langchain_core.documents import Document
 
 from app.rag import chroma as rag_chroma
 
 
-class FakeCollection:
-    def __init__(self, data):
+class FakeVectorStore:
+    def __init__(self, data=None):
         self.data = data
         self.includes = []
 
@@ -13,9 +14,14 @@ class FakeCollection:
         self.includes.append(include)
         return self.data
 
+    def similarity_search_by_vector_with_relevance_scores(self, embedding, k):
+        self.embedding = embedding
+        self.k = k
+        return [(Document(page_content="body", metadata={"position": 1}, id="id-1"), 0.25)]
+
 
 def test_load_index_from_chroma_keeps_embeddings_aligned_when_sorting(monkeypatch):
-    collection = FakeCollection(
+    collection = FakeVectorStore(
         {
             "documents": ["third", "first", "second"],
             "metadatas": [
@@ -32,8 +38,8 @@ def test_load_index_from_chroma_keeps_embeddings_aligned_when_sorting(monkeypatc
     )
     monkeypatch.setattr(
         rag_chroma,
-        "get_chroma_collection",
-        lambda create=False, settings=None: collection,
+        "create_vector_store",
+        lambda *_args, **_kwargs: collection,
     )
 
     chunks, doc_embeddings = rag_chroma.load_index_from_chroma()
@@ -60,7 +66,7 @@ def test_load_index_from_chroma_rejects_corrupt_embeddings(
     embeddings,
     error_message,
 ):
-    collection = FakeCollection(
+    collection = FakeVectorStore(
         {
             "documents": ["first", "second"],
             "metadatas": [{"chunk_id": 1}, {"chunk_id": 2}],
@@ -69,9 +75,26 @@ def test_load_index_from_chroma_rejects_corrupt_embeddings(
     )
     monkeypatch.setattr(
         rag_chroma,
-        "get_chroma_collection",
-        lambda create=False, settings=None: collection,
+        "create_vector_store",
+        lambda *_args, **_kwargs: collection,
     )
 
     with pytest.raises(ValueError, match=error_message):
         rag_chroma.load_index_from_chroma()
+
+
+def test_query_chroma_preserves_cosine_distance_and_vector_score(monkeypatch):
+    store = FakeVectorStore()
+    monkeypatch.setattr(rag_chroma, "create_vector_store", lambda *_args, **_kwargs: store)
+
+    assert rag_chroma.query_chroma(np.array([1.0, 2.0]), n_results=3) == [
+        {
+            "record_id": "id-1",
+            "text": "body",
+            "metadata": {"position": 1},
+            "distance": 0.25,
+            "vector_score": 0.75,
+        }
+    ]
+    assert store.embedding == [1.0, 2.0]
+    assert store.k == 3

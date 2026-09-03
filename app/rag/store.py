@@ -14,7 +14,6 @@ from sentence_transformers import CrossEncoder
 from app.rag.chroma import (
     chroma_collection_has_chunks,
     load_index_from_chroma,
-    persist_chunks_to_chroma,
 )
 from app.config import ensure_model_cache_dir, get_settings
 from app.rag.ingest import collect_supported_files
@@ -234,23 +233,6 @@ def get_index_cache_source() -> str:
     if index_cache_exists():
         return "chroma"
     return "none"
-
-
-def save_index_cache(
-    chunks: list[dict],
-    doc_embeddings
-):
-    """将 chunk、元数据和向量持久化到 ChromaDB。"""
-    try:
-        saved_count = persist_chunks_to_chroma(
-            chunks=chunks,
-            embeddings=doc_embeddings,
-            reset=True,
-        )
-        logger.info(f"[index] saved chunks to ChromaDB count={saved_count}")
-    except Exception:
-        logger.exception("[index] failed to save chunks to ChromaDB")
-        raise
 
 
 def _load_models(model=None, rerank_model=None):

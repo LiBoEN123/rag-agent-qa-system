@@ -162,10 +162,12 @@ def create_record_manager(
 
 
 def create_vector_store(
-    embeddings: Embeddings,
+    embeddings: Embeddings | None,
     settings: AppSettings | None = None,
+    *,
+    create_collection_if_not_exists: bool = True,
 ) -> Chroma:
-    """创建由 langchain-chroma 管理写入的 v2 VectorStore。"""
+    """创建由 langchain-chroma 管理读写的 v2 VectorStore。"""
     resolved = settings or get_settings()
     resolved.chroma_persist_dir.mkdir(parents=True, exist_ok=True)
     return Chroma(
@@ -173,6 +175,7 @@ def create_vector_store(
         persist_directory=str(resolved.chroma_persist_dir),
         embedding_function=embeddings,
         collection_metadata={"hnsw:space": "cosine"},
+        create_collection_if_not_exists=create_collection_if_not_exists,
     )
 
 

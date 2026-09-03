@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from langchain_chroma import Chroma
 from langchain_core.embeddings import Embeddings
 
 from app.api.lifecycle import StartupDependencies, initialize_rag
@@ -19,7 +20,7 @@ from app.ingestion import (
     build_knowledge_document,
 )
 from app.rag import indexing, pipeline
-from app.rag.chroma import get_chroma_client, load_index_from_chroma
+from app.rag.chroma import load_index_from_chroma
 from app.rag.ingest import clean_documents, load_files, split_chunks
 
 
@@ -227,15 +228,14 @@ def test_real_langchain_incremental_add_skip_modify_add_delete(tmp_path):
 
 def test_force_rebuild_preserves_legacy_collection(tmp_path):
     settings = get_settings()
-    client = get_chroma_client(settings)
-    legacy = client.get_or_create_collection(settings.chroma_collection_name)
-    legacy.add(
-        ids=["legacy-record"],
-        documents=["legacy"],
-        embeddings=[[1.0, 0.0]],
-    )
-    (tmp_path / "current.txt").write_text("current", encoding="utf-8")
     embeddings = CountingEmbeddings()
+    legacy = Chroma(
+        collection_name=settings.chroma_collection_name,
+        persist_directory=str(settings.chroma_persist_dir),
+        embedding_function=embeddings,
+    )
+    legacy.add_texts(["legacy"], ids=["legacy-record"])
+    (tmp_path / "current.txt").write_text("current", encoding="utf-8")
     result = indexing.sync_documents(
         indexing.load_local_langchain_documents(str(tmp_path)),
         embeddings,
@@ -244,8 +244,13 @@ def test_force_rebuild_preserves_legacy_collection(tmp_path):
     )
 
     assert result["num_added"] == 1
-    assert client.get_collection(settings.chroma_collection_name).count() == 1
-    assert client.get_collection(settings.chroma_index_collection_name).count() == 1
+    assert len(legacy.get(include=[])["ids"]) == 1
+    current = indexing.create_vector_store(
+        None,
+        settings,
+        create_collection_if_not_exists=False,
+    )
+    assert len(current.get(include=[])["ids"]) == 1
 
 
 def test_startup_always_syncs_and_propagates_force_rebuild():

@@ -226,9 +226,8 @@ def test_reject_pending_candidate_and_reject_terminal_reversal():
 def test_candidate_lifecycle_has_zero_rag_chroma_mcp_web_or_network_calls(
     monkeypatch,
 ):
-    rag_chroma = importlib.import_module("app.rag.chroma")
+    rag_indexing = importlib.import_module("app.rag.indexing")
     rag_pipeline = importlib.import_module("app.rag.pipeline")
-    rag_store = importlib.import_module("app.rag.store")
     mcp_client = importlib.import_module("app.tools.mcp.client")
     web_fetch_module = importlib.import_module("app.tools.web_fetch")
     calls = {
@@ -248,13 +247,8 @@ def test_candidate_lifecycle_has_zero_rag_chroma_mcp_web_or_network_calls(
         return fail
 
     monkeypatch.setattr(
-        rag_chroma,
-        "persist_chunks_to_chroma",
-        forbidden("chroma_writes"),
-    )
-    monkeypatch.setattr(
-        rag_chroma,
-        "reset_chroma_collection",
+        rag_indexing,
+        "sync_documents",
         forbidden("chroma_writes"),
     )
     monkeypatch.setattr(
@@ -269,11 +263,6 @@ def test_candidate_lifecycle_has_zero_rag_chroma_mcp_web_or_network_calls(
     )
     monkeypatch.setattr(
         rag_pipeline,
-        "save_index_cache",
-        forbidden("rag_cache_writes"),
-    )
-    monkeypatch.setattr(
-        rag_store,
         "save_index_cache",
         forbidden("rag_cache_writes"),
     )

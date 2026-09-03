@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import pytest
 
 from app.ingestion import (
+    InMemoryCandidateRepository,
     IngestionCandidateStatus,
     IngestionPrincipalType,
     IngestionRequester,
@@ -107,6 +108,48 @@ def test_candidate_list_filters_and_paginates_without_skipping_validation(tmp_pa
         repository.get(approved.candidate_id)
 
 
+def test_sqlalchemy_repository_reads_and_updates_raw_phase12_schema(tmp_path):
+    db_path = tmp_path / "phase12.sqlite3"
+    candidate = _propose(InMemoryCandidateRepository())
+    document = candidate.document
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """CREATE TABLE ingestion_candidates (
+                candidate_id TEXT PRIMARY KEY, status TEXT NOT NULL,
+                source_type TEXT NOT NULL, source_uri TEXT NOT NULL,
+                content_hash TEXT NOT NULL, requested_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL, candidate_json TEXT NOT NULL
+            )"""
+        )
+        connection.execute(
+            "INSERT INTO ingestion_candidates VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                candidate.candidate_id,
+                candidate.status.value,
+                document.source_type.value,
+                document.source_uri,
+                document.content_hash,
+                candidate.requested_at.isoformat(),
+                candidate.requested_at.isoformat(),
+                candidate.model_dump_json(),
+            ),
+        )
+
+    repository = SQLiteCandidateRepository(db_path)
+    assert repository.get(candidate.candidate_id) == candidate
+    assert repository.save(candidate) == candidate
+    approved = IngestionService(repository).approve(
+        candidate.candidate_id,
+        decided_by=REQUESTER,
+        decided_at=FIXED_TIME,
+    )
+    assert repository.list(status=IngestionCandidateStatus.APPROVED) == [approved]
+    with pytest.raises(ValueError, match="不能覆盖"):
+        repository.save(candidate)
+    with pytest.raises(KeyError):
+        repository.replace(_propose(InMemoryCandidateRepository(), url="https://x.test"))
+
+
 def test_index_runs_persist_success_and_safe_failure_without_content(tmp_path):
     db_path = tmp_path / "app.sqlite3"
     repository = SQLiteIndexRunRepository(db_path)
@@ -130,6 +173,8 @@ def test_index_runs_persist_success_and_safe_failure_without_content(tmp_path):
     assert completed.status is IndexRunStatus.SUCCESS
     assert (completed.added, completed.updated, completed.deleted, completed.skipped) == (1, 2, 3, 4)
     assert failed.status is IndexRunStatus.FAILED
+    assert restarted.list(status=IndexRunStatus.SUCCESS, limit=1) == [completed]
+    assert restarted.list(limit=1, offset=1) == [completed]
 
     with get_connection(db_path) as connection:
         columns = {

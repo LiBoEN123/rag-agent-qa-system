@@ -1,18 +1,18 @@
-"""Knowledge ingestion candidate 与 index operation 的 SQLite 适配。"""
+"""Knowledge ingestion candidate 与 index operation 的 SQLAlchemy 适配。"""
 
 from __future__ import annotations
 
-import sqlite3
-from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Iterator
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
+from sqlalchemy import Integer, Text, create_engine, func, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from app.ingestion import IngestionCandidate, IngestionCandidateStatus, KnowledgeSourceType
-from app.storage.database import get_connection, init_db
+from app.storage.database import get_db_path, init_db
 
 
 class CandidatePersistenceError(RuntimeError):
@@ -42,6 +42,38 @@ class IngestionIndexRun(BaseModel):
     error_message: str | None = Field(default=None, max_length=500)
 
 
+class _Base(DeclarativeBase): ...
+
+
+class _IngestionCandidateRecord(_Base):
+    __tablename__ = "ingestion_candidates"
+
+    candidate_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    status: Mapped[str] = mapped_column(Text)
+    source_type: Mapped[str] = mapped_column(Text)
+    source_uri: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str] = mapped_column(Text)
+    requested_at: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[str] = mapped_column(Text)
+    candidate_json: Mapped[str] = mapped_column(Text)
+
+
+class _IngestionIndexRunRecord(_Base):
+    __tablename__ = "ingestion_index_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    candidate_id: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text)
+    started_at: Mapped[str] = mapped_column(Text)
+    completed_at: Mapped[str | None] = mapped_column(Text)
+    added: Mapped[int | None] = mapped_column(Integer)
+    updated: Mapped[int | None] = mapped_column(Integer)
+    deleted: Mapped[int | None] = mapped_column(Integer)
+    skipped: Mapped[int | None] = mapped_column(Integer)
+    error_code: Mapped[str | None] = mapped_column(Text)
+    error_message: Mapped[str | None] = mapped_column(Text)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
@@ -51,102 +83,85 @@ def _page(limit: int, offset: int) -> None:
         raise ValueError("limit 必须为正整数且 offset 不能为负数")
 
 
-@contextmanager
-def _connection(path: Path | None) -> Iterator[sqlite3.Connection]:
-    with closing(get_connection(path)) as connection, connection:
-        yield connection
-
-
-def _where(**filters: str | None) -> tuple[str, list[str]]:
-    selected = [(name, value) for name, value in filters.items() if value is not None]
-    clause = " WHERE " + " AND ".join(f"{name} = ?" for name, _ in selected)
-    return (clause if selected else "", [value for _, value in selected])
+def _sessions(path: Path | None):
+    init_db(path)
+    resolved = Path(path) if path is not None else get_db_path()
+    engine = create_engine(
+        f"sqlite:///{resolved.resolve()}",
+        connect_args={"check_same_thread": False},
+    )
+    return sessionmaker(engine, expire_on_commit=False)
 
 
 class SQLiteCandidateRepository:
     """复用 application SQLite 的 CandidateRepository 持久实现。"""
 
     def __init__(self, db_path: Path | None = None) -> None:
-        self._db_path = db_path
-        init_db(db_path)
+        self._sessions = _sessions(db_path)
 
     @staticmethod
-    def _values(candidate: IngestionCandidate) -> tuple[str, ...]:
+    def _values(candidate: IngestionCandidate) -> dict[str, str]:
         document = candidate.document
-        return (
-            candidate.candidate_id,
-            candidate.status.value,
-            document.source_type.value,
-            document.source_uri,
-            document.content_hash,
-            candidate.requested_at.isoformat(),
-            _now(),
-            candidate.model_dump_json(),
-        )
+        return {
+            "candidate_id": candidate.candidate_id,
+            "status": candidate.status.value,
+            "source_type": document.source_type.value,
+            "source_uri": document.source_uri,
+            "content_hash": document.content_hash,
+            "requested_at": candidate.requested_at.isoformat(),
+            "updated_at": _now(),
+            "candidate_json": candidate.model_dump_json(),
+        }
 
     @staticmethod
-    def _load(row: sqlite3.Row) -> IngestionCandidate:
+    def _load(record: _IngestionCandidateRecord) -> IngestionCandidate:
         try:
-            candidate = IngestionCandidate.model_validate_json(
-                row["candidate_json"]
-            )
+            candidate = IngestionCandidate.model_validate_json(record.candidate_json)
         except (ValidationError, ValueError, TypeError) as exc:
             raise CandidatePersistenceError(
                 "持久 candidate 未通过 domain contract 校验"
             ) from exc
-        document = candidate.document
-        if (
-            row["candidate_id"], row["status"], row["source_type"]
-        ) != (
-            candidate.candidate_id, candidate.status.value,
-            document.source_type.value,
+        if (record.candidate_id, record.status, record.source_type) != (
+            candidate.candidate_id,
+            candidate.status.value,
+            candidate.document.source_type.value,
         ):
             raise CandidatePersistenceError("candidate 查询字段与 JSON 不一致")
         return candidate
 
     def get(self, candidate_id: str) -> IngestionCandidate | None:
-        with _connection(self._db_path) as connection:
-            row = connection.execute(
-                "SELECT * FROM ingestion_candidates WHERE candidate_id = ?",
-                (candidate_id,),
-            ).fetchone()
-        return None if row is None else self._load(row)
+        with self._sessions() as session:
+            record = session.get(_IngestionCandidateRecord, candidate_id)
+            return None if record is None else self._load(record)
 
     def save(self, candidate: IngestionCandidate) -> IngestionCandidate:
-        with _connection(self._db_path) as connection:
-            connection.execute(
-                """INSERT OR IGNORE INTO ingestion_candidates(
-                    candidate_id, status, source_type, source_uri, content_hash,
-                    requested_at, updated_at, candidate_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                self._values(candidate),
+        with self._sessions.begin() as session:
+            session.execute(
+                sqlite_insert(_IngestionCandidateRecord)
+                .values(**self._values(candidate))
+                .on_conflict_do_nothing(index_elements=["candidate_id"])
             )
-        stored = self.get(candidate.candidate_id)
-        if stored != candidate:
-            raise ValueError(
-                "同一 candidate_id 不能覆盖为不同 domain state"
-            )
-        return stored
+            record = session.get(_IngestionCandidateRecord, candidate.candidate_id)
+            if record is None:  # pragma: no cover - SQLite insert/get invariant
+                raise CandidatePersistenceError("candidate 保存后无法读取")
+            stored = self._load(record)
+            if stored != candidate:
+                raise ValueError("同一 candidate_id 不能覆盖为不同 domain state")
+            return stored
 
     def replace(self, candidate: IngestionCandidate) -> IngestionCandidate:
-        values = self._values(candidate)
-        with _connection(self._db_path) as connection:
-            cursor = connection.execute(
-                """UPDATE ingestion_candidates SET status = ?, source_type = ?,
-                    source_uri = ?, content_hash = ?, requested_at = ?,
-                    updated_at = ?, candidate_json = ? WHERE candidate_id = ?""",
-                (*values[1:], values[0]),
-            )
-        if cursor.rowcount != 1:
-            raise KeyError(candidate.candidate_id)
+        with self._sessions.begin() as session:
+            record = session.get(_IngestionCandidateRecord, candidate.candidate_id)
+            if record is None:
+                raise KeyError(candidate.candidate_id)
+            for name, value in self._values(candidate).items():
+                setattr(record, name, value)
         return candidate
 
     def count(self) -> int:
-        with _connection(self._db_path) as connection:
-            row = connection.execute(
-                "SELECT COUNT(*) FROM ingestion_candidates"
-            ).fetchone()
-        return int(row[0])
+        with self._sessions() as session:
+            statement = select(func.count()).select_from(_IngestionCandidateRecord)
+            return int(session.scalar(statement) or 0)
 
     def list(
         self,
@@ -157,63 +172,53 @@ class SQLiteCandidateRepository:
         offset: int = 0,
     ) -> list[IngestionCandidate]:
         _page(limit, offset)
-        where, parameters = _where(
-            status=status.value if status else None,
-            source_type=source_type.value if source_type else None,
+        filters = {}
+        if status is not None:
+            filters["status"] = status.value
+        if source_type is not None:
+            filters["source_type"] = source_type.value
+        statement = (
+            select(_IngestionCandidateRecord)
+            .filter_by(**filters)
+            .order_by(
+                _IngestionCandidateRecord.requested_at.desc(),
+                _IngestionCandidateRecord.candidate_id.desc(),
+            )
+            .limit(limit)
+            .offset(offset)
         )
-        with _connection(self._db_path) as connection:
-            rows = connection.execute(
-                "SELECT * FROM ingestion_candidates" + where
-                + " ORDER BY requested_at DESC, candidate_id DESC"
-                " LIMIT ? OFFSET ?",
-                (*parameters, limit, offset),
-            ).fetchall()
-        return [self._load(row) for row in rows]
+        with self._sessions() as session:
+            return [self._load(record) for record in session.scalars(statement)]
 
 
 class SQLiteIndexRunRepository:
     """保存同步 index operation 状态与安全计数，不复制正文。"""
 
     def __init__(self, db_path: Path | None = None) -> None:
-        self._db_path = db_path
-        init_db(db_path)
+        self._sessions = _sessions(db_path)
 
     @staticmethod
-    def _load(row: sqlite3.Row) -> IngestionIndexRun:
-        return IngestionIndexRun.model_validate(dict(row))
-
-    def _get(self, run_id: int) -> IngestionIndexRun | None:
-        with _connection(self._db_path) as connection:
-            row = connection.execute(
-                "SELECT * FROM ingestion_index_runs WHERE id = ?",
-                (run_id,),
-            ).fetchone()
-        return None if row is None else self._load(row)
+    def _load(record: _IngestionIndexRunRecord) -> IngestionIndexRun:
+        return IngestionIndexRun.model_validate(record, from_attributes=True)
 
     def create_running(self, candidate_id: str) -> IngestionIndexRun:
-        with _connection(self._db_path) as connection:
-            cursor = connection.execute(
-                """INSERT INTO ingestion_index_runs(
-                    candidate_id, status, started_at
-                ) VALUES (?, ?, ?)""",
-                (candidate_id, IndexRunStatus.RUNNING.value, _now()),
-            )
-        return self._get(cursor.lastrowid)
+        record = _IngestionIndexRunRecord(
+            candidate_id=candidate_id,
+            status=IndexRunStatus.RUNNING.value,
+            started_at=_now(),
+        )
+        with self._sessions.begin() as session:
+            session.add(record)
+            session.flush()
+            return self._load(record)
 
     def succeed(self, run_id: int, **counts: int) -> IngestionIndexRun:
         return self._complete(run_id, IndexRunStatus.SUCCESS, counts=counts)
 
-    def fail(
-        self,
-        run_id: int,
-        *,
-        error_code: str,
-    ) -> IngestionIndexRun:
+    def fail(self, run_id: int, *, error_code: str) -> IngestionIndexRun:
         safe_code = error_code[:128]
         return self._complete(
-            run_id,
-            IndexRunStatus.FAILED,
-            error=(safe_code, safe_code),
+            run_id, IndexRunStatus.FAILED, error=(safe_code, safe_code)
         )
 
     def _complete(
@@ -224,27 +229,16 @@ class SQLiteIndexRunRepository:
         counts: dict[str, int] | None = None,
         error: tuple[str, str] | None = None,
     ) -> IngestionIndexRun:
-        values = counts or {}
-        count_values = tuple(
-            values.get(name)
-            for name in ("added", "updated", "deleted", "skipped")
-        )
-        with _connection(self._db_path) as connection:
-            cursor = connection.execute(
-                """UPDATE ingestion_index_runs SET status = ?, completed_at = ?,
-                    added = ?, updated = ?, deleted = ?, skipped = ?,
-                    error_code = ?, error_message = ?
-                WHERE id = ? AND status = ?""",
-                (
-                    status.value, _now(), *count_values,
-                    *(error or (None, None)), run_id,
-                    IndexRunStatus.RUNNING.value,
-                ),
-            )
-        run = self._get(run_id)
-        if cursor.rowcount != 1 or run is None:
-            raise KeyError(run_id)
-        return run
+        with self._sessions.begin() as session:
+            record = session.get(_IngestionIndexRunRecord, run_id)
+            if record is None or record.status != IndexRunStatus.RUNNING.value:
+                raise KeyError(run_id)
+            record.status = status.value
+            record.completed_at = _now()
+            for name in ("added", "updated", "deleted", "skipped"):
+                setattr(record, name, (counts or {}).get(name))
+            record.error_code, record.error_message = error or (None, None)
+            return self._load(record)
 
     def latest(self, candidate_id: str) -> IngestionIndexRun | None:
         runs = self.list(candidate_id=candidate_id, limit=1)
@@ -259,17 +253,20 @@ class SQLiteIndexRunRepository:
         offset: int = 0,
     ) -> list[IngestionIndexRun]:
         _page(limit, offset)
-        where, parameters = _where(
-            candidate_id=candidate_id,
-            status=status.value if status else None,
+        filters = {}
+        if candidate_id is not None:
+            filters["candidate_id"] = candidate_id
+        if status is not None:
+            filters["status"] = status.value
+        statement = (
+            select(_IngestionIndexRunRecord)
+            .filter_by(**filters)
+            .order_by(_IngestionIndexRunRecord.id.desc())
+            .limit(limit)
+            .offset(offset)
         )
-        with _connection(self._db_path) as connection:
-            rows = connection.execute(
-                "SELECT * FROM ingestion_index_runs" + where
-                + " ORDER BY id DESC LIMIT ? OFFSET ?",
-                (*parameters, limit, offset),
-            ).fetchall()
-        return [self._load(row) for row in rows]
+        with self._sessions() as session:
+            return [self._load(record) for record in session.scalars(statement)]
 
 
 __all__ = ["CandidatePersistenceError", "IndexRunStatus", "IngestionIndexRun",
