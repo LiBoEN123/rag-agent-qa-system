@@ -270,6 +270,17 @@ system/developer/tool-policy/permission 指令。结果固定带
 SDK 未知的未来 block 类型才返回 `mcp_unsupported_content`，错误中只包含 Python 类型名，
 不会使用 `repr(block)` 或记录 payload。
 
+永久知识 source fetch 只能由显式 operator/service 调用 `invoke_mcp_tool()` 时选择
+`ingestion` serialization profile。它复用同一个 cached Provider、interceptor、权限、
+timeout、transport、脱敏和审计，但文本上限为 1,000,000 字符，并额外保留有限、安全的
+`content_blocks` 类型信息，让 GitHub adapter 能区分说明文本与
+`EmbeddedResource(TextResourceContents)` 正文。普通 Agent 调用仍默认使用 12,000 字符
+profile，工具参数 schema 中不存在 profile 字段，完整正文不会进入 Agent context。
+
+ingestion 结果一旦 `truncated=true` 就不能产生可索引文档；超过 1,000,000 字符同样
+fail closed。截断结果的 `content_blocks` 不保留正文，只保留类型、MIME、URI 和字符数等
+有限摘要。审计仍只记录字段、正文字符数、截断标志和状态，不记录完整正文。
+
 ## 同步与流式执行
 
 官方 MCP `StructuredTool` 以 coroutine 为主。项目包装器保留原始 MCP Tool Schema，

@@ -43,5 +43,16 @@ chunk 参数、namespace/collection 或索引版本变化，以及 RecordManager
 显式 force rebuild 只清理 v2 collection 和 Local RecordManager namespace，再由框架
 全量 index。没有跨 SQLite/Chroma 事务、rollback journal 或自定义 registry。
 
-Phase 10 不新增 Agent Tool/Public API，也不连接 GitHub/Firecrawl live ingestion。
-GitHub MCP serializer finding 仍是 Phase 11 live ingestion 的 blocker。
+Phase 10 不新增 Agent Tool/Public API。
+
+Phase 11B 在该边界上增加两个独立 external namespace：
+
+- GitHub file：`rag-agent/github/v1`；
+- Firecrawl page：`rag-agent/firecrawl/v1`。
+
+二者继续写入统一 `mini_rag_chunks_v2` collection，但只对显式 approved candidate 调用
+`index(cleanup="incremental")`。因此更新一个 source 只清理相同 `source_id` 的旧 chunks，
+不会删除 Local 或其他 external source；Local authoritative sync 仍默认
+`cleanup="full"`，且只操作 Local namespace 已记录的 keys。成功后直接复用现有
+`load_index_cache()` 从最终 Chroma corpus 重建 BM25/runtime，不新增 registry、手写
+Vector CRUD 或增量 BM25。

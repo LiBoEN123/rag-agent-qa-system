@@ -9,6 +9,7 @@
 app.api
   → app.services
   → app.agent
+  → app.sources
   → app.tools
   → app.rag
   → app.ingestion
@@ -33,6 +34,7 @@ app.api
 | `app.api` | FastAPI app、HTTP Schema/middleware、Uvicorn 适配、lifespan、路由和依赖组装 | 所有下层 | 无低层限制；它是组合根 |
 | `app.services` | Chat 应用用例，编排 Agent Runtime、Result、Session、Metrics、Query Rewrite | agent 及所有更低层 | api、FastAPI、Starlette |
 | `app.agent` | 直接 `create_agent` Runtime、Router、框架适配、治理事件和结果转换 | tools、rag、llm 及基础设施/基础层 | api、services |
+| `app.sources` | 显式外部 source fetch、纯 Adapter、proposal/approval 与 approved-only indexing 编排 | tools、rag、ingestion 及基础层 | api、services、agent |
 | `app.tools` | ToolSpec、Provider、Registry、Runtime 和具体工具 | rag、llm、storage 及基础层 | api、services、agent |
 | `app.rag` | 索引、检索、重排、生成、引用和独立 RAG Graph | llm、storage、observability 及基础层 | api、services、agent、tools |
 | `app.ingestion` | 永久知识进入前的 source、identity、provenance、trust、policy 与 approval domain | common | api、services、agent、tools、rag、llm、storage、observability |
@@ -129,8 +131,8 @@ python scripts/inspect_agent_runtime.py --check
    `app.common`；配置解析和语义留在 `app.config`。
 4. Agent Loop 与直接 Runtime 放入 `app.agent`，工具执行放入 `app.tools`；只有独立
    RAG Graph、索引、检索和生成放入 `app.rag`；进入永久知识前的 identity、
-   provenance、policy 和 approval 放入 `app.ingestion`。不要重新创建 Parent Agent
-   Graph。
+   provenance、policy 和 approval 放入 `app.ingestion`；受治理外部 fetch 与这些边界的
+   薄编排放入 `app.sources`。不要重新创建 Parent Agent Graph。
 5. 更新 `.importlinter` 时把新 package 加到职责匹配的层，不通过调整顺序把偶然
    耦合合法化，也不添加 ignore。
 6. 运行 `lint-imports --verbose` 查看完整 importer/imported 链，再运行 focused

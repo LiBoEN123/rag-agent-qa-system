@@ -25,8 +25,13 @@ from app.tools.context import PrincipalType, ToolInvocationContext
 from app.tools.mcp.bridge import (
     McpToolCallInterceptor,
     build_governed_mcp_tool,
+    invoke_mcp_tool,
 )
 from app.tools.mcp.config import McpServerConfig
+from app.tools.mcp.serialization import (
+    MCP_INGESTION_MAX_TEXT_CHARS,
+    McpSerializationProfile,
+)
 
 
 class WeatherArgs(BaseModel):
@@ -45,6 +50,9 @@ class RecordingSink:
 class Runtime:
     context: ToolInvocationContext
     tool_call_id: str = "mcp-call-1"
+    mcp_serialization_profile: McpSerializationProfile = (
+        McpSerializationProfile.AGENT
+    )
 
 
 def _runtime(*permissions):
@@ -525,6 +533,8 @@ def test_large_text_embedded_text_and_structured_outputs_are_bounded(
     output = bounded["output"]
     assert len(output["content"]) <= 128
     assert output["truncated"] is True
+    assert "content_blocks" not in output
+    assert "serialization_profile" not in output
     assert (
         len(
             json.dumps(
@@ -536,6 +546,92 @@ def test_large_text_embedded_text_and_structured_outputs_are_bounded(
         <= 256
     )
     assert "structured-secret" not in json.dumps(output)
+
+
+def test_ingestion_profile_preserves_complete_text_without_changing_agent_profile(
+    settings_factory,
+):
+    body = "complete body " * 2000
+    sink = RecordingSink()
+
+    async def handler(request):
+        del request
+        return CallToolResult(
+            content=[
+                TextContent(type="text", text="description"),
+                EmbeddedResource(
+                    type="resource",
+                    resource=TextResourceContents(
+                        uri="repo://owner/repo/sha/"
+                        "f7fc20386c23e20d55f438222fab301cfccc4c65/contents/README.md",
+                        mimeType="text/markdown",
+                        text=body,
+                    ),
+                ),
+            ]
+        )
+
+    settings = settings_factory(mcp_max_text_chars=128)
+    interceptor = McpToolCallInterceptor(
+        settings,
+        server_configs=_server_configs(),
+        audit_sink=sink,
+    )
+    agent = _payload(
+        asyncio.run(interceptor(_request(_runtime("mcp:weather")), handler))
+    )["output"]
+    ingestion_runtime = _runtime("mcp:weather")
+    ingestion_runtime.mcp_serialization_profile = McpSerializationProfile.INGESTION
+    ingestion = _payload(
+        asyncio.run(interceptor(_request(ingestion_runtime), handler))
+    )["output"]
+
+    assert len(agent["content"]) == 128
+    assert agent["truncated"] is True
+    assert "content_blocks" not in agent
+    assert ingestion["truncated"] is False
+    assert ingestion["serialization_profile"] == "ingestion"
+    assert ingestion["content_blocks"][0] == {
+        "type": "text",
+        "text": "description",
+        "size_chars": 11,
+    }
+    assert ingestion["content_blocks"][1]["text"] == body
+    assert ingestion["content_blocks"][1]["size_chars"] == len(body)
+    assert "complete body" not in json.dumps(
+        [event.to_dict() for event in sink.events],
+        ensure_ascii=False,
+    )
+
+
+def test_oversized_ingestion_output_is_bounded_and_drops_block_body(settings_factory):
+    body = "x" * (MCP_INGESTION_MAX_TEXT_CHARS + 1)
+    runtime = _runtime("mcp:weather")
+    runtime.mcp_serialization_profile = McpSerializationProfile.INGESTION
+
+    async def handler(request):
+        del request
+        return CallToolResult(content=[TextContent(type="text", text=body)])
+
+    output = _payload(
+        asyncio.run(
+            McpToolCallInterceptor(
+                settings_factory(),
+                server_configs=_server_configs(),
+                audit_sink=RecordingSink(),
+            )(_request(runtime), handler)
+        )
+    )["output"]
+
+    assert len(output["content"]) == MCP_INGESTION_MAX_TEXT_CHARS
+    assert output["truncated"] is True
+    assert output["content_blocks"] == [
+        {
+            "type": "text",
+            "size_chars": MCP_INGESTION_MAX_TEXT_CHARS + 1,
+            "truncated": True,
+        }
+    ]
 
 
 def test_unknown_future_content_fails_without_payload_repr(settings_factory):
@@ -616,6 +712,24 @@ def test_governed_tool_supports_sync_and_native_async_paths(settings_factory):
         args={"location": "Beijing"},
     )
     assert parsed["ok"] is True
+
+
+def test_direct_ingestion_profile_rejects_non_read_only_tool(settings_factory):
+    tool = _governed_tool(settings_factory())
+    tool.metadata["risk_level"] = "external_write"
+
+    result = asyncio.run(
+        invoke_mcp_tool(
+            tool,
+            {"location": "Beijing"},
+            context=_runtime("mcp:weather").context,
+            serialization_profile=McpSerializationProfile.INGESTION,
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["error_code"] == "mcp_execution_error"
+    assert result["runtime"]["attempt_count"] == 0
 
 
 def test_sync_bridge_fails_safely_inside_existing_event_loop(settings_factory):

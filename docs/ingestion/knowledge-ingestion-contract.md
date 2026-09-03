@@ -26,7 +26,7 @@ IngestionCandidate
 
 ```text
 PHASE 10: Approved Candidate → Incremental Indexing
-PHASE 11: GitHub / Firecrawl → live Source Adapter
+PHASE 11B: governed GitHub file / Firecrawl page → live Source Adapter
 ```
 
 Phase 9 没有公开 API、Agent Tool 或 `add_to_knowledge_base(content)`，也没有让一次
@@ -158,13 +158,9 @@ Evidence Gate、Citation、Agent loop 或 Evaluation ground truth。
 Phase 10 由 RAG 侧薄适配消费 approved candidate，并使用 LangChain Indexing API、
 SQLRecordManager 和 langchain-chroma 管理增量 Vector 写入；Phase 9 domain 仍不依赖
 RAG。Phase 10 不建立 source/chunk registry、tombstone、事务协调器或持久整数 ID。
-Phase 11 才连接 GitHub/Firecrawl MCP、recrawl、ETag polling 与 branch sync。
-
-Phase 8B 的 GitHub MCP serializer 问题仍为已知项：
-
-```text
-github_mcp_serializer_issue: BLOCKER_FOR_PHASE_11
-github_mcp_serializer_issue: NOT_BLOCKER_FOR_PHASE_10
-```
-
-Phase 9 没有修改 `app/tools/mcp/serialization.py`、bridge 或任何 live adapter。
+Phase 11B 通过独立 `app.sources` 层连接现有 governed MCP：GitHub 只使用
+`get_file_contents` 的完整 text resource，Firecrawl 只使用显式选择 URL 的 `scrape`
+正文。两者默认停在 pending，显式批准后才以独立 RecordManager namespace 和
+`cleanup="incremental"` 进入 Phase 10 索引。Agent tool call 仍是 ephemeral result，不能
+触发 proposal、approval 或 index。recrawl、ETag polling、branch/site sync、remote delete
+detection 和 scheduler 仍属于后续阶段；Phase 9 domain 本身仍不依赖 MCP、Tool 或 RAG。

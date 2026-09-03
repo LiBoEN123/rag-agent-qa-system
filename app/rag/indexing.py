@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from langchain_chroma import Chroma
 from langchain_classic.indexes import SQLRecordManager
@@ -182,10 +182,13 @@ def sync_documents(
     *,
     settings: AppSettings | None = None,
     namespace: str = LOCAL_RECORD_NAMESPACE,
+    cleanup: Literal["full", "incremental"] = "full",
     force_rebuild: bool = False,
 ) -> dict[str, int]:
-    """用 LangChain Indexing API 同步完整 Local authoritative corpus。"""
+    """用 LangChain Indexing API 同步指定 namespace 的受控文档。"""
     resolved = settings or get_settings()
+    if force_rebuild and cleanup != "full":
+        raise ValueError("force_rebuild 只允许用于 full authoritative sync")
     manager = create_record_manager(resolved, namespace=namespace)
     vector_store = create_vector_store(embeddings, resolved)
 
@@ -200,7 +203,7 @@ def sync_documents(
         documents,
         manager,
         vector_store,
-        cleanup="full",
+        cleanup=cleanup,
         source_id_key="source_id",
         key_encoder="sha256",
     )

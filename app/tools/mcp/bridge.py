@@ -33,6 +33,7 @@ from app.tools.mcp.config import McpServerConfig
 from app.tools.policy import build_tool_args_fingerprint
 from app.tools.result import tool_error, tool_success
 from app.tools.mcp.serialization import (
+    McpSerializationProfile,
     serialize_mcp_call_result,
     summarize_mcp_output,
 )
@@ -278,6 +279,15 @@ class McpToolCallInterceptor:
         exposed_name = f"{request.server_name}_{request.name}"
         call_id = _runtime_call_id(request.runtime)
         context = _runtime_context(request.runtime)
+        serialization_profile = getattr(
+            request.runtime,
+            "mcp_serialization_profile",
+            McpSerializationProfile.AGENT,
+        )
+        try:
+            serialization_profile = McpSerializationProfile(serialization_profile)
+        except (TypeError, ValueError):
+            serialization_profile = McpSerializationProfile.AGENT
         try:
             args_fingerprint = build_tool_args_fingerprint(
                 tool_name=exposed_name,
@@ -471,6 +481,7 @@ class McpToolCallInterceptor:
                 settings=self._settings,
                 server_alias=request.server_name,
                 remote_tool_name=request.name,
+                profile=serialization_profile,
             )
             if outcome.ok:
                 result = _standard_result(
@@ -678,6 +689,7 @@ class _DirectRuntime:
 
     context: ToolInvocationContext
     tool_call_id: str
+    mcp_serialization_profile: McpSerializationProfile
 
 
 async def invoke_mcp_tool(
@@ -685,6 +697,7 @@ async def invoke_mcp_tool(
     args: dict[str, Any],
     *,
     context: ToolInvocationContext,
+    serialization_profile: McpSerializationProfile = McpSerializationProfile.AGENT,
 ) -> dict[str, Any]:
     """供冒烟工具通过正式 bridge 调用 cached governed MCP tool。"""
     if (tool.metadata or {}).get("tool_origin") != "mcp":
@@ -692,7 +705,24 @@ async def invoke_mcp_tool(
     coroutine = tool.coroutine
     if not callable(coroutine):
         return _bridge_failure(tool.name, args, "Configured MCP tool is unavailable")
-    runtime = _DirectRuntime(context=context, tool_call_id=str(uuid4()))
+    try:
+        resolved_profile = McpSerializationProfile(serialization_profile)
+    except (TypeError, ValueError):
+        return _bridge_failure(tool.name, args, "MCP serialization profile is invalid")
+    if (
+        resolved_profile is McpSerializationProfile.INGESTION
+        and (tool.metadata or {}).get("risk_level") != ToolRiskLevel.READ_ONLY.value
+    ):
+        return _bridge_failure(
+            tool.name,
+            args,
+            "MCP ingestion requires a read-only tool",
+        )
+    runtime = _DirectRuntime(
+        context=context,
+        tool_call_id=str(uuid4()),
+        mcp_serialization_profile=resolved_profile,
+    )
     try:
         result = await coroutine(runtime=runtime, **args)
     except Exception:
