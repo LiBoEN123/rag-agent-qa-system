@@ -291,6 +291,10 @@ class AppSettings(BaseSettings):
         le=2_000_000,
     )
 
+    # 永久知识运营 API（默认不注册）
+    ingestion_admin_api_enabled: bool = False
+    ingestion_admin_api_key: SecretStr | None = None
+
     # 受治理的只读 SQL 工具
     sql_tool_enabled: bool = False
     sql_database_url: SecretStr | None = None
@@ -406,6 +410,7 @@ class AppSettings(BaseSettings):
         "decompose_api_key",
         "judge_api_key",
         "sql_database_url",
+        "ingestion_admin_api_key",
         mode="before",
     )
     @classmethod
@@ -742,6 +747,14 @@ def validate_startup_environment(settings: AppSettings) -> None:
     """校验 API 启动外部前提，不访问网络或初始化运行时。"""
     if settings.llm_api_key is None:
         raise ValueError("缺少 LLM_API_KEY 或 DEEPSEEK_API_KEY，请检查 .env")
+    if (
+        settings.ingestion_admin_api_enabled
+        and settings.ingestion_admin_api_key is None
+    ):
+        raise ValueError(
+            "INGESTION_ADMIN_API_ENABLED=true 时必须配置 "
+            "INGESTION_ADMIN_API_KEY"
+        )
     validate_rag_environment(settings)
 
     file_paths = [("SQLITE_DB_PATH", settings.sqlite_db_path)]

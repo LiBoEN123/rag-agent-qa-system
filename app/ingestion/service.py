@@ -173,6 +173,7 @@ class IngestionService:
             policy_reasons=candidate.policy_reasons,
             status=candidate.status,
             approval_status=candidate.approval.status,
+            requested_at=candidate.requested_at,
         )
 
     @staticmethod

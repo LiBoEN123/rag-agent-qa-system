@@ -19,6 +19,8 @@ def test_init_db_creates_tables(tmp_path):
     assert "messages" in names
     assert "agent_runs" in names
     assert "agent_steps" in names
+    assert "ingestion_candidates" in names
+    assert "ingestion_index_runs" in names
 
 
 def test_sqlite_memory_append_and_get_history(tmp_path):

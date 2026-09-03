@@ -5,11 +5,11 @@ from __future__ import annotations
 from threading import RLock
 from typing import Protocol
 
-from app.ingestion.contracts import IngestionCandidate
+from app.ingestion.contracts import IngestionCandidate, IngestionCandidateStatus, KnowledgeSourceType
 
 
 class CandidateRepository(Protocol):
-    """候选存储边界；Phase 9 不提供持久数据库实现。"""
+    """候选存储边界；基础设施层可以提供持久实现。"""
 
     def get(self, candidate_id: str) -> IngestionCandidate | None:
         """按稳定 candidate ID 查询。"""
@@ -22,6 +22,16 @@ class CandidateRepository(Protocol):
 
     def count(self) -> int:
         """返回逻辑候选数量。"""
+
+    def list(
+        self,
+        *,
+        status: IngestionCandidateStatus | None = None,
+        source_type: KnowledgeSourceType | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[IngestionCandidate]:
+        """按可查询字段分页返回候选，不改变 domain state。"""
 
 
 class InMemoryCandidateRepository:
@@ -58,6 +68,32 @@ class InMemoryCandidateRepository:
     def count(self) -> int:
         with self._lock:
             return len(self._candidates)
+
+    def list(
+        self,
+        *,
+        status: IngestionCandidateStatus | None = None,
+        source_type: KnowledgeSourceType | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[IngestionCandidate]:
+        if limit < 1 or offset < 0:
+            raise ValueError("limit 必须为正整数且 offset 不能为负数")
+        with self._lock:
+            candidates = [
+                candidate
+                for candidate in self._candidates.values()
+                if (status is None or candidate.status is status)
+                and (
+                    source_type is None
+                    or candidate.document.source_type is source_type
+                )
+            ]
+            candidates.sort(
+                key=lambda item: (item.requested_at, item.candidate_id),
+                reverse=True,
+            )
+            return candidates[offset : offset + limit]
 
 
 __all__ = ["CandidateRepository", "InMemoryCandidateRepository"]

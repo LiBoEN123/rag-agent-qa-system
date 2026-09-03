@@ -295,7 +295,7 @@ def test_create_app_does_not_run_lifespan_at_import_or_construction(monkeypatch)
     monkeypatch.setattr(
         api_application,
         "start_application_resources",
-        lambda: calls.append("start"),
+        lambda *_args: calls.append("start"),
     )
 
     application = api_application.create_app(
@@ -325,7 +325,7 @@ def test_lifespan_awaits_mcp_startup_and_closes_it_before_other_runtimes(
     monkeypatch.setattr(
         api_application,
         "start_application_resources",
-        lambda: calls.append("application_start"),
+        lambda *_args: calls.append("application_start"),
     )
     monkeypatch.setattr(api_application, "initialize_mcp_runtime", initialize_mcp)
     monkeypatch.setattr(api_application, "close_mcp_runtime", close_mcp)

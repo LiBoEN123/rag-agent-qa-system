@@ -355,6 +355,7 @@ class IngestionCandidateSummary(_FrozenContract):
     policy_reasons: tuple[PolicyReason, ...]
     status: IngestionCandidateStatus
     approval_status: ApprovalStatus
+    requested_at: AwareDatetime
 
 
 class KnowledgeSourceAdapter(Protocol):

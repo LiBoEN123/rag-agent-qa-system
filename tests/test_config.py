@@ -370,6 +370,26 @@ def test_startup_validation_is_explicit_and_checks_external_paths(tmp_path):
 
     validate_startup_environment(settings)
 
+    assert settings.ingestion_admin_api_enabled is False
+    assert settings.ingestion_admin_api_key is None
+    with pytest.raises(ValueError, match="INGESTION_ADMIN_API_KEY"):
+        validate_startup_environment(
+            settings.model_copy(
+                update={
+                    "ingestion_admin_api_enabled": True,
+                    "ingestion_admin_api_key": None,
+                }
+            )
+        )
+    enabled = settings.model_copy(
+        update={
+            "ingestion_admin_api_enabled": True,
+            "ingestion_admin_api_key": SecretStr("admin-key"),
+        }
+    )
+    validate_startup_environment(enabled)
+    assert isinstance(enabled.ingestion_admin_api_key, SecretStr)
+
     with pytest.raises(ValueError, match="LLM_API_KEY"):
         validate_startup_environment(
             settings.model_copy(update={"llm_api_key": None})

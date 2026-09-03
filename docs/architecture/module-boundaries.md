@@ -12,15 +12,16 @@ app.api
   → app.sources
   → app.tools
   → app.rag
+  → app.storage / app.observability
   → app.ingestion
   → app.llm
-  → app.storage / app.observability
   → app.contracts / app.config / app.common
 ```
 
 箭头表示允许依赖的方向。高层可以直接依赖任意更低层；低层不能直接或间接依赖
-更高层。`app.storage : app.observability` 暂时属于同一层，允许保留必要的相互
-依赖。`app.contracts | app.config | app.common` 是三个彼此独立的基础模块。
+更高层。`app.storage : app.observability` 属于同一层；其中 storage 可以实现
+`app.ingestion` 定义的 repository contract，但 domain 不反向依赖 storage。
+`app.contracts | app.config | app.common` 是三个彼此独立的基础模块。
 
 `app.main` 是只调用 `app.api.application.create_app()` 并导出 ASGI app 的进程
 入口，允许依赖 API；当前并不直接导入 FastAPI。`app.rebuild_kb` 是维护命令入口，
@@ -39,7 +40,7 @@ app.api
 | `app.rag` | 索引、检索、重排、生成、引用和独立 RAG Graph | llm、storage、observability 及基础层 | api、services、agent、tools |
 | `app.ingestion` | 永久知识进入前的 source、identity、provenance、trust、policy 与 approval domain | common | api、services、agent、tools、rag、llm、storage、observability |
 | `app.llm` | 模型传输、工厂、错误和模型 Schema | contracts、config、common | rag、tools、agent、services、api |
-| `app.storage` | SQLite、session、trace 持久化 | observability 及基础层 | 业务层 |
+| `app.storage` | SQLite、session、trace、ingestion repository 持久化适配 | ingestion 及基础层 | api、services、agent、tools、rag、sources |
 | `app.observability` | 框架无关 metrics、trace ID 和日志数据处理 | storage 及基础层 | 业务层、FastAPI、Starlette |
 | `app.contracts` | 跨层稳定值对象和状态策略 | 无 | config、common 及所有应用/基础设施层 |
 | `app.config` | 唯一 AppSettings、配置 helper、校验和惰性缓存 | 无内部 package | contracts、common 及所有上层 |

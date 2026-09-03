@@ -85,7 +85,7 @@ def test_fastapi_lifespan_explicitly_configures_uvicorn_access(monkeypatch):
     monkeypatch.setattr(
         api_application,
         "start_application_resources",
-        lambda: calls.append("start"),
+        lambda *_args: calls.append("start"),
     )
     monkeypatch.setattr(
         api_application,

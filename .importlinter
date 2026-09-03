@@ -12,9 +12,9 @@ layers =
     app.sources
     app.tools
     app.rag
+    app.storage : app.observability
     app.ingestion
     app.llm
-    app.storage : app.observability
     app.contracts | app.config | app.common
 
 [importlinter:contract:top-level-acyclic]
