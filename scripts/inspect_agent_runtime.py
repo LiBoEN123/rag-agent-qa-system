@@ -240,6 +240,9 @@ def inspect_runtime(
     tool_runtime_source = (
         PROJECT_ROOT / "app" / "tools" / "runtime.py"
     ).read_text(encoding="utf-8")
+    tool_execution_source = (
+        PROJECT_ROOT / "app" / "tools" / "execution.py"
+    ).read_text(encoding="utf-8")
     local_provider_source = (
         PROJECT_ROOT / "app" / "tools" / "providers" / "local.py"
     ).read_text(encoding="utf-8")
@@ -357,19 +360,21 @@ def inspect_runtime(
         ),
         _check(
             "local_tool_execution_entry_is_unique",
-            "tool_runtime.execute_registered_tool(" in framework_tools_source
+            "class ProjectStructuredTool(StructuredTool)" in framework_tools_source
+            and "execute_project_tool(" in framework_tools_source
+            and "execute_registered_tool" not in framework_tools_source
             and "registry.dispatch(" not in framework_tools_source
             and "def dispatch(" not in registry_source
             and not (PROJECT_ROOT / "app" / "tools" / "dispatch.py").exists(),
-            "StructuredTool calls execute_registered_tool without dispatch wrappers",
+            "ProjectStructuredTool directly enters the thin project adapter",
         ),
         _check(
-            "local_handler_is_runtime_owned",
-            "return runtime.execute(" in tool_runtime_source
-            and tool_runtime_source.count("spec.handler") == 1
+            "local_handler_is_adapter_owned",
+            tool_execution_source.count("spec.handler") == 1
+            and "spec.handler" not in tool_runtime_source
             and "spec.handler" not in framework_tools_source
             and "spec.handler" not in local_provider_source,
-            "only ToolRuntime submits the local ToolSpec handler",
+            "only the thin project execution adapter submits ToolSpec.handler",
         ),
         _check(
             "local_provider_is_discovery_only",
@@ -472,9 +477,10 @@ def inspect_runtime(
         "tool_visibility": visibility,
         "local_tool_execution": {
             "provider": "LocalToolProvider.list_specs",
-            "adapter": "request-level StructuredTool",
-            "entry": "execute_registered_tool",
-            "runtime": "ToolRuntime.execute",
+            "adapter": "ProjectStructuredTool",
+            "input_validation": "LangChain StructuredTool/Pydantic",
+            "retry": "LangChain ToolRetryMiddleware",
+            "timeout": "shared bounded executor helper",
             "terminal": "ToolSpec.handler",
         },
         "module_boundaries": module_boundaries,

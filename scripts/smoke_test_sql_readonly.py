@@ -19,10 +19,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from app.agent.framework_tools import build_local_tool  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.tools.context import build_default_tool_context  # noqa: E402
 from app.tools.registry import get_tool_registry  # noqa: E402
-from app.tools.runtime import execute_registered_tool  # noqa: E402
 
 
 def _tool_call(args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
@@ -91,13 +91,16 @@ def run_command(args: argparse.Namespace) -> int:
         return 2
 
     tool_name, tool_args = _tool_call(args)
-    # 刻意走唯一执行入口，确保权限、超时、审计与错误治理生效。
-    result = execute_registered_tool(
-        registry=get_tool_registry(),
-        tool_name=tool_name,
-        tool_args=tool_args,
+    registry = get_tool_registry()
+    spec = registry.get(tool_name)
+    if spec is None:
+        raise LookupError(f"unknown local tool: {tool_name}")
+    result = build_local_tool(
+        spec,
         context=context,
-    )
+        settings=settings,
+        runtime_injection=False,
+    ).invoke(tool_args)
     summary = {
         "tool": tool_name,
         "ok": result.get("ok") is True,

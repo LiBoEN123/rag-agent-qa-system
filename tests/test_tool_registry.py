@@ -2,11 +2,12 @@ import json
 from dataclasses import replace
 
 import pytest
+from pydantic import ValidationError
 
 from app.tools.context import ToolInvocationContext
 from app.tools.registry import ToolRegistry, ToolSpec
 from app.tools.result import tool_success
-from app.tools.runtime import execute_registered_tool
+from tests.support.local_tools import invoke_local_tool
 from app.tools.schemas import (
     SearchKnowledgeBaseArgs,
     SearchKnowledgeBaseOutput,
@@ -116,9 +117,9 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
     }
 
 
-def test_execute_registered_tool_runs_simple_calculator(tool_registry):
+def test_invoke_local_tool_runs_simple_calculator(tool_registry):
     """验证唯一执行入口可以调用已注册计算器工具。"""
-    result = execute_registered_tool(
+    result = invoke_local_tool(
         registry=tool_registry,
         tool_name="simple_calculator",
         tool_args={"expression": "1 + 2 * 3"},
@@ -147,7 +148,7 @@ def test_migrated_calculator_rejects_malformed_output(tool_registry):
         )
     )
 
-    result = execute_registered_tool(
+    result = invoke_local_tool(
         registry=registry,
         tool_name="simple_calculator",
         tool_args={"expression": "1 + 2"},
@@ -159,7 +160,7 @@ def test_migrated_calculator_rejects_malformed_output(tool_registry):
     assert result["output"] is None
 
 
-def test_execute_registered_tool_runs_search_knowledge_base(
+def test_invoke_local_tool_runs_search_knowledge_base(
     monkeypatch,
     tool_registry,
 ):
@@ -216,7 +217,7 @@ def test_execute_registered_tool_runs_search_knowledge_base(
         fake_run_rag_subgraph,
     )
 
-    result = execute_registered_tool(
+    result = invoke_local_tool(
         registry=tool_registry,
         tool_name="search_knowledge_base",
         tool_args={
@@ -286,7 +287,7 @@ def test_search_knowledge_base_exposes_multi_query_final_chunks(
         fake_run_rag_subgraph,
     )
 
-    result = execute_registered_tool(
+    result = invoke_local_tool(
         registry=tool_registry,
         tool_name="search_knowledge_base",
         tool_args={"query": "对比两个政策", "top_k": 1},
@@ -340,7 +341,7 @@ def test_search_knowledge_base_rejects_inconsistent_output_counts(tool_registry)
         )
     )
 
-    result = execute_registered_tool(
+    result = invoke_local_tool(
         registry=registry,
         tool_name="search_knowledge_base",
         tool_args={"query": "测试", "top_k": 1},
@@ -360,20 +361,17 @@ def test_search_knowledge_base_rejects_inconsistent_output_counts(tool_registry)
         {"query": "测试", "top_k": 11},
     ],
 )
-def test_search_knowledge_base_rejects_invalid_args_at_runtime(
+def test_search_knowledge_base_rejects_invalid_args_in_structured_tool(
     tool_registry,
     tool_args,
 ):
-    """知识库参数非法时由 Runtime 拒绝且不进入 handler。"""
-    result = execute_registered_tool(
-        registry=tool_registry,
-        tool_name="search_knowledge_base",
-        tool_args=tool_args,
-    )
-
-    assert result["ok"] is False
-    assert result["error_code"] == "invalid_arguments"
-    assert result["runtime"]["attempt_count"] == 0
+    """知识库参数非法时由 StructuredTool/Pydantic 拒绝。"""
+    with pytest.raises(ValidationError):
+        invoke_local_tool(
+            registry=tool_registry,
+            tool_name="search_knowledge_base",
+            tool_args=tool_args,
+        )
 
 
 @pytest.mark.parametrize("chunk_id", [0, 1, " chunk-abc "])
@@ -392,7 +390,7 @@ def test_get_chunk_text_keeps_integer_and_string_ids(
         return {"found": True, "chunk_id": value, "text": "测试正文"}
 
     monkeypatch.setattr(rag, "get_chunk_full_text", fake_get_chunk_full_text)
-    result = execute_registered_tool(
+    result = invoke_local_tool(
         registry=tool_registry,
         tool_name="get_chunk_text",
         tool_args={"chunk_id": chunk_id},
@@ -421,7 +419,7 @@ def test_list_documents_output_model_accepts_current_preview_shape(
     ]
     monkeypatch.setattr(rag, "preview_docs", lambda: documents)
 
-    result = execute_registered_tool(
+    result = invoke_local_tool(
         registry=tool_registry,
         tool_name="list_documents",
         tool_args={},
@@ -432,37 +430,33 @@ def test_list_documents_output_model_accepts_current_preview_shape(
 
 
 @pytest.mark.parametrize("chunk_id", ["", "   "])
-def test_get_chunk_text_rejects_blank_string_at_runtime(tool_registry, chunk_id):
-    """空白字符串 ID 在提交 handler 前返回 invalid_arguments。"""
-    result = execute_registered_tool(
-        registry=tool_registry,
-        tool_name="get_chunk_text",
-        tool_args={"chunk_id": chunk_id},
-    )
-
-    assert result["error_code"] == "invalid_arguments"
-    assert result["runtime"]["attempt_count"] == 0
+def test_get_chunk_text_rejects_blank_string_in_structured_tool(tool_registry, chunk_id):
+    """空白字符串 ID 在提交 handler 前由 Pydantic 拒绝。"""
+    with pytest.raises(ValidationError):
+        invoke_local_tool(
+            registry=tool_registry,
+            tool_name="get_chunk_text",
+            tool_args={"chunk_id": chunk_id},
+        )
 
 
 @pytest.mark.parametrize("expression", ["", "   "])
-def test_simple_calculator_rejects_blank_expression_at_runtime(
+def test_simple_calculator_rejects_blank_expression_in_structured_tool(
     tool_registry,
     expression,
 ):
     """空白表达式由参数模型拒绝，计算器只处理已校验表达式。"""
-    result = execute_registered_tool(
-        registry=tool_registry,
-        tool_name="simple_calculator",
-        tool_args={"expression": expression},
-    )
-
-    assert result["error_code"] == "invalid_arguments"
-    assert result["runtime"]["attempt_count"] == 0
+    with pytest.raises(ValidationError):
+        invoke_local_tool(
+            registry=tool_registry,
+            tool_name="simple_calculator",
+            tool_args={"expression": expression},
+        )
 
 
 def test_simple_calculator_keeps_ast_safety_rules(tool_registry):
     """表达式结构合法后仍由计算器 AST 白名单拒绝代码执行。"""
-    result = execute_registered_tool(
+    result = invoke_local_tool(
         registry=tool_registry,
         tool_name="simple_calculator",
         tool_args={"expression": "__import__('os').getcwd()"},
@@ -472,23 +466,14 @@ def test_simple_calculator_keeps_ast_safety_rules(tool_registry):
     assert "只支持简单数字四则运算" in result["error"]
 
 
-def test_execute_registered_tool_rejects_unknown_tool(tool_registry):
-    """验证未知工具返回兼容错误结构。"""
-    result = execute_registered_tool(
-        registry=tool_registry,
-        tool_name="unknown_tool",
-        tool_args={},
-    )
-
-    assert result["ok"] is False
-    assert result["status"] == "error"
-    assert result["tool_name"] == "unknown_tool"
-    assert result["tool_input"] == {}
-    assert result["output"] is None
-    assert result["error"] == "unknown tool: unknown_tool"
-    assert result["error_code"] == "unknown_tool"
-    assert result["retryable"] is False
-    assert result["runtime"]["attempt_count"] == 0
+def test_invoke_local_tool_rejects_unknown_tool(tool_registry):
+    """直接调用只能构造已注册的 BaseTool；未知工具不另设 Runtime API。"""
+    with pytest.raises(LookupError, match="unknown local tool"):
+        invoke_local_tool(
+            registry=tool_registry,
+            tool_name="unknown_tool",
+            tool_args={},
+        )
 
 
 def test_execution_entry_validates_args_before_handler():
@@ -520,7 +505,7 @@ def test_execution_entry_validates_args_before_handler():
     )
 
     context = ToolInvocationContext(trace_id="trace-registry")
-    result = execute_registered_tool(
+    result = invoke_local_tool(
         registry=registry,
         tool_name="search_knowledge_base",
         tool_args={"query": "测试", "top_k": 5},
@@ -532,8 +517,8 @@ def test_execution_entry_validates_args_before_handler():
     assert seen["context"] is context
 
 
-def test_execution_entry_returns_tool_error_when_args_invalid():
-    """验证参数非法时返回工具错误且不调用 handler。"""
+def test_execution_entry_uses_structured_tool_validation_before_handler():
+    """验证参数非法时由 StructuredTool 拒绝且不调用 handler。"""
     registry = ToolRegistry()
     called = {"count": 0}
 
@@ -552,24 +537,20 @@ def test_execution_entry_returns_tool_error_when_args_invalid():
         )
     )
 
-    result = execute_registered_tool(
-        registry=registry,
-        tool_name="search_knowledge_base",
-        tool_args={"query": "测试", "top_k": 999},
-    )
+    with pytest.raises(ValidationError):
+        invoke_local_tool(
+            registry=registry,
+            tool_name="search_knowledge_base",
+            tool_args={"query": "测试", "top_k": 999},
+        )
 
     assert called["count"] == 0
-    assert result["status"] != "success"
-    assert result["ok"] is False
-    assert "invalid tool args" in result["error"]
-    assert result["error_code"] == "invalid_arguments"
-    assert result["runtime"]["attempt_count"] == 0
 
 
 def test_execution_entry_accepts_explicit_context(tool_registry):
     """验证唯一执行入口保留显式请求上下文。"""
     context = ToolInvocationContext(trace_id="test-trace")
-    result = execute_registered_tool(
+    result = invoke_local_tool(
         registry=tool_registry,
         tool_name="simple_calculator",
         tool_args={"expression": "2 + 3"},

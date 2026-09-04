@@ -26,12 +26,12 @@ class FakeRegistry:
 
 @pytest.fixture(autouse=True)
 def route_execution_through_fake_registry(monkeypatch):
-    """让 CLI 测试替身仍经过唯一函数形态而不创建真实 Runtime。"""
+    """让 CLI 测试替身覆盖诊断 BaseTool 调用而不访问网络。"""
 
     def fake_execute(*, registry, tool_name, tool_args=None, context=None):
         return registry.execute(tool_name, tool_args, context=context)
 
-    monkeypatch.setattr(smoke, "execute_registered_tool", fake_execute)
+    monkeypatch.setattr(smoke, "invoke_local_tool", fake_execute)
 
 
 def _context(*permissions):
@@ -72,7 +72,7 @@ def _context(*permissions):
         ),
     ],
 )
-def test_subcommands_use_registered_tool_execution_entry(
+def test_subcommands_use_direct_base_tool_execution_entry(
     monkeypatch,
     argv,
     permission,

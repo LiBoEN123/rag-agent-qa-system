@@ -2,13 +2,11 @@
 
 import json
 
-import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_tools
 from app.config import get_settings
-import app.tools.runtime as tool_runtime
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolRiskLevel, ToolSpec
 from app.tools.errors import ToolErrorCode
@@ -37,15 +35,6 @@ class FakeModel:
     def invoke(self, messages):
         self.received_messages.append(list(messages))
         return self.responses.pop(0)
-
-
-@pytest.fixture(autouse=True)
-def isolate_tool_runtimes():
-    tool_runtime.reset_tool_runtime()
-    yield
-    tool_runtime.reset_tool_runtime()
-
-
 def _call(tool_name: str, value: int | None, call_id: str) -> dict:
     args = {} if value is None else {"value": value}
     return {
@@ -380,6 +369,9 @@ def test_missing_idempotency_key_stops_without_handler_or_model_retry(
 
 
 def test_runtime_unavailable_is_terminal(monkeypatch):
+    from app.tools import execution
+    from app.tools.runtime import ProjectToolExecutorError
+
     calls: list[int] = []
 
     def handler(args, context):
@@ -392,16 +384,11 @@ def test_runtime_unavailable_is_terminal(monkeypatch):
         [AIMessage(content="", tool_calls=[_call("runtime_tool", 1, "runtime")])]
     )
 
-    def unavailable(self, tool_name, tool_args=None, *, context=None):
-        return tool_error(
-            tool_name,
-            tool_args or {},
-            "runtime closed",
-            error_code=ToolErrorCode.RUNTIME_UNAVAILABLE.value,
-            runtime={"attempt_count": 0, "max_attempts": 0},
-        )
+    def unavailable(*args, **kwargs):
+        del args, kwargs
+        raise ProjectToolExecutorError
 
-    monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", unavailable)
+    monkeypatch.setattr(execution, "run_with_timeout", unavailable)
     output = _invoke(monkeypatch, registry=registry, model=model)
 
     assert calls == []
@@ -490,13 +477,12 @@ def test_structured_tool_validation_error_is_corrected_next_round(monkeypatch):
     assert first_payload["error_code"] == "invalid_arguments"
     assert first_payload["error_source"] == "structured_tool_validation"
     assert first_payload["handler_executed"] is False
-    assert "value" in first_payload["error"]
+    assert first_payload["error"] == "工具参数校验失败"
     assert output["result"]["answer"] == "corrected"
 
 
-def test_execution_error_can_switch_tools_and_both_use_runtime(monkeypatch):
+def test_execution_error_can_switch_tools(monkeypatch):
     executed: list[str] = []
-    runtime_calls: list[str] = []
 
     def first_handler(args, context):
         executed.append("first")
@@ -514,13 +500,6 @@ def test_execution_error_can_switch_tools_and_both_use_runtime(monkeypatch):
     registry = ToolRegistry()
     registry.register(_spec("first_tool", first_handler))
     registry.register(_spec("second_tool", second_handler))
-    original_execute = tool_runtime.ToolRuntime.execute
-
-    def recording_execute(self, tool_name, tool_args=None, *, context=None):
-        runtime_calls.append(tool_name)
-        return original_execute(self, tool_name, tool_args, context=context)
-
-    monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", recording_execute)
     model = FakeModel(
         [
             AIMessage(content="", tool_calls=[_call("first_tool", 1, "first")]),
@@ -532,5 +511,4 @@ def test_execution_error_can_switch_tools_and_both_use_runtime(monkeypatch):
     output = _invoke(monkeypatch, registry=registry, model=model)
 
     assert executed == ["first", "second"]
-    assert runtime_calls == ["first_tool", "second_tool"]
     assert output["result"]["answer"] == "used fallback tool"

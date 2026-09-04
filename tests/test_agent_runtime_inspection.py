@@ -6,6 +6,7 @@ from importlib import import_module
 from pydantic import BaseModel
 
 from app.agent import framework_agent
+from app.agent.framework_tools import build_framework_tools
 from app.tools.context import build_default_tool_context
 from app.tools.contracts import ToolSpec
 from app.tools.providers import LocalToolProvider
@@ -53,7 +54,7 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "streaming_uses_create_agent_directly",
         "rag_graph_is_tool_owned",
         "local_tool_execution_entry_is_unique",
-        "local_handler_is_runtime_owned",
+        "local_handler_is_adapter_owned",
         "local_provider_is_discovery_only",
         "mcp_governance_is_independent",
         "no_parent_event_projection_cursor",
@@ -100,9 +101,10 @@ def test_runtime_report_preserves_direct_create_agent_contract(
     }
     assert report["local_tool_execution"] == {
         "provider": "LocalToolProvider.list_specs",
-        "adapter": "request-level StructuredTool",
-        "entry": "execute_registered_tool",
-        "runtime": "ToolRuntime.execute",
+        "adapter": "ProjectStructuredTool",
+        "input_validation": "LangChain StructuredTool/Pydantic",
+        "retry": "LangChain ToolRetryMiddleware",
+        "timeout": "shared bounded executor helper",
         "terminal": "ToolSpec.handler",
     }
     assert {
@@ -177,6 +179,25 @@ def test_tool_contracts_use_model_facing_json_schema(
         "registered_tool_count": len(tools),
         "visible_tool_count": len(report["default_visible_tools"]),
     }
+
+
+def test_all_local_framework_tool_schemas_match_registry_contract(settings_factory):
+    """全部八个 Local Tool 保持名称、描述、字段、required 与类型不变。"""
+    settings = _knowledge_only(settings_factory, "web:search", "web:fetch")
+    context = build_default_tool_context(source="schema_parity", settings=settings)
+    registry = inspection.get_tool_registry()
+    tools = build_framework_tools(LocalToolProvider(registry), context=context)
+
+    assert len(tools) == 8
+    for tool in tools:
+        spec = registry.get(tool.name)
+        assert spec is not None
+        expected = spec.args_model.model_json_schema()
+        actual = tool.tool_call_schema.model_json_schema()
+        assert tool.name == spec.name
+        assert tool.description == spec.description
+        assert actual.get("properties") == expected.get("properties")
+        assert actual.get("required", []) == expected.get("required", [])
 
 
 def test_json_cli_is_parseable_stable_and_safe(capsys):

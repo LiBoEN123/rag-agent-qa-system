@@ -20,6 +20,12 @@ from app.agent.guardrails import (
 )
 from app.config import AppSettings, get_settings
 from app.tools.errors import ToolErrorCode
+from app.tools.execution import (
+    enter_framework_execution,
+    exit_framework_execution,
+    framework_execution_started,
+    invalid_arguments_result,
+)
 from app.tools.policy import build_tool_args_fingerprint
 from app.tools.result import tool_error
 
@@ -204,6 +210,80 @@ def _tool_state_command(
     if knowledge_base_result is not None:
         updates["knowledge_base_result"] = knowledge_base_result
     return Command(graph=graph, update=updates, resume=resume, goto=goto)
+
+
+class ProjectToolExecutionMiddleware(AgentMiddleware):
+    """仅为本地 ProjectStructuredTool 建立 retry scope 和校验错误契约。"""
+
+    @staticmethod
+    def _project_tool(request: ToolCallRequest):
+        from app.agent.framework_tools import ProjectStructuredTool
+
+        return (
+            request.tool
+            if isinstance(request.tool, ProjectStructuredTool)
+            else None
+        )
+
+    @staticmethod
+    def _validated_output(request, tool, output):
+        if framework_execution_started() or not isinstance(output, ToolMessage):
+            return output
+        context = request.runtime.context
+        if not isinstance(context, type(tool.project_context)):
+            context = tool.project_context
+        raw_args = request.tool_call.get("args") or {}
+        result = invalid_arguments_result(
+            spec=tool.project_spec,
+            tool_args=raw_args if isinstance(raw_args, dict) else {},
+            context=context,
+            tool_call_id=str(request.tool_call.get("id") or ""),
+            settings=tool.project_settings,
+            audit_sink=tool.project_audit_sink,
+        )
+        return output.model_copy(
+            update={
+                "content": json.dumps(
+                    result,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "status": "error",
+            }
+        )
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        """本地工具使用 ContextVar 跨 framework retry 共享 attempt 状态。"""
+        tool = self._project_tool(request)
+        if tool is None:
+            return handler(request)
+        token = enter_framework_execution()
+        try:
+            return self._validated_output(request, tool, handler(request))
+        finally:
+            exit_framework_execution(token)
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[
+            [ToolCallRequest], Awaitable[ToolMessage | Command[Any]]
+        ],
+    ) -> ToolMessage | Command[Any]:
+        """异步 Agent 复用相同本地执行边界，MCP BaseTool 直接跳过。"""
+        tool = self._project_tool(request)
+        if tool is None:
+            return await handler(request)
+        token = enter_framework_execution()
+        try:
+            output = await handler(request)
+            return self._validated_output(request, tool, output)
+        finally:
+            exit_framework_execution(token)
 
 
 class ProjectToolGovernanceMiddleware(AgentMiddleware):

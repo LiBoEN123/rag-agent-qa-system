@@ -11,7 +11,7 @@ from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolAuditOutputMode, ToolRiskLevel
 from app.tools.providers import LocalToolProvider
 from app.tools.registry import ToolRegistry, register_default_tools
-from app.tools.runtime import execute_registered_tool
+from tests.support.local_tools import invoke_local_tool
 from tests.support.agent_runtime import build_agent_harness
 
 
@@ -76,7 +76,7 @@ def test_query_args_and_outputs_are_pydantic_validated(sql_registry):
 
 
 def test_runtime_permission_gate_runs_before_sql_handler(sql_registry):
-    denied = execute_registered_tool(
+    denied = invoke_local_tool(
         registry=sql_registry,
         tool_name="list_sql_tables",
         tool_args={},
@@ -103,7 +103,7 @@ def test_runtime_executes_three_sql_tools_with_structured_outputs(sql_registry):
     ]
 
     results = [
-        execute_registered_tool(
+        invoke_local_tool(
             registry=sql_registry,
             tool_name=name,
             tool_args=args,
@@ -120,7 +120,7 @@ def test_runtime_executes_three_sql_tools_with_structured_outputs(sql_registry):
 
 
 def test_runtime_returns_safe_specific_sql_error(sql_registry):
-    result = execute_registered_tool(
+    result = invoke_local_tool(
         registry=sql_registry,
         tool_name="query_sql_readonly",
         tool_args={"sql": "DELETE FROM students"},

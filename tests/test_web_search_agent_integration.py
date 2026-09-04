@@ -9,7 +9,6 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 from app.agent import framework_agent
 from app.rag import graph as rag_graph
-import app.tools.runtime as tool_runtime
 from app.tools.context import ToolInvocationContext
 from app.tools.registry import get_tool_registry
 from tests.support.agent_runtime import build_agent_harness
@@ -300,11 +299,9 @@ def _invoke(model, context):
 
 @pytest.fixture(autouse=True)
 def isolate_runtime(settings_env):
-    """禁用生产审计并隔离每个用例使用的工具运行时。"""
-    tool_runtime.reset_tool_runtime()
+    """禁用生产审计并隔离每个用例配置。"""
     settings_env(tool_audit_enabled=False)
     yield
-    tool_runtime.reset_tool_runtime()
 
 
 def test_consecutive_requests_keep_web_visibility_isolated_and_execute_graph(
@@ -434,10 +431,6 @@ def test_forged_hidden_web_search_is_unknown_without_ddgs_or_runtime(
     )
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
 
-    def forbidden_execute(*args, **kwargs):
-        raise AssertionError(f"hidden web_search reached ToolRuntime: {args} {kwargs}")
-
-    monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", forbidden_execute)
     output = _invoke(
         model,
         ToolInvocationContext(
@@ -485,14 +478,6 @@ def test_agent_searches_then_fetches_through_registry_runtime(monkeypatch):
     )
     model = SearchFetchModel()
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
-    runtime_calls = []
-    original_execute = tool_runtime.ToolRuntime.execute
-
-    def recording_execute(self, name, args=None, *, context=None):
-        runtime_calls.append((name, dict(args or {}), context))
-        return original_execute(self, name, args, context=context)
-
-    monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", recording_execute)
     output = _invoke(
         model,
         ToolInvocationContext(
@@ -518,9 +503,7 @@ def test_agent_searches_then_fetches_through_registry_runtime(monkeypatch):
     search_payload = json.loads(search_message.content)
     fetch_payload = json.loads(fetch_message.content)
     assert model.selected_url == search_payload["output"]["results"][0]["url"]
-    assert runtime_calls[0][0] == "web_search"
-    assert runtime_calls[1][0] == "web_fetch"
-    assert str(runtime_calls[1][1]["url"]) == model.selected_url
+    assert fetch_payload["tool_input"]["url"] == model.selected_url
     assert fetch_payload["output"]["final_url"] == model.selected_url
     assert fetch_payload["output"]["content_is_untrusted"] is True
     assert "LangGraph 1.2 release details" in output["result"]["answer"]
@@ -538,7 +521,7 @@ def test_agent_searches_then_fetches_through_registry_runtime(monkeypatch):
     assert "web_fetch" not in build_agent_harness().nodes
 
 
-def test_agent_searches_then_reads_pdf_through_registry_runtime(monkeypatch):
+def test_agent_searches_then_reads_pdf_through_project_tool(monkeypatch):
     """真实 create_agent 循环把搜索 PDF URL 交给受治理 PDF 工具。"""
     ddgs_calls = []
 
@@ -568,14 +551,6 @@ def test_agent_searches_then_reads_pdf_through_registry_runtime(monkeypatch):
     )
     model = SearchPdfModel()
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
-    runtime_calls = []
-    original_execute = tool_runtime.ToolRuntime.execute
-
-    def recording_execute(self, name, args=None, *, context=None):
-        runtime_calls.append((name, dict(args or {}), context))
-        return original_execute(self, name, args, context=context)
-
-    monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", recording_execute)
     output = _invoke(
         model,
         ToolInvocationContext(
@@ -602,10 +577,6 @@ def test_agent_searches_then_reads_pdf_through_registry_runtime(monkeypatch):
     assert pdf_payload["output"]["page_numbers"] == [1, 2]
     assert "[Page 1]" in pdf_payload["output"]["content"]
     assert "[Page 2]" in pdf_payload["output"]["content"]
-    assert [call[0] for call in runtime_calls] == [
-        "web_search",
-        "web_pdf_fetch",
-    ]
     assert "Governed Web PDF Fixture" in output["result"]["answer"]
     assert model.selected_url in output["result"]["answer"]
     assert "[1, 2]" in output["result"]["answer"]

@@ -6,13 +6,13 @@ from pathlib import Path
 
 import pytest
 
+from app.agent import framework_tools
 from app.agent.results import create_agent_result
 from app.config import AppSettings
 from app.contracts.chat import AgentResultStatus
 from app.services.chat_service import ChatServiceDependencies
-from app.tools import runtime as tool_runtime
 from app.tools.context import PrincipalType, ToolInvocationContext
-from app.tools.registry import ToolRegistry
+from app.tools.registry import get_tool_registry
 from scripts.evaluation import agent as agent_evaluation
 from scripts.evaluation import runner
 from scripts.evaluation.contracts import AgentEvaluationDataset
@@ -316,25 +316,26 @@ def test_evaluation_profiles_do_not_share_mcp_provider_cache(
 
 
 def test_capture_tool_output_keys_never_keeps_values(monkeypatch):
-    def fake_execute(*, registry, tool_name, tool_args=None, context=None):
-        del registry, tool_args, context
+    def fake_execute(*, spec, tool_args, **kwargs):
+        del tool_args, kwargs
         return {
             "status": "success",
             "ok": True,
-            "tool_name": tool_name,
+            "tool_name": spec.name,
             "output": {"result": 7, "private_value": "must-not-persist"},
         }
 
     monkeypatch.setattr(
-        tool_runtime,
-        "execute_registered_tool",
+        framework_tools,
+        "execute_project_tool",
         fake_execute,
     )
 
     with agent_evaluation.capture_tool_output_keys() as records:
-        tool_runtime.execute_registered_tool(
-            registry=ToolRegistry(),
-            tool_name="simple_calculator",
+        spec = get_tool_registry().get("simple_calculator")
+        assert spec is not None
+        framework_tools.execute_project_tool(
+            spec=spec,
             tool_args={"expression": "1+2"},
         )
 

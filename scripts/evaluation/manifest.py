@@ -95,7 +95,7 @@ def get_git_state() -> dict[str, Any]:
 def build_tool_contract(
     settings: AppSettings,
 ) -> tuple[list[str], list[dict[str, Any]], str]:
-    """构造当前 ToolRegistry 合同，不创建 ToolRuntime。"""
+    """构造当前 ToolRegistry 合同，不创建工具执行器。"""
     from app.tools.registry import ToolRegistry, register_default_tools
 
     registry = ToolRegistry()

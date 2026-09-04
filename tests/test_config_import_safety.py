@@ -113,7 +113,8 @@ import app.tools.runtime as runtime
 assert config.get_settings.cache_info().currsize == 0
 assert registry.get_tool_registry.cache_info().currsize == 0
 assert agent_runtime._get_cached_framework_agent.cache_info().currsize == 0
-assert len(runtime._runtime_entries) == 0
+assert runtime._executor is None
+assert not hasattr(runtime, "_runtime_entries")
 assert all(
     getter.cache_info().currsize == 0
     for getter in (

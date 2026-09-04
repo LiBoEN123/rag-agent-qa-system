@@ -1,30 +1,23 @@
-"""安全 Web PDF 参数、解析、共享下载与 ToolRuntime 集成测试。"""
+"""安全 Web PDF 参数、解析、共享下载与本地工具集成测试。"""
 
 from __future__ import annotations
 
 import json
-import threading
-import time
-from dataclasses import replace
 from importlib import import_module
 from io import BytesIO
 from pathlib import Path
 
 import pytest
-import requests
 from pydantic import ValidationError
 from pypdf import PdfReader, PdfWriter
 
 from app.config import AppSettings
-import app.tools.runtime as tool_runtime
-from app.tools.audit import NullToolAuditSink
 from app.tools.context import ToolInvocationContext
 from app.tools.errors import ToolErrorCode, ToolExecutionError
 from app.tools.registry import ToolRegistry, get_tool_registry
-from app.tools.result import tool_success
-from app.tools.runtime import ToolRuntime, execute_registered_tool
 from app.tools.schemas import WebPdfFetchArgs, WebPdfFetchOutput
 from tests.support.pdf_fixture import build_text_pdf
+from tests.support.local_tools import invoke_local_tool
 
 
 web_download_module = import_module("app.tools.web_download")
@@ -99,8 +92,7 @@ class CollectingAuditSink:
 
 @pytest.fixture(autouse=True)
 def isolate_web_pdf_fetch(settings_env):
-    """固定 PDF 与共享网络配置，并隔离 Runtime 和生产审计。"""
-    tool_runtime.reset_tool_runtime()
+    """固定 PDF 与共享网络配置，并隔离生产审计。"""
     settings_env(
         web_fetch_connect_timeout=3.0,
         web_fetch_read_timeout=10.0,
@@ -112,7 +104,6 @@ def isolate_web_pdf_fetch(settings_env):
         tool_audit_enabled=False,
     )
     yield
-    tool_runtime.reset_tool_runtime()
 
 
 def _pdf_spec():
@@ -131,18 +122,6 @@ def _args(**overrides):
     }
     values.update(overrides)
     return values
-
-
-def _runtime(registry: ToolRegistry, *, audit_sink=None) -> ToolRuntime:
-    return ToolRuntime(
-        registry,
-        max_workers=2,
-        retry_base_delay_ms=0,
-        retry_max_delay_ms=0,
-        retry_jitter_ratio=0,
-        sleep_func=lambda _delay: None,
-        audit_sink=audit_sink or NullToolAuditSink(),
-    )
 
 
 def _install_fake_manager(monkeypatch, outcomes):
@@ -521,7 +500,7 @@ def test_registry_runtime_executes_real_pdf_spec_and_pypdf(monkeypatch):
     registry = ToolRegistry()
     registry.register(_pdf_spec())
 
-    result = execute_registered_tool(
+    result = invoke_local_tool(
         registry=registry,
         tool_name="web_pdf_fetch",
         tool_args=_args(),
@@ -548,7 +527,7 @@ def test_permission_denial_prevents_download_and_pdf_reader(monkeypatch):
     registry = ToolRegistry()
     registry.register(_pdf_spec())
 
-    result = execute_registered_tool(
+    result = invoke_local_tool(
         registry=registry,
         tool_name="web_pdf_fetch",
         tool_args=_args(),
@@ -557,133 +536,6 @@ def test_permission_denial_prevents_download_and_pdf_reader(monkeypatch):
 
     assert result["error_code"] == "permission_denied"
     assert result["runtime"]["attempt_count"] == 0
-
-
-def test_runtime_retries_network_dependency_once_then_succeeds(monkeypatch):
-    managers = _install_fake_manager(
-        monkeypatch,
-        [requests.exceptions.ConnectionError("temporary"), FakeResponse()],
-    )
-    registry = ToolRegistry()
-    registry.register(_pdf_spec())
-    runtime = _runtime(registry)
-    try:
-        result = runtime.execute(
-            "web_pdf_fetch",
-            _args(),
-            context=ToolInvocationContext(permissions=("web:fetch",)),
-        )
-    finally:
-        runtime.close()
-
-    assert result["ok"] is True
-    assert len(managers) == 2
-    assert result["runtime"]["attempt_count"] == 2
-    assert result["runtime"]["max_attempts"] == 2
-    assert [item["error_code"] for item in result["runtime"]["attempts"]] == [
-        "dependency_unavailable",
-        "",
-    ]
-
-
-@pytest.mark.parametrize(
-    "body",
-    [_writer_pdf(), _writer_pdf(encrypted=True), b"%PDF-damaged"],
-)
-def test_runtime_does_not_retry_invalid_pdf_results(monkeypatch, body):
-    managers = _install_fake_manager(
-        monkeypatch,
-        [FakeResponse(body=body), FakeResponse()],
-    )
-    registry = ToolRegistry()
-    registry.register(_pdf_spec())
-    runtime = _runtime(registry)
-    try:
-        result = runtime.execute(
-            "web_pdf_fetch",
-            _args(),
-            context=ToolInvocationContext(permissions=("web:fetch",)),
-        )
-    finally:
-        runtime.close()
-
-    assert result["error_code"] == "invalid_result"
-    assert result["runtime"]["attempt_count"] == 1
-    assert len(managers) == 1
-
-
-def test_runtime_output_model_rejects_invalid_pdf_output():
-    invalid_spec = replace(
-        _pdf_spec(),
-        handler=lambda args, context: tool_success(
-            "web_pdf_fetch",
-            args,
-            {
-                "requested_url": args["url"],
-                "final_url": args["url"],
-                "status_code": 200,
-                "content_type": "application/pdf",
-                "total_pages": 1,
-                "start_page": 1,
-                "pages_read": 1,
-                "page_numbers": [1],
-                "content": "[Page 1]\ntext",
-                "content_length": 999,
-                "truncated": False,
-            },
-        ),
-    )
-    registry = ToolRegistry()
-    registry.register(invalid_spec)
-    runtime = _runtime(registry)
-    try:
-        result = runtime.execute(
-            "web_pdf_fetch",
-            _args(),
-            context=ToolInvocationContext(permissions=("web:fetch",)),
-        )
-    finally:
-        runtime.close()
-
-    assert result["error_code"] == "output_validation_error"
-    assert result["runtime"]["attempt_count"] == 1
-
-
-def test_runtime_total_timeout_bounds_pdf_download(monkeypatch):
-    completed = threading.Event()
-
-    class SlowSession(FakeSession):
-        def request(self, method, url, **kwargs):
-            self.calls.append((method, url, kwargs))
-            time.sleep(0.08)
-            completed.set()
-            return self.outcome
-
-    class SlowManager:
-        def __init__(self, config):
-            del config
-            self.session = SlowSession(FakeResponse())
-
-        def get_session(self):
-            return self.session
-
-    monkeypatch.setattr(web_download_module, "Manager", SlowManager)
-    registry = ToolRegistry()
-    registry.register(replace(_pdf_spec(), timeout=0.01))
-    runtime = _runtime(registry)
-    try:
-        result = runtime.execute(
-            "web_pdf_fetch",
-            _args(),
-            context=ToolInvocationContext(permissions=("web:fetch",)),
-        )
-        assert completed.wait(timeout=1)
-    finally:
-        runtime.close()
-
-    assert result["error_code"] == "timeout"
-    assert result["runtime"]["attempt_count"] == 1
-    assert result["runtime"]["timed_out"] is True
 
 
 def test_pdf_audit_never_records_url_body_metadata_or_proxy(
@@ -700,15 +552,13 @@ def test_pdf_audit_never_records_url_body_metadata_or_proxy(
     sink = CollectingAuditSink()
     registry = ToolRegistry()
     registry.register(_pdf_spec())
-    runtime = _runtime(registry, audit_sink=sink)
-    try:
-        result = runtime.execute(
-            "web_pdf_fetch",
-            _args(url=url),
-            context=ToolInvocationContext(permissions=("web:fetch",)),
-        )
-    finally:
-        runtime.close()
+    result = invoke_local_tool(
+        registry,
+        "web_pdf_fetch",
+        _args(url=url),
+        context=ToolInvocationContext(permissions=("web:fetch",)),
+        audit_sink=sink,
+    )
 
     serialized = json.dumps([event.to_dict() for event in sink.events])
     assert result["ok"] is True

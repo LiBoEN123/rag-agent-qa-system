@@ -21,12 +21,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from app.agent.framework_tools import build_local_tool  # noqa: E402
 from app.tools.context import (  # noqa: E402
     ToolInvocationContext,
     build_default_tool_context,
 )
 from app.tools.registry import ToolRegistry, get_tool_registry  # noqa: E402
-from app.tools.runtime import execute_registered_tool  # noqa: E402
 
 
 PERMISSIONS = {
@@ -34,6 +34,27 @@ PERMISSIONS = {
     "web_fetch": "web:fetch",
     "web_pdf_fetch": "web:fetch",
 }
+
+
+def invoke_local_tool(
+    *,
+    registry: ToolRegistry,
+    tool_name: str,
+    tool_args: dict[str, Any],
+    context: ToolInvocationContext,
+) -> dict[str, Any]:
+    """通过诊断用 BaseTool.invoke 执行一个已注册本地工具。"""
+    spec = registry.get(tool_name)
+    if spec is None:
+        raise LookupError(f"unknown local tool: {tool_name}")
+    result = build_local_tool(
+        spec,
+        context=context,
+        runtime_injection=False,
+    ).invoke(tool_args)
+    if not isinstance(result, dict):
+        raise TypeError("local tool returned a non-mapping result")
+    return result
 
 
 def build_context(tool_name: str) -> ToolInvocationContext:
@@ -157,8 +178,7 @@ def run_command(
         return 2
     started = time.perf_counter()
     try:
-        # 这里刻意走唯一执行入口，确保权限、超时和错误合同都参与验证。
-        result = execute_registered_tool(
+        result = invoke_local_tool(
             registry=registry or get_tool_registry(),
             tool_name=tool_name,
             tool_args=tool_args,

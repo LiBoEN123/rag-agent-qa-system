@@ -331,7 +331,7 @@ def test_lifespan_awaits_mcp_startup_and_closes_it_before_other_runtimes(
     monkeypatch.setattr(api_application, "close_mcp_runtime", close_mcp)
     monkeypatch.setattr(
         api_application,
-        "close_tool_runtime",
+        "close_tool_executor",
         lambda: calls.append("tool_close"),
     )
     monkeypatch.setattr(

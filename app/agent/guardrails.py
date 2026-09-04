@@ -10,7 +10,7 @@ from app.tools.errors import ToolErrorCode
 
 
 class AgentToolFailureKind(StrEnum):
-    """ToolRuntime 失败对 Agent 的稳定语义。"""
+    """工具执行失败对 Agent 的稳定语义。"""
 
     RECOVERABLE = "recoverable"
     TRANSIENT_EXHAUSTED = "transient_exhausted"
@@ -228,7 +228,13 @@ def build_tool_governance_event(
 
     runtime = result.get("runtime") if isinstance(result.get("runtime"), dict) else {}
     error_source = "tool_runtime"
-    if not runtime:
+    if (
+        known_tool
+        and error_code == ToolErrorCode.INVALID_ARGUMENTS.value
+        and int(runtime.get("attempt_count", 0) or 0) == 0
+    ):
+        error_source = "structured_tool_validation"
+    elif not runtime:
         error_source = (
             "structured_tool_validation" if known_tool else "structured_tool_adapter"
         )

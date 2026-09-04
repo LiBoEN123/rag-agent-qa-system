@@ -1,4 +1,4 @@
-"""请求级工具可见性与 Runtime 最终授权边界测试。"""
+"""请求级工具可见性与 ProjectStructuredTool 最终授权边界测试。"""
 
 import json
 
@@ -7,14 +7,13 @@ from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_tools
-import app.tools.runtime as tool_runtime
 from app.tools.context import ToolInvocationContext, has_permission
 from app.tools.contracts import ToolRiskLevel, ToolSpec
 from app.tools.providers import LocalToolProvider
 from app.tools.providers.base import is_tool_visible
 from app.tools.registry import ToolRegistry
 from app.tools.result import tool_success
-from app.tools.runtime import execute_registered_tool
+from tests.support.local_tools import invoke_local_tool
 from tests.support.agent_runtime import build_agent_harness
 
 
@@ -37,15 +36,6 @@ class VisibilityModel:
     def invoke(self, messages):
         self.received_messages.append(list(messages))
         return self.responses.pop(0)
-
-
-@pytest.fixture(autouse=True)
-def isolate_tool_runtime():
-    tool_runtime.reset_tool_runtime()
-    yield
-    tool_runtime.reset_tool_runtime()
-
-
 def _spec(
     name: str,
     calls: list,
@@ -237,19 +227,10 @@ def test_agent_binds_visible_tools_and_executes_authorized_tool(monkeypatch):
         permissions=("documents:read",),
         source="visibility_test",
     )
-    runtime_calls = []
-    original_execute = tool_runtime.ToolRuntime.execute
-
-    def recording_execute(self, name, args=None, *, context=None):
-        runtime_calls.append((name, context))
-        return original_execute(self, name, args, context=context)
-
-    monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", recording_execute)
     output = _invoke_graph(monkeypatch, registry, model, context)
     assert model.bound_tool_names == ["public_tool", "private_tool"]
-    assert len(runtime_calls) == 1
-    assert runtime_calls[0][0] == "private_tool"
-    execution_context = runtime_calls[0][1]
+    assert len(calls) == 1
+    execution_context = calls[0][2]
     assert execution_context.trace_id == context.trace_id
     assert execution_context.permissions == context.permissions
     assert execution_context.effective_question
@@ -281,10 +262,6 @@ def test_forged_hidden_tool_is_unknown_without_metadata_leak(monkeypatch):
     )
     context = ToolInvocationContext(trace_id="trace-hidden")
 
-    def forbidden_execute(*args, **kwargs):
-        raise AssertionError("hidden tool must not reach ToolRuntime")
-
-    monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", forbidden_execute)
     output = _invoke_graph(monkeypatch, registry, model, context)
     message = model.received_messages[1][-1]
     payload = json.loads(message.content)
@@ -304,7 +281,7 @@ def test_direct_execution_entry_remains_runtime_authorized():
         _spec("private_tool", calls, required_permissions=("documents:read",))
     )
 
-    result = execute_registered_tool(
+    result = invoke_local_tool(
         registry=registry,
         tool_name="private_tool",
         tool_args={"text": "blocked"},

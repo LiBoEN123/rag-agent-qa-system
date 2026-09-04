@@ -1,76 +1,98 @@
-"""ToolSpec 到 LangChain 动态工具的薄适配。"""
+"""ToolSpec 到 LangChain ProjectStructuredTool 的薄适配。"""
 
 from collections.abc import Sequence
 from typing import Any
 
 from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, StructuredTool
-from pydantic import ConfigDict, create_model
+from pydantic import ConfigDict, Field, SkipValidation, create_model
 
-from app.tools import runtime as tool_runtime
+from app.config import AppSettings, get_settings
+from app.tools.audit import ToolAuditSink, get_default_tool_audit_sink
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
+from app.tools.execution import execute_project_tool
 from app.tools.mcp.provider import list_mcp_tools_for_context
+from app.tools.policy import ToolPolicyEngine
 from app.tools.providers import ToolProvider, get_default_tool_provider
 from app.tools.registry import ToolRegistry
 
 
-def _provider_registry(provider: ToolProvider) -> ToolRegistry:
-    """取得 Provider 所属 Registry，供唯一执行入口复用。"""
-    registry = getattr(provider, "registry", None)
-    if not isinstance(registry, ToolRegistry):
-        raise ValueError("Agent ToolProvider 必须暴露 ToolSpec 所属的 ToolRegistry")
-    return registry
+class ProjectStructuredTool(StructuredTool):
+    """携带非公开 ToolSpec 的本地 StructuredTool。"""
+
+    project_spec: SkipValidation[ToolSpec] = Field(exclude=True, repr=False)
+    project_context: SkipValidation[ToolInvocationContext] = Field(exclude=True, repr=False)
+    project_settings: SkipValidation[AppSettings] = Field(exclude=True, repr=False)
+    project_policy_engine: SkipValidation[ToolPolicyEngine] = Field(exclude=True, repr=False)
+    project_audit_sink: SkipValidation[ToolAuditSink] = Field(exclude=True, repr=False)
 
 
-def _build_tool(spec: ToolSpec, registry: ToolRegistry) -> StructuredTool:
-    """将单个 ToolSpec 转换为只注入 Runtime 的框架工具。"""
-    if spec.args_model is None:
-        raise ValueError(f"tool {spec.name!r} 缺少 Pydantic args_model")
-    runtime_schema = create_model(
-        f"{spec.args_model.__name__}Runtime",
-        __base__=spec.args_model,
-        __config__=ConfigDict(arbitrary_types_allowed=True),
-        runtime=(ToolRuntime[ToolInvocationContext], ...),
-    )
+def build_local_tool(
+    spec: ToolSpec,
+    *,
+    context: ToolInvocationContext,
+    settings: AppSettings | None = None,
+    policy_engine: ToolPolicyEngine | None = None,
+    audit_sink: ToolAuditSink | None = None,
+    runtime_injection: bool = True,
+) -> ProjectStructuredTool:
+    """构造直接调用 handler adapter 的本地工具。"""
+    resolved_settings = settings or get_settings()
+    resolved_policy = policy_engine or ToolPolicyEngine()
+    resolved_audit = audit_sink or get_default_tool_audit_sink(resolved_settings)
 
-    def invoke_registered_tool(
-        runtime: ToolRuntime[ToolInvocationContext],
-        **tool_args: Any,
-    ) -> dict[str, Any]:
-        """通过项目唯一执行入口进入 Runtime，不直接接触 handler。"""
-        context = runtime.context
-        if not isinstance(context, ToolInvocationContext):
+    def execute(tool_args: dict[str, Any], runtime: Any = None) -> dict[str, Any]:
+        invocation_context = context
+        tool_call_id = ""
+        if runtime is not None:
+            invocation_context = runtime.context
+            tool_call_id = str(runtime.tool_call_id or "")
+        if not isinstance(invocation_context, ToolInvocationContext):
             raise RuntimeError("ToolRuntime did not inject ToolInvocationContext")
-        return tool_runtime.execute_registered_tool(
-            registry=registry,
-            tool_name=spec.name,
+        return execute_project_tool(
+            spec=spec,
             tool_args=tool_args,
-            context=context,
+            context=invocation_context,
+            tool_call_id=tool_call_id,
+            settings=resolved_settings,
+            policy_engine=resolved_policy,
+            audit_sink=resolved_audit,
         )
 
-    async def ainvoke_registered_tool(
-        runtime: ToolRuntime[ToolInvocationContext],
-        **tool_args: Any,
-    ) -> dict[str, Any]:
-        """异步 Agent 复用本地工具的受控同步执行边界。"""
-        context = runtime.context
-        if not isinstance(context, ToolInvocationContext):
-            raise RuntimeError("ToolRuntime did not inject ToolInvocationContext")
-        return tool_runtime.execute_registered_tool(
-            registry=registry,
-            tool_name=spec.name,
-            tool_args=tool_args,
-            context=context,
+    if runtime_injection:
+        runtime_schema = create_model(
+            f"{spec.args_model.__name__}Runtime",
+            __base__=spec.args_model,
+            __config__=ConfigDict(arbitrary_types_allowed=True),
+            runtime=(ToolRuntime[ToolInvocationContext], ...),
         )
 
-    return StructuredTool.from_function(
-        func=invoke_registered_tool,
-        coroutine=ainvoke_registered_tool,
+        def invoke_project_tool(
+            runtime: ToolRuntime[ToolInvocationContext],
+            **tool_args: Any,
+        ) -> dict[str, Any]:
+            return execute(tool_args, runtime)
+
+        args_schema = runtime_schema
+    else:
+
+        def invoke_project_tool(**tool_args: Any) -> dict[str, Any]:
+            return execute(tool_args)
+
+        args_schema = spec.args_model
+
+    return ProjectStructuredTool.from_function(
+        func=invoke_project_tool,
         name=spec.name,
         description=spec.description,
-        args_schema=runtime_schema,
+        args_schema=args_schema,
         metadata={"tool_version": spec.version},
+        project_spec=spec,
+        project_context=context,
+        project_settings=resolved_settings,
+        project_policy_engine=resolved_policy,
+        project_audit_sink=resolved_audit,
     )
 
 
@@ -80,8 +102,13 @@ def build_framework_tools(
     context: ToolInvocationContext,
 ) -> list[BaseTool]:
     """按本次请求 Provider 构造供 create_agent 使用的本地工具。"""
-    registry = _provider_registry(provider)
+    registry = getattr(provider, "registry", None)
+    if not isinstance(registry, ToolRegistry):
+        raise ValueError("Agent ToolProvider 必须暴露 ToolSpec 所属的 ToolRegistry")
     specs: Sequence[ToolSpec] = provider.list_specs(context=context)
+    settings = get_settings()
+    policy_engine = ToolPolicyEngine()
+    audit_sink = get_default_tool_audit_sink(settings)
     tools: list[BaseTool] = []
     seen: set[str] = set()
     for spec in specs:
@@ -90,7 +117,12 @@ def build_framework_tools(
         if spec.name in seen:
             raise ValueError(f"tool {spec.name!r} 重复，禁止静默覆盖")
         seen.add(spec.name)
-        tools.append(_build_tool(spec, registry))
+        tools.append(
+            build_local_tool(
+                spec, context=context, settings=settings,
+                policy_engine=policy_engine, audit_sink=audit_sink,
+            )
+        )
     return tools
 
 
@@ -112,7 +144,13 @@ def build_agent_framework_tools(
 
 def resolve_agent_tools(context: ToolInvocationContext) -> list[BaseTool]:
     """从唯一 Provider 入口解析本次请求可见的完整工具集合。"""
-    return build_agent_framework_tools(
-        get_default_tool_provider(),
-        context=context,
-    )
+    return build_agent_framework_tools(get_default_tool_provider(), context=context)
+
+
+__all__ = [
+    "ProjectStructuredTool",
+    "build_agent_framework_tools",
+    "build_framework_tools",
+    "build_local_tool",
+    "resolve_agent_tools",
+]

@@ -10,7 +10,6 @@ from app.agent import framework_agent, framework_tools
 from app.agent.runtime import prepare_agent_runtime_invocation
 from app.config import get_settings
 from app.tools.context import ToolInvocationContext
-import app.tools.runtime as tool_runtime
 from app.tools.contracts import ToolSpec
 from app.tools.providers import LocalToolProvider
 from app.tools.registry import ToolRegistry
@@ -23,9 +22,7 @@ from tests.support.agent_runtime import build_agent_harness
 def isolate_tool_audit(settings_env):
     """Agent loop 测试不写生产工具审计文件。"""
     settings_env(tool_audit_enabled=False)
-    tool_runtime.reset_tool_runtime()
     yield
-    tool_runtime.reset_tool_runtime()
 
 
 class FakeToolCallingModel:
@@ -452,7 +449,7 @@ def test_agent_loop_stops_at_max_iterations(monkeypatch):
 
 
 def test_agent_loop_stops_before_exceeding_tool_call_budget(monkeypatch):
-    """已用完工具预算后，模型的新调用不会进入 ToolRuntime。"""
+    """已用完工具预算后，模型的新调用不会进入本地 handler。"""
     model = FakeToolCallingModel(
         [
             AIMessage(
@@ -538,7 +535,7 @@ def test_agent_loop_recovers_from_forged_hidden_tool_name(monkeypatch):
 
 
 def test_agent_loop_preserves_runtime_context_and_audit_chain(monkeypatch):
-    """Agent 节点不直调 handler，完整 Context 由 Runtime 与审计事件接收。"""
+    """LangChain 注入的请求 Context 会进入项目审计事件。"""
     model = FakeToolCallingModel(
         [
             AIMessage(
@@ -562,29 +559,16 @@ def test_agent_loop_preserves_runtime_context_and_audit_chain(monkeypatch):
         permissions=("knowledge_base:read",),
         source="agent_loop_governance_test",
     )
-    execute_contexts = []
     audit_events = []
-    original_execute = tool_runtime.ToolRuntime.execute
-    original_emit_audit = tool_runtime.ToolRuntime._emit_audit
 
-    def recording_execute(self, tool_name, tool_args=None, *, context=None):
-        execute_contexts.append(context)
-        return original_execute(
-            self,
-            tool_name,
-            tool_args,
-            context=context,
-        )
+    class Sink:
+        def write(self, event):
+            audit_events.append(event)
 
-    def recording_emit_audit(self, *, event_type, **kwargs):
-        audit_events.append((event_type.value, kwargs["context"]))
-        return original_emit_audit(self, event_type=event_type, **kwargs)
-
-    monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", recording_execute)
     monkeypatch.setattr(
-        tool_runtime.ToolRuntime,
-        "_emit_audit",
-        recording_emit_audit,
+        framework_tools,
+        "get_default_tool_audit_sink",
+        lambda settings: Sink(),
     )
 
     output = _invoke_graph(
@@ -593,22 +577,14 @@ def test_agent_loop_preserves_runtime_context_and_audit_chain(monkeypatch):
         context=context,
     )
 
-    assert len(execute_contexts) == 1
-    execution_context = execute_contexts[0]
-    assert execution_context.trace_id == context.trace_id
-    assert execution_context.session_id == context.session_id
-    assert execution_context.permissions == context.permissions
-    assert execution_context.effective_question == "请计算 1+2"
-    assert execution_context.top_k == 5
-    assert execution_context.decompose_top_k == 10
-    assert [event for event, _ in audit_events] == [
+    assert [event.event_type.value for event in audit_events] == [
         "requested",
         "started",
         "succeeded",
     ]
-    assert all(
-        event_context is execution_context for _, event_context in audit_events
-    )
+    assert {event.trace_id for event in audit_events} == {context.trace_id}
+    assert {event.session_id for event in audit_events} == {context.session_id}
+    assert {event.principal_id for event in audit_events} == {context.principal_id}
     trace = next(
         item
         for item in output["result"]["tool_trace"]

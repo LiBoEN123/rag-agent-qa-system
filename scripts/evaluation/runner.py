@@ -72,11 +72,11 @@ def _clear_runtime_caches() -> None:
     from app.agent.runtime import reset_agent_runtime
     from app.llm.factory import clear_model_factory_cache
     from app.tools.registry import clear_tool_registry_cache
-    from app.tools.runtime import close_tool_runtime
+    from app.tools.runtime import close_tool_executor
     from app.tools.mcp.client import reset_mcp_runtime
 
     reset_agent_runtime()
-    close_tool_runtime()
+    close_tool_executor()
     clear_tool_registry_cache()
     clear_model_factory_cache()
     reset_mcp_runtime()

@@ -2,6 +2,7 @@
 
 import json
 
+import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel, Field
 
@@ -12,7 +13,6 @@ from app.tools.contracts import ToolSpec
 from app.tools.providers import LocalToolProvider
 from app.tools.registry import ToolRegistry, get_tool_registry
 from app.tools.result import tool_success
-from app.tools.runtime import execute_registered_tool
 from tests.support.agent_runtime import build_agent_harness
 
 
@@ -46,6 +46,22 @@ class FakeAgentModel:
     def invoke(self, messages):
         self.received_messages.append(list(messages))
         return self.responses.pop(0)
+
+
+def _invoke_local(
+    registry: ToolRegistry,
+    tool_name: str,
+    tool_args: dict,
+    context: ToolInvocationContext,
+):
+    """通过直接 BaseTool.invoke 覆盖非 Agent 诊断调用。"""
+    spec = registry.get(tool_name)
+    assert spec is not None
+    return framework_tools.build_local_tool(
+        spec,
+        context=context,
+        runtime_injection=False,
+    ).invoke(tool_args)
 
 
 def _register_dynamic_tools(
@@ -158,21 +174,18 @@ def test_tool_spec_builds_framework_structured_tool_from_provider():
     assert registry.contract_specs() == registry.contract_specs()
     json.dumps(registry.contract_specs())
 
-    invalid = execute_registered_tool(
-        registry=registry,
-        tool_name="join_texts",
-        tool_args={"parts": "不是列表"},
+    join_spec = registry.get("join_texts")
+    assert join_spec is not None
+    tool = framework_tools.build_local_tool(
+        join_spec,
         context=context,
+        runtime_injection=False,
     )
-    assert invalid["error_code"] == "invalid_arguments"
+    with pytest.raises(ValueError):
+        tool.invoke({"parts": "不是列表"})
     assert contexts == []
 
-    valid = execute_registered_tool(
-        registry=registry,
-        tool_name="join_texts",
-        tool_args={"parts": ["a", "b"]},
-        context=context,
-    )
+    valid = tool.invoke({"parts": ["a", "b"]})
     assert valid["output"] == {"text": "a b"}
     assert contexts == [context]
 
@@ -412,7 +425,7 @@ def test_provider_request_isolation(monkeypatch):
 
 
 def test_direct_execution_entry_still_enforces_runtime_permissions():
-    """绕过模型可见性直接执行时，最终权限仍由 ToolRuntime 拒绝。"""
+    """绕过模型可见性直接执行时，最终权限仍由项目策略拒绝。"""
     registry = ToolRegistry()
     called: list[str] = []
 
@@ -435,11 +448,11 @@ def test_direct_execution_entry_still_enforces_runtime_permissions():
         trace_id="trace-denied",
         source="permission_test",
     )
-    result = execute_registered_tool(
-        registry=registry,
-        tool_name="protected_echo",
-        tool_args={"text": "blocked"},
-        context=context,
+    result = _invoke_local(
+        registry,
+        "protected_echo",
+        {"text": "blocked"},
+        context,
     )
 
     assert result["ok"] is False

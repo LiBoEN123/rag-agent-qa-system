@@ -89,15 +89,15 @@ async def close_mcp_runtime() -> None:
         )
 
 
-def close_tool_runtime() -> None:
-    """关闭工具线程池；关闭异常只记录日志，不阻塞其他资源清理。"""
+def close_tool_executor() -> None:
+    """关闭同步工具 timeout executor；异常不阻塞其他资源清理。"""
     try:
-        from app.tools.runtime import close_tool_runtime as close_runtime
+        from app.tools.runtime import close_tool_executor as close_executor
 
-        close_runtime()
+        close_executor()
     except Exception as exc:
         logger.warning(
-            "[shutdown] tool_runtime_close_failed error=%s",
+            "[shutdown] tool_executor_close_failed error=%s",
             str(exc)[:200],
         )
 

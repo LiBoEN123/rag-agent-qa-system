@@ -10,7 +10,7 @@ from app.config import AppSettings, clear_settings_cache, get_settings
 from app.agent.runtime import reset_agent_runtime
 from app.llm.factory import clear_model_factory_cache
 from app.tools.registry import clear_tool_registry_cache, get_tool_registry
-from app.tools.runtime import reset_tool_runtime
+from app.tools.runtime import close_tool_executor
 from app.tools.mcp.client import reset_mcp_runtime
 from app.tools.sql_readonly.engine import clear_sql_engine_cache
 
@@ -92,7 +92,7 @@ def settings_factory(tmp_path) -> Callable[..., AppSettings]:
 
 def _clear_configuration_dependent_caches() -> None:
     """按依赖方向清理所有持有配置快照的进程内缓存。"""
-    reset_tool_runtime()
+    close_tool_executor()
     reset_agent_runtime()
     clear_model_factory_cache()
     clear_tool_registry_cache()

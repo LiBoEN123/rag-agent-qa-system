@@ -7,7 +7,7 @@ import app.tools.compare_documents as compare_documents_module
 from app.llm.schemas import CompareDocumentsLLMOutput
 from app.tools.context import build_default_tool_context
 from app.tools.registry import get_tool_registry
-from app.tools.runtime import execute_registered_tool
+from tests.support.local_tools import invoke_local_tool
 from app.tools.schemas import CompareDocumentsArgs
 
 
@@ -51,16 +51,13 @@ def _validated_compare_args(values: dict | None = None, **overrides) -> dict:
     ],
 )
 def test_compare_documents_rejects_invalid_args_at_runtime(tool_args):
-    """基础字段和范围错误统一由 Runtime 参数边界拒绝。"""
-    result = execute_registered_tool(
-        registry=get_tool_registry(),
-        tool_name="compare_documents",
-        tool_args=tool_args,
-    )
-
-    assert result["ok"] is False
-    assert result["error_code"] == "invalid_arguments"
-    assert result["runtime"]["attempt_count"] == 0
+    """基础字段和范围错误由 StructuredTool/Pydantic 边界拒绝。"""
+    with pytest.raises(ValidationError):
+        invoke_local_tool(
+            registry=get_tool_registry(),
+            tool_name="compare_documents",
+            tool_args=tool_args,
+        )
 
 
 def test_compare_documents_same_docs_returns_error():
@@ -314,7 +311,7 @@ def test_execution_entry_propagates_compare_documents_trace_id(
         "invoke_structured",
         fake_invoke_structured,
     )
-    result = execute_registered_tool(
+    result = invoke_local_tool(
         registry=get_tool_registry(),
         tool_name="compare_documents",
         tool_args={

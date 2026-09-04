@@ -5,7 +5,6 @@ import json
 from langchain_core.messages import AIMessage, ToolMessage
 
 from app.agent import framework_agent, framework_tools
-import app.tools.runtime as tool_runtime
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from app.tools.errors import ToolErrorCode, ToolExecutionError
@@ -49,7 +48,6 @@ def _invoke_knowledge_graph(
     registry = ToolRegistry()
     seen_contexts: list[ToolInvocationContext] = []
     seen_args: list[dict] = []
-    runtime_calls: list[str] = []
     rag_calls: list[dict] = []
 
     def handler(args, context):
@@ -81,17 +79,10 @@ def _invoke_knowledge_graph(
     )
     provider = LocalToolProvider(registry)
     model = KnowledgeModel()
-    original_execute = tool_runtime.ToolRuntime.execute
-
-    def recording_execute(self, tool_name, tool_args=None, *, context=None):
-        runtime_calls.append(tool_name)
-        return original_execute(self, tool_name, tool_args, context=context)
-
     def fake_rag_subgraph(**kwargs):
         rag_calls.append(kwargs)
         return dict(rag_result)
 
-    monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", recording_execute)
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
@@ -124,12 +115,11 @@ def _invoke_knowledge_graph(
         "context": context,
         "seen_contexts": seen_contexts,
         "seen_args": seen_args,
-        "runtime_calls": runtime_calls,
         "rag_calls": rag_calls,
     }
 
 
-def test_search_knowledge_base_uses_real_structured_tool_registry_and_runtime(
+def test_search_knowledge_base_uses_real_project_structured_tool_and_rag(
     monkeypatch,
 ):
     chunk = {
@@ -160,7 +150,6 @@ def test_search_knowledge_base_uses_real_structured_tool_registry_and_runtime(
     ]
     assert issubclass(bound_tool.args_schema, SearchKnowledgeBaseArgs)
     assert "runtime" not in bound_tool.tool_call_schema.model_fields
-    assert result["runtime_calls"] == ["search_knowledge_base"]
     assert result["seen_args"] == [
         {"query": "奖学金申请条件", "top_k": 5}
     ]
@@ -196,7 +185,7 @@ def test_successful_zero_result_search_is_not_a_tool_error(monkeypatch):
         },
     )
 
-    assert result["runtime_calls"] == ["search_knowledge_base"]
+    assert result["seen_args"] == [{"query": "奖学金申请条件", "top_k": 5}]
     assert result["output"]["tool_error_count"] == 0
     assert result["output"]["observations"][0]["success"] is True
     assert result["rag_calls"][0]["retrieved_chunks"] == []

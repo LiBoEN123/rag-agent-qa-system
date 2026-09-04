@@ -1,4 +1,4 @@
-"""ChatService 到真实 Agent Graph、Provider 和 ToolRuntime 的主路径测试。"""
+"""ChatService 到真实 Agent Graph、Provider 和本地工具的主路径测试。"""
 
 import json
 from importlib import import_module
@@ -16,7 +16,6 @@ from app.services.chat_service import (
     ChatServiceDependencies,
 )
 from app.services.chat_models import ChatServiceRequest
-import app.tools.runtime as tool_runtime
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from app.tools.providers import LocalToolProvider
@@ -170,17 +169,15 @@ class IncrementingClock:
         return self.value
 
 
-def test_chat_service_runs_real_create_agent_provider_and_runtime(
+def test_chat_service_runs_real_create_agent_provider_and_local_tool(
     monkeypatch,
     settings_env,
 ):
-    """ChatService 通过真实 create_agent、Provider 与 Runtime 完成工具调用。"""
+    """ChatService 通过真实 create_agent、Provider 与本地工具完成调用。"""
     reset_agent_runtime()
-    tool_runtime.reset_tool_runtime()
     registry = ToolRegistry()
     handler_contexts: list[ToolInvocationContext] = []
     handler_args: list[dict] = []
-    runtime_calls: list[tuple[str, ToolInvocationContext]] = []
     routed_questions: list[str] = []
 
     def handler(args, context):
@@ -199,13 +196,6 @@ def test_chat_service_runs_real_create_agent_provider_and_runtime(
         )
     )
     model = ChatAgentModel()
-    original_execute = tool_runtime.ToolRuntime.execute
-
-    def recording_execute(self, tool_name, tool_args=None, *, context=None):
-        runtime_calls.append((tool_name, context))
-        return original_execute(self, tool_name, tool_args, context=context)
-
-    monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", recording_execute)
     original_route = agent_runtime.route_agent_action
 
     def recording_route(question):
@@ -278,7 +268,6 @@ def test_chat_service_runs_real_create_agent_provider_and_runtime(
         )
     finally:
         reset_agent_runtime()
-        tool_runtime.reset_tool_runtime()
 
     assert outcome.http_status == 200
     assert outcome.code == 0
@@ -294,9 +283,8 @@ def test_chat_service_runs_real_create_agent_provider_and_runtime(
     assert isinstance(model.received_messages[1][-1], ToolMessage)
     tool_payload = json.loads(model.received_messages[1][-1].content)
     assert tool_payload["output"] == {"text": "完整主路径"}
-    assert runtime_calls[0][0] == "chat_echo"
     assert handler_args == [{"text": "完整主路径"}]
-    assert handler_contexts == [runtime_calls[0][1]]
+    assert len(handler_contexts) == 1
     context = handler_contexts[0]
     assert context.trace_id == "trace-chat-integration"
     assert context.session_id == "session-chat-integration"
@@ -329,7 +317,6 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
     web_search_module = import_module("app.tools.web_search")
     web_download_module = import_module("app.tools.web_download")
     reset_agent_runtime()
-    tool_runtime.reset_tool_runtime()
     ddgs_calls = []
 
     class FakeDDGS:
@@ -460,7 +447,6 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
         )
     finally:
         reset_agent_runtime()
-        tool_runtime.reset_tool_runtime()
 
     assert outcome.http_status == 200
     assert outcome.code == 0
@@ -520,7 +506,6 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
         Path(__file__).parent / "fixtures" / "web_pdf_text.pdf"
     ).read_bytes()
     reset_agent_runtime()
-    tool_runtime.reset_tool_runtime()
     ddgs_calls = []
 
     class FakeDDGS:
@@ -659,7 +644,6 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
         )
     finally:
         reset_agent_runtime()
-        tool_runtime.reset_tool_runtime()
 
     assert outcome.http_status == 200
     assert outcome.code == 0
