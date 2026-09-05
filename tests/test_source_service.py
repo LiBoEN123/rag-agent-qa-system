@@ -19,8 +19,10 @@ from app.ingestion import (
 )
 from app.sources import ExternalKnowledgeSourceService, SourceIngestionError
 from app.tools.context import ToolInvocationContext
-from app.tools.mcp.serialization import McpSerializationProfile
-from app.tools.mcp.serialization import serialize_mcp_call_result
+from app.tools.mcp.serialization import (
+    McpSerializationProfile,
+    sanitize_mcp_call_result,
+)
 
 
 FIXED_TIME = datetime(2026, 9, 2, 9, 0, tzinfo=timezone.utc)
@@ -199,7 +201,7 @@ def test_firecrawl_json_secret_is_redacted_without_breaking_payload(
             "api_key": "metadata-secret",
         },
     }
-    outcome = serialize_mcp_call_result(
+    outcome = sanitize_mcp_call_result(
         CallToolResult(
             content=[TextContent(type="text", text=json.dumps(raw))],
         ),
@@ -209,9 +211,10 @@ def test_firecrawl_json_secret_is_redacted_without_breaking_payload(
         profile=McpSerializationProfile.INGESTION,
     )
     assert outcome.ok is True
+    assert outcome.ingestion_output is not None
 
     async def invoke(*_args, **_kwargs):
-        return {"ok": True, "output": outcome.output}
+        return {"ok": True, "output": outcome.ingestion_output}
 
     monkeypatch.setattr("app.sources.service.invoke_mcp_tool", invoke)
     service = ExternalKnowledgeSourceService(requester=_requester())

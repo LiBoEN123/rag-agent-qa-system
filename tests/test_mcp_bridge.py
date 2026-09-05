@@ -5,8 +5,8 @@ import json
 from dataclasses import dataclass
 
 from langchain_core.messages import ToolMessage
-from langchain_core.tools import StructuredTool
 from langchain_mcp_adapters.interceptors import MCPToolCallRequest
+from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool
 from mcp.types import (
     AudioContent,
     BlobResourceContents,
@@ -16,6 +16,7 @@ from mcp.types import (
     ResourceLink,
     TextContent,
     TextResourceContents,
+    Tool,
 )
 from pydantic import BaseModel
 
@@ -31,6 +32,7 @@ from app.tools.mcp.config import McpServerConfig
 from app.tools.mcp.serialization import (
     MCP_INGESTION_MAX_TEXT_CHARS,
     McpSerializationProfile,
+    normalize_mcp_tool_message,
 )
 
 
@@ -53,6 +55,7 @@ class Runtime:
     mcp_serialization_profile: McpSerializationProfile = (
         McpSerializationProfile.AGENT
     )
+    mcp_ingestion_output: dict | None = None
 
 
 def _runtime(*permissions):
@@ -67,8 +70,49 @@ def _runtime(*permissions):
     )
 
 
-def _payload(message: ToolMessage):
-    return json.loads(message.content)
+def _payload(result: CallToolResult):
+    """通过公开 adapter/BaseTool 路径读取 interceptor 的最终项目结果。"""
+
+    class ResultSession:
+        async def call_tool(self, name, args, progress_callback=None):
+            del name, args, progress_callback
+            return result
+
+    remote = Tool(
+        name="get_weather",
+        description="weather",
+        inputSchema={"type": "object", "properties": {}},
+    )
+    tool = convert_mcp_tool_to_langchain_tool(
+        ResultSession(),
+        remote,
+        server_name="weather",
+        tool_name_prefix=True,
+        handle_tool_errors=True,
+    )
+    message = asyncio.run(
+        tool.ainvoke(
+            {
+                "type": "tool_call",
+                "name": tool.name,
+                "args": {},
+                "id": "adapter-test-call",
+            }
+        )
+    )
+    assert message.tool_call_id == "adapter-test-call"
+    assert message.status == ("error" if result.isError else "success")
+    if result.structuredContent is not None:
+        assert message.artifact == {
+            "structured_content": result.structuredContent,
+        }
+    payload = normalize_mcp_tool_message(
+        message,
+        tool_name="weather_get_weather",
+        args={"location": "Beijing"},
+    )
+    assert payload is not None
+    return payload
 
 
 def _request(runtime, **args):
@@ -582,9 +626,9 @@ def test_ingestion_profile_preserves_complete_text_without_changing_agent_profil
     )["output"]
     ingestion_runtime = _runtime("mcp:weather")
     ingestion_runtime.mcp_serialization_profile = McpSerializationProfile.INGESTION
-    ingestion = _payload(
-        asyncio.run(interceptor(_request(ingestion_runtime), handler))
-    )["output"]
+    asyncio.run(interceptor(_request(ingestion_runtime), handler))
+    ingestion = ingestion_runtime.mcp_ingestion_output
+    assert ingestion is not None
 
     assert len(agent["content"]) == 128
     assert agent["truncated"] is True
@@ -613,15 +657,15 @@ def test_oversized_ingestion_output_is_bounded_and_drops_block_body(settings_fac
         del request
         return CallToolResult(content=[TextContent(type="text", text=body)])
 
-    output = _payload(
-        asyncio.run(
-            McpToolCallInterceptor(
-                settings_factory(),
-                server_configs=_server_configs(),
-                audit_sink=RecordingSink(),
-            )(_request(runtime), handler)
-        )
-    )["output"]
+    asyncio.run(
+        McpToolCallInterceptor(
+            settings_factory(),
+            server_configs=_server_configs(),
+            audit_sink=RecordingSink(),
+        )(_request(runtime), handler)
+    )
+    output = runtime.mcp_ingestion_output
+    assert output is not None
 
     assert len(output["content"]) == MCP_INGESTION_MAX_TEXT_CHARS
     assert output["truncated"] is True
@@ -666,22 +710,24 @@ def _governed_tool(settings):
         audit_sink=RecordingSink(),
     )
 
-    async def raw_coroutine(runtime=None, **args):
-        request = _request(runtime, **args)
-
-        async def handler(_request):
+    class WeatherSession:
+        async def call_tool(self, name, args, progress_callback=None):
+            del name, args, progress_callback
             return CallToolResult(
                 content=[TextContent(type="text", text="Weather ready")]
             )
 
-        return await interceptor(request, handler), None
-
-    raw_tool = StructuredTool(
-        name="weather_get_weather",
-        description="Remote weather",
-        args_schema=WeatherArgs,
-        coroutine=raw_coroutine,
-        response_format="content_and_artifact",
+    raw_tool = convert_mcp_tool_to_langchain_tool(
+        WeatherSession(),
+        Tool(
+            name="get_weather",
+            description="Remote weather",
+            inputSchema=WeatherArgs.model_json_schema(),
+        ),
+        tool_interceptors=[interceptor],
+        server_name="weather",
+        tool_name_prefix=True,
+        handle_tool_errors=True,
     )
     return build_governed_mcp_tool(
         raw_tool,
@@ -695,13 +741,28 @@ def test_governed_tool_supports_sync_and_native_async_paths(settings_factory):
     tool = _governed_tool(settings_factory())
     runtime = _runtime("mcp:weather")
 
-    sync_result = tool.func(runtime=runtime, location="Beijing")
-    async_result = asyncio.run(tool.coroutine(runtime=runtime, location="Beijing"))
+    def call(call_id):
+        return {
+            "type": "tool_call",
+            "name": tool.name,
+            "args": {"location": "Beijing", "runtime": runtime},
+            "id": call_id,
+        }
+
+    sync_message = tool.invoke(call("sync"))
+    async_message = asyncio.run(tool.ainvoke(call("async")))
+    sync_result = parse_tool_result(
+        sync_message, known=True, name=tool.name, args={"location": "Beijing"}
+    )
+    async_result = parse_tool_result(
+        async_message, known=True, name=tool.name, args={"location": "Beijing"}
+    )
 
     assert sync_result["ok"] is True
     assert async_result["ok"] is True
     assert sync_result["output"] == async_result["output"]
-    assert "runtime" not in tool.tool_call_schema.model_fields
+    assert tool.args_schema == WeatherArgs.model_json_schema()
+    assert "runtime" not in tool.tool_call_schema["properties"]
     parsed = parse_tool_result(
         ToolMessage(
             content=json.dumps(async_result),
@@ -737,9 +798,19 @@ def test_sync_bridge_fails_safely_inside_existing_event_loop(settings_factory):
     runtime = _runtime("mcp:weather")
 
     async def call_sync_from_loop():
-        return tool.func(runtime=runtime, location="Beijing")
+        return tool.invoke(
+            {
+                "type": "tool_call",
+                "name": tool.name,
+                "args": {"location": "Beijing", "runtime": runtime},
+                "id": "sync-in-loop",
+            }
+        )
 
-    result = asyncio.run(call_sync_from_loop())
+    message = asyncio.run(call_sync_from_loop())
+    result = parse_tool_result(
+        message, known=True, name=tool.name, args={"location": "Beijing"}
+    )
 
     assert result["ok"] is False
     assert result["error_code"] == "mcp_execution_error"

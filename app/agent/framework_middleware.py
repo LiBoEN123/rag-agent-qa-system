@@ -26,6 +26,7 @@ from app.tools.execution import (
     framework_execution_started,
     invalid_arguments_result,
 )
+from app.tools.mcp.serialization import normalize_mcp_tool_message
 from app.tools.policy import build_tool_args_fingerprint
 from app.tools.result import tool_error
 
@@ -67,6 +68,9 @@ def parse_tool_result(
     args: dict,
 ) -> dict[str, Any]:
     """读取标准 ToolMessage；框架校验错误映射为项目稳定错误码。"""
+    mcp_result = normalize_mcp_tool_message(message, tool_name=name, args=args)
+    if mcp_result is not None:
+        return mcp_result
     try:
         value = (
             json.loads(message.content) if isinstance(message.content, str) else None

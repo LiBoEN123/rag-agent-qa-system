@@ -545,7 +545,7 @@ def test_initialize_uses_official_client_options_and_caches_discovery(
         "X-MCP-Readonly": "true",
     }
     assert instances[0].kwargs["tool_name_prefix"] is True
-    assert instances[0].kwargs["handle_tool_errors"] is False
+    assert instances[0].kwargs["handle_tool_errors"] is True
     assert len(instances[0].kwargs["tool_interceptors"]) == 1
     assert "local-test-value" not in caplog.text
 

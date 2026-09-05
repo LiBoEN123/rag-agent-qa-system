@@ -1,4 +1,4 @@
-"""把不可信 MCP Tool 输出压缩为有限、脱敏的项目数据。"""
+"""MCP 原始结果的安全净化与官方 ToolMessage 的项目结果归一化。"""
 
 from __future__ import annotations
 
@@ -8,25 +8,13 @@ from enum import Enum
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from langchain_core.messages import ToolMessage
 from mcp import types
 
 from app.config import AppSettings
 from app.tools.errors import ToolErrorCode
-from app.tools.redaction import (
-    TRUNCATED,
-    redact_sensitive_data,
-    redact_sensitive_text,
-)
-
-
-@dataclass(frozen=True, slots=True)
-class McpSerializationOutcome:
-    """MCP 原始结果的安全序列化结论。"""
-
-    ok: bool
-    output: dict[str, Any] | None = None
-    error: str = ""
-    error_code: str = ""
+from app.tools.redaction import TRUNCATED, redact_sensitive_data, redact_sensitive_text
+from app.tools.result import tool_error, tool_success
 
 
 class McpSerializationProfile(str, Enum):
@@ -37,25 +25,39 @@ class McpSerializationProfile(str, Enum):
 
 
 _MAX_ERROR_TEXT_CHARS = 2_000
+_PROJECT_META_PREFIX = "__project_mcp_meta__:"
 MCP_INGESTION_MAX_TEXT_CHARS = 1_000_000
 
 
+@dataclass(frozen=True, slots=True)
+class McpSanitizationOutcome:
+    """净化后的官方 MCP result，以及 ingestion 所需的安全原始元数据。"""
+
+    ok: bool
+    result: types.CallToolResult | None = None
+    text: str = ""
+    truncated: bool = False
+    ingestion_output: dict[str, Any] | None = None
+    error: str = ""
+    error_code: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class _SafeBlock:
+    text: str
+    mcp_block: object
+    ingestion_block: dict[str, Any]
+
+
 def _truncate_text(value: str, limit: int) -> tuple[str, bool]:
-    """在字符边界截断文本，并保证标记计入限制。"""
     if len(value) <= limit:
         return value, False
-    marker = TRUNCATED
-    if limit <= len(marker):
-        return marker[:limit], True
-    return value[: limit - len(marker)] + marker, True
+    if limit <= len(TRUNCATED):
+        return TRUNCATED[:limit], True
+    return value[: limit - len(TRUNCATED)] + TRUNCATED, True
 
 
-def _bounded_structured(
-    value: Any,
-    *,
-    limit: int,
-) -> tuple[Any, bool]:
-    """复用现有脱敏器，并逐级收紧为完整 JSON 值而非半截 JSON。"""
+def _bounded_structured(value: Any, *, limit: int) -> tuple[Any, bool]:
     try:
         raw = json.dumps(
             value,
@@ -65,20 +67,14 @@ def _bounded_structured(
             allow_nan=False,
         )
     except (TypeError, ValueError):
-        return {
-            "truncated": True,
-            "unsupported_value": True,
-            "message": "MCP structured content is not JSON-compatible",
-        }, True
-
-    attempts = (
+        return {"truncated": True, "unsupported_value": True}, True
+    for max_depth, max_items, max_string_chars in (
         (8, 100, 4000),
         (6, 50, 2000),
         (5, 20, 1000),
         (4, 10, 500),
         (3, 5, 200),
-    )
-    for max_depth, max_items, max_string_chars in attempts:
+    ):
         sanitized = redact_sensitive_data(
             value,
             max_depth=max_depth,
@@ -93,20 +89,11 @@ def _bounded_structured(
             separators=(",", ":"),
         )
         if len(serialized) <= limit:
-            truncated = len(raw) > limit or TRUNCATED in serialized
-            return sanitized, truncated
-    summary = {
-        "truncated": True,
-        "type": type(value).__name__,
-        "message": "MCP structured content exceeded the configured limit",
-    }
-    if len(json.dumps(summary, ensure_ascii=False)) <= limit:
-        return summary, True
+            return sanitized, len(raw) > limit or TRUNCATED in serialized
     return {"truncated": True}, True
 
 
 def _safe_resource_uri(value: object) -> str:
-    """移除资源 URI 的 userinfo、query 和 fragment，避免凭据进入模型上下文。"""
     try:
         parsed = urlsplit(str(value))
         port = parsed.port
@@ -119,231 +106,255 @@ def _safe_resource_uri(value: object) -> str:
     return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
 
 
-def _content_summary(block_type: str, **metadata: object) -> str:
-    """把非文本 block 压缩为不含 payload 的 JSON 摘要。"""
+def _summary(block_type: str, **metadata: object) -> str:
     payload = {"type": block_type}
     payload.update({key: value for key, value in metadata.items() if value is not None})
     return json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
 
 
-@dataclass(frozen=True, slots=True)
-class _SerializedContentBlock:
-    """一个官方 MCP content block 的安全文本与有限类型信息。"""
-
-    text: str
-    block: dict[str, Any]
-
-
-def _text_block(block_type: str, text: str, **metadata: object) -> _SerializedContentBlock:
-    return _SerializedContentBlock(
-        text=text,
-        block={"type": block_type, "text": text, **metadata},
-    )
-
-
-def _summary_block(block_type: str, **metadata: object) -> _SerializedContentBlock:
-    safe_metadata = {key: value for key, value in metadata.items() if value is not None}
-    return _SerializedContentBlock(
-        text=_content_summary(block_type, **safe_metadata),
-        block={"type": block_type, **safe_metadata},
-    )
-
-
-def _serialize_content_block(  # noqa: PLR0911
-    block: object,
-) -> _SerializedContentBlock | None:
-    """依据官方 SDK 类型提取文本，并永久丢弃二进制 payload。"""
+def _safe_block(block: object) -> _SafeBlock | None:  # noqa: PLR0911
     if isinstance(block, types.TextContent):
-        return _text_block("text", block.text, size_chars=len(block.text))
+        text = redact_sensitive_text(block.text)
+        return _SafeBlock(
+            text,
+            block.model_copy(update={"text": text}),
+            {"type": "text", "text": text, "size_chars": len(block.text)},
+        )
     if isinstance(block, types.EmbeddedResource):
         resource = block.resource
         if isinstance(resource, types.TextResourceContents):
-            return _text_block(
-                "embedded_resource_text",
-                resource.text,
-                uri=_safe_resource_uri(resource.uri),
-                mime_type=resource.mimeType,
-                size_chars=len(resource.text),
+            text = redact_sensitive_text(resource.text)
+            uri = _safe_resource_uri(resource.uri)
+            safe_resource = resource.model_copy(update={"text": text, "uri": uri})
+            return _SafeBlock(
+                text,
+                block.model_copy(update={"resource": safe_resource}),
+                {
+                    "type": "embedded_resource_text",
+                    "text": text,
+                    "uri": uri,
+                    "mime_type": resource.mimeType,
+                    "size_chars": len(resource.text),
+                },
             )
         if isinstance(resource, types.BlobResourceContents):
-            return _summary_block(
+            text = _summary(
                 "embedded_blob",
                 mime_type=resource.mimeType,
                 size_chars=len(resource.blob),
             )
+            return _SafeBlock(
+                text, types.TextContent(type="text", text=text), json.loads(text)
+            )
         return None
     if isinstance(block, types.ResourceLink):
-        return _summary_block(
+        text = _summary(
             "resource_link",
-            name=block.name,
+            name=redact_sensitive_text(block.name),
             uri=_safe_resource_uri(block.uri),
             mime_type=block.mimeType,
         )
-    if isinstance(block, types.ImageContent):
-        return _summary_block(
-            "image",
-            mime_type=block.mimeType,
-            data_chars=len(block.data),
-        )
-    if isinstance(block, types.AudioContent):
-        return _summary_block(
-            "audio",
-            mime_type=block.mimeType,
-            data_chars=len(block.data),
-        )
-    return None
+    elif isinstance(block, types.ImageContent):
+        text = _summary("image", mime_type=block.mimeType, data_chars=len(block.data))
+    elif isinstance(block, types.AudioContent):
+        text = _summary("audio", mime_type=block.mimeType, data_chars=len(block.data))
+    else:
+        return None
+    return _SafeBlock(text, types.TextContent(type="text", text=text), json.loads(text))
 
 
-def _safe_ingestion_blocks(
-    blocks: list[_SerializedContentBlock],
-    *,
-    text_truncated: bool,
-) -> list[dict[str, Any]]:
-    """只在完整时保留脱敏文本；截断结果只暴露 block 类型摘要。"""
-    safe_blocks: list[dict[str, Any]] = []
-    for serialized in blocks:
-        block: dict[str, Any] = {}
-        for key, value in serialized.block.items():
-            if value is None or (key == "text" and text_truncated):
-                continue
-            if key == "text" and isinstance(value, str):
-                try:
-                    decoded = json.loads(value)
-                except (TypeError, ValueError):
-                    value = redact_sensitive_text(value)
-                else:
-                    value = json.dumps(
-                        redact_sensitive_data(
-                            decoded,
-                            max_depth=8,
-                            max_items=100,
-                            max_string_chars=MCP_INGESTION_MAX_TEXT_CHARS,
-                            max_serialized_chars=MCP_INGESTION_MAX_TEXT_CHARS * 2,
-                        ),
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    )
-            elif isinstance(value, str):
-                value = redact_sensitive_text(value)
-            block[key] = value
-        if text_truncated and "text" in serialized.block:
-            block["truncated"] = True
-        safe_blocks.append(block)
-    return safe_blocks
-
-
-def serialize_mcp_call_result(
-    result: object,
+def sanitize_mcp_call_result(
+    value: object,
     *,
     settings: AppSettings,
     server_alias: str,
     remote_tool_name: str,
     profile: McpSerializationProfile = McpSerializationProfile.AGENT,
-) -> McpSerializationOutcome:
-    """安全归一化 MCP SDK 结果中的官方 content blocks 和 structured content。"""
-    if not isinstance(result, types.CallToolResult):
-        return McpSerializationOutcome(
+) -> McpSanitizationOutcome:
+    """把不可信 payload 净化为仍由官方 adapter 转换的 CallToolResult。"""
+    if not isinstance(value, types.CallToolResult):
+        return McpSanitizationOutcome(
             ok=False,
             error="MCP tool returned an invalid result",
             error_code=ToolErrorCode.MCP_EXECUTION_ERROR.value,
         )
-
     try:
         resolved_profile = McpSerializationProfile(profile)
     except (TypeError, ValueError):
-        return McpSerializationOutcome(
+        return McpSanitizationOutcome(
             ok=False,
             error="MCP serialization profile is invalid",
             error_code=ToolErrorCode.MCP_EXECUTION_ERROR.value,
         )
 
-    serialized_blocks: list[_SerializedContentBlock] = []
-    for block in result.content:
-        serialized = _serialize_content_block(block)
-        if serialized is None:
+    blocks: list[_SafeBlock] = []
+    for block in value.content:
+        sanitized = _safe_block(block)
+        if sanitized is None:
             block_type, _ = _truncate_text(
-                redact_sensitive_text(type(block).__name__),
-                128,
+                redact_sensitive_text(type(block).__name__), 128
             )
-            return McpSerializationOutcome(
+            return McpSanitizationOutcome(
                 ok=False,
                 error=f"MCP tool returned unsupported content type: {block_type}",
                 error_code=ToolErrorCode.MCP_UNSUPPORTED_CONTENT.value,
             )
-        serialized_blocks.append(serialized)
+        blocks.append(sanitized)
+
     text_limit = (
         settings.mcp_max_text_chars
         if resolved_profile is McpSerializationProfile.AGENT
         else MCP_INGESTION_MAX_TEXT_CHARS
     )
+    if value.isError:
+        text_limit = min(text_limit, _MAX_ERROR_TEXT_CHARS)
     text, text_truncated = _truncate_text(
-        redact_sensitive_text("\n".join(block.text for block in serialized_blocks)),
-        text_limit,
+        "\n".join(block.text for block in blocks), text_limit
+    )
+    safe_content = (
+        [block.mcp_block for block in blocks]
+        if not text_truncated
+        else [types.TextContent(type="text", text=text)]
     )
 
-    if result.isError:
-        error = "MCP tool execution failed"
-        if text.strip():
-            error = f"{error}: {text}"
-        error, _ = _truncate_text(
-            error,
-            min(settings.mcp_max_text_chars, _MAX_ERROR_TEXT_CHARS),
+    structured = None
+    structured_truncated = False
+    if value.structuredContent is not None:
+        structured, structured_truncated = _bounded_structured(
+            value.structuredContent,
+            limit=settings.mcp_max_structured_chars,
         )
-        return McpSerializationOutcome(
-            ok=False,
-            error=error,
-            error_code=ToolErrorCode.MCP_EXECUTION_ERROR.value,
-        )
-
-    output: dict[str, Any] = {
+    safe_result = value.model_copy(
+        update={"content": safe_content, "structuredContent": structured}
+    )
+    truncated = bool(text_truncated or structured_truncated)
+    ingestion_blocks = []
+    for block in blocks:
+        item = {
+            key: val for key, val in block.ingestion_block.items() if val is not None
+        }
+        if text_truncated and "text" in item:
+            item.pop("text")
+            item["truncated"] = True
+        ingestion_blocks.append(item)
+    ingestion_output = {
         "content": text,
         "content_is_untrusted": True,
         "server": server_alias,
         "tool": remote_tool_name,
-        "truncated": text_truncated,
+        "truncated": truncated,
+        "serialization_profile": McpSerializationProfile.INGESTION.value,
+        "content_blocks": ingestion_blocks,
     }
-    if resolved_profile is McpSerializationProfile.INGESTION:
-        output["serialization_profile"] = resolved_profile.value
-        output["content_blocks"] = _safe_ingestion_blocks(
-            serialized_blocks,
-            text_truncated=text_truncated,
+    if structured is not None:
+        ingestion_output["structured_content"] = structured
+    return McpSanitizationOutcome(
+        ok=True,
+        result=safe_result,
+        text=text,
+        truncated=truncated,
+        ingestion_output=(
+            ingestion_output
+            if resolved_profile is McpSerializationProfile.INGESTION
+            else None
+        ),
+    )
+
+
+def attach_mcp_execution_metadata(
+    result: types.CallToolResult,
+    metadata: dict[str, Any],
+) -> types.CallToolResult:
+    """以安全文本标记携带项目元数据，随后仍由官方 adapter 生成 ToolMessage。"""
+    marker = types.TextContent(
+        type="text",
+        text=_PROJECT_META_PREFIX
+        + json.dumps(
+            metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ),
+    )
+    return result.model_copy(update={"content": [*result.content, marker]})
+
+
+def normalize_mcp_tool_message(
+    message: ToolMessage,
+    *,
+    tool_name: str,
+    args: dict[str, Any],
+) -> dict[str, Any] | None:
+    """从官方 ToolMessage 读取安全内容/artifact，并构造一次项目 ToolResult。"""
+    if not isinstance(message.content, list):
+        return None
+    metadata = None
+    text_parts: list[str] = []
+    for block in message.content:
+        if not isinstance(block, dict) or block.get("type") != "text":
+            return None
+        text = block.get("text")
+        if not isinstance(text, str):
+            return None
+        if text.startswith(_PROJECT_META_PREFIX):
+            if metadata is not None:
+                return None
+            try:
+                candidate = json.loads(text.removeprefix(_PROJECT_META_PREFIX))
+            except (TypeError, ValueError):
+                return None
+            if not isinstance(candidate, dict):
+                return None
+            metadata = candidate
+        else:
+            text_parts.append(text)
+    if not isinstance(metadata, dict):
+        return None
+
+    runtime = metadata.get("runtime")
+    governance = metadata.get("governance")
+    audit = metadata.get("audit")
+    if not all(isinstance(value, dict) for value in (runtime, governance, audit)):
+        return None
+    error_code = metadata.get("error_code")
+    if message.status == "error" or isinstance(error_code, str) and error_code:
+        result = tool_error(
+            tool_name,
+            args,
+            str(metadata.get("error") or "MCP tool execution failed"),
+            error_code=str(error_code or ToolErrorCode.MCP_EXECUTION_ERROR.value),
+            retryable=False,
+            runtime=runtime,
+            governance=governance,
         )
-    if result.structuredContent is not None:
-        structured, structured_truncated = _bounded_structured(
-            result.structuredContent,
-            limit=settings.mcp_max_structured_chars,
+    else:
+        output = metadata.get("output")
+        if not isinstance(output, dict):
+            return None
+        output = {**output, "content": "\n".join(text_parts)}
+        artifact = message.artifact
+        if isinstance(artifact, dict) and "structured_content" in artifact:
+            output["structured_content"] = artifact["structured_content"]
+        result = tool_success(
+            tool_name,
+            args,
+            output,
+            runtime=runtime,
+            governance=governance,
         )
-        output["structured_content"] = structured
-        output["truncated"] = bool(text_truncated or structured_truncated)
-    return McpSerializationOutcome(ok=True, output=output)
+    result["tool_call_id"] = message.tool_call_id
+    result["audit"] = audit
+    return result
 
 
 def summarize_mcp_output(value: object) -> dict[str, Any]:
-    """生成不含正文的 MCP 审计输出摘要。"""
     if not isinstance(value, dict):
         return {"mode": "summary", "type": type(value).__name__}
+    content = value.get("content")
     return {
         "mode": "summary",
         "type": "dict",
         "fields": sorted(str(key) for key in value)[:20],
-        "content_chars": len(value.get("content", ""))
-        if isinstance(value.get("content"), str)
-        else 0,
+        "content_chars": len(content) if isinstance(content, str) else 0,
         "truncated": bool(value.get("truncated", False)),
         "content_is_untrusted": bool(value.get("content_is_untrusted", False)),
     }
-
-
-__all__ = [
-    "MCP_INGESTION_MAX_TEXT_CHARS",
-    "McpSerializationOutcome",
-    "McpSerializationProfile",
-    "serialize_mcp_call_result",
-    "summarize_mcp_output",
-]

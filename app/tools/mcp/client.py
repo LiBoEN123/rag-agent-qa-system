@@ -72,7 +72,7 @@ async def initialize_mcp_runtime(settings: AppSettings) -> McpRuntime | None:
         connections,
         tool_interceptors=[interceptor],
         tool_name_prefix=True,
-        handle_tool_errors=False,
+        handle_tool_errors=True,
     )
     entries = await discover_mcp_tools(
         client,

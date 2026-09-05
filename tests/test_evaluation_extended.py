@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
 from langchain_core.tools import StructuredTool
 from langchain_mcp_adapters.interceptors import MCPToolCallRequest
-from mcp.types import CallToolResult
+from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool
+from mcp.types import CallToolResult, Tool
 from pydantic import BaseModel
 
 from app.tools.context import ToolInvocationContext
 from app.tools.mcp.bridge import McpToolCallInterceptor
 from app.tools.mcp.config import McpServerConfig
 from app.tools.mcp.provider import CachedMcpTool, McpToolProvider
+from app.tools.mcp.serialization import normalize_mcp_tool_message
 from scripts.evaluation.contracts import load_agent_evaluation_dataset
 from scripts.evaluation.external import scan_artifacts_for_secret_values
 from scripts.evaluation.manifest import read_registered_tool_names, sha256_file
@@ -124,8 +125,40 @@ def test_github_permission_cannot_execute_firecrawl(settings_factory):
             )
         ),
     )
-    message = asyncio.run(interceptor(request, handler))
-    payload = json.loads(message.content)
+    result = asyncio.run(interceptor(request, handler))
+
+    class ResultSession:
+        async def call_tool(self, name, args, progress_callback=None):
+            del name, args, progress_callback
+            return result
+
+    tool = convert_mcp_tool_to_langchain_tool(
+        ResultSession(),
+        Tool(
+            name="firecrawl_search",
+            description="search",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        server_name="firecrawl",
+        tool_name_prefix=True,
+        handle_tool_errors=True,
+    )
+    message = asyncio.run(
+        tool.ainvoke(
+            {
+                "type": "tool_call",
+                "name": tool.name,
+                "args": {},
+                "id": "evaluation-permission-call",
+            }
+        )
+    )
+    payload = normalize_mcp_tool_message(
+        message,
+        tool_name=tool.name,
+        args={"query": "Pydantic"},
+    )
+    assert payload is not None
 
     assert payload["error_code"] == "mcp_permission_denied"
     assert payload["runtime"]["attempt_count"] == 0
