@@ -1,12 +1,13 @@
-"""Agent 追踪持久化模块。
-
-将 Agent 运行摘要和计划步骤写入 SQLite，并提供按 trace_id 查询的接口。
-"""
+"""使用共享 SQLAlchemy Session 保存和读取 Agent 运行摘要与步骤。"""
 
 import json
 from pathlib import Path
 
-from app.storage.database import get_connection, init_db, now_iso
+from sqlalchemy import delete, insert, select
+
+from app.storage.database import (
+    agent_runs, agent_steps, get_session_factory, init_db, now_iso,
+)
 
 
 _MAX_FINAL_ANSWER_CHARS = 10_000
@@ -38,38 +39,15 @@ def save_agent_run(
         return
 
     init_db(db_path)
-    conn = get_connection(db_path)
-    try:
-        with conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO agent_runs(
-                    trace_id,
-                    session_id,
-                    question,
-                    rewritten_question,
-                    final_answer,
-                    status,
-                    reason,
-                    created_at,
-                    total_cost_ms
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    normalized_trace_id,
-                    session_id,
-                    str(question or ""),
-                    str(rewritten_question or ""),
-                    str(final_answer or "")[:_MAX_FINAL_ANSWER_CHARS],
-                    str(status or ""),
-                    str(reason or ""),
-                    now_iso(),
-                    _safe_int(total_cost_ms),
-                ),
-            )
-    finally:
-        conn.close()
+    with get_session_factory(db_path).begin() as session:
+        # 保留 SQLite REPLACE 的删除再插入语义（包括 rowid）。
+        session.execute(insert(agent_runs).prefix_with("OR REPLACE").values(
+            trace_id=normalized_trace_id, session_id=session_id,
+            question=str(question or ""), rewritten_question=str(rewritten_question or ""),
+            final_answer=str(final_answer or "")[:_MAX_FINAL_ANSWER_CHARS],
+            status=str(status or ""), reason=str(reason or ""),
+            created_at=now_iso(), total_cost_ms=_safe_int(total_cost_ms),
+        ))
 
 
 def save_agent_steps(
@@ -78,54 +56,25 @@ def save_agent_steps(
     tool_trace: list[dict],
     db_path: Path | None = None,
 ) -> None:
-    """替换指定 trace 的全部步骤记录。"""
+    """替换指定 trace 的全部步骤记录；空列表保持原有 no-op。"""
     normalized_trace_id = (trace_id or "").strip()
     if not normalized_trace_id or not tool_trace:
         return
 
     init_db(db_path)
-    conn = get_connection(db_path)
-    try:
-        with conn:
-            conn.execute(
-                "DELETE FROM agent_steps WHERE trace_id = ?",
-                (normalized_trace_id,),
-            )
-            for raw_item in tool_trace:
-                item = raw_item if isinstance(raw_item, dict) else {}
-                conn.execute(
-                    """
-                    INSERT INTO agent_steps(
-                        trace_id,
-                        step_id,
-                        action,
-                        tool_name,
-                        tool_args_json,
-                        observation_json,
-                        status,
-                        cost_ms,
-                        created_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        normalized_trace_id,
-                        item.get("step_id"),
-                        str(item.get("action") or item.get("step") or ""),
-                        str(item.get("tool_name") or ""),
-                        json.dumps(
-                            item.get("tool_args", {}),
-                            ensure_ascii=False,
-                            default=str,
-                        ),
-                        json.dumps(item, ensure_ascii=False, default=str),
-                        str(item.get("status") or item.get("tool_status") or ""),
-                        _safe_int(item.get("cost_ms")),
-                        now_iso(),
-                    ),
-                )
-    finally:
-        conn.close()
+    with get_session_factory(db_path).begin() as session:
+        session.execute(delete(agent_steps).where(agent_steps.c.trace_id == normalized_trace_id))
+        for raw_item in tool_trace:
+            item = raw_item if isinstance(raw_item, dict) else {}
+            session.execute(insert(agent_steps).values(
+                trace_id=normalized_trace_id, step_id=item.get("step_id"),
+                action=str(item.get("action") or item.get("step") or ""),
+                tool_name=str(item.get("tool_name") or ""),
+                tool_args_json=json.dumps(item.get("tool_args", {}), ensure_ascii=False, default=str),
+                observation_json=json.dumps(item, ensure_ascii=False, default=str),
+                status=str(item.get("status") or item.get("tool_status") or ""),
+                cost_ms=_safe_int(item.get("cost_ms")), created_at=now_iso(),
+            ))
 
 
 def save_agent_trace(
@@ -170,15 +119,10 @@ def get_agent_run(
         return None
 
     init_db(db_path)
-    conn = get_connection(db_path)
-    try:
-        row = conn.execute(
-            "SELECT * FROM agent_runs WHERE trace_id = ?",
-            (normalized_trace_id,),
-        ).fetchone()
-    finally:
-        conn.close()
-
+    with get_session_factory(db_path)() as session:
+        row = session.execute(
+            select(agent_runs).where(agent_runs.c.trace_id == normalized_trace_id)
+        ).mappings().first()
     return dict(row) if row is not None else None
 
 
@@ -192,27 +136,13 @@ def get_agent_steps(
         return []
 
     init_db(db_path)
-    conn = get_connection(db_path)
-    try:
-        rows = conn.execute(
-            """
-            SELECT *
-            FROM agent_steps
-            WHERE trace_id = ?
-            ORDER BY id
-            """,
-            (normalized_trace_id,),
-        ).fetchall()
-    finally:
-        conn.close()
-
+    with get_session_factory(db_path)() as session:
+        rows = session.execute(
+            select(agent_steps).where(agent_steps.c.trace_id == normalized_trace_id)
+            .order_by(agent_steps.c.id.asc())
+        ).mappings().all()
     return [dict(row) for row in rows]
 
 
-__all__ = [
-    "get_agent_run",
-    "get_agent_steps",
-    "save_agent_run",
-    "save_agent_steps",
-    "save_agent_trace",
-]
+__all__ = ["get_agent_run", "get_agent_steps", "save_agent_run",
+           "save_agent_steps", "save_agent_trace"]

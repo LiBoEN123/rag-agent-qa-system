@@ -1,11 +1,11 @@
-"""会话记忆持久化模块。
-
-使用 SQLite 保存、查询和清理会话消息，为多轮问题改写提供历史上下文。
-"""
+"""使用共享 SQLAlchemy Session 保存、查询和清理会话消息。"""
 
 from pathlib import Path
 
-from app.storage.database import get_connection, init_db, now_iso
+from sqlalchemy import delete, insert, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+from app.storage.database import get_session_factory, init_db, messages, now_iso, sessions
 
 
 _ALLOWED_ROLES = {"user", "assistant"}
@@ -22,33 +22,23 @@ def append_message_sqlite(
     normalized_content = (content or "").strip()
     if not normalized_session_id or not normalized_content:
         return
-
     if role not in _ALLOWED_ROLES:
         raise ValueError(f"invalid role: {role}")
 
     init_db(db_path)
     timestamp = now_iso()
-    conn = get_connection(db_path)
-    try:
-        with conn:
-            conn.execute(
-                """
-                INSERT INTO sessions(session_id, created_at, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(session_id)
-                DO UPDATE SET updated_at=excluded.updated_at
-                """,
-                (normalized_session_id, timestamp, timestamp),
+    with get_session_factory(db_path).begin() as session:
+        session.execute(
+            sqlite_insert(sessions).values(
+                session_id=normalized_session_id, created_at=timestamp, updated_at=timestamp,
+            ).on_conflict_do_update(
+                index_elements=["session_id"], set_={"updated_at": timestamp},
             )
-            conn.execute(
-                """
-                INSERT INTO messages(session_id, role, content, created_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (normalized_session_id, role, normalized_content, timestamp),
-            )
-    finally:
-        conn.close()
+        )
+        session.execute(insert(messages).values(
+            session_id=normalized_session_id, role=role,
+            content=normalized_content, created_at=timestamp,
+        ))
 
 
 def get_history_sqlite(
@@ -62,25 +52,13 @@ def get_history_sqlite(
         return []
 
     init_db(db_path)
-    conn = get_connection(db_path)
-    try:
-        rows = conn.execute(
-            """
-            SELECT role, content
-            FROM messages
-            WHERE session_id = ?
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (normalized_session_id, int(limit)),
-        ).fetchall()
-    finally:
-        conn.close()
-
-    return [
-        {"role": row["role"], "content": row["content"]}
-        for row in reversed(rows)
-    ]
+    with get_session_factory(db_path)() as session:
+        rows = session.execute(
+            select(messages.c.role, messages.c.content)
+            .where(messages.c.session_id == normalized_session_id)
+            .order_by(messages.c.id.desc()).limit(int(limit))
+        ).mappings().all()
+    return [dict(row) for row in reversed(rows)]
 
 
 def clear_session_sqlite(
@@ -93,23 +71,9 @@ def clear_session_sqlite(
         return
 
     init_db(db_path)
-    conn = get_connection(db_path)
-    try:
-        with conn:
-            conn.execute(
-                "DELETE FROM messages WHERE session_id = ?",
-                (normalized_session_id,),
-            )
-            conn.execute(
-                "DELETE FROM sessions WHERE session_id = ?",
-                (normalized_session_id,),
-            )
-    finally:
-        conn.close()
+    with get_session_factory(db_path).begin() as session:
+        session.execute(delete(messages).where(messages.c.session_id == normalized_session_id))
+        session.execute(delete(sessions).where(sessions.c.session_id == normalized_session_id))
 
 
-__all__ = [
-    "append_message_sqlite",
-    "clear_session_sqlite",
-    "get_history_sqlite",
-]
+__all__ = ["append_message_sqlite", "clear_session_sqlite", "get_history_sqlite"]

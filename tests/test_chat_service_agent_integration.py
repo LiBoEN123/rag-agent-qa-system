@@ -16,6 +16,9 @@ from app.services.chat_service import (
     ChatServiceDependencies,
 )
 from app.services.chat_models import ChatServiceRequest
+from app.storage.database import clear_storage_engine_cache
+from app.storage.session import append_message, get_history
+from app.storage.traces import get_agent_run, get_agent_steps
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from app.tools.providers import LocalToolProvider
@@ -219,12 +222,17 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
         tool_default_principal_id="chat-user",
         tool_default_permissions=("knowledge_base:read",),
         tool_audit_enabled=False,
+        enable_agent_trace_store=True,
     )
 
     session_writes: list[tuple[str, str, str]] = []
     metric_writes: list[dict] = []
     bad_cases: list[dict] = []
     clock = IncrementingClock()
+
+    def persist_message(session_id, role, content):
+        session_writes.append((session_id, role, content))
+        append_message(session_id, role, content)
 
     def rewrite(question, history, trace_id=""):
         return {
@@ -241,14 +249,12 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
 
     dependencies = ChatServiceDependencies(
         settings_provider=lambda: settings,
-        get_history=lambda session_id: [],
+        get_history=get_history,
         rewrite_query_with_history=rewrite,
         run_agent=run_agent,
         log_and_write_metrics=lambda record: metric_writes.append(dict(record)),
         write_bad_cases=lambda record: bad_cases.append(dict(record)),
-        append_message=lambda session_id, role, content: session_writes.append(
-            (session_id, role, content)
-        ),
+        append_message=persist_message,
         now_iso=lambda: "2026-07-20T10:00:00.000",
         perf_counter=clock,
     )
@@ -299,6 +305,21 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
             "ChatService 主路径完成。",
         ),
     ]
+    clear_storage_engine_cache()
+    assert get_history("session-chat-integration") == [
+        {"role": "user", "content": "请走完整 Agent 工具主路径"},
+        {"role": "assistant", "content": "ChatService 主路径完成。"},
+    ]
+    stored_run = get_agent_run("trace-chat-integration")
+    assert stored_run["session_id"] == "session-chat-integration"
+    assert stored_run["final_answer"] == outcome.result["answer"]
+    assert stored_run["status"] == "OK"
+    stored_steps = get_agent_steps("trace-chat-integration")
+    # ChatService 在 Agent 已持久化后才追加 query_rewrite 步骤。
+    assert [json.loads(step["observation_json"]) for step in stored_steps] == [
+        step for step in outcome.result["tool_trace"] if step.get("step") != "query_rewrite"
+    ]
+    assert any(step["tool_name"] == "chat_echo" for step in stored_steps)
     assert len(metric_writes) == 1
     decide_trace = next(
         step

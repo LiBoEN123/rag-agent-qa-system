@@ -13,6 +13,7 @@ from app.tools.registry import clear_tool_registry_cache, get_tool_registry
 from app.tools.runtime import close_tool_executor
 from app.tools.mcp.client import reset_mcp_runtime
 from app.tools.sql_readonly.engine import clear_sql_engine_cache
+from app.storage.database import clear_storage_engine_cache
 
 
 @pytest.fixture
@@ -97,6 +98,7 @@ def _clear_configuration_dependent_caches() -> None:
     clear_model_factory_cache()
     clear_tool_registry_cache()
     clear_sql_engine_cache()
+    clear_storage_engine_cache()
     reset_mcp_runtime()
     clear_settings_cache()
 

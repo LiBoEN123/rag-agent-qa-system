@@ -1,19 +1,21 @@
+import sqlite3
+
 import pytest
 
 
 def test_init_db_creates_tables(tmp_path):
     """验证初始化数据库会创建全部持久化表。"""
-    from app.storage.database import get_connection, init_db
+    from app.storage.database import init_db
 
     db_path = tmp_path / "test.sqlite"
     init_db(db_path)
 
-    with get_connection(db_path) as conn:
+    with sqlite3.connect(db_path) as conn:
         rows = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()
 
-    names = {row["name"] for row in rows}
+    names = {row[0] for row in rows}
 
     assert "sessions" in names
     assert "messages" in names

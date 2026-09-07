@@ -7,12 +7,16 @@ from enum import Enum
 from pathlib import Path
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import Integer, Text, create_engine, func, select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from app.ingestion import IngestionCandidate, IngestionCandidateStatus, KnowledgeSourceType
-from app.storage.database import get_db_path, init_db
+from app.storage.database import (
+    _IngestionCandidateRecord,
+    _IngestionIndexRunRecord,
+    get_session_factory,
+    init_db,
+)
 
 
 class CandidatePersistenceError(RuntimeError):
@@ -42,38 +46,6 @@ class IngestionIndexRun(BaseModel):
     error_message: str | None = Field(default=None, max_length=500)
 
 
-class _Base(DeclarativeBase): ...
-
-
-class _IngestionCandidateRecord(_Base):
-    __tablename__ = "ingestion_candidates"
-
-    candidate_id: Mapped[str] = mapped_column(Text, primary_key=True)
-    status: Mapped[str] = mapped_column(Text)
-    source_type: Mapped[str] = mapped_column(Text)
-    source_uri: Mapped[str] = mapped_column(Text)
-    content_hash: Mapped[str] = mapped_column(Text)
-    requested_at: Mapped[str] = mapped_column(Text)
-    updated_at: Mapped[str] = mapped_column(Text)
-    candidate_json: Mapped[str] = mapped_column(Text)
-
-
-class _IngestionIndexRunRecord(_Base):
-    __tablename__ = "ingestion_index_runs"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    candidate_id: Mapped[str] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(Text)
-    started_at: Mapped[str] = mapped_column(Text)
-    completed_at: Mapped[str | None] = mapped_column(Text)
-    added: Mapped[int | None] = mapped_column(Integer)
-    updated: Mapped[int | None] = mapped_column(Integer)
-    deleted: Mapped[int | None] = mapped_column(Integer)
-    skipped: Mapped[int | None] = mapped_column(Integer)
-    error_code: Mapped[str | None] = mapped_column(Text)
-    error_message: Mapped[str | None] = mapped_column(Text)
-
-
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
@@ -83,21 +55,12 @@ def _page(limit: int, offset: int) -> None:
         raise ValueError("limit 必须为正整数且 offset 不能为负数")
 
 
-def _sessions(path: Path | None):
-    init_db(path)
-    resolved = Path(path) if path is not None else get_db_path()
-    engine = create_engine(
-        f"sqlite:///{resolved.resolve()}",
-        connect_args={"check_same_thread": False},
-    )
-    return sessionmaker(engine, expire_on_commit=False)
-
-
 class SQLiteCandidateRepository:
     """复用 application SQLite 的 CandidateRepository 持久实现。"""
 
     def __init__(self, db_path: Path | None = None) -> None:
-        self._sessions = _sessions(db_path)
+        init_db(db_path)
+        self._sessions = get_session_factory(db_path)
 
     @staticmethod
     def _values(candidate: IngestionCandidate) -> dict[str, str]:
@@ -195,7 +158,8 @@ class SQLiteIndexRunRepository:
     """保存同步 index operation 状态与安全计数，不复制正文。"""
 
     def __init__(self, db_path: Path | None = None) -> None:
-        self._sessions = _sessions(db_path)
+        init_db(db_path)
+        self._sessions = get_session_factory(db_path)
 
     @staticmethod
     def _load(record: _IngestionIndexRunRecord) -> IngestionIndexRun:

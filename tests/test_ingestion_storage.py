@@ -16,7 +16,7 @@ from app.ingestion import (
     KnowledgeSourceType,
 )
 from app.sources import FirecrawlPagePayload, FirecrawlPageSourceAdapter
-from app.storage.database import get_connection, init_db
+from app.storage.database import init_db
 from app.storage.ingestion import (
     CandidatePersistenceError,
     IndexRunStatus,
@@ -99,7 +99,7 @@ def test_candidate_list_filters_and_paginates_without_skipping_validation(tmp_pa
     assert repository.list(source_type=KnowledgeSourceType.FIRECRAWL, limit=1) == [second]
     assert repository.list(source_type=KnowledgeSourceType.FIRECRAWL, limit=1, offset=1) == [approved]
 
-    with get_connection(tmp_path / "app.sqlite3") as connection:
+    with sqlite3.connect(tmp_path / "app.sqlite3") as connection:
         connection.execute(
             "UPDATE ingestion_candidates SET candidate_json = ? WHERE candidate_id = ?",
             ("{}", approved.candidate_id),
@@ -176,9 +176,9 @@ def test_index_runs_persist_success_and_safe_failure_without_content(tmp_path):
     assert restarted.list(status=IndexRunStatus.SUCCESS, limit=1) == [completed]
     assert restarted.list(limit=1, offset=1) == [completed]
 
-    with get_connection(db_path) as connection:
+    with sqlite3.connect(db_path) as connection:
         columns = {
-            row["name"]
+            row[1]
             for row in connection.execute("PRAGMA table_info(ingestion_index_runs)")
         }
     assert "content" not in columns
@@ -222,9 +222,9 @@ def test_init_db_upgrades_existing_database_without_changing_old_rows(tmp_path):
 
     init_db(db_path)
 
-    with get_connection(db_path) as upgraded:
+    with sqlite3.connect(db_path) as upgraded:
         tables = {
-            row["name"]
+            row[0]
             for row in upgraded.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             )

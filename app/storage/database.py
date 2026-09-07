@@ -1,13 +1,106 @@
-"""SQLite 数据库基础模块。
+"""Application SQLite 的共享 SQLAlchemy schema、Engine 和 Session。"""
 
-负责创建连接、初始化数据表，并提供统一的时间字段生成方法。
-"""
-
-import sqlite3
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
+from threading import Lock
+
+from sqlalchemy import Column, Index, Integer, Table, Text, create_engine, literal
+from sqlalchemy.engine import URL, Engine
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from app.config import get_settings
+
+
+class Base(DeclarativeBase): ...
+
+
+# nullable=True 保留旧 SQLite PRIMARY KEY 的 PRAGMA 标记；不新增 FK。
+sessions = Table(
+    "sessions", Base.metadata,
+    Column("session_id", Text, primary_key=True, nullable=True),
+    Column("created_at", Text, nullable=False),
+    Column("updated_at", Text, nullable=False),
+)
+messages = Table(
+    "messages", Base.metadata,
+    Column("id", Integer, primary_key=True, nullable=True),
+    Column("session_id", Text, nullable=False),
+    Column("role", Text, nullable=False),
+    Column("content", Text, nullable=False),
+    Column("created_at", Text, nullable=False),
+    Index("idx_messages_session_id_id", "session_id", "id"),
+    sqlite_autoincrement=True,
+)
+agent_runs = Table(
+    "agent_runs", Base.metadata,
+    Column("trace_id", Text, primary_key=True, nullable=True),
+    Column("session_id", Text),
+    Column("question", Text, nullable=False),
+    Column("rewritten_question", Text),
+    Column("final_answer", Text),
+    Column("status", Text),
+    Column("reason", Text),
+    Column("created_at", Text, nullable=False),
+    Column("total_cost_ms", Integer, server_default=literal(0)),
+)
+agent_steps = Table(
+    "agent_steps", Base.metadata,
+    Column("id", Integer, primary_key=True, nullable=True),
+    Column("trace_id", Text, nullable=False),
+    Column("step_id", Integer),
+    Column("action", Text),
+    Column("tool_name", Text),
+    Column("tool_args_json", Text),
+    Column("observation_json", Text),
+    Column("status", Text),
+    Column("cost_ms", Integer, server_default=literal(0)),
+    Column("created_at", Text, nullable=False),
+    Index("idx_agent_steps_trace_id_id", "trace_id", "id"),
+    sqlite_autoincrement=True,
+)
+
+
+class _IngestionCandidateRecord(Base):
+    __tablename__ = "ingestion_candidates"
+
+    candidate_id: Mapped[str] = mapped_column(Text, primary_key=True, nullable=True)
+    status: Mapped[str] = mapped_column(Text)
+    source_type: Mapped[str] = mapped_column(Text)
+    source_uri: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str] = mapped_column(Text)
+    requested_at: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[str] = mapped_column(Text)
+    candidate_json: Mapped[str] = mapped_column(Text)
+    __table_args__ = (
+        Index("idx_ingestion_candidates_status_requested", status, requested_at.desc()),
+        Index("idx_ingestion_candidates_source_requested", source_type, requested_at.desc()),
+    )
+
+
+class _IngestionIndexRunRecord(Base):
+    __tablename__ = "ingestion_index_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, nullable=True)
+    candidate_id: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text)
+    started_at: Mapped[str] = mapped_column(Text)
+    completed_at: Mapped[str | None] = mapped_column(Text)
+    added: Mapped[int | None] = mapped_column(Integer)
+    updated: Mapped[int | None] = mapped_column(Integer)
+    deleted: Mapped[int | None] = mapped_column(Integer)
+    skipped: Mapped[int | None] = mapped_column(Integer)
+    error_code: Mapped[str | None] = mapped_column(Text)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    __table_args__ = (
+        Index("idx_ingestion_index_runs_candidate_id", candidate_id, id.desc()),
+        Index("idx_ingestion_index_runs_status_id", status, id.desc()),
+        {"sqlite_autoincrement": True},
+    )
+
+
+_engines: dict[Path, Engine] = {}
+_engine_lock = Lock()
 
 
 def now_iso() -> str:
@@ -20,99 +113,42 @@ def get_db_path() -> Path:
     return get_settings().sqlite_db_path
 
 
-def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
-    """创建 SQLite 连接，并确保数据库所在目录存在。"""
-    path = Path(db_path) if db_path is not None else get_db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    return conn
+def get_engine(db_path: Path | None = None) -> Engine:
+    """按绝对路径复用 Engine，支持测试隔离和线程调用。"""
+    path = Path(db_path if db_path is not None else get_db_path()).resolve()
+    with _engine_lock:
+        if path not in _engines:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _engines[path] = create_engine(
+                URL.create("sqlite", database=str(path)),
+                connect_args={"check_same_thread": False},
+            )
+        return _engines[path]
+
+
+@lru_cache(maxsize=None)
+def _session_factory(engine: Engine) -> sessionmaker[Session]:
+    return sessionmaker(engine, expire_on_commit=False)
+
+
+def get_session_factory(db_path: Path | None = None) -> sessionmaker[Session]:
+    """返回与指定数据库 Engine 共享的同步 Session 工厂。"""
+    return _session_factory(get_engine(db_path))
 
 
 def init_db(db_path: Path | None = None) -> None:
-    """初始化会话历史和 Agent trace 所需的数据表。"""
-    conn = get_connection(db_path)
-    try:
-        with conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS sessions (
-                    session_id TEXT PRIMARY KEY,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_messages_session_id_id
-                ON messages(session_id, id);
-
-                CREATE TABLE IF NOT EXISTS agent_runs (
-                    trace_id TEXT PRIMARY KEY,
-                    session_id TEXT,
-                    question TEXT NOT NULL,
-                    rewritten_question TEXT,
-                    final_answer TEXT,
-                    status TEXT,
-                    reason TEXT,
-                    created_at TEXT NOT NULL,
-                    total_cost_ms INTEGER DEFAULT 0
-                );
-
-                CREATE TABLE IF NOT EXISTS agent_steps (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    trace_id TEXT NOT NULL,
-                    step_id INTEGER,
-                    action TEXT,
-                    tool_name TEXT,
-                    tool_args_json TEXT,
-                    observation_json TEXT,
-                    status TEXT,
-                    cost_ms INTEGER DEFAULT 0,
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_agent_steps_trace_id_id
-                ON agent_steps(trace_id, id);
-
-                CREATE TABLE IF NOT EXISTS ingestion_candidates (
-                    candidate_id TEXT PRIMARY KEY,
-                    status TEXT NOT NULL, source_type TEXT NOT NULL,
-                    source_uri TEXT NOT NULL, content_hash TEXT NOT NULL,
-                    requested_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-                    candidate_json TEXT NOT NULL
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_ingestion_candidates_status_requested
-                ON ingestion_candidates(status, requested_at DESC);
-
-                CREATE INDEX IF NOT EXISTS idx_ingestion_candidates_source_requested
-                ON ingestion_candidates(source_type, requested_at DESC);
-
-                CREATE TABLE IF NOT EXISTS ingestion_index_runs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    candidate_id TEXT NOT NULL, status TEXT NOT NULL,
-                    started_at TEXT NOT NULL, completed_at TEXT,
-                    added INTEGER, updated INTEGER,
-                    deleted INTEGER, skipped INTEGER,
-                    error_code TEXT, error_message TEXT
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_ingestion_index_runs_candidate_id
-                ON ingestion_index_runs(candidate_id, id DESC);
-
-                CREATE INDEX IF NOT EXISTS idx_ingestion_index_runs_status_id
-                ON ingestion_index_runs(status, id DESC);
-                """
-            )
-    finally:
-        conn.close()
+    """按唯一 metadata 创建全部六张表及索引，保留已有数据。"""
+    Base.metadata.create_all(get_engine(db_path))
 
 
-__all__ = ["get_connection", "get_db_path", "init_db", "now_iso"]
+def clear_storage_engine_cache() -> None:
+    """测试结束或应用停止使用 storage 后释放连接池和工厂缓存。"""
+    with _engine_lock:
+        for engine in _engines.values():
+            engine.dispose()
+        _session_factory.cache_clear()
+        _engines.clear()
+
+
+__all__ = ["clear_storage_engine_cache", "get_db_path", "get_engine",
+           "get_session_factory", "init_db", "now_iso"]
