@@ -1,11 +1,10 @@
 import json
-from dataclasses import replace
 
 import pytest
 from pydantic import ValidationError
 
 from app.tools.context import ToolInvocationContext
-from app.tools.registry import ToolRegistry, ToolSpec
+from app.tools.catalog import ToolSpec
 from app.tools.result import tool_success
 from tests.support.local_tools import invoke_local_tool
 from app.tools.schemas import (
@@ -17,7 +16,7 @@ from app.tools.schemas import (
 
 def test_tool_registry_names_include_builtin_tools(tool_registry):
     """验证内置工具已注册到统一注册中心。"""
-    names = tool_registry.names()
+    names = [item.name for item in tool_registry]
 
     assert "search_knowledge_base" in names
     assert "simple_calculator" in names
@@ -31,7 +30,7 @@ def test_tool_registry_names_include_builtin_tools(tool_registry):
 
 def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
     """验证八个注册生产工具发布完整且符合要求的 V2 契约。"""
-    specs = tool_registry.contract_specs()
+    specs = [item.to_contract_dict() for item in tool_registry]
     specs_by_name = {spec["name"]: spec for spec in specs}
     expected_permissions = {
         "search_knowledge_base": ["knowledge_base:read"],
@@ -54,13 +53,13 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
         "web_pdf_fetch": 45.0,
     }
 
-    assert len(specs) == len(tool_registry.names())
-    assert set(specs_by_name) == set(tool_registry.names())
-    assert [spec["name"] for spec in specs] == tool_registry.names()
+    assert len(specs) == len([item.name for item in tool_registry])
+    assert set(specs_by_name) == set([item.name for item in tool_registry])
+    assert [spec["name"] for spec in specs] == [item.name for item in tool_registry]
     json.dumps(specs)
 
     for name, spec in specs_by_name.items():
-        registered = tool_registry.get(name)
+        registered = next((item for item in tool_registry if item.name == name), None)
         assert registered is not None
         assert spec["version"] == "1.0.0"
         assert spec["risk_level"] == "read_only"
@@ -132,20 +131,17 @@ def test_invoke_local_tool_runs_simple_calculator(tool_registry):
 
 def test_migrated_calculator_rejects_malformed_output(tool_registry):
     """生产计算器契约会在 Runtime 拒绝结构错误的成功输出。"""
-    spec = tool_registry.get("simple_calculator")
+    spec = next((item for item in tool_registry if item.name == "simple_calculator"), None)
     assert spec is not None
     assert spec.output_model is SimpleCalculatorOutput
 
-    registry = ToolRegistry()
-    registry.register(
-        replace(
-            spec,
-            handler=lambda args, context: tool_success(
+    registry = []
+    registry.append(
+        spec.model_copy(update={'handler': lambda args, context: tool_success(
                 "simple_calculator",
                 args,
                 {"expression": args["expression"], "result": {"invalid": True}},
-            ),
-        )
+            )})
     )
 
     result = invoke_local_tool(
@@ -305,7 +301,7 @@ def test_search_knowledge_base_exposes_multi_query_final_chunks(
 
 def test_search_knowledge_base_rejects_inconsistent_output_counts(tool_registry):
     """知识库生产输出模型拒绝证据数量不一致的成功结果。"""
-    spec = tool_registry.get("search_knowledge_base")
+    spec = next((item for item in tool_registry if item.name == "search_knowledge_base"), None)
     assert spec is not None
     assert spec.output_model is SearchKnowledgeBaseOutput
     rag_result = {
@@ -323,11 +319,9 @@ def test_search_knowledge_base_rejects_inconsistent_output_counts(tool_registry)
         "answer_llm_used": False,
         "llm_call_count": 0,
     }
-    registry = ToolRegistry()
-    registry.register(
-        replace(
-            spec,
-            handler=lambda args, context: tool_success(
+    registry = []
+    registry.append(
+        spec.model_copy(update={'handler': lambda args, context: tool_success(
                 "search_knowledge_base",
                 args,
                 {
@@ -337,8 +331,7 @@ def test_search_knowledge_base_rejects_inconsistent_output_counts(tool_registry)
                     "top_scores": [],
                     "rag_result": rag_result,
                 },
-            ),
-        )
+            )})
     )
 
     result = invoke_local_tool(
@@ -478,7 +471,7 @@ def test_invoke_local_tool_rejects_unknown_tool(tool_registry):
 
 def test_execution_entry_validates_args_before_handler():
     """验证唯一执行入口在调用 handler 前执行参数校验。"""
-    registry = ToolRegistry()
+    registry = []
     seen = {}
 
     def fake_handler(args, context):
@@ -493,7 +486,7 @@ def test_execution_entry_validates_args_before_handler():
             "error": "",
         }
 
-    registry.register(
+    registry.append(
         ToolSpec(
             name="search_knowledge_base",
             version="1.0.0",
@@ -519,14 +512,14 @@ def test_execution_entry_validates_args_before_handler():
 
 def test_execution_entry_uses_structured_tool_validation_before_handler():
     """验证参数非法时由 StructuredTool 拒绝且不调用 handler。"""
-    registry = ToolRegistry()
+    registry = []
     called = {"count": 0}
 
     def fake_handler(args, context):
         called["count"] += 1
         return {"status": "success", "ok": True, "tool_name": "search_knowledge_base"}
 
-    registry.register(
+    registry.append(
         ToolSpec(
             name="search_knowledge_base",
             version="1.0.0",

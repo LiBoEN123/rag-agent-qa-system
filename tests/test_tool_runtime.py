@@ -9,6 +9,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel
 
+from tests.support.local_tools import tool_runtime
 from app.agent import framework_agent
 from app.agent.framework_agent import build_framework_agent
 from app.agent.framework_tools import ProjectStructuredTool, build_local_tool
@@ -107,7 +108,6 @@ def invoke_with_framework(
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     tool = build_local_tool(
         spec,
-        context=resolved_context,
         settings=settings,
         audit_sink=audit_sink,
     )
@@ -130,16 +130,14 @@ def test_structured_tool_owns_validation_and_schema(settings_factory):
     spec = make_spec(handler)
     tool = build_local_tool(
         spec,
-        context=ToolInvocationContext(trace_id="direct"),
         settings=settings_factory(),
-        runtime_injection=False,
     )
     assert isinstance(tool, ProjectStructuredTool)
     assert tool.project_spec is spec
     assert tool.tool_call_schema.model_json_schema()["properties"] == (
         spec.args_model.model_json_schema()["properties"]
     )
-    result = tool.invoke({"value": "7"})
+    result = tool.invoke({"value": "7", "runtime": tool_runtime(ToolInvocationContext(trace_id="direct"))})
     assert result["tool_input"] == {"value": 7}
     assert calls == 1
 

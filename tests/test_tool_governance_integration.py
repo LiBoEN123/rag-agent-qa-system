@@ -2,16 +2,17 @@
 
 import json
 
+from app.config import get_settings
 from app.agent.state import AgentObservation
 from app.agent.tool_events import build_tool_trace
 from app.tools.context import ToolInvocationContext
-from app.tools.registry import get_tool_registry
+from app.tools.catalog import get_local_tool_specs
 from tests.support.local_tools import invoke_local_tool
 
 
 def test_execution_entry_runs_default_registry_tool():
     result = invoke_local_tool(
-        registry=get_tool_registry(),
+        registry=get_local_tool_specs(get_settings()),
         tool_name="simple_calculator",
         tool_args={"expression": "1 + 2"},
         context=ToolInvocationContext(trace_id="direct-trace"),

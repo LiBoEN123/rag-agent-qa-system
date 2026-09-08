@@ -22,6 +22,7 @@ from app.agent.framework_middleware import (
     ProjectToolGovernanceMiddleware,
 )
 from app.agent.framework_tools import ProjectStructuredTool, resolve_agent_tools
+from app.agent.tool_visibility import ProjectToolVisibilityMiddleware
 from app.config import AppSettings, get_settings
 from app.llm.factory import get_answer_model
 from app.tools.context import ToolInvocationContext, build_default_tool_context
@@ -160,7 +161,8 @@ def build_framework_agent(
         build_default_tool_context(
             source="agent_runtime",
             settings=resolved,
-        )
+        ),
+        resolved,
     )
     local_tools = [
         tool for tool in resolved_tools if isinstance(tool, ProjectStructuredTool)
@@ -194,6 +196,7 @@ def build_framework_agent(
         _DeferredAgentModel(),
         tools=resolved_tools,
         middleware=[
+            ProjectToolVisibilityMiddleware(),
             resolved_governance,
             *execution_middleware,
             ModelCallLimitMiddleware(

@@ -6,9 +6,10 @@ import os
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from app.config import get_settings
 from app.config import AppSettings
 from app.tools.mcp.config import load_mcp_config
-from app.tools.registry import get_tool_registry
+from app.tools.catalog import get_local_tool_specs
 from scripts.evaluation.contracts import AgentEvaluationDataset
 
 
@@ -54,9 +55,9 @@ def build_tool_origin_catalog(
 ) -> dict[str, dict[str, str | bool]]:
     """从本地 Registry 和 MCP Provider 构造名称到来源的安全映射。"""
     catalog: dict[str, dict[str, str | bool]] = {}
-    registry = get_tool_registry()
-    for name in registry.names():
-        spec = registry.get(name)
+    registry = get_local_tool_specs(get_settings())
+    for name in [item.name for item in registry]:
+        spec = next((item for item in registry if item.name == name), None)
         if spec is None:
             continue
         origin = (

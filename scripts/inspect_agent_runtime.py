@@ -26,14 +26,16 @@ from app.agent.framework_middleware import (  # noqa: E402
     _MODEL_GOVERNANCE_KEY,
     ProjectToolGovernanceMiddleware,
 )
-from app.agent.framework_tools import build_framework_tools  # noqa: E402
+from app.agent.framework_tools import get_local_tools, local_tool_contract  # noqa: E402
 from app.agent.results import AgentRunResult  # noqa: E402
 from app.agent.streaming import stream_agent  # noqa: E402
 from app.config import AppSettings  # noqa: E402
 from app.contracts.chat import CHAT_STATUS_POLICIES  # noqa: E402
 from app.tools.context import build_default_tool_context  # noqa: E402
-from app.tools.providers import LocalToolProvider, ToolProvider  # noqa: E402
-from app.tools.registry import get_tool_registry  # noqa: E402
+from app.agent.tool_visibility import ProjectToolVisibilityMiddleware  # noqa: E402
+from langchain.agents.middleware import ModelRequest  # noqa: E402
+from langgraph.runtime import Runtime  # noqa: E402
+from langchain_core.tools import BaseTool  # noqa: E402
 
 
 EXPECTED_AGENT_NODES = {"__start__", "model", "tools", "__end__"}
@@ -88,50 +90,17 @@ def _graph_edges(graph) -> list[dict[str, Any]]:
 
 
 def _tool_report(
-    provider: ToolProvider,
-    *,
-    settings: AppSettings,
+    tools: tuple[BaseTool, ...], *, settings: AppSettings,
 ) -> tuple[list[dict[str, Any]], list[str], dict[str, int]]:
-    registry = getattr(provider, "registry", None)
-    if registry is None:
-        raise ValueError("inspection ToolProvider must expose a registry")
-    context = build_default_tool_context(
-        source="agent_runtime_inspection",
-        settings=settings,
-    )
-    registered = []
-    for name in registry.names():
-        spec = registry.get(name)
-        if spec is None:
-            continue
-        registered.append(
-            {
-                "name": spec.name,
-                "version": spec.version,
-                "description": spec.description,
-                "args_schema": spec.args_schema,
-                "output_model": (
-                    spec.output_model.__name__
-                    if spec.output_model is not None
-                    else None
-                ),
-                "risk_level": spec.risk_level.value,
-                "required_permissions": list(spec.required_permissions),
-                "timeout": spec.timeout,
-                "max_retries": spec.max_retries,
-                "requires_approval": spec.requires_approval,
-            }
-        )
-    visible = [spec.name for spec in provider.list_specs(context=context)]
-    return (
-        registered,
-        visible,
-        {
-            "permission_count": len(context.permissions),
-            "registered_tool_count": len(registered),
-            "visible_tool_count": len(visible),
-        },
-    )
+    context = build_default_tool_context(source="agent_runtime_inspection", settings=settings)
+    registered = [local_tool_contract(tool) for tool in tools]
+    request = ModelRequest(model=_DeferredAgentModel(), tools=list(tools), messages=[], runtime=Runtime(context=context))
+    visible = [tool.name for tool in ProjectToolVisibilityMiddleware.visible_request(request).tools]
+    return registered, visible, {
+        "permission_count": len(context.permissions),
+        "registered_tool_count": len(registered),
+        "visible_tool_count": len(visible),
+    }
 
 
 def _module_boundaries() -> dict[str, bool]:
@@ -176,24 +145,17 @@ def _check(name: str, passed: bool, detail: str) -> dict[str, Any]:
 
 
 def inspect_runtime(
-    provider: ToolProvider | None = None,
+    tools: tuple[BaseTool, ...] | None = None,
     *,
     settings: AppSettings | None = None,
 ) -> dict[str, Any]:
     """构造只含普通 JSON 值的当前 Runtime 架构报告。"""
     resolved_settings = settings or AppSettings(_env_file=None)
-    resolved_provider = provider or LocalToolProvider(get_tool_registry())
-    inspection_context = build_default_tool_context(
-        source="agent_runtime_inspection",
-        settings=resolved_settings,
-    )
+    resolved_tools = tools if tools is not None else get_local_tools(resolved_settings)
     governance = ProjectToolGovernanceMiddleware(settings=resolved_settings)
     compiled_agent = build_framework_agent(
         resolved_settings,
-        tools=build_framework_tools(
-            resolved_provider,
-            context=inspection_context,
-        ),
+        tools=resolved_tools,
         governance=governance,
     )
     graph = compiled_agent.get_graph()
@@ -201,7 +163,7 @@ def inspect_runtime(
     nodes = sorted(graph.nodes)
     xray_nodes = sorted(xray_graph.nodes)
     registered, visible, visibility = _tool_report(
-        resolved_provider,
+        resolved_tools,
         settings=resolved_settings,
     )
     module_boundaries = _module_boundaries()
@@ -234,8 +196,8 @@ def inspect_runtime(
         path.read_text(encoding="utf-8")
         for path in sorted((PROJECT_ROOT / "app" / "agent").glob("*.py"))
     )
-    registry_source = (
-        PROJECT_ROOT / "app" / "tools" / "registry.py"
+    catalog_source = (
+        PROJECT_ROOT / "app" / "tools" / "catalog.py"
     ).read_text(encoding="utf-8")
     tool_runtime_source = (
         PROJECT_ROOT / "app" / "tools" / "runtime.py"
@@ -243,8 +205,8 @@ def inspect_runtime(
     tool_execution_source = (
         PROJECT_ROOT / "app" / "tools" / "execution.py"
     ).read_text(encoding="utf-8")
-    local_provider_source = (
-        PROJECT_ROOT / "app" / "tools" / "providers" / "local.py"
+    visibility_source = (
+        PROJECT_ROOT / "app" / "agent" / "tool_visibility.py"
     ).read_text(encoding="utf-8")
     mcp_source = "\n".join(
         path.read_text(encoding="utf-8")
@@ -364,7 +326,7 @@ def inspect_runtime(
             and "execute_project_tool(" in framework_tools_source
             and "execute_registered_tool" not in framework_tools_source
             and "registry.dispatch(" not in framework_tools_source
-            and "def dispatch(" not in registry_source
+            and "def dispatch(" not in catalog_source
             and not (PROJECT_ROOT / "app" / "tools" / "dispatch.py").exists(),
             "ProjectStructuredTool directly enters the thin project adapter",
         ),
@@ -373,16 +335,17 @@ def inspect_runtime(
             tool_execution_source.count("spec.handler") == 1
             and "spec.handler" not in tool_runtime_source
             and "spec.handler" not in framework_tools_source
-            and "spec.handler" not in local_provider_source,
+            and "spec.handler" not in visibility_source,
             "only the thin project execution adapter submits ToolSpec.handler",
         ),
         _check(
-            "local_provider_is_discovery_only",
-            "def list_specs(" in local_provider_source
-            and "is_tool_visible(" in local_provider_source
-            and "execute_registered_tool" not in local_provider_source
-            and ".handler" not in local_provider_source,
-            "LocalToolProvider only preserves registry order and visibility",
+            "local_visibility_is_model_middleware",
+            "request.override(" in visibility_source
+            and "def wrap_model_call(" in visibility_source
+            and "def awrap_model_call(" in visibility_source
+            and "isinstance(tool, ProjectStructuredTool)" in visibility_source
+            and not (PROJECT_ROOT / "app" / "tools" / "providers" / "local.py").exists(),
+            "LangChain middleware filters local tools in sync and async model calls",
         ),
         _check(
             "mcp_governance_is_independent",
@@ -476,7 +439,8 @@ def inspect_runtime(
         "default_visible_tools": visible,
         "tool_visibility": visibility,
         "local_tool_execution": {
-            "provider": "LocalToolProvider.list_specs",
+            "catalog": "get_local_tools",
+            "visibility": "ProjectToolVisibilityMiddleware",
             "adapter": "ProjectStructuredTool",
             "input_validation": "LangChain StructuredTool/Pydantic",
             "retry": "LangChain ToolRetryMiddleware",

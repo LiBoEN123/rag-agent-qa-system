@@ -8,8 +8,7 @@ from app.agent import framework_agent, framework_tools
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from app.tools.errors import ToolErrorCode, ToolExecutionError
-from app.tools.providers import LocalToolProvider
-from app.tools.registry import ToolRegistry
+from tests.support.local_tools import local_tools
 from app.tools.result import tool_success
 from app.tools.schemas import SearchKnowledgeBaseArgs
 from tests.support.agent_runtime import build_agent_harness
@@ -45,7 +44,7 @@ def _invoke_knowledge_graph(
     output: dict,
     rag_result: dict,
 ):
-    registry = ToolRegistry()
+    registry = []
     seen_contexts: list[ToolInvocationContext] = []
     seen_args: list[dict] = []
     rag_calls: list[dict] = []
@@ -66,7 +65,7 @@ def _invoke_knowledge_graph(
             {**output, "rag_result": resolved_rag},
         )
 
-    registry.register(
+    registry.append(
         ToolSpec(
             name="search_knowledge_base",
             version="1.0.0",
@@ -77,7 +76,7 @@ def _invoke_knowledge_graph(
             required_permissions=("knowledge_base:read",),
         )
     )
-    provider = LocalToolProvider(registry)
+    provider = local_tools(registry)
     model = KnowledgeModel()
     def fake_rag_subgraph(**kwargs):
         rag_calls.append(kwargs)
@@ -86,8 +85,8 @@ def _invoke_knowledge_graph(
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_default_tool_provider",
-        lambda: provider,
+        "get_local_tools",
+        lambda settings: provider,
     )
     context = ToolInvocationContext(
         trace_id="trace-knowledge-strict",
@@ -223,7 +222,7 @@ def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
                 )
             return AIMessage(content="知识库暂时不可用，请稍后重试。")
 
-    registry = ToolRegistry()
+    registry = []
 
     def unavailable_handler(args, context):
         del args, context
@@ -233,7 +232,7 @@ def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
             retryable=False,
         )
 
-    registry.register(
+    registry.append(
         ToolSpec(
             name="search_knowledge_base",
             version="1.0.0",
@@ -248,8 +247,8 @@ def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_default_tool_provider",
-        lambda: LocalToolProvider(registry),
+        "get_local_tools",
+        lambda settings: local_tools(registry),
     )
     context = ToolInvocationContext(
         trace_id="trace-knowledge-unavailable",

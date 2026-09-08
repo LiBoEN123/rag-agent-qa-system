@@ -1,7 +1,4 @@
-"""工具注册表模块。
-
-管理工具注册与查询，并注册系统内置工具集合。
-"""
+"""按配置缓存的本地工具声明；稳定顺序由不可变 tuple 保持。"""
 
 from functools import lru_cache
 
@@ -43,35 +40,6 @@ from app.tools.web_pdf_fetch import web_pdf_fetch
 from app.tools.web_search import web_search
 
 
-class ToolRegistry:
-    """统一管理工具注册、查询和稳定顺序。"""
-
-    def __init__(self):
-        """初始化空工具注册表。"""
-        self._tools: dict[str, ToolSpec] = {}
-
-    def register(self, spec: ToolSpec) -> None:
-        """注册一个工具定义。"""
-        if not isinstance(spec, ToolSpec):
-            raise TypeError("spec 必须是 ToolSpec")
-
-        if spec.name in self._tools:
-            raise ValueError(f"tool {spec.name!r} 已注册，禁止静默覆盖")
-
-        self._tools[spec.name] = spec
-
-    def get(self, name: str) -> ToolSpec | None:
-        """按名称获取工具定义。"""
-        return self._tools.get(name)
-
-    def names(self) -> list[str]:
-        """返回已注册工具名称列表。"""
-        return list(self._tools.keys())
-
-    def contract_specs(self) -> list[dict]:
-        """返回完整且可序列化的工具契约。"""
-        return [spec.to_contract_dict() for spec in self._tools.values()]
-
 def _handle_simple_calculator(
     args: dict,
     context: ToolInvocationContext,
@@ -112,13 +80,10 @@ def _handle_compare_documents(
     return compare_documents_tool(args, trace_id=context.trace_id)
 
 
-def register_default_tools(
-    registry: ToolRegistry,
-    *,
-    settings: AppSettings,
-) -> None:
-    """注册项目内置工具。"""
-    registry.register(
+@lru_cache(maxsize=4)
+def get_local_tool_specs(settings: AppSettings) -> tuple[ToolSpec, ...]:
+    """按完整配置缓存默认声明；SQL 工具追加在固定位置。"""
+    specs = [
         ToolSpec(
             name="search_knowledge_base",
             version="1.0.0",
@@ -137,9 +102,7 @@ def register_default_tools(
             idempotent=True,
             requires_approval=False,
             audit_output_mode=ToolAuditOutputMode.SUMMARY,
-        )
-    )
-    registry.register(
+        ),
         ToolSpec(
             name="web_search",
             version="1.0.0",
@@ -160,9 +123,7 @@ def register_default_tools(
             requires_approval=False,
             sensitive_arg_fields=("query",),
             audit_output_mode=ToolAuditOutputMode.SUMMARY,
-        )
-    )
-    registry.register(
+        ),
         ToolSpec(
             name="web_fetch",
             version="1.0.0",
@@ -185,9 +146,7 @@ def register_default_tools(
             requires_approval=False,
             sensitive_arg_fields=("url",),
             audit_output_mode=ToolAuditOutputMode.SUMMARY,
-        )
-    )
-    registry.register(
+        ),
         ToolSpec(
             name="web_pdf_fetch",
             version="1.0.0",
@@ -212,9 +171,7 @@ def register_default_tools(
             requires_approval=False,
             sensitive_arg_fields=("url",),
             audit_output_mode=ToolAuditOutputMode.SUMMARY,
-        )
-    )
-    registry.register(
+        ),
         ToolSpec(
             name="compare_documents",
             version="1.0.0",
@@ -232,9 +189,7 @@ def register_default_tools(
             idempotent=True,
             requires_approval=False,
             audit_output_mode=ToolAuditOutputMode.SUMMARY,
-        )
-    )
-    registry.register(
+        ),
         ToolSpec(
             name="simple_calculator",
             version="1.0.0",
@@ -252,9 +207,7 @@ def register_default_tools(
             idempotent=True,
             requires_approval=False,
             audit_output_mode=ToolAuditOutputMode.SANITIZED,
-        )
-    )
-    registry.register(
+        ),
         ToolSpec(
             name="list_documents",
             version="1.0.0",
@@ -272,9 +225,7 @@ def register_default_tools(
             idempotent=True,
             requires_approval=False,
             audit_output_mode=ToolAuditOutputMode.SUMMARY,
-        )
-    )
-    registry.register(
+        ),
         ToolSpec(
             name="get_chunk_text",
             version="1.0.0",
@@ -292,33 +243,16 @@ def register_default_tools(
             idempotent=True,
             requires_approval=False,
             audit_output_mode=ToolAuditOutputMode.NONE,
-        )
-    )
+        ),
+    ]
     if settings.sql_tool_enabled:
-        for spec in build_sql_readonly_tool_specs(settings):
-            registry.register(spec)
+        specs.extend(build_sql_readonly_tool_specs(settings))
+    names = [spec.name for spec in specs]
+    if len(names) != len(set(names)):
+        raise ValueError("本地工具名称重复，禁止静默覆盖")
+    return tuple(specs)
 
 
-@lru_cache(maxsize=1)
-def get_tool_registry() -> ToolRegistry:
-    """按当前配置惰性构造并缓存默认工具注册表。"""
-    settings = get_settings()
-    registry = ToolRegistry()
-    register_default_tools(registry, settings=settings)
-    return registry
-
-
-def clear_tool_registry_cache() -> None:
-    """清理默认 Registry 缓存，供受控配置刷新使用。"""
-    get_tool_registry.cache_clear()
-
-
-__all__ = [
-    "ToolRegistry",
-    "ToolAuditOutputMode",
-    "ToolRiskLevel",
-    "ToolSpec",
-    "clear_tool_registry_cache",
-    "get_tool_registry",
-    "register_default_tools",
-]
+def get_local_tool_names(settings: AppSettings | None = None) -> tuple[str, ...]:
+    """为 MCP collision 和诊断提供同一 catalog 的名称。"""
+    return tuple(spec.name for spec in get_local_tool_specs(settings or get_settings()))

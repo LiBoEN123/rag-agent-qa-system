@@ -13,7 +13,7 @@ from app.config import AppSettings
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 IMPORT_TARGETS = (
     "app.config",
-    "app.tools.registry",
+    "app.tools.catalog",
     "app.llm.factory",
     "app.agent.runtime",
     "app.services.chat_service",
@@ -107,11 +107,13 @@ sqlite3.connect = forbidden
 from app import config
 from app.agent import runtime as agent_runtime
 from app.llm import factory
-import app.tools.registry as registry
+import app.tools.catalog as catalog
 import app.tools.runtime as runtime
 
 assert config.get_settings.cache_info().currsize == 0
-assert registry.get_tool_registry.cache_info().currsize == 0
+assert catalog.get_local_tool_specs.cache_info().currsize == 0
+from app.agent.framework_tools import get_local_tools
+assert get_local_tools.cache_info().currsize == 0
 assert agent_runtime._get_cached_framework_agent.cache_info().currsize == 0
 assert runtime._executor is None
 assert not hasattr(runtime, "_runtime_entries")

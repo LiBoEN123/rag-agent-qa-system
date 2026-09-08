@@ -7,9 +7,10 @@ import pytest
 from ddgs.exceptions import DDGSException, RatelimitException, TimeoutException
 from pydantic import ValidationError
 
+from app.config import get_settings
 from app.tools.context import ToolInvocationContext
 from app.tools.errors import ToolErrorCode, ToolExecutionError
-from app.tools.registry import ToolRegistry, get_tool_registry
+from app.tools.catalog import get_local_tool_specs
 from app.tools.schemas import WebSearchArgs, WebSearchOutput
 from tests.support.local_tools import invoke_local_tool
 
@@ -40,7 +41,7 @@ def isolate_web_search(settings_env):
 
 def _web_spec():
     """返回默认注册表中的 Web 搜索工具契约。"""
-    spec = get_tool_registry().get("web_search")
+    spec = next((item for item in get_local_tool_specs(get_settings()) if item.name == "web_search"), None)
     assert spec is not None
     return spec
 
@@ -273,8 +274,8 @@ def test_local_tool_executes_production_web_search_spec_with_permission(monkeypa
             return [{"title": "Release", "href": "https://example.com", "body": "News"}]
 
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
-    registry = ToolRegistry()
-    registry.register(_web_spec())
+    registry = []
+    registry.append(_web_spec())
     result = invoke_local_tool(
         registry,
         "web_search",
@@ -311,8 +312,8 @@ def test_execution_entry_uses_web_runtime_and_output_model(
 
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     settings_env(tool_audit_enabled=False)
-    registry = ToolRegistry()
-    registry.register(_web_spec())
+    registry = []
+    registry.append(_web_spec())
 
     result = invoke_local_tool(
         registry=registry,
@@ -338,8 +339,8 @@ def test_direct_execution_entry_denies_permission_before_ddgs(
 
     monkeypatch.setattr(web_search_module, "DDGS", ForbiddenDDGS)
     settings_env(tool_audit_enabled=False)
-    registry = ToolRegistry()
-    registry.register(_web_spec())
+    registry = []
+    registry.append(_web_spec())
     result = invoke_local_tool(
         registry=registry,
         tool_name="web_search",
@@ -363,8 +364,8 @@ def test_web_search_audit_summary_redacts_query_and_result_text(monkeypatch):
 
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     sink = CollectingAuditSink()
-    registry = ToolRegistry()
-    registry.register(_web_spec())
+    registry = []
+    registry.append(_web_spec())
     result = invoke_local_tool(
         registry,
         "web_search",

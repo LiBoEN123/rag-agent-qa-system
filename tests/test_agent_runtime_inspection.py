@@ -5,12 +5,12 @@ from importlib import import_module
 
 from pydantic import BaseModel
 
+from app.tools.catalog import get_local_tool_specs
 from app.agent import framework_agent
-from app.agent.framework_tools import build_framework_tools
+from app.agent.framework_tools import get_local_tools
 from app.tools.context import build_default_tool_context
 from app.tools.contracts import ToolSpec
-from app.tools.providers import LocalToolProvider
-from app.tools.registry import ToolRegistry
+from tests.support.local_tools import local_tools
 from scripts import inspect_agent_runtime as inspection
 
 
@@ -55,7 +55,7 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "rag_graph_is_tool_owned",
         "local_tool_execution_entry_is_unique",
         "local_handler_is_adapter_owned",
-        "local_provider_is_discovery_only",
+        "local_visibility_is_model_middleware",
         "mcp_governance_is_independent",
         "no_parent_event_projection_cursor",
         "agent_result_contract",
@@ -100,7 +100,8 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "dependency": "0.3.2",
     }
     assert report["local_tool_execution"] == {
-        "provider": "LocalToolProvider.list_specs",
+        "catalog": "get_local_tools",
+        "visibility": "ProjectToolVisibilityMiddleware",
         "adapter": "ProjectStructuredTool",
         "input_validation": "LangChain StructuredTool/Pydantic",
         "retry": "LangChain ToolRetryMiddleware",
@@ -184,13 +185,12 @@ def test_tool_contracts_use_model_facing_json_schema(
 def test_all_local_framework_tool_schemas_match_registry_contract(settings_factory):
     """全部八个 Local Tool 保持名称、描述、字段、required 与类型不变。"""
     settings = _knowledge_only(settings_factory, "web:search", "web:fetch")
-    context = build_default_tool_context(source="schema_parity", settings=settings)
-    registry = inspection.get_tool_registry()
-    tools = build_framework_tools(LocalToolProvider(registry), context=context)
+    registry = get_local_tool_specs(settings)
+    tools = get_local_tools(settings)
 
     assert len(tools) == 8
     for tool in tools:
-        spec = registry.get(tool.name)
+        spec = next((item for item in registry if item.name == tool.name), None)
         assert spec is not None
         expected = spec.args_model.model_json_schema()
         actual = tool.tool_call_schema.model_json_schema()
@@ -286,8 +286,8 @@ def test_inspection_does_not_initialize_model_or_handler(
         del args, kwargs
         raise AssertionError("inspection must not execute runtime dependencies")
 
-    registry = ToolRegistry()
-    registry.register(
+    registry = []
+    registry.append(
         ToolSpec(
             name="inspection_probe",
             version="1.0.0",
@@ -310,7 +310,7 @@ def test_inspection_does_not_initialize_model_or_handler(
     )
 
     report = inspection.inspect_runtime(
-        LocalToolProvider(registry),
+        local_tools(registry),
         settings=_knowledge_only(settings_factory),
     )
 

@@ -7,10 +7,11 @@ from pathlib import Path
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
+from app.config import get_settings
 from app.agent import framework_agent
 from app.rag import graph as rag_graph
 from app.tools.context import ToolInvocationContext
-from app.tools.registry import get_tool_registry
+from app.tools.catalog import get_local_tool_specs
 from tests.support.agent_runtime import build_agent_harness
 
 
@@ -411,11 +412,11 @@ def test_consecutive_requests_keep_web_visibility_isolated_and_execute_graph(
         "list_documents",
         "get_chunk_text",
         "web_search",
-    } <= set(get_tool_registry().names())
+    } <= set([item.name for item in get_local_tool_specs(get_settings())])
     assert "web_search" not in build_agent_harness().nodes
 
 
-def test_forged_hidden_web_search_is_unknown_without_ddgs_or_runtime(
+def test_forged_hidden_web_search_is_denied_without_ddgs_or_runtime(
     monkeypatch,
 ):
     class ForbiddenDDGS:
@@ -440,12 +441,12 @@ def test_forged_hidden_web_search_is_unknown_without_ddgs_or_runtime(
         ),
     )
 
-    message = model.received_messages[1][-1]
+    message = next(m for m in output["messages"] if isinstance(m, ToolMessage))
     assert "web_search" not in model.bound_tool_names
     assert isinstance(message, ToolMessage)
     assert message.tool_call_id == "forged-web-call"
-    assert json.loads(message.content)["error_code"] == "unknown_tool"
-    assert output["result"]["status"] == "OK"
+    assert json.loads(message.content)["error_code"] == "permission_denied"
+    assert output["result"]["status"] == "TOOL_ERROR"
 
 
 def test_agent_searches_then_fetches_through_registry_runtime(monkeypatch):
@@ -643,7 +644,7 @@ def test_agent_recovers_from_web_fetch_pdf_content_type_error(monkeypatch):
     assert len(FakePdfManager.sessions) == 2
 
 
-def test_forged_hidden_web_fetch_is_unknown_without_http_manager(monkeypatch):
+def test_forged_hidden_web_fetch_is_denied_without_http_manager(monkeypatch):
     class ForbiddenManager:
         def __init__(self, config):
             raise AssertionError(f"hidden web_fetch reached Manager: {config}")
@@ -678,15 +679,15 @@ def test_forged_hidden_web_fetch_is_unknown_without_http_manager(monkeypatch):
         ),
     )
 
-    message = model.received_messages[1][-1]
+    message = next(m for m in output["messages"] if isinstance(m, ToolMessage))
     assert "web_fetch" not in model.bound_tool_names
     assert isinstance(message, ToolMessage)
     assert message.tool_call_id == "forged-fetch-call"
-    assert json.loads(message.content)["error_code"] == "unknown_tool"
-    assert output["result"]["status"] == "OK"
+    assert json.loads(message.content)["error_code"] == "permission_denied"
+    assert output["result"]["status"] == "TOOL_ERROR"
 
 
-def test_forged_hidden_web_pdf_fetch_is_unknown_without_dependencies(
+def test_forged_hidden_web_pdf_fetch_is_denied_without_dependencies(
     monkeypatch,
 ):
     class ForbiddenManager:
@@ -734,9 +735,9 @@ def test_forged_hidden_web_pdf_fetch_is_unknown_without_dependencies(
         ),
     )
 
-    message = model.received_messages[1][-1]
+    message = next(m for m in output["messages"] if isinstance(m, ToolMessage))
     assert "web_pdf_fetch" not in model.bound_tool_names
     assert isinstance(message, ToolMessage)
     assert message.tool_call_id == "forged-pdf-fetch-call"
-    assert json.loads(message.content)["error_code"] == "unknown_tool"
-    assert output["result"]["status"] == "OK"
+    assert json.loads(message.content)["error_code"] == "permission_denied"
+    assert output["result"]["status"] == "TOOL_ERROR"

@@ -17,7 +17,7 @@ from app.tools.mcp.provider import (
     clear_mcp_tool_provider,
     install_mcp_tool_provider,
 )
-from app.tools.registry import get_tool_registry
+from app.tools.catalog import get_local_tool_names
 
 
 logger = get_logger("chat_service")
@@ -78,7 +78,7 @@ async def initialize_mcp_runtime(settings: AppSettings) -> McpRuntime | None:
         client,
         config=config,
         settings=settings,
-        local_tool_names=set(get_tool_registry().names()),
+        local_tool_names=set(get_local_tool_names()),
     )
     provider = McpToolProvider(entries, settings=settings)
     runtime = _install_runtime(McpRuntime(client=client, provider=provider))

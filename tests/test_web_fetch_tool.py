@@ -16,12 +16,13 @@ from requests_hardened import Config, Manager
 from requests_hardened.ip_filter import InvalidIPAddress
 from requests_hardened.ip_filter_adapter import IPFilterAdapter
 
+from app.config import get_settings
 from app.config import (
     AppSettings,
 )
 from app.tools.context import ToolInvocationContext
 from app.tools.errors import ToolErrorCode, ToolExecutionError
-from app.tools.registry import ToolRegistry, get_tool_registry
+from app.tools.catalog import get_local_tool_specs
 from app.tools.schemas import WebFetchArgs, WebFetchOutput
 from tests.support.local_tools import invoke_local_tool
 
@@ -119,7 +120,7 @@ def isolate_web_fetch(settings_env):
 
 def _web_fetch_spec():
     """返回默认注册表中的 Web 抓取工具契约。"""
-    spec = get_tool_registry().get("web_fetch")
+    spec = next((item for item in get_local_tool_specs(get_settings()) if item.name == "web_fetch"), None)
     assert spec is not None
     return spec
 
@@ -655,8 +656,8 @@ def test_ssrf_denial_never_falls_back_to_raw_requests(monkeypatch):
 
 def test_registry_runtime_executes_production_web_fetch_spec(monkeypatch):
     managers = _install_fake_manager(monkeypatch, [FakeResponse()])
-    registry = ToolRegistry()
-    registry.register(_web_fetch_spec())
+    registry = []
+    registry.append(_web_fetch_spec())
 
     result = invoke_local_tool(
         registry=registry,
@@ -678,8 +679,8 @@ def test_permission_denial_prevents_manager_construction(monkeypatch):
             raise AssertionError(f"manager must not be constructed: {config}")
 
     monkeypatch.setattr(web_download_module, "Manager", ForbiddenManager)
-    registry = ToolRegistry()
-    registry.register(_web_fetch_spec())
+    registry = []
+    registry.append(_web_fetch_spec())
 
     result = invoke_local_tool(
         registry=registry,
@@ -711,8 +712,8 @@ def test_fetch_audit_never_records_full_url_proxy_or_content(
         ],
     )
     sink = CollectingAuditSink()
-    registry = ToolRegistry()
-    registry.register(_web_fetch_spec())
+    registry = []
+    registry.append(_web_fetch_spec())
     result = invoke_local_tool(
         registry,
         "web_fetch",

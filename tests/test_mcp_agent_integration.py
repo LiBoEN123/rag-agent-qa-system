@@ -22,8 +22,7 @@ from app.tools.mcp.provider import (
     McpToolProvider,
     install_mcp_tool_provider,
 )
-from app.tools.providers import LocalToolProvider
-from app.tools.registry import ToolRegistry
+from tests.support.local_tools import local_tools
 from tests.support.agent_runtime import build_agent_harness
 
 
@@ -122,8 +121,8 @@ def _setup(monkeypatch, settings, model, calls, *, server_config=None):
     )
     monkeypatch.setattr(
         framework_tools,
-        "get_default_tool_provider",
-        lambda: LocalToolProvider(ToolRegistry()),
+        "get_local_tools",
+        lambda settings: local_tools([]),
     )
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     return build_agent_harness(settings), tool

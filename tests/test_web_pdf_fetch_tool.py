@@ -11,10 +11,11 @@ import pytest
 from pydantic import ValidationError
 from pypdf import PdfReader, PdfWriter
 
+from app.config import get_settings
 from app.config import AppSettings
 from app.tools.context import ToolInvocationContext
 from app.tools.errors import ToolErrorCode, ToolExecutionError
-from app.tools.registry import ToolRegistry, get_tool_registry
+from app.tools.catalog import get_local_tool_specs
 from app.tools.schemas import WebPdfFetchArgs, WebPdfFetchOutput
 from tests.support.pdf_fixture import build_text_pdf
 from tests.support.local_tools import invoke_local_tool
@@ -108,7 +109,7 @@ def isolate_web_pdf_fetch(settings_env):
 
 def _pdf_spec():
     """返回默认注册表中的 PDF 抓取工具契约。"""
-    spec = get_tool_registry().get("web_pdf_fetch")
+    spec = next((item for item in get_local_tool_specs(get_settings()) if item.name == "web_pdf_fetch"), None)
     assert spec is not None
     return spec
 
@@ -497,8 +498,8 @@ def test_html_and_pdf_tools_import_the_same_shared_download_entry():
 
 def test_registry_runtime_executes_real_pdf_spec_and_pypdf(monkeypatch):
     managers = _install_fake_manager(monkeypatch, [FakeResponse()])
-    registry = ToolRegistry()
-    registry.register(_pdf_spec())
+    registry = []
+    registry.append(_pdf_spec())
 
     result = invoke_local_tool(
         registry=registry,
@@ -524,8 +525,8 @@ def test_permission_denial_prevents_download_and_pdf_reader(monkeypatch):
 
     monkeypatch.setattr(web_download_module, "Manager", ForbiddenManager)
     monkeypatch.setattr(web_pdf_fetch_module, "PdfReader", forbidden_reader)
-    registry = ToolRegistry()
-    registry.register(_pdf_spec())
+    registry = []
+    registry.append(_pdf_spec())
 
     result = invoke_local_tool(
         registry=registry,
@@ -550,8 +551,8 @@ def test_pdf_audit_never_records_url_body_metadata_or_proxy(
     settings_env(web_fetch_proxy=proxy)
     _install_fake_manager(monkeypatch, [FakeResponse()])
     sink = CollectingAuditSink()
-    registry = ToolRegistry()
-    registry.register(_pdf_spec())
+    registry = []
+    registry.append(_pdf_spec())
     result = invoke_local_tool(
         registry,
         "web_pdf_fetch",

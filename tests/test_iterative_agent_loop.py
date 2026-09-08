@@ -11,8 +11,7 @@ from app.agent.runtime import prepare_agent_runtime_invocation
 from app.config import get_settings
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
-from app.tools.providers import LocalToolProvider
-from app.tools.registry import ToolRegistry
+from tests.support.local_tools import local_tools
 from app.tools.result import tool_success
 from app.tools.schemas import SearchKnowledgeBaseArgs
 from tests.support.agent_runtime import build_agent_harness
@@ -490,8 +489,8 @@ def test_agent_loop_stops_before_exceeding_tool_call_budget(monkeypatch):
     assert output["result"]["status"] == "MODEL_ERROR"
 
 
-def test_agent_loop_recovers_from_forged_hidden_tool_name(monkeypatch):
-    """无权工具按未知名称写回 ToolMessage，模型读取后可继续回答。"""
+def test_agent_loop_stops_after_forged_hidden_tool_permission_denial(monkeypatch):
+    """隐藏工具仍经过执行权限检查，并沿用 permission denied 停止语义。"""
     model = FakeToolCallingModel(
         [
             AIMessage(
@@ -522,15 +521,15 @@ def test_agent_loop_recovers_from_forged_hidden_tool_name(monkeypatch):
         context=denied_context,
     )
 
-    assert len(model.received_messages) == 2
-    assert output["stop_reason"] == "completed"
-    assert output["result"]["answer"] == "hidden tool handled"
+    assert len(model.received_messages) == 1
+    assert output["stop_reason"] == "permission_denied"
+    assert output["result"]["status"] == "TOOL_ERROR"
     tool_trace = next(
         item
         for item in output["result"]["tool_trace"]
         if item.get("step") == "tool_call"
     )
-    assert tool_trace["error_code"] == "unknown_tool"
+    assert tool_trace["error_code"] == "permission_denied"
     assert tool_trace["handler_executed"] is False
 
 
@@ -655,8 +654,8 @@ def test_agent_selected_knowledge_search_keeps_rag_citation_path(
     }
     rag_calls = []
 
-    registry = ToolRegistry()
-    registry.register(
+    registry = []
+    registry.append(
         ToolSpec(
             name="search_knowledge_base",
             version="1.0.0",
@@ -699,8 +698,8 @@ def test_agent_selected_knowledge_search_keeps_rag_citation_path(
 
     monkeypatch.setattr(
         framework_tools,
-        "get_default_tool_provider",
-        lambda: LocalToolProvider(registry),
+        "get_local_tools",
+        lambda settings: local_tools(registry),
     )
 
     output = (

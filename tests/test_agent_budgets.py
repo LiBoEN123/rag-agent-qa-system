@@ -9,8 +9,7 @@ from app.agent import framework_agent, framework_middleware, framework_tools
 from app.config import get_settings
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
-from app.tools.providers import LocalToolProvider
-from app.tools.registry import ToolRegistry
+from tests.support.local_tools import local_tools
 from app.tools.result import tool_success
 from tests.support.agent_runtime import build_agent_harness
 
@@ -34,8 +33,8 @@ class BudgetModel:
 
 def _setup(monkeypatch, *, model, handler, max_tool_calls=10, max_elapsed_ms=120000):
     """按指定预算组装使用测试模型与工具的 Agent 图。"""
-    registry = ToolRegistry()
-    registry.register(
+    registry = []
+    registry.append(
         ToolSpec(
             name="budget_tool",
             version="1.0.0",
@@ -48,8 +47,8 @@ def _setup(monkeypatch, *, model, handler, max_tool_calls=10, max_elapsed_ms=120
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_default_tool_provider",
-        lambda: LocalToolProvider(registry),
+        "get_local_tools",
+        lambda settings: local_tools(registry),
     )
     settings = get_settings().model_copy(
         update={

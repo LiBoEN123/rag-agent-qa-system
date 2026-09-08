@@ -21,8 +21,7 @@ from app.storage.session import append_message, get_history
 from app.storage.traces import get_agent_run, get_agent_steps
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
-from app.tools.providers import LocalToolProvider
-from app.tools.registry import ToolRegistry
+from tests.support.local_tools import local_tools
 from app.tools.result import tool_success
 
 
@@ -178,7 +177,7 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
 ):
     """ChatService 通过真实 create_agent、Provider 与本地工具完成调用。"""
     reset_agent_runtime()
-    registry = ToolRegistry()
+    registry = []
     handler_contexts: list[ToolInvocationContext] = []
     handler_args: list[dict] = []
     routed_questions: list[str] = []
@@ -188,7 +187,7 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
         handler_contexts.append(context)
         return tool_success("chat_echo", args, {"text": args["text"]})
 
-    registry.register(
+    registry.append(
         ToolSpec(
             name="chat_echo",
             version="1.0.0",
@@ -209,8 +208,8 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_default_tool_provider",
-        lambda: LocalToolProvider(registry),
+        "get_local_tools",
+        lambda settings: local_tools(registry),
     )
     settings = settings_env(
         agent_max_iterations=6,

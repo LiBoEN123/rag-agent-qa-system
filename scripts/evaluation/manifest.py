@@ -37,7 +37,7 @@ PROMPT_INPUT_FILES = (
     "app/rag/decomposition.py",
     "app/rag/generation.py",
     "app/tools/compare_documents.py",
-    "app/tools/registry.py",
+    "app/tools/catalog.py",
 )
 CONTEXT_SELECTION_SOURCE = "app/rag/generation.py"
 PREDICTION_SCHEMA_VERSION = 2
@@ -95,18 +95,16 @@ def get_git_state() -> dict[str, Any]:
 def build_tool_contract(
     settings: AppSettings,
 ) -> tuple[list[str], list[dict[str, Any]], str]:
-    """构造当前 ToolRegistry 合同，不创建工具执行器。"""
-    from app.tools.registry import ToolRegistry, register_default_tools
+    """从 LangChain 工具 schema 与治理声明构造当前合同。"""
+    from app.agent.framework_tools import get_local_tool_contracts
 
-    registry = ToolRegistry()
-    register_default_tools(registry, settings=settings)
-    specs = registry.contract_specs()
-    return registry.names(), specs, sha256_json(specs)
+    specs = get_local_tool_contracts(settings)
+    return [spec["name"] for spec in specs], specs, sha256_json(specs)
 
 
 def read_registered_tool_names() -> list[str]:
-    """从当前 ToolRegistry 源码静态读取 ToolSpec 名称，无导入副作用。"""
-    registry_path = PROJECT_ROOT / "app" / "tools" / "registry.py"
+    """从当前 本地工具 catalog 源码静态读取 ToolSpec 名称，无导入副作用。"""
+    registry_path = PROJECT_ROOT / "app" / "tools" / "catalog.py"
     tree = ast.parse(
         registry_path.read_text(encoding="utf-8"),
         filename=str(registry_path),
@@ -132,7 +130,7 @@ def read_registered_tool_names() -> list[str]:
             names.append(keyword.value.value)
     if not names or len(names) != len(set(names)):
         raise ValueError(
-            "无法从当前 ToolRegistry 静态解析唯一工具名合同"
+            "无法从当前 本地工具 catalog 静态解析唯一工具名合同"
         )
     return names
 

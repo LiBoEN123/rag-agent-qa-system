@@ -71,13 +71,15 @@ def _clear_runtime_caches() -> None:
     """清理会持有 Settings 或副作用边界的进程内缓存。"""
     from app.agent.runtime import reset_agent_runtime
     from app.llm.factory import clear_model_factory_cache
-    from app.tools.registry import clear_tool_registry_cache
+    from app.tools.catalog import get_local_tool_specs
+    from app.agent.framework_tools import get_local_tools
     from app.tools.runtime import close_tool_executor
     from app.tools.mcp.client import reset_mcp_runtime
 
     reset_agent_runtime()
     close_tool_executor()
-    clear_tool_registry_cache()
+    get_local_tool_specs.cache_clear()
+    get_local_tools.cache_clear()
     clear_model_factory_cache()
     reset_mcp_runtime()
 

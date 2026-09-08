@@ -4,9 +4,10 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import ValidationError
 
 import app.tools.compare_documents as compare_documents_module
+from app.config import get_settings
 from app.llm.schemas import CompareDocumentsLLMOutput
 from app.tools.context import build_default_tool_context
-from app.tools.registry import get_tool_registry
+from app.tools.catalog import get_local_tool_specs
 from tests.support.local_tools import invoke_local_tool
 from app.tools.schemas import CompareDocumentsArgs
 
@@ -54,7 +55,7 @@ def test_compare_documents_rejects_invalid_args_at_runtime(tool_args):
     """基础字段和范围错误由 StructuredTool/Pydantic 边界拒绝。"""
     with pytest.raises(ValidationError):
         invoke_local_tool(
-            registry=get_tool_registry(),
+            registry=get_local_tool_specs(get_settings()),
             tool_name="compare_documents",
             tool_args=tool_args,
         )
@@ -312,7 +313,7 @@ def test_execution_entry_propagates_compare_documents_trace_id(
         fake_invoke_structured,
     )
     result = invoke_local_tool(
-        registry=get_tool_registry(),
+        registry=get_local_tool_specs(get_settings()),
         tool_name="compare_documents",
         tool_args={
             "query": "  普通本科四年制最长学习年限  ",

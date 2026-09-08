@@ -6,13 +6,15 @@ from pathlib import Path
 
 import pytest
 
+from app.config import get_settings
 from app.agent import framework_tools
 from app.agent.results import create_agent_result
 from app.config import AppSettings
 from app.contracts.chat import AgentResultStatus
 from app.services.chat_service import ChatServiceDependencies
 from app.tools.context import PrincipalType, ToolInvocationContext
-from app.tools.registry import get_tool_registry
+from tests.support.local_tools import visible_tools
+from app.tools.catalog import get_local_tool_specs
 from scripts.evaluation import agent as agent_evaluation
 from scripts.evaluation import runner
 from scripts.evaluation.contracts import AgentEvaluationDataset
@@ -110,7 +112,7 @@ def test_core_evaluation_exposes_only_authorized_local_tools(
 
     with runner.evaluation_settings_scope(evaluation):
         visible_names = [
-            tool.name for tool in resolve_agent_tools(context)
+            tool.name for tool in visible_tools(resolve_agent_tools(context), context=context)
         ]
 
     assert visible_names == [
@@ -332,7 +334,7 @@ def test_capture_tool_output_keys_never_keeps_values(monkeypatch):
     )
 
     with agent_evaluation.capture_tool_output_keys() as records:
-        spec = get_tool_registry().get("simple_calculator")
+        spec = next((item for item in get_local_tool_specs(get_settings()) if item.name == "simple_calculator"), None)
         assert spec is not None
         framework_tools.execute_project_tool(
             spec=spec,

@@ -19,6 +19,7 @@ from app.agent.guardrails import (
     sum_governance_event_costs,
 )
 from app.config import AppSettings, get_settings
+from app.tools.context import ToolInvocationContext
 from app.tools.errors import ToolErrorCode
 from app.tools.execution import (
     enter_framework_execution,
@@ -234,8 +235,8 @@ class ProjectToolExecutionMiddleware(AgentMiddleware):
         if framework_execution_started() or not isinstance(output, ToolMessage):
             return output
         context = request.runtime.context
-        if not isinstance(context, type(tool.project_context)):
-            context = tool.project_context
+        if not isinstance(context, ToolInvocationContext):
+            raise RuntimeError("ToolRuntime did not inject ToolInvocationContext")
         raw_args = request.tool_call.get("args") or {}
         result = invalid_arguments_result(
             spec=tool.project_spec,

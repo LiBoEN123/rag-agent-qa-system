@@ -9,8 +9,8 @@ from pydantic import ValidationError
 from app.agent import framework_agent, framework_tools
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolAuditOutputMode, ToolRiskLevel
-from app.tools.providers import LocalToolProvider
-from app.tools.registry import ToolRegistry, register_default_tools
+from tests.support.local_tools import local_tools
+from app.tools.catalog import get_local_tool_specs
 from tests.support.local_tools import invoke_local_tool
 from tests.support.agent_runtime import build_agent_harness
 
@@ -34,14 +34,13 @@ def sql_settings(settings_factory, sql_business_db):
 
 @pytest.fixture
 def sql_registry(sql_settings):
-    registry = ToolRegistry()
-    register_default_tools(registry, settings=sql_settings)
+    registry = get_local_tool_specs(sql_settings)
     return registry
 
 
 def test_sql_tool_specs_use_existing_readonly_governance(sql_registry, sql_settings):
     for name in SQL_TOOL_NAMES:
-        spec = sql_registry.get(name)
+        spec = next((item for item in sql_registry if item.name == name), None)
         assert spec is not None
         assert spec.risk_level is ToolRiskLevel.READ_ONLY
         assert spec.required_permissions == ("database:read",)
@@ -55,7 +54,7 @@ def test_sql_tool_specs_use_existing_readonly_governance(sql_registry, sql_setti
 
 
 def test_query_args_and_outputs_are_pydantic_validated(sql_registry):
-    query_spec = sql_registry.get("query_sql_readonly")
+    query_spec = next((item for item in sql_registry if item.name == "query_sql_readonly"), None)
 
     with pytest.raises(ValidationError):
         query_spec.args_model.model_validate(
@@ -189,8 +188,8 @@ def test_framework_agent_calls_all_sql_tools_through_registry_runtime(
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_default_tool_provider",
-        lambda: LocalToolProvider(sql_registry),
+        "get_local_tools",
+        lambda settings: local_tools(sql_registry),
     )
     context = ToolInvocationContext(
         trace_id="trace-sql-agent",

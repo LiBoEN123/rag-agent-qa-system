@@ -3,6 +3,7 @@ import inspect
 import pytest
 from pydantic import BaseModel
 
+from app.tools import catalog
 from app.agent.rules import is_system_capability_question
 from app.agent.router import route_agent_action
 from app.llm import factory as model_factory
@@ -107,9 +108,10 @@ def test_registered_tool_does_not_require_router_change(monkeypatch, tool_regist
     class NewToolArgs(BaseModel):
         value: str = ""
 
-    monkeypatch.setattr(tool_registry, "_tools", dict(tool_registry._tools))
+    specs = list(tool_registry)
+    monkeypatch.setattr(catalog, "get_local_tool_specs", lambda settings: tuple(specs))
     before = route_agent_action("调用刚注册的新能力处理这段输入")
-    tool_registry.register(
+    specs.append(
         ToolSpec(
             name="pr9_test_tool",
             version="1.0.0",
@@ -121,7 +123,7 @@ def test_registered_tool_does_not_require_router_change(monkeypatch, tool_regist
     )
     after = route_agent_action("调用刚注册的新能力处理这段输入")
 
-    assert "pr9_test_tool" in tool_registry.names()
+    assert "pr9_test_tool" in [spec.name for spec in specs]
     assert after == before
     assert after["action"] == "agent"
 

@@ -24,7 +24,6 @@ from app.common.logging import get_logger
 from app.config import AppSettings, get_settings
 from app.tools.context import ToolInvocationContext, build_default_tool_context
 from app.tools.mcp.provider import list_mcp_tools_for_context
-from app.tools.providers import ToolProvider
 
 
 logger = get_logger("chat_service")
@@ -84,22 +83,14 @@ def validate_runtime_counts(
 @lru_cache(maxsize=4)
 def _get_cached_framework_agent(
     settings: AppSettings,
-    provider: ToolProvider,
 ) -> CompiledAgentRuntime:
     """缓存不依赖 MCP discovery 的本地 ``create_agent`` 结构。"""
     governance = ProjectToolGovernanceMiddleware(settings=settings)
-    context = build_default_tool_context(
-        source="agent_runtime",
-        settings=settings,
-    )
     return cast(
         CompiledAgentRuntime,
         build_framework_agent(
             settings,
-            tools=framework_tools.build_framework_tools(
-                provider,
-                context=context,
-            ),
+            tools=framework_tools.get_local_tools(settings),
             governance=governance,
         ),
     )
@@ -110,19 +101,10 @@ def get_compiled_agent_runtime(
     *,
     tool_context: ToolInvocationContext | None = None,
 ) -> CompiledAgentRuntime:
-    """返回与当前请求可见工具集合一致的 CompiledStateGraph。"""
+    """Local 权限变化共用编译缓存；仅额外 MCP 工具集合需要构图。"""
     resolved_settings = settings or get_settings()
-    provider = framework_tools.get_default_tool_provider()
-    if tool_context is None:
-        return _get_cached_framework_agent(resolved_settings, provider)
-    if (
-        tool_context.principal_id
-        == resolved_settings.tool_default_principal_id
-        and tool_context.permissions
-        == resolved_settings.tool_default_permissions
-        and not list_mcp_tools_for_context(tool_context)
-    ):
-        return _get_cached_framework_agent(resolved_settings, provider)
+    if tool_context is None or not list_mcp_tools_for_context(tool_context):
+        return _get_cached_framework_agent(resolved_settings)
 
     governance = ProjectToolGovernanceMiddleware(settings=resolved_settings)
     return cast(
@@ -131,6 +113,7 @@ def get_compiled_agent_runtime(
             resolved_settings,
             tools=framework_tools.resolve_agent_tools(
                 tool_context,
+                resolved_settings,
             ),
             governance=governance,
         ),

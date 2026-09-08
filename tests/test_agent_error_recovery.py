@@ -10,8 +10,7 @@ from app.config import get_settings
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolRiskLevel, ToolSpec
 from app.tools.errors import ToolErrorCode
-from app.tools.providers import LocalToolProvider
-from app.tools.registry import ToolRegistry
+from tests.support.local_tools import local_tools
 from app.tools.result import tool_error, tool_success
 from tests.support.agent_runtime import build_agent_harness
 
@@ -70,7 +69,7 @@ def _spec(
 def _invoke(
     monkeypatch,
     *,
-    registry: ToolRegistry,
+    registry: list[ToolSpec],
     model: FakeModel,
     context: ToolInvocationContext | None = None,
     max_tool_errors: int = 3,
@@ -78,12 +77,12 @@ def _invoke(
     max_same_errors: int = 2,
 ):
     """按指定错误预算组装并调用受控 Agent 图。"""
-    provider = LocalToolProvider(registry)
+    provider = local_tools(registry)
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_default_tool_provider",
-        lambda: provider,
+        "get_local_tools",
+        lambda settings: provider,
     )
     settings = get_settings().model_copy(
         update={
@@ -139,8 +138,8 @@ def test_max_tool_errors_stops_on_third_failure_without_another_model_call(
             error_code=ToolErrorCode.EXECUTION_ERROR.value,
         )
 
-    registry = ToolRegistry()
-    registry.register(_spec("failing_tool", handler))
+    registry = []
+    registry.append(_spec("failing_tool", handler))
     model = FakeModel(
         [
             AIMessage(content="", tool_calls=[_call("failing_tool", 1, "e1")]),
@@ -166,8 +165,8 @@ def test_third_identical_call_is_blocked_before_structured_tool(monkeypatch):
         calls.append(args["value"])
         return tool_success("repeatable_tool", args, {"value": args["value"]})
 
-    registry = ToolRegistry()
-    registry.register(_spec("repeatable_tool", handler))
+    registry = []
+    registry.append(_spec("repeatable_tool", handler))
     model = FakeModel(
         [
             AIMessage(content="", tool_calls=[_call("repeatable_tool", 1, "r1")]),
@@ -197,8 +196,8 @@ def test_same_tool_with_different_arguments_does_not_trigger_call_guard(
         calls.append(args["value"])
         return tool_success("varying_tool", args, {"value": args["value"]})
 
-    registry = ToolRegistry()
-    registry.register(_spec("varying_tool", handler))
+    registry = []
+    registry.append(_spec("varying_tool", handler))
     model = FakeModel(
         [
             AIMessage(content="", tool_calls=[_call("varying_tool", 1, "v1")]),
@@ -226,8 +225,8 @@ def test_second_identical_error_is_saved_then_stops(monkeypatch):
             error_code=ToolErrorCode.EXECUTION_ERROR.value,
         )
 
-    registry = ToolRegistry()
-    registry.register(_spec("same_error_tool", handler))
+    registry = []
+    registry.append(_spec("same_error_tool", handler))
     model = FakeModel(
         [
             AIMessage(content="", tool_calls=[_call("same_error_tool", 1, "s1")]),
@@ -256,8 +255,8 @@ def test_same_error_code_with_different_arguments_is_not_same_error_loop(
             error_code=ToolErrorCode.EXECUTION_ERROR.value,
         )
 
-    registry = ToolRegistry()
-    registry.register(_spec("different_error_calls", handler))
+    registry = []
+    registry.append(_spec("different_error_calls", handler))
     model = FakeModel(
         [
             AIMessage(
@@ -291,8 +290,8 @@ def test_approval_required_stops_and_aborts_later_batch_call(monkeypatch):
         later_calls.append(args["value"])
         return tool_success("later_tool", args, {"value": args["value"]})
 
-    registry = ToolRegistry()
-    registry.register(
+    registry = []
+    registry.append(
         _spec(
             "approval_tool",
             approval_handler,
@@ -301,7 +300,7 @@ def test_approval_required_stops_and_aborts_later_batch_call(monkeypatch):
             requires_approval=True,
         )
     )
-    registry.register(_spec("later_tool", later_handler))
+    registry.append(_spec("later_tool", later_handler))
     model = FakeModel(
         [
             AIMessage(
@@ -336,8 +335,8 @@ def test_missing_idempotency_key_stops_without_handler_or_model_retry(
         calls.append(args["value"])
         return tool_success("write_tool", args, {"value": args["value"]})
 
-    registry = ToolRegistry()
-    registry.register(
+    registry = []
+    registry.append(
         _spec(
             "write_tool",
             handler,
@@ -378,8 +377,8 @@ def test_runtime_unavailable_is_terminal(monkeypatch):
         calls.append(args["value"])
         return tool_success("runtime_tool", args, {"value": args["value"]})
 
-    registry = ToolRegistry()
-    registry.register(_spec("runtime_tool", handler))
+    registry = []
+    registry.append(_spec("runtime_tool", handler))
     model = FakeModel(
         [AIMessage(content="", tool_calls=[_call("runtime_tool", 1, "runtime")])]
     )
@@ -397,7 +396,7 @@ def test_runtime_unavailable_is_terminal(monkeypatch):
     assert _payloads(output)["runtime"]["failure_kind"] == "terminal_runtime"
 
 
-def test_hidden_tool_is_unknown_and_public_batch_call_still_executes(monkeypatch):
+def test_hidden_tool_is_denied_and_public_batch_call_is_aborted(monkeypatch):
     protected_calls: list[int] = []
     normal_calls: list[int] = []
 
@@ -409,15 +408,15 @@ def test_hidden_tool_is_unknown_and_public_batch_call_still_executes(monkeypatch
         normal_calls.append(args["value"])
         return tool_success("normal_tool", args, {"value": args["value"]})
 
-    registry = ToolRegistry()
-    registry.register(
+    registry = []
+    registry.append(
         _spec(
             "protected_tool",
             protected_handler,
             required_permissions=("protected:read",),
         )
     )
-    registry.register(_spec("normal_tool", normal_handler))
+    registry.append(_spec("normal_tool", normal_handler))
     model = FakeModel(
         [
             AIMessage(
@@ -446,11 +445,12 @@ def test_hidden_tool_is_unknown_and_public_batch_call_still_executes(monkeypatch
     payloads = _payloads(output)
 
     assert protected_calls == []
-    assert normal_calls == [2]
-    assert output["stop_reason"] == "completed"
+    assert normal_calls == []
+    assert output["stop_reason"] == "permission_denied"
     assert set(payloads) == {"denied", "normal"}
-    assert payloads["denied"]["error_code"] == "unknown_tool"
-    assert payloads["normal"]["ok"] is True
+    assert payloads["denied"]["error_code"] == "permission_denied"
+    assert payloads["normal"]["error_code"] == "agent_batch_aborted"
+    assert payloads["normal"]["handler_executed"] is False
 
 
 def test_structured_tool_validation_error_is_corrected_next_round(monkeypatch):
@@ -460,8 +460,8 @@ def test_structured_tool_validation_error_is_corrected_next_round(monkeypatch):
         calls.append(args["value"])
         return tool_success("validated_tool", args, {"value": args["value"]})
 
-    registry = ToolRegistry()
-    registry.register(_spec("validated_tool", handler))
+    registry = []
+    registry.append(_spec("validated_tool", handler))
     model = FakeModel(
         [
             AIMessage(content="", tool_calls=[_call("validated_tool", None, "bad")]),
@@ -497,9 +497,9 @@ def test_execution_error_can_switch_tools(monkeypatch):
         executed.append("second")
         return tool_success("second_tool", args, {"value": args["value"]})
 
-    registry = ToolRegistry()
-    registry.register(_spec("first_tool", first_handler))
-    registry.register(_spec("second_tool", second_handler))
+    registry = []
+    registry.append(_spec("first_tool", first_handler))
+    registry.append(_spec("second_tool", second_handler))
     model = FakeModel(
         [
             AIMessage(content="", tool_calls=[_call("first_tool", 1, "first")]),
