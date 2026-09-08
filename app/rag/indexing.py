@@ -11,6 +11,10 @@ from langchain_classic.indexes import SQLRecordManager
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.indexing import index
+from langchain_text_splitters import (
+    MarkdownHeaderTextSplitter,
+    RecursiveCharacterTextSplitter,
+)
 
 from app.config import AppSettings, get_settings
 from app.ingestion import (
@@ -22,7 +26,12 @@ from app.ingestion import (
     KnowledgeSourceType,
     build_knowledge_document,
 )
-from app.rag.ingest import clean_documents, load_files, split_doc
+from app.rag.ingest import (
+    clean_markdown_text,
+    clean_text,
+    collect_supported_files,
+    read_file_text,
+)
 
 
 LOCAL_RECORD_NAMESPACE = "rag-agent/local/v1"
@@ -38,6 +47,9 @@ _MIME_TYPES = {
     "pdf": "application/pdf",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 }
+_PLAIN_TEXT_FILE_TYPES = {"txt", "pdf", "docx"}
+_TEXT_SEPARATORS = ["\n\n", "\n", "。", "！", "？", "；", ""]
+_MARKDOWN_HEADERS = [("#", "h1"), ("##", "h2"), ("###", "h3")]
 
 
 def candidate_to_langchain_documents(
@@ -46,7 +58,7 @@ def candidate_to_langchain_documents(
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
 ) -> list[Document]:
-    """仅把 approved candidate 用现有 splitter 转换为 LangChain chunks。"""
+    """仅把 approved candidate 直接切分为 LangChain chunks。"""
     if candidate.status is not IngestionCandidateStatus.APPROVED:
         raise ValueError("只有 approved ingestion candidate 可以进入永久索引")
 
@@ -55,44 +67,49 @@ def candidate_to_langchain_documents(
     file_type = str(source_metadata.get("file_type") or "txt").lower()
     file_name = str(source_metadata.get("file_name") or document.title)
     source_path = str(source_metadata.get("source_path") or document.source_uri)
-    legacy_doc = {
-        "doc_id": document.document_uid,
-        "file_name": file_name,
-        "source_path": source_path,
-        "file_type": file_type,
-        "text": document.content,
-    }
-    chunks = split_doc(
-        legacy_doc,
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
+    settings = get_settings()
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=settings.chunk_size if chunk_size is None else chunk_size,
+        chunk_overlap=(
+            settings.chunk_overlap if chunk_overlap is None else chunk_overlap
+        ),
+        separators=_TEXT_SEPARATORS,
     )
 
-    langchain_documents: list[Document] = []
-    for chunk in chunks:
-        metadata = {
-            key: value
-            for key, value in (chunk.get("metadata") or {}).items()
-            if key not in {"doc_id", "chunk_id"} and value is not None
-        }
-        metadata.update(
-            {
-                "source_id": document.source_id,
-                "document_uid": document.document_uid,
-                "source_type": document.source_type.value,
-                "source_uri": document.source_uri,
-                "file_name": file_name,
-                "file_type": file_type,
-                "source_path": source_path,
-            }
-        )
-        langchain_documents.append(
-            Document(
-                page_content=str(chunk.get("text") or ""),
-                metadata=metadata,
+    if file_type == "md":
+        sections = MarkdownHeaderTextSplitter(
+            headers_to_split_on=_MARKDOWN_HEADERS,
+        ).split_text(document.content)
+        chunks = splitter.split_documents(sections)
+    elif file_type in _PLAIN_TEXT_FILE_TYPES:
+        chunks = splitter.create_documents([document.content])
+    else:
+        raise ValueError(f"不支持的文件类型: {file_type}")
+
+    provenance = {
+        "source_id": document.source_id,
+        "document_uid": document.document_uid,
+        "source_type": document.source_type.value,
+        "source_uri": document.source_uri,
+        "file_name": file_name,
+        "file_type": file_type,
+        "source_path": source_path,
+    }
+    result: list[Document] = []
+    for position, chunk in enumerate(chunks, start=1):
+        page_content = chunk.page_content
+        metadata = {**provenance, "position": position}
+        if file_type == "md":
+            title_path = " > ".join(
+                chunk.metadata[key]
+                for key in ("h1", "h2", "h3")
+                if key in chunk.metadata
             )
-        )
-    return langchain_documents
+            if title_path:
+                page_content = f"[标题路径] {title_path}\n\n{page_content}"
+            metadata.update({"title_path": title_path, **chunk.metadata})
+        result.append(Document(page_content=page_content, metadata=metadata))
+    return result
 
 
 def load_local_langchain_documents(
@@ -101,26 +118,31 @@ def load_local_langchain_documents(
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
 ) -> list[Document]:
-    """复用现有 Local loader/cleaner，并经过 Phase 9 admission contract。"""
-    raw_docs, _docs_registry = load_files(data_dir)
+    """读取并清洗 Local 文件，再经过 Phase 9 admission contract。"""
     service = IngestionService()
     langchain_documents: list[Document] = []
 
-    for raw_doc in clean_documents(raw_docs):
-        source_path = Path(str(raw_doc["source_path"])).resolve()
-        file_type = str(raw_doc["file_type"])
+    for file_path in collect_supported_files(data_dir):
+        source_path = file_path.resolve()
+        file_type = file_path.suffix.lower().lstrip(".")
+        content = read_file_text(str(file_path))
+        content = (
+            clean_markdown_text(content)
+            if file_type == "md"
+            else clean_text(content)
+        )
         knowledge_document = build_knowledge_document(
             source_type=KnowledgeSourceType.LOCAL_FILE,
             source_uri=str(source_path),
-            title=str(raw_doc["file_name"]),
-            content=str(raw_doc["text"]),
+            title=file_path.name,
+            content=content,
             fetched_at=datetime.fromtimestamp(
                 source_path.stat().st_mtime,
                 tz=timezone.utc,
             ),
             mime_type=_MIME_TYPES.get(file_type),
             metadata={
-                "file_name": str(raw_doc["file_name"]),
+                "file_name": file_path.name,
                 "file_type": file_type,
                 "source_path": str(source_path),
             },

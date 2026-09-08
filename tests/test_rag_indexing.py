@@ -21,7 +21,6 @@ from app.ingestion import (
 )
 from app.rag import indexing, pipeline
 from app.rag.chroma import load_index_from_chroma
-from app.rag.ingest import clean_documents, load_files, split_chunks
 
 
 class CountingEmbeddings(Embeddings):
@@ -131,14 +130,13 @@ def test_candidate_adapter_enforces_approved_only_and_preserves_phase9_ids(tmp_p
         indexing.candidate_to_langchain_documents(superseded)
 
 
-def test_local_adapter_reuses_existing_clean_and_split_behavior(tmp_path):
+def test_local_adapter_preserves_cleaning_and_markdown_chunk_contract(tmp_path):
     file_path = tmp_path / "guide.md"
-    file_path.write_text("# 标题\n\n第一段。\n\n第二段。", encoding="utf-8")
-    raw_docs, _registry = load_files(str(tmp_path))
-    existing_chunks, _counts = split_chunks(
-        clean_documents(raw_docs),
-        chunk_size=30,
-        chunk_overlap=0,
+    file_path.write_text(
+        "# 一级\r\n\r\n开头\t 内容。\r\n\r\n"
+        "## 二级\r\n\r\n第二段。\r\n\r\n"
+        "### 三级\r\n\r\n第三段内容。<!-- hidden -->\r\n\r\n尾段。",
+        encoding="utf-8",
     )
 
     converted = indexing.load_local_langchain_documents(
@@ -148,11 +146,96 @@ def test_local_adapter_reuses_existing_clean_and_split_behavior(tmp_path):
     )
 
     assert [item.page_content for item in converted] == [
-        item["text"] for item in existing_chunks
+        "[标题路径] 一级\n\n开头 内容。",
+        "[标题路径] 一级 > 二级\n\n第二段。",
+        "[标题路径] 一级 > 二级 > 三级\n\n第三段内容。  \n尾段。",
     ]
-    assert [item.metadata["position"] for item in converted] == [
-        item["metadata"]["position"] for item in existing_chunks
+    assert [
+        {
+            key: value
+            for key, value in item.metadata.items()
+            if key in {"position", "title_path", "h1", "h2", "h3"}
+        }
+        for item in converted
+    ] == [
+        {"position": 1, "title_path": "一级", "h1": "一级"},
+        {
+            "position": 2,
+            "title_path": "一级 > 二级",
+            "h1": "一级",
+            "h2": "二级",
+        },
+        {
+            "position": 3,
+            "title_path": "一级 > 二级 > 三级",
+            "h1": "一级",
+            "h2": "二级",
+            "h3": "三级",
+        },
     ]
+    assert all("doc_id" not in item.metadata for item in converted)
+    assert all("chunk_id" not in item.metadata for item in converted)
+
+
+def test_local_plain_text_cleaning_and_metadata_surface(tmp_path):
+    file_path = tmp_path / "notes.txt"
+    file_path.write_text(
+        "  alpha\t beta\r\n\r\n\r\n gamma  ",
+        encoding="utf-8",
+    )
+
+    [document] = indexing.load_local_langchain_documents(
+        str(tmp_path),
+        chunk_size=100,
+        chunk_overlap=0,
+    )
+
+    assert document.page_content == "alpha beta\n\n gamma"
+    assert set(document.metadata) == {
+        "source_id",
+        "document_uid",
+        "source_type",
+        "source_uri",
+        "file_name",
+        "file_type",
+        "source_path",
+        "position",
+    }
+    assert document.metadata["file_name"] == "notes.txt"
+    assert document.metadata["file_type"] == "txt"
+    assert document.metadata["source_path"] == str(file_path.resolve())
+    assert document.metadata["position"] == 1
+
+
+@pytest.mark.parametrize("file_type", ["pdf", "docx"])
+def test_candidate_adapter_treats_pdf_and_docx_as_plain_text(tmp_path, file_type):
+    source_path = (tmp_path / f"manual.{file_type}").resolve()
+    document = build_knowledge_document(
+        source_type=KnowledgeSourceType.LOCAL_FILE,
+        source_uri=str(source_path),
+        title=source_path.name,
+        content="第一段内容。\n\n第二段内容。",
+        metadata={
+            "file_name": source_path.name,
+            "file_type": file_type,
+            "source_path": str(source_path),
+        },
+    )
+    candidate = IngestionService().propose(
+        document=document,
+        requester=_requester(),
+    )
+
+    converted = indexing.candidate_to_langchain_documents(
+        candidate,
+        chunk_size=20,
+        chunk_overlap=0,
+    )
+
+    assert [item.page_content for item in converted] == [
+        "第一段内容。\n\n第二段内容。"
+    ]
+    assert {item.metadata["file_type"] for item in converted} == {file_type}
 
 
 def test_real_langchain_incremental_add_skip_modify_add_delete(tmp_path):

@@ -5,7 +5,6 @@
 
 import json
 
-import numpy as np
 import torch
 from langchain_huggingface import HuggingFaceEmbeddings
 from rank_bm25 import BM25Okapi
@@ -69,49 +68,6 @@ def _load_rerank_model():
         cache_folder=cache_folder,
         local_files_only=True
     )
-
-
-def build_index(all_chunks: list[dict], model=None, rerank_model=None):
-    """基于 chunk 文本构建 BM25、向量嵌入和重排模型。"""
-    if not all_chunks:
-        return {
-            "texts": [],
-            "bm25": None,
-            "doc_embeddings": None,
-            "model": model,
-            "rerank_model": rerank_model
-        }
-
-    local_texts = [chunk["text"] for chunk in all_chunks]
-    tokenized_texts = [tokenize(text) for text in local_texts]
-
-    if model is None:
-        model = _load_embedding_model()
-
-    if rerank_model is None:
-        rerank_model = _load_rerank_model()
-
-    if hasattr(model, "embed_documents"):
-        local_doc_embeddings = np.asarray(
-            model.embed_documents(local_texts),
-            dtype=np.float32,
-        )
-    else:
-        local_doc_embeddings = model.encode(
-            local_texts,
-            normalize_embeddings=True,
-            convert_to_numpy=True,
-        )
-
-    local_bm25 = BM25Okapi(tokenized_texts)
-
-    return {
-        "texts": local_texts,
-        "bm25": local_bm25,
-        "doc_embeddings": local_doc_embeddings,
-        "model": model,
-        "rerank_model": rerank_model
-    }
 
 
 def build_file_snapshot(data_dir: str):

@@ -843,7 +843,8 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   │   ├── __init__.py          # RAG 公共门面和依赖注入
 │   │   ├── pipeline.py          # 索引状态、生命周期与检索门面
 │   │   ├── graph/               # LangGraph RAG 子图状态、节点、条件、构建和运行入口
-│   │   ├── ingest.py            # 文档读取、清洗、切分
+│   │   ├── ingest.py            # Local 文档读取与清洗
+│   │   ├── indexing.py          # approved candidate 切分与 LangChain 增量索引
 │   │   ├── retrieval.py         # 混合召回与重排
 │   │   ├── decomposition.py     # 复杂问题识别、拆分调用和解析
 │   │   ├── policy.py            # 证据拒答与澄清策略
