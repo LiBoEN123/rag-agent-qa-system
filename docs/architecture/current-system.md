@@ -18,7 +18,8 @@ FastAPI application
 → Query Rewrite
 → Agent Runtime
 → create_agent
-→ LocalToolProvider / execute_registered_tool / ToolRuntime
+→ ProjectToolVisibilityMiddleware
+→ cached Local StructuredTool / execute_project_tool
   或 governed MCP adapter tools
 → AgentRunResult
 → ChatStatusPolicy
@@ -31,8 +32,7 @@ FastAPI application
 ```text
 create_agent
 → search_knowledge_base StructuredTool
-→ execute_registered_tool
-→ ToolRuntime.execute
+→ execute_project_tool
 → search_knowledge_base handler
 → 独立 RAG Graph
 → 结构化工具结果 + 配对 ToolMessage
@@ -53,8 +53,9 @@ create_agent
 - Agent Runtime 以普通 Python 执行唯一 Router，并直接调用 `create_agent`。
 - LangChain `create_agent` 是唯一 Agent Loop；项目不再包裹 Parent Agent Graph。
 - Project Governance Middleware 拥有模型事件消费、Tool Hook、预算和 fail-closed 语义。
-- Tool Adapter 只把请求可见的本地 ToolSpec/MCP BaseTool 交给框架。
-- `execute_registered_tool → ToolRuntime.execute` 是唯一本地工具执行治理边界。
+- Local catalog 以不可变 tuple 缓存全部本地 StructuredTool；Model Middleware 只按请求
+  Context 过滤模型可见集合。
+- `execute_project_tool` 是唯一本地工具执行治理边界。
 - MCP Bridge / Interceptor 独立治理远端 MCP；MCP 不进入本地 ToolRuntime。
 - 独立 RAG Graph 只由知识库工具调用，是唯一专用业务工作流 Graph。
 - Framework State 只保存框架运行所需状态；`AgentRunResult` 是 Runtime 输出边界。
@@ -75,6 +76,7 @@ terminal 后续调用的确定性 fail-closed。这也是明确保留的并发�
 
 - Parent Agent Graph、`Command.PARENT`、`pending_rag_result` 和父图事件游标；
 - `ToolRegistry.dispatch` 与 `dispatch_tool` 转发层；
+- `ToolRegistry`、`ToolProvider`、`LocalToolProvider` 和构建期请求 Context；
 - 项目私有 Tool governance artifact bus；
 - ToolSpec 手写 `args_schema` 与 Pydantic `args_model` 的重复契约。
 
@@ -149,7 +151,7 @@ Router 只决定 `agent`、`direct_answer` 或 `clarify`，不选择具体工具
 
 ## 工具系统与治理边界
 
-生产 Registry 默认固定注册八个 `ToolSpec`：
+生产 catalog 默认固定包含八个 `ToolSpec`：
 
 1. `search_knowledge_base`
 2. `compare_documents`
@@ -161,31 +163,31 @@ Router 只决定 `agent`、`direct_answer` 或 `clarify`，不选择具体工具
 8. `web_pdf_fetch`
 
 只有 `SQL_TOOL_ENABLED=true` 时才额外注册 `list_sql_tables`、
-`describe_sql_table` 和 `query_sql_readonly`。模型可见性由 Provider 根据请求权限过滤；
+`describe_sql_table` 和 `query_sql_readonly`。模型可见性由 LangChain Model Middleware
+根据请求权限过滤；
 本地工具的执行期治理始终经过：
 
 ```text
-LocalToolProvider.list_specs
-→ request-level StructuredTool
+cached tuple[ProjectStructuredTool, ...]
 → create_agent tools
+→ ProjectToolVisibilityMiddleware
+→ request.override(tools=visible_tools)
 
 create_agent ToolNode
 → ProjectToolGovernanceMiddleware.wrap_tool_call / awrap_tool_call
-→ request-level StructuredTool
-→ execute_registered_tool()
-→ ToolRuntime.execute()
+→ cached StructuredTool
+→ execute_project_tool()
 → ToolSpec.handler
 → paired ToolMessage
 → Command(update={governance_events, stop_reason, ...})
 ```
 
-`ToolRegistry` 只拥有 ToolSpec 注册、重名拒绝、按名查找、稳定顺序列举和契约导出；
-`execute_registered_tool()` 是生产本地工具的唯一公共执行入口，按 Registry 取得进程内
-共享 Runtime 后调用 `ToolRuntime.execute()`。Registry 不再提供 dispatch 方法，项目也
-不再保留额外的 `dispatch_tool` 兼容门面。
+`app.tools.catalog` 用普通 tuple 保持稳定顺序，在构造时一次拒绝重名，并按完整
+`AppSettings` 缓存 ToolSpec。`app.agent.framework_tools` 缓存不绑定请求 Context 的
+StructuredTool；本地权限差异复用同一个 compiled Agent。
 
 本地 `ToolSpec` 的参数契约只由 Pydantic `args_model` 定义：同一个模型同时用于
-`ToolRuntime` 参数校验、LangChain 模型可见 Schema 和 `contract_specs()` 导出，不再
+LangChain 模型可见 Schema、执行输入和 manifest contract 导出，不再
 手写第二份 `args_schema`。输出契约按真实能力非对称处理：存在 `output_model` 时由该
 模型负责 Runtime 校验并派生导出 Schema；没有输出模型时才要求显式 `output_schema`
 作为 handler payload 的展示契约。两者不能同时声明。这里的输出仅指 handler 的
@@ -193,13 +195,12 @@ create_agent ToolNode
 
 ```text
 StructuredTool
-→ execute_registered_tool()
-→ ToolRuntime.execute()
+→ execute_project_tool()
 → ToolSpec.handler
 ```
 
-`ToolRuntime` 独占最终权限、策略、审批、幂等、审计、超时、有限重试、脱敏和输出
-校验。Provider 可见性与 Framework Middleware 都不能绕过或复制这条边界。
+`execute_project_tool` 独占最终权限、策略、审批、幂等、审计、超时、有限重试、脱敏和
+输出校验。模型可见性 Middleware 不能绕过或复制这条边界。
 
 可选 MCP Client 工具源默认关闭。显式启用后，FastAPI 启动期使用官方
 `langchain-mcp-adapters.MultiServerMCPClient` discovery 并缓存受治理的只读工具。

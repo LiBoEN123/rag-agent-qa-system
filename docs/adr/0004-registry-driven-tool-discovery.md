@@ -1,8 +1,13 @@
 # ADR 0004：基于注册表的工具发现
 
-- 状态：Accepted
+- 状态：Superseded（2026-09-08）
 - 日期：2026-07-20
 - 决策者：Project Maintainer
+
+> 当前实现已删除 `ToolRegistry`、`ToolProvider` 和 `LocalToolProvider`。本地 ToolSpec
+> 由按配置缓存的不可变 catalog 提供；请求权限只在 LangChain 模型调用前过滤本地
+> `StructuredTool`，最终执行仍由 `ToolRuntime` 治理。下文保留原始决策记录，现状见
+> [当前架构](../architecture/current-system.md)。
 
 ## 背景
 

@@ -100,7 +100,7 @@ python scripts/run_evaluation_baseline.py --validate-only
 - Agent v2 数据 Schema；
 - case ID 是否重复；
 - Core/Online、单轮/多轮和 category 覆盖；
-- expected status、工具名和当前 `ToolRegistry` 是否一致；
+- expected status、工具名和当前本地 ToolSpec catalog 是否一致；
 - `tool_sequence`、`tool_status_sequence` 等合同是否合法。
 
 它不会初始化 RAG、模型或工具执行器，不访问网络，不创建输出目录，也不写数据库。

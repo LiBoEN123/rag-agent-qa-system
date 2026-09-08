@@ -2,7 +2,7 @@
 
 本项目可以作为 MCP Client，在 FastAPI 启动阶段从部署者静态配置的外部 MCP Server
 发现只读工具和部署者精确声明的待审批外部写工具，并把它们与本地
-`ToolRegistry` 工具一起交给唯一的 LangChain
+cached local StructuredTool 一起交给唯一的 LangChain
 `create_agent`。本项目不是 MCP Server，也不实现 MCP JSON-RPC、`tools/list` 或
 `tools/call`；协议、Streamable HTTP session 和 MCP Tool 到 LangChain Tool 的转换均由
 官方 `langchain-mcp-adapters` 的 `MultiServerMCPClient` 完成。
@@ -10,14 +10,14 @@
 ## 架构与治理边界
 
 ```text
-Local ToolRegistry → ToolRuntime → StructuredTool ─┐
+ToolSpec catalog → cached ProjectStructuredTool ───┐
                                                    ├→ create_agent
 MultiServerMCPClient → governed StructuredTool ────┘
 ```
 
-本地工具继续使用 `ToolSpec → ToolRegistry → ToolRuntime`，MCP adapter 已经把远端
+本地工具使用 `ToolSpec → ProjectStructuredTool → execute_project_tool`，MCP adapter 已经把远端
 Schema 转换成 LangChain `StructuredTool`，因此不会把 MCP Tool 反向转换成
-`ToolSpec`。本地工具按当前请求权限构造成 StructuredTool；MCP 工具保留 Bridge 已生成的
+`ToolSpec`。本地 StructuredTool 按配置缓存，并由 Model Middleware 按请求权限过滤；MCP 工具保留 Bridge 已生成的
 governed StructuredTool，不再经过 framework 二次 wrapper。两类 BaseTool 都由
 `create_agent` ToolNode 的原生
 `ProjectToolGovernanceMiddleware.wrap_tool_call/awrap_tool_call` 截获，共用调用数、

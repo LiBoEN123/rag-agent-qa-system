@@ -446,7 +446,7 @@ def test_hidden_tool_is_denied_and_public_batch_call_is_aborted(monkeypatch):
 
     assert protected_calls == []
     assert normal_calls == []
-    assert output["stop_reason"] == "permission_denied"
+    assert output["stop_reason"] == "fatal_tool_error"
     assert set(payloads) == {"denied", "normal"}
     assert payloads["denied"]["error_code"] == "permission_denied"
     assert payloads["normal"]["error_code"] == "agent_batch_aborted"

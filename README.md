@@ -41,14 +41,14 @@ FastAPI / Chat Router
 → Agent Runtime（普通 Python Router）
 → LangChain create_agent（唯一 Agent Loop）
 → Project Governance Middleware
-→ 请求级 Tool Adapter
+→ 缓存的 Local StructuredTool + 请求级可见性 Middleware
 → Local ToolRuntime 或独立 MCP Bridge
 → Tool Handler；知识库工具可调用独立 RAG Graph
 → Framework State → AgentRunResult
 → ChatStatusPolicy → HTTP JSON / SSE
 ```
 
-本地工具固定经过 `execute_registered_tool → ToolRuntime.execute → ToolSpec.handler`；MCP
+本地工具固定经过 `StructuredTool → execute_project_tool → ToolSpec.handler`；MCP
 保持 adapter/bridge/interceptor 边界，不进入本地 ToolRuntime。LangGraph 只存在于
 `create_agent` 内部循环和独立 RAG Graph，不存在项目 Parent Agent Graph。
 
@@ -70,9 +70,9 @@ Phase 6B 的 Model private marker 是已接受设计，不是待迁移 TODO。�
 | 引用绑定 | 将 `Reference N` 映射回真实文件、`chunk_id`、`snippet` 和分数 |
 | Agent Runtime | 直接执行唯一的 LangChain `create_agent` CompiledStateGraph；框架负责模型—工具循环、参数校验、ToolMessage 和模型/工具调用上限 |
 | Agent 路由 | `app.agent.runtime` 是唯一 Router 调用者；正常请求输出 `agent`，`direct_answer` / `clarify` 在普通 Python 中安全短路 |
-| 工具发现 | 本地 `ToolProvider` 过滤 ToolSpec；可选 MCP Provider 过滤启动期 discovery cache。Runtime 对模型绑定和执行使用同一组请求级 governed tools |
+| 工具发现 | 不可变本地 ToolSpec/StructuredTool catalog 按配置缓存；LangChain Model Middleware 按请求权限过滤模型可见工具。可选 MCP Provider 继续过滤启动期 discovery cache |
 | Agent Guardrail | 工具错误总数、连续相同调用/错误、累计模型与工具耗时预算、同批 fail-closed、无悬空 ToolMessage |
-| 工具调用 | 默认 Registry 保持八个生产工具；显式启用只读 SQL 后额外注册 `list_sql_tables`、`describe_sql_table`、`query_sql_readonly`。模型可见集合始终由请求权限决定 |
+| 工具调用 | 默认 catalog 保持八个生产工具；显式启用只读 SQL 后追加 `list_sql_tables`、`describe_sql_table`、`query_sql_readonly`。模型可见集合始终由请求权限决定 |
 | 可观测性 | `trace_id`、请求耗时、阶段耗时、工具调用日志、metrics 汇总接口 |
 | 失败分析 | `logs/bad_cases.jsonl` 记录值得分析的失败样例 |
 | 评测 | 支持规则评测、Chroma/chunks 索引取证和可选 LLM Judge 语义评估 |
@@ -203,7 +203,7 @@ python scripts/smoke_test_online_tools.py search \
   --max-results 3
 ```
 
-脚本默认经过 `ToolRegistry → ToolRuntime → DDGS` 生产链路，不调用 Agent 模型、不读取或修改知识库；缺少 `web:search` 权限时会直接给出启用提示。
+脚本默认经过 `StructuredTool → execute_project_tool → DDGS` 生产链路，不调用 Agent 模型、不读取或修改知识库；缺少 `web:search` 权限时会直接给出启用提示。
 
 ## Web Fetch
 
@@ -229,7 +229,7 @@ python scripts/smoke_test_online_tools.py fetch \
   --max-chars 4000
 ```
 
-脚本默认经过 `ToolRegistry → ToolRuntime → requests-hardened → Trafilatura`，只显示有限正文预览和安全元数据，不显示代理、headers、cookies 或完整正文。
+脚本默认经过 `StructuredTool → execute_project_tool → requests-hardened → Trafilatura`，只显示有限正文预览和安全元数据，不显示代理、headers、cookies 或完整正文。
 
 ## Web PDF Fetch
 
@@ -239,7 +239,7 @@ python scripts/smoke_test_online_tools.py fetch \
 
 正文按实际页码返回 `[Page N]` 边界，空白页不列入 `page_numbers`，title、author 和 subject 只做有限单行规范化。加密、损坏、页数超限和无可提取文本的 PDF 会返回稳定非重试错误；扫描件/图片型 PDF 不自动 OCR，也不接收密码、提取图片/附件/脚本或调用 LLM 清洗。
 
-PDF 文本和元数据固定标记 `content_is_untrusted=true`，只能作为回答参考；模型不得执行 PDF 中的命令或把内容视为 system/developer/tool 指令，回答时应注明 `final_url` 和相关页码。`web_pdf_fetch` 要求 `web:fetch` 权限，经过普通 `StructuredTool → Registry → ToolRuntime → handler → ToolMessage` 链路；它不进入本地 RAG、不写 ChromaDB/BM25，也不生成本地 references。
+PDF 文本和元数据固定标记 `content_is_untrusted=true`，只能作为回答参考；模型不得执行 PDF 中的命令或把内容视为 system/developer/tool 指令，回答时应注明 `final_url` 和相关页码。`web_pdf_fetch` 要求 `web:fetch` 权限，经过普通 `StructuredTool → execute_project_tool → handler → ToolMessage` 链路；它不进入本地 RAG、不写 ChromaDB/BM25，也不生成本地 references。
 
 真实网络验证仅由维护者手动执行，不进入 Pytest/CI：
 
@@ -251,7 +251,7 @@ python scripts/smoke_test_online_tools.py pdf \
   --max-chars 8000
 ```
 
-脚本默认经过 `ToolRegistry → ToolRuntime → requests-hardened → pypdf`，只显示安全有限 URL、页码、长度和正文预览，不显示代理、headers、PDF bytes 或完整正文。
+脚本默认经过 `StructuredTool → execute_project_tool → requests-hardened → pypdf`，只显示安全有限 URL、页码、长度和正文预览，不显示代理、headers、PDF bytes 或完整正文。
 
 ## Agent Runtime 检查
 
@@ -655,7 +655,7 @@ GET /metrics-summary?limit=20
 
 如果 `/chat` 传入 `session_id`，Query Rewrite 会在 Agent Router 之前执行；Router 看到的是改写后的有效问题，响应中的 `data.question` 仍保留原始输入，改写细节记录在 `data.tool_trace` 的 `query_rewrite` step 中。
 
-Router 不调用独立模型，也不解析具体工具 action。普通问题进入 `create_agent` 后，Agent Model 根据 Runtime 绑定的当前可见 StructuredTool/Pydantic Schema 选择本地 Registry 工具或获授权的 MCP 工具；本地执行仍统一经过 `ToolRegistry` 和 `ToolRuntime`，MCP 执行通过官方 adapter 和项目 bridge 后进入相同 Agent 治理。
+Router 不调用独立模型，也不解析具体工具 action。普通问题进入 `create_agent` 后，Agent Model 根据可见性 Middleware 绑定的 StructuredTool/Pydantic Schema 选择本地 catalog 工具或获授权的 MCP 工具；本地执行统一经过 `execute_project_tool`，MCP 执行通过官方 adapter 和项目 bridge 后进入相同 Agent 治理。
 
 ## 索引构建与缓存
 
@@ -862,13 +862,13 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   │   ├── compare_documents.py # 双文档证据对比
 │   │   ├── context.py           # 请求级工具调用上下文
 │   │   ├── contracts.py         # ToolSpec、风险和审计输出契约
+│   │   ├── catalog.py           # 按配置缓存的不可变本地 ToolSpec catalog
 │   │   ├── runtime.py           # 唯一执行入口与 ToolRuntime 治理
 │   │   ├── web_search.py        # DDGS 调用、结果规范化和公开异常映射
 │   │   ├── web_download.py      # HTML/PDF 共用的 hardened 有限下载适配
 │   │   ├── web_fetch.py         # HTML/XHTML/纯文本的 Trafilatura 提取
 │   │   ├── web_pdf_fetch.py     # PDF magic、pypdf 页范围与元数据提取
 │   │   ├── mcp/                 # MCP 配置、discovery、bridge、Provider 与安全序列化
-│   │   ├── registry.py          # 工具注册、查找、顺序和契约导出
 │   │   └── schemas.py           # 工具参数模型
 │   ├── services/
 │   │   ├── chat_models.py       # 框架无关请求、结果和内部上下文

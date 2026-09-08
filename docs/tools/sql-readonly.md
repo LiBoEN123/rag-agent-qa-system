@@ -3,7 +3,7 @@
 ## 能力与边界
 
 该能力默认关闭，只面向部署者显式配置的业务数据源。启用后，Agent 可通过现有
-`ToolRegistry` / `ToolRuntime` 使用三个工具：
+不可变本地 catalog / `execute_project_tool` 使用三个工具：
 
 | 工具 | 作用 | 输出边界 |
 | --- | --- | --- |
@@ -13,7 +13,7 @@
 
 不支持 `INSERT`、`UPDATE`、`DELETE`、DDL、事务/管理语句、自动建表、数据库迁移或
 审批式写操作。自然语言不能绕过 Agent 直接执行 SQL；模型必须选择公开的 Tool
-Schema，调用仍经过 Registry/Runtime。第一版正式验证 SQLite；未默认安装
+Schema，调用仍经过 StructuredTool 和执行期 Policy。第一版正式验证 SQLite；未默认安装
 MySQL/PostgreSQL 驱动，未来使用这些数据库时必须另行安装匹配驱动并配置数据库侧
 只读账号。
 
@@ -24,7 +24,7 @@ developer、用户问题或工具政策，也不能触发额外工具、秘密�
 实现固定使用 `SQLAlchemy==2.0.51` 管理连接、连接池、Dialect、Inspector 和执行，
 使用 `sqlglot==30.14.0` 解析/遍历/改写 SQL AST，输入输出继续由 Pydantic 校验。
 没有引入 LangChain `SQLDatabaseToolkit` 或 `langchain-community`：项目已有唯一
-ToolRegistry/ToolRuntime，额外 Toolkit 会形成第二套工具注册和执行治理边界。
+本地 catalog/执行治理，额外 Toolkit 会形成第二套工具注册和执行治理边界。
 
 ## 启用配置
 
@@ -88,9 +88,9 @@ AST 检查不能替代数据库权限。SQLite 由文件级 `mode=ro` + `query_o
 
 ```text
 LangChain create_agent
-→ 请求级 governed StructuredTool
-→ execute_registered_tool
-→ ToolRuntime.execute
+→ cached governed StructuredTool
+→ ProjectToolVisibilityMiddleware
+→ execute_project_tool
 → SQL service
 → sqlglot / SQLAlchemy
 → Runtime 工具结果 / ToolMessage
@@ -113,5 +113,5 @@ python scripts/smoke_test_sql_readonly.py query \
   --sql "SELECT id, name FROM students ORDER BY id LIMIT 5"
 ```
 
-脚本刻意经 `ToolRegistry/ToolRuntime` 分发，不直接调用 Service，不显示 URL/密码，且
+脚本刻意经 `StructuredTool/execute_project_tool` 分发，不直接调用 Service，不显示 URL/密码，且
 查询行只打印有限预览。它可能连接真实配置的数据源，只供人工运行，不属于 CI。

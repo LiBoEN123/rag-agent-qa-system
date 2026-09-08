@@ -95,17 +95,16 @@ ContextVar、thread-local、pending event dict、全局缓存或额外 Model Gra
 
 ```text
 StructuredTool
-→ execute_registered_tool
-→ ToolRuntime.execute
+→ execute_project_tool
 → ToolSpec.handler
 → 标准工具结果字典
 → 配对 ToolMessage
 → Command(update={messages, governance_events, ...})
 ```
 
-模型可见性不是授权替代。Provider 只过滤 Schema；Registry 只负责注册和查找；
-`execute_registered_tool` 是唯一公共本地执行入口。最终权限、策略、审批、幂等、审计、
-超时、有限重试、脱敏和输出模型仍由 ToolRuntime 独占。
+模型可见性不是授权替代。`ProjectToolVisibilityMiddleware` 只过滤模型可见 Schema；
+`execute_project_tool` 是唯一公共本地执行入口。最终权限、策略、审批、幂等、审计、
+超时、有限重试、脱敏和输出模型仍由该执行边界独占。
 
 `search_knowledge_base` 也遵守这条链。其 handler 先取得候选 chunks，再使用 Context 中
 的 `effective_question`、`top_k`、`decompose_top_k` 和 `trace_id` 调用独立
@@ -162,7 +161,8 @@ Agent Runtime 缓存。
 | --- | --- | --- |
 | Settings | 首次 `get_settings()` | `clear_settings_cache()` |
 | 角色模型 | 首次对应 Model Factory getter | `clear_model_factory_cache()` |
-| 默认 Tool Registry | 首次 `get_tool_registry()` | `clear_tool_registry_cache()` |
+| Local ToolSpec catalog | 首次 `get_local_tool_specs(settings)` | `get_local_tool_specs.cache_clear()` |
+| Local StructuredTool catalog | 首次 `get_local_tools(settings)` | `get_local_tools.cache_clear()` |
 | Tool Runtime | 首次正式执行本地工具 | `reset_tool_runtime()` |
 | SQL Engine | 第一次实际 SQL 工具调用 | `clear_sql_engine_cache()` |
 | MCP Client / Tool cache | 显式启用时由 lifespan discovery | `close_mcp_runtime()` |
@@ -180,13 +180,14 @@ Agent trace 仍可按 `ENABLE_AGENT_TRACE_STORE` 单独保存。
 | `app/agent/streaming.py` | 直接 astream、安全 projector、取消传播和最终状态捕获 |
 | `app/agent/framework_agent.py` | `create_agent` 与最小 Framework State |
 | `app/agent/framework_middleware.py` | LangChain 模型/工具生命周期 Hook 和 RAG 终止协调 |
-| `app/agent/framework_tools.py` | ToolSpec/MCP 到动态框架工具的薄适配 |
+| `app/agent/framework_tools.py` | ToolSpec 到缓存 StructuredTool 的薄适配及 MCP 合并 |
+| `app/agent/tool_visibility.py` | 模型调用前按 Runtime Context 过滤本地可见工具 |
 | `app/agent/guardrails.py` | 工具治理规则、预算、错误分类、停止原因和指纹 |
 | `app/agent/tool_events.py` | Framework event 到 observation、trace 和 metrics 的投影 |
 | `app/agent/results.py` | Framework output 到唯一 AgentRunResult、校验和 trace 快照 |
 | `app/agent/answer.py` | direct/clarify/RAG 结果更新 helper |
 | `app/tools/context.py` | 请求主体、权限、trace 和 RAG 请求参数 |
-| `app/tools/registry.py` | ToolSpec 注册、查找、顺序与契约导出 |
+| `app/tools/catalog.py` | 不可变 ToolSpec catalog、重名检查、配置缓存与名称导出 |
 | `app/tools/runtime.py` | 执行期权限、策略、审计、超时、重试、脱敏和输出校验 |
 | `app/tools/knowledge_base.py` | 知识库检索和独立 RAG Graph 调用 |
 | `app/rag/graph/` | 专用 RAG 状态、节点、条件和运行入口 |
@@ -197,8 +198,8 @@ Agent trace 仍可按 `ENABLE_AGENT_TRACE_STORE` 单独保存。
 | 现象 | 首先检查 |
 | --- | --- |
 | Router 执行两次 | 是否绕开 `run_agent()` / `stream_agent()` 又手动调用 Router |
-| 模型看不到本地工具 | Provider 权限、ToolSpec `required_permissions`、Context |
-| Registry 中存在但 Agent 不可见 | Provider 权限过滤与请求级工具集合 |
+| 模型看不到本地工具 | Visibility Middleware、ToolSpec `required_permissions`、Runtime Context |
+| Catalog 中存在但 Agent 不可见 | `request.override(tools=...)` 的权限过滤结果 |
 | 工具可见但执行被拒绝 | ToolRuntime 权限、审批、幂等和策略 |
 | 工具错误后未恢复 | error code 分类、stop reason、同批 fail-closed |
 | 重复调用未停止 | governance event 指纹与连续计数 |
@@ -213,9 +214,9 @@ Agent trace 仍可按 `ENABLE_AGENT_TRACE_STORE` 单独保存。
 1. 定义严格 Pydantic `args_model`；输出可严格建模时定义 `output_model`，否则只声明
    显式 `output_schema` fallback，然后创建 ToolSpec。不要再手写 `args_schema`，也不要
    同时维护 `output_model` 与重复 `output_schema`。
-2. 注册到 ToolRegistry，设置权限、风险、超时、重试、幂等、审批和审计模式。
+2. 在 `get_local_tool_specs()` 的普通列表中追加 ToolSpec，设置权限、风险、超时、重试、幂等、审批和审计模式。
 3. 让 handler 返回标准 `tool_success()` / `tool_error()`。
-4. 为 Registry、ToolRuntime、Provider 可见性和框架调用补测试。
+4. 为 catalog、执行期 Policy、Middleware 可见性和框架调用补测试。
 5. 运行 Runtime inspection、Import Linter 和全量测试。
 
 通常不需要修改 Router、`create_agent` 或 Middleware。只有知识库完整 RAG 工具使用
@@ -225,7 +226,7 @@ Agent trace 仍可按 `ENABLE_AGENT_TRACE_STORE` 单独保存。
 
 - 不重新创建包裹 `create_agent` 的 Parent StateGraph。
 - 不在 Router 中枚举工具意图或加入 URL/PDF/SQL/MCP 关键词分支。
-- 不让 StructuredTool 绕过 ToolRegistry/ToolRuntime 直接调用本地 handler。
+- 不让 StructuredTool 绕过 `execute_project_tool` 直接调用本地 handler。
 - 不在 ChatService 或 SSE projector 中加入具体工具业务分支。
 - 不复制 LangChain 已提供的模型—工具循环、参数校验或 ToolMessage 协议。
 - 不把 ToolMessage 正文、工具参数、网页/PDF/chunk 内容或 reasoning 投影到 SSE。

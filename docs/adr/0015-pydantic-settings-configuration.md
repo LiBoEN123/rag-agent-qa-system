@@ -69,8 +69,9 @@ HTML 和 PDF 下载返回统一代理。模型和工具结果看不到代理值�
 
 - Settings：`get_settings()` / `clear_settings_cache()`；
 - Model Factory：角色 getter / `clear_model_factory_cache()`；
-- Tool Registry：`get_tool_registry()` / `clear_tool_registry_cache()`；
-- Tool Runtime：按 Registry 与 runtime 参数创建 / `reset_tool_runtime()`；
+- Local Tool Catalog：`get_local_tool_specs()` 与 `get_local_tools()` 按冻结 Settings
+  缓存，受控测试通过各函数的 `cache_clear()` 失效；
+- Agent Runtime：`_get_cached_framework_agent(settings)` / `reset_agent_runtime()`；
 - Graph/Checkpointer：按冻结 Settings 构建 / `reset_agent_graph_runtime()` 或
   `close_agent_graph_runtime()`。
 

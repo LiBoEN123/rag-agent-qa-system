@@ -522,7 +522,7 @@ def test_agent_loop_stops_after_forged_hidden_tool_permission_denial(monkeypatch
     )
 
     assert len(model.received_messages) == 1
-    assert output["stop_reason"] == "permission_denied"
+    assert output["stop_reason"] == "fatal_tool_error"
     assert output["result"]["status"] == "TOOL_ERROR"
     tool_trace = next(
         item

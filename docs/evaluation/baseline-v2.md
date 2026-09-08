@@ -32,7 +32,7 @@ Online 搜索结果和网页内容会变化，因此不应成为稳定 CI 门禁
 v1 文件保留。Agent v2 的每条 case 必须包含 `version: 2`，并且只能选择
 `question` 单轮结构或至少两轮的 `turns` 结构。`suite` 只能是 `core`、
 `online`、`mcp` 或 `mixed`。合法 status 来自 `AgentResultStatus`。本地/Web 工具名
-来自当前 `ToolRegistry`；MCP 工具名在 validate-only 阶段只做安全语法校验，正式
+来自当前本地 ToolSpec catalog；MCP 工具名在 validate-only 阶段只做安全语法校验，正式
 live run discovery 后再与安全 catalog 核对。
 
 只校验数据合同：

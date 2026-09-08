@@ -234,7 +234,7 @@ def validate_tool_names(
     dataset: AgentEvaluationDataset,
     registered_tool_names: list[str] | tuple[str, ...] | set[str],
 ) -> None:
-    """确认每个期望工具都来自当前 ToolRegistry。"""
+    """确认每个期望工具都来自当前本地 ToolSpec catalog。"""
     known = set(registered_tool_names)
     unknown: dict[str, list[str]] = {}
     for case in dataset.cases:

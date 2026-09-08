@@ -12,6 +12,10 @@
 > `pending_rag_result` 已删除。`create_agent` 仍是唯一 Agent Loop；知识库工具在本地
 > ToolRuntime 后调用独立 RAG Graph，并以原生 Tool Middleware `Command(update=...)`
 > 写入 `knowledge_base_result`。下文父图流程仅作历史记录。
+>
+> 2026-09-08 修订：本地工具定义改由缓存 catalog 提供，执行链为
+> `StructuredTool → execute_project_tool → ToolSpec.handler`；
+> 请求权限可见性由 `ProjectToolVisibilityMiddleware` 处理。
 
 ## 背景
 
