@@ -18,7 +18,6 @@ from app.api.schemas import (
 )
 from app.common.logging import get_logger
 from app.config import AppSettings
-from app.rag.scoring import safe_float
 
 
 logger = get_logger("chat_service")
@@ -30,9 +29,7 @@ class DiagnosticsDependencies:
     preview_docs: Callable
     preview_chunks: Callable
     get_rag_status: Callable
-    search_relevant_chunks: Callable
-    rerank: Callable
-    should_refuse: Callable
+    run_diagnostic_search: Callable
     read_recent_metrics: Callable
 
 
@@ -60,7 +57,7 @@ def create_diagnostics_router(
 
     @router.post("/search", response_model=SearchResponse)
     def search_api(req: ChatRequest, response: Response):
-        """执行知识库检索、重排和证据门控并返回候选片段。"""
+        """清理检索输入，并将 RAG 诊断结果映射为 HTTP 响应。"""
         question = (req.question or "").strip()
         logger.info(
             "[search] request question_len=%s question_preview=%s",
@@ -81,69 +78,13 @@ def create_diagnostics_router(
                     ),
                 )
 
-            rag_status = deps.get_rag_status()
-            if not rag_status["ready"]:
-                response.status_code = 503
-                return SearchResponse(
-                    code="EMPTY_INDEX",
-                    message=rag_status["message"],
-                    data=SearchData(
-                        question=question,
-                        status="empty_index",
-                        reason="知识库未准备完成",
-                        results=[],
-                    ),
-                )
-
             settings = deps.settings_provider()
             top_k = req.top_k if req.top_k is not None else settings.top_k
-            retrieved = deps.search_relevant_chunks(question, top_k)
-            if not retrieved:
-                return SearchResponse(
-                    code=0,
-                    message="success",
-                    data=SearchData(
-                        question=question,
-                        status="no_evidence",
-                        reason="未检索到结果",
-                        results=[],
-                    ),
-                )
-
-            final_chunks = deps.rerank(retrieved, question)[:top_k]
-            if not final_chunks:
-                return SearchResponse(
-                    code=0,
-                    message="success",
-                    data=SearchData(
-                        question=question,
-                        status="no_evidence",
-                        reason="重排后没有可用结果",
-                        results=[],
-                    ),
-                )
-
-            if deps.should_refuse(final_chunks):
-                max_vector_score = max(
-                    safe_float(item.get("vector_score"))
-                    for item in final_chunks
-                )
-                return SearchResponse(
-                    code=0,
-                    message="success",
-                    data=SearchData(
-                        question=question,
-                        status="no_evidence",
-                        reason=f"证据分数低于阈值：max_vector={max_vector_score:.4f}",
-                        results=[],
-                    ),
-                )
-
-            for rank, item in enumerate(final_chunks, start=1):
-                item["reference_id"] = f"Reference {rank}"
+            diagnostic = deps.run_diagnostic_search(question, top_k)
+            empty_index = diagnostic["status"] == "empty_index"
             results = [
                 SearchResult(
-                    reference_id=item["reference_id"],
+                    reference_id=f"Reference {rank}",
                     source_path=item["source_path"],
                     file_name=item["file_name"],
                     chunk_id=item["chunk_id"],
@@ -154,16 +95,16 @@ def create_diagnostics_router(
                     vector_score=item["vector_score"],
                     rerank_score=item.get("rerank_score", 0.0),
                 )
-                for item in final_chunks
+                for rank, item in enumerate(diagnostic["chunks"], start=1)
             ]
-            response.status_code = 200
+            response.status_code = 503 if empty_index else 200
             return SearchResponse(
-                code=0,
-                message="success",
+                code="EMPTY_INDEX" if empty_index else 0,
+                message=diagnostic["message"],
                 data=SearchData(
                     question=question,
-                    status="ok",
-                    reason="检索成功",
+                    status=diagnostic["status"],
+                    reason=diagnostic["reason"],
                     results=results,
                 ),
             )

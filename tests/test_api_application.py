@@ -3,7 +3,9 @@
 import asyncio
 from dataclasses import fields, replace
 from types import SimpleNamespace
+from unittest.mock import Mock, call
 
+import pytest
 from fastapi import Response
 
 import app.api.application as api_application
@@ -55,9 +57,12 @@ def build_diagnostics_dependencies(**overrides):
             "doc_count": 0,
             "chunk_count": 0,
         },
-        "search_relevant_chunks": lambda question, top_k: [],
-        "rerank": lambda chunks, question: chunks,
-        "should_refuse": lambda chunks: False,
+        "run_diagnostic_search": lambda question, top_k: {
+            "status": "no_evidence",
+            "message": "success",
+            "reason": "未检索到结果",
+            "chunks": [],
+        },
         "read_recent_metrics": lambda limit: [],
     }
     replacements.update(overrides)
@@ -144,9 +149,7 @@ def test_diagnostics_dependencies_only_expose_replaceable_runtime_boundaries():
         "preview_docs",
         "preview_chunks",
         "get_rag_status",
-        "search_relevant_chunks",
-        "rerank",
-        "should_refuse",
+        "run_diagnostic_search",
         "read_recent_metrics",
     ]
 
@@ -157,16 +160,27 @@ def test_diagnostics_dependencies_only_expose_replaceable_runtime_boundaries():
         dependencies,
         read_recent_metrics=replacement,
     ).read_recent_metrics is replacement
+    assert (
+        api_application.get_default_diagnostics_dependencies().run_diagnostic_search
+        is pipeline.run_diagnostic_search
+    )
 
 
 def test_search_response_model_and_empty_question_behavior_are_unchanged():
-    router = create_diagnostics_router(build_diagnostics_dependencies())
+    diagnostic = Mock()
+    settings_provider = Mock()
+    router = create_diagnostics_router(build_diagnostics_dependencies(
+        run_diagnostic_search=diagnostic,
+        settings_provider=settings_provider,
+    ))
     route = next(route for route in router.routes if route.path == "/search")
     response = Response()
 
     result = route.endpoint(ChatRequest(question="  "), response)
 
     assert route.response_model is SearchResponse
+    diagnostic.assert_not_called()
+    settings_provider.assert_not_called()
     assert response.status_code == 400
     assert result.model_dump() == {
         "code": "EMPTY_QUESTION",
@@ -182,9 +196,11 @@ def test_search_response_model_and_empty_question_behavior_are_unchanged():
 
 def test_search_empty_index_behavior_is_unchanged():
     dependencies = build_diagnostics_dependencies(
-        get_rag_status=lambda: {
-            "ready": False,
+        run_diagnostic_search=lambda question, top_k: {
+            "status": "empty_index",
             "message": "知识库索引为空",
+            "reason": "知识库未准备完成",
+            "chunks": [],
         },
     )
     endpoint = get_diagnostics_endpoint(
@@ -208,9 +224,31 @@ def test_search_empty_index_behavior_is_unchanged():
     }
 
 
-def test_search_success_shape_and_default_top_k_are_unchanged():
+def test_search_no_evidence_result_mapping_is_unchanged():
+    endpoint = get_diagnostics_endpoint(
+        create_diagnostics_router(build_diagnostics_dependencies()),
+        "/search",
+    )
+    response = Response()
+
+    result = endpoint(ChatRequest(question="测试问题"), response)
+
+    assert response.status_code == 200
+    assert result.model_dump() == {
+        "code": 0,
+        "message": "success",
+        "data": {
+            "question": "测试问题",
+            "status": "no_evidence",
+            "reason": "未检索到结果",
+            "results": [],
+        },
+    }
+
+
+def test_search_success_shape_and_top_k_resolution_are_unchanged():
     calls = []
-    retrieved = [
+    chunks = [
         {
             "source_path": "docs/example.md",
             "file_name": "example.md",
@@ -221,15 +259,29 @@ def test_search_success_shape_and_default_top_k_are_unchanged():
             "bm25_score": 0.7,
             "vector_score": 0.9,
             "rerank_score": 0.95,
-        }
+        },
+        {
+            "source_path": "docs/second.md",
+            "file_name": "second.md",
+            "chunk_id": "chunk-2",
+            "snippet": "第二段内容",
+            "hybrid_score": 0.6,
+            "bm25_score": 0.5,
+            "vector_score": 0.7,
+        },
     ]
 
     def search(question, top_k):
         calls.append((question, top_k))
-        return retrieved
+        return {
+            "status": "ok",
+            "message": "success",
+            "reason": "检索成功",
+            "chunks": chunks,
+        }
 
     dependencies = build_diagnostics_dependencies(
-        search_relevant_chunks=search,
+        run_diagnostic_search=search,
     )
     endpoint = get_diagnostics_endpoint(
         create_diagnostics_router(dependencies),
@@ -237,7 +289,7 @@ def test_search_success_shape_and_default_top_k_are_unchanged():
     )
     response = Response()
 
-    result = endpoint(ChatRequest(question="测试问题"), response)
+    result = endpoint(ChatRequest(question="  测试问题  "), response)
 
     assert calls == [("测试问题", 2)]
     assert response.status_code == 200
@@ -260,10 +312,155 @@ def test_search_success_shape_and_default_top_k_are_unchanged():
                     "bm25_score": 0.7,
                     "vector_score": 0.9,
                     "rerank_score": 0.95,
-                }
+                },
+                {
+                    "reference_id": "Reference 2",
+                    "source_path": "docs/second.md",
+                    "file_name": "second.md",
+                    "chunk_id": "chunk-2",
+                    "position": None,
+                    "snippet": "第二段内容",
+                    "score": 0.6,
+                    "bm25_score": 0.5,
+                    "vector_score": 0.7,
+                    "rerank_score": 0.0,
+                },
             ],
         },
     }
+    endpoint(ChatRequest(question="测试问题", top_k=1), Response())
+    assert calls == [("测试问题", 2), ("测试问题", 1)]
+    assert all("reference_id" not in chunk for chunk in chunks)
+
+
+def test_search_internal_error_behavior_is_unchanged():
+    diagnostic = Mock(side_effect=RuntimeError("diagnostic failure"))
+    endpoint = get_diagnostics_endpoint(
+        create_diagnostics_router(build_diagnostics_dependencies(
+            run_diagnostic_search=diagnostic,
+        )),
+        "/search",
+    )
+    response = Response()
+
+    result = endpoint(ChatRequest(question="测试问题"), response)
+
+    assert response.status_code == 500
+    assert result.model_dump() == {
+        "code": "INTERNAL_ERROR",
+        "message": "服务器内部错误",
+        "data": {
+            "question": "测试问题",
+            "status": "error",
+            "reason": "search 接口处理异常",
+            "results": [],
+        },
+    }
+
+
+@pytest.fixture
+def diagnostic_search_steps(monkeypatch):
+    steps = Mock()
+    steps.get_rag_status.return_value = {"ready": True, "message": "ready"}
+    steps.search_relevant_chunks.return_value = []
+    steps.rerank.return_value = []
+    steps.should_refuse.return_value = False
+    for name in ("get_rag_status", "search_relevant_chunks", "rerank", "should_refuse"):
+        monkeypatch.setattr(pipeline, name, getattr(steps, name))
+    return steps
+
+
+def test_diagnostic_search_not_ready_skips_retrieval(diagnostic_search_steps):
+    steps = diagnostic_search_steps
+    steps.get_rag_status.return_value = {"ready": False, "message": "索引尚未就绪"}
+
+    assert pipeline.run_diagnostic_search("测试问题", 2) == {
+        "status": "empty_index",
+        "message": "索引尚未就绪",
+        "reason": "知识库未准备完成",
+        "chunks": [],
+    }
+    assert steps.mock_calls == [call.get_rag_status()]
+
+
+def test_diagnostic_search_empty_retrieval_skips_rerank(diagnostic_search_steps):
+    assert pipeline.run_diagnostic_search("测试问题", 2) == {
+        "status": "no_evidence",
+        "message": "success",
+        "reason": "未检索到结果",
+        "chunks": [],
+    }
+    assert diagnostic_search_steps.mock_calls == [
+        call.get_rag_status(),
+        call.search_relevant_chunks("测试问题", 2),
+    ]
+
+
+def test_diagnostic_search_empty_rerank_skips_evidence_gate(diagnostic_search_steps):
+    steps = diagnostic_search_steps
+    retrieved = [{"vector_score": 0.9}]
+    steps.search_relevant_chunks.return_value = retrieved
+
+    assert pipeline.run_diagnostic_search("测试问题", 2) == {
+        "status": "no_evidence",
+        "message": "success",
+        "reason": "重排后没有可用结果",
+        "chunks": [],
+    }
+    assert steps.mock_calls == [
+        call.get_rag_status(),
+        call.search_relevant_chunks("测试问题", 2),
+        call.rerank(retrieved, "测试问题"),
+    ]
+
+
+def test_diagnostic_search_refusal_preserves_safe_vector_reason(diagnostic_search_steps):
+    steps = diagnostic_search_steps
+    reranked = [
+        {"vector_score": None},
+        {"vector_score": "nan"},
+        {"vector_score": "0.123456"},
+        {"vector_score": 0.9},
+    ]
+    steps.search_relevant_chunks.return_value = reranked
+    steps.rerank.return_value = reranked
+    steps.should_refuse.return_value = True
+
+    assert pipeline.run_diagnostic_search("测试问题", 3) == {
+        "status": "no_evidence",
+        "message": "success",
+        "reason": "证据分数低于阈值：max_vector=0.1235",
+        "chunks": [],
+    }
+    steps.should_refuse.assert_called_once_with(reranked[:3])
+
+
+def test_diagnostic_search_success_preserves_order_and_chunks(diagnostic_search_steps):
+    steps = diagnostic_search_steps
+    retrieved = [{"chunk_id": "first"}, {"chunk_id": "second"}, {"chunk_id": "third"}]
+    reranked = [retrieved[2], retrieved[0], retrieved[1]]
+    original = [dict(chunk) for chunk in retrieved]
+    steps.search_relevant_chunks.return_value = retrieved
+    steps.rerank.return_value = reranked
+
+    result = pipeline.run_diagnostic_search("测试问题", 2)
+
+    assert result == {
+        "status": "ok",
+        "message": "success",
+        "reason": "检索成功",
+        "chunks": reranked[:2],
+    }
+    assert result["chunks"][0] is reranked[0]
+    assert result["chunks"][1] is reranked[1]
+    assert retrieved == original
+    assert all("reference_id" not in chunk for chunk in reranked)
+    assert steps.mock_calls == [
+        call.get_rag_status(),
+        call.search_relevant_chunks("测试问题", 2),
+        call.rerank(retrieved, "测试问题"),
+        call.should_refuse(reranked[:2]),
+    ]
 
 
 def test_decide_behavior_uses_the_deterministic_router_unchanged():

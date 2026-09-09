@@ -36,10 +36,8 @@ from app.rag.pipeline import (
     preview_chunks,
     preview_docs,
     rebuild_and_persist_index,
-    rerank,
-    search_relevant_chunks,
+    run_diagnostic_search,
 )
-from app.rag.policy import should_refuse
 from app.rag.store import needs_rebuild
 from app.services.chat_service import (
     ChatService,
@@ -57,9 +55,7 @@ def get_default_diagnostics_dependencies() -> DiagnosticsDependencies:
         preview_docs=preview_docs,
         preview_chunks=preview_chunks,
         get_rag_status=get_rag_status,
-        search_relevant_chunks=search_relevant_chunks,
-        rerank=rerank,
-        should_refuse=should_refuse,
+        run_diagnostic_search=run_diagnostic_search,
         read_recent_metrics=read_recent_metrics,
     )
 

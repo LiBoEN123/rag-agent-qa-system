@@ -12,12 +12,14 @@ from app.rag.debug import (
     preview_docs as preview_docs_impl,
 )
 from app.rag.indexing import load_local_langchain_documents, sync_documents
+from app.rag.policy import should_refuse
 from app.rag.retrieval import (
     retrieve as retrieve_impl,
     rerank as rerank_impl,
     search_relevant_chunks as search_relevant_chunks_impl,
     retrieve_with_sub_queries,
 )
+from app.rag.scoring import safe_float
 from app.rag.store import (
     build_current_manifest,
     _load_embedding_model,
@@ -241,6 +243,54 @@ def search_relevant_chunks(question: str, top_k: int = 3) -> List[Dict[str, Any]
 # =========================
 # 调试接口包装
 # =========================
+def run_diagnostic_search(question: str, top_k: int) -> dict[str, Any]:
+    """按当前索引执行单查询检索、重排和证据门控，不进入问答工作流。"""
+    rag_status = get_rag_status()
+    if not rag_status["ready"]:
+        return {
+            "status": "empty_index",
+            "message": rag_status["message"],
+            "reason": "知识库未准备完成",
+            "chunks": [],
+        }
+
+    retrieved = search_relevant_chunks(question, top_k)
+    if not retrieved:
+        return {
+            "status": "no_evidence",
+            "message": "success",
+            "reason": "未检索到结果",
+            "chunks": [],
+        }
+
+    final_chunks = rerank(retrieved, question)[:top_k]
+    if not final_chunks:
+        return {
+            "status": "no_evidence",
+            "message": "success",
+            "reason": "重排后没有可用结果",
+            "chunks": [],
+        }
+
+    if should_refuse(final_chunks):
+        max_vector_score = max(
+            safe_float(item.get("vector_score")) for item in final_chunks
+        )
+        return {
+            "status": "no_evidence",
+            "message": "success",
+            "reason": f"证据分数低于阈值：max_vector={max_vector_score:.4f}",
+            "chunks": [],
+        }
+
+    return {
+        "status": "ok",
+        "message": "success",
+        "reason": "检索成功",
+        "chunks": final_chunks,
+    }
+
+
 def preview_docs():
     """返回当前知识库文档注册表的调试预览。"""
     return preview_docs_impl(docs_registry)
