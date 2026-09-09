@@ -31,11 +31,8 @@ from app.api.middleware import trace_and_timing_middleware
 from app.config import AppSettings, get_settings, validate_startup_environment
 from app.ingestion import IngestionPrincipalType, IngestionRequester, IngestionService
 from app.observability.metrics import read_recent_metrics
-from app.rag import (
+from app.rag.pipeline import (
     get_rag_status,
-    index_cache_exists,
-    load_index_cache,
-    needs_rebuild,
     preview_chunks,
     preview_docs,
     rebuild_and_persist_index,
@@ -43,6 +40,7 @@ from app.rag import (
     search_relevant_chunks,
 )
 from app.rag.policy import should_refuse
+from app.rag.store import needs_rebuild
 from app.services.chat_service import (
     ChatService,
     create_default_chat_service,
@@ -117,8 +115,6 @@ def start_application_resources(settings: AppSettings | None = None) -> None:
         StartupDependencies(
             settings=resolved,
             needs_rebuild=needs_rebuild,
-            index_cache_exists=index_cache_exists,
-            load_index_cache=load_index_cache,
             rebuild_and_persist_index=rebuild_and_persist_index,
         )
     )

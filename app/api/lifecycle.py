@@ -1,6 +1,6 @@
 """应用启动生命周期模块。
 
-负责校验配置，并在服务启动时判断加载缓存还是重建知识库索引。
+启动时增量同步知识库索引，并管理 Agent 等运行时资源。
 """
 
 from dataclasses import dataclass
@@ -17,8 +17,6 @@ logger = get_logger("chat_service")
 class StartupDependencies:
     settings: AppSettings
     needs_rebuild: Callable
-    index_cache_exists: Callable
-    load_index_cache: Callable
     rebuild_and_persist_index: Callable
 
 

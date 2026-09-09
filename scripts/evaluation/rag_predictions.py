@@ -14,16 +14,14 @@ from typing import Any
 
 from app.api.lifecycle import StartupDependencies, initialize_rag
 from app.config import get_settings
-from app.rag import (
+from app.rag.pipeline import (
     get_rag_status,
-    index_cache_exists,
-    load_index_cache,
-    needs_rebuild,
     rebuild_and_persist_index,
     retrieve,
 )
 from app.rag.graph import run_rag_subgraph
 from app.rag.generation import build_context_with_selection
+from app.rag.store import needs_rebuild
 
 
 PREDICTION_SCHEMA_VERSION = 2
@@ -105,8 +103,6 @@ def initialize_rag_for_predictions(force_rebuild: bool = False) -> None:
             StartupDependencies(
                 settings=settings,
                 needs_rebuild=needs_rebuild,
-                index_cache_exists=index_cache_exists,
-                load_index_cache=load_index_cache,
                 rebuild_and_persist_index=rebuild_and_persist_index,
             )
         )

@@ -1,4 +1,4 @@
-import app.rag as rag
+from app.rag import pipeline
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import ValidationError
@@ -95,7 +95,7 @@ def test_compare_documents_success(monkeypatch):
             "metadata": {"file_name": "new.md", "chunk_id": 3},
         },
     ]
-    monkeypatch.setattr(rag, "chunks", fake_chunks, raising=False)
+    monkeypatch.setattr(pipeline, "chunks", fake_chunks)
     monkeypatch.setattr(
         compare_documents_module,
         "_call_compare_documents_llm",
@@ -132,6 +132,11 @@ def test_compare_documents_success(monkeypatch):
     assert output["doc_a_evidence"][0]["chunk_id"] == 1
     assert output["doc_b_evidence"][0]["chunk_id"] == 2
 
+    monkeypatch.setattr(pipeline, "chunks", fake_chunks[1:])
+    after_reload = compare_documents_tool(result["tool_input"])
+    assert after_reload["ok"] is False
+    assert "doc_a 未找到匹配文档 chunk" in after_reload["error"]
+
 
 def test_compare_documents_same_numeric_terms_not_conflict(monkeypatch):
     """验证同一规定值的不同措辞不会仅因文本不完全一致而判定冲突。"""
@@ -147,7 +152,7 @@ def test_compare_documents_same_numeric_terms_not_conflict(monkeypatch):
             "metadata": {"file_name": "new.md", "chunk_id": 2},
         },
     ]
-    monkeypatch.setattr(rag, "chunks", fake_chunks, raising=False)
+    monkeypatch.setattr(pipeline, "chunks", fake_chunks)
     monkeypatch.setattr(
         compare_documents_module,
         "_call_compare_documents_llm",
@@ -187,7 +192,7 @@ def test_compare_documents_returns_error_when_llm_fails(monkeypatch):
             "metadata": {"file_name": "new.md", "chunk_id": 2},
         },
     ]
-    monkeypatch.setattr(rag, "chunks", fake_chunks, raising=False)
+    monkeypatch.setattr(pipeline, "chunks", fake_chunks)
 
     def fake_llm(**kwargs):
         """模拟 LLM 调用失败。"""
@@ -306,7 +311,7 @@ def test_execution_entry_propagates_compare_documents_trace_id(
             summary="摘要",
         )
 
-    monkeypatch.setattr(rag, "chunks", fake_chunks, raising=False)
+    monkeypatch.setattr(pipeline, "chunks", fake_chunks)
     monkeypatch.setattr(
         compare_documents_module.ModelGateway,
         "invoke_structured",

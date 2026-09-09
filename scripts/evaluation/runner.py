@@ -541,7 +541,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Extended MCP preflight failed: {exc}", file=sys.stderr)
         return 2
 
-    from app.rag import get_rag_status
+    from app.rag.pipeline import get_rag_status
 
     rag_status = get_rag_status()
     manifest = build_manifest(

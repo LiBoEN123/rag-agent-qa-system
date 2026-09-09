@@ -336,13 +336,17 @@ def test_force_rebuild_preserves_legacy_collection(tmp_path):
     assert len(current.get(include=[])["ids"]) == 1
 
 
-def test_startup_always_syncs_and_propagates_force_rebuild():
+@pytest.mark.parametrize("needs_force_rebuild", [False, True])
+@pytest.mark.parametrize("auto_rebuild", [False, True])
+def test_startup_always_syncs_and_propagates_force_rebuild(
+    needs_force_rebuild, auto_rebuild,
+):
     calls = []
     settings = SimpleNamespace(
         rag_file_path="/tmp/kb",
         chunk_size=100,
         chunk_overlap=10,
-        auto_rebuild_on_startup=False,
+        auto_rebuild_on_startup=auto_rebuild,
     )
 
     def sync(**kwargs):
@@ -352,9 +356,7 @@ def test_startup_always_syncs_and_propagates_force_rebuild():
     initialize_rag(
         StartupDependencies(
             settings=settings,
-            needs_rebuild=lambda _data_dir: (False, "unchanged"),
-            index_cache_exists=lambda: True,
-            load_index_cache=lambda: pytest.fail("startup 必须走 index sync"),
+            needs_rebuild=lambda _data_dir: (needs_force_rebuild, "manifest check"),
             rebuild_and_persist_index=sync,
         )
     )
@@ -364,7 +366,7 @@ def test_startup_always_syncs_and_propagates_force_rebuild():
             "data_dir": "/tmp/kb",
             "chunk_size": 100,
             "chunk_overlap": 10,
-            "force_rebuild": False,
+            "force_rebuild": needs_force_rebuild or auto_rebuild,
         }
     ]
 

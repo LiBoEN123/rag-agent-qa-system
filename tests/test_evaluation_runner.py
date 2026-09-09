@@ -583,7 +583,7 @@ def test_runner_writes_expected_output_structure(
         lambda **kwargs: _fake_manifest(kwargs["run_id"]),
     )
     monkeypatch.setattr(
-        "app.rag.get_rag_status",
+        "app.rag.pipeline.get_rag_status",
         lambda: {},
     )
 

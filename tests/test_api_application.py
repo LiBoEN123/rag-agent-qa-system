@@ -15,6 +15,7 @@ from app.agent.results import (
 from app.api.diagnostics import create_diagnostics_router
 from app.api.schemas import ChatRequest, SearchResponse
 from app.contracts.chat import AgentResultStatus
+from app.rag import pipeline
 from app.services.chat_models import ChatServiceOutcome
 
 
@@ -288,6 +289,52 @@ def test_decide_behavior_uses_the_deterministic_router_unchanged():
             },
         },
     }
+
+
+def test_default_diagnostics_reads_current_pipeline_state(monkeypatch):
+    endpoint = get_diagnostics_endpoint(
+        create_diagnostics_router(api_application.get_default_diagnostics_dependencies()),
+        "/kb_summary",
+    )
+    documents = [{"file_name": "current.md"}]
+    monkeypatch.setattr(pipeline, "docs_registry", documents)
+    monkeypatch.setattr(pipeline, "chunks", [{"text": "current"}])
+    monkeypatch.setattr(pipeline, "RAG_READY", True)
+    monkeypatch.setattr(pipeline, "RAG_INIT_MESSAGE", "OK")
+    monkeypatch.setattr(pipeline, "INDEX_SOURCE", "chroma")
+
+    assert endpoint()["data"] == {
+        "ready": True,
+        "message": "OK",
+        "doc_count": 1,
+        "chunk_count": 1,
+        "index_source": "chroma",
+        "file_names": ["current.md"],
+        "documents": documents,
+    }
+
+
+def test_start_application_resources_wires_incremental_sync(monkeypatch):
+    settings = api_application.get_settings()
+    calls = []
+    monkeypatch.setattr(api_application, "validate_startup_environment", lambda _: None)
+    monkeypatch.setattr(api_application, "init_db", lambda _: None)
+    monkeypatch.setattr(api_application, "initialize_agent_runtime", lambda _: None)
+    monkeypatch.setattr(api_application, "needs_rebuild", lambda _: (False, "unchanged"))
+
+    def sync(**kwargs):
+        calls.append(kwargs)
+        return True, "ok"
+
+    monkeypatch.setattr(api_application, "rebuild_and_persist_index", sync)
+    api_application.start_application_resources(settings)
+
+    assert calls == [{
+        "data_dir": str(settings.rag_file_path),
+        "chunk_size": settings.chunk_size,
+        "chunk_overlap": settings.chunk_overlap,
+        "force_rebuild": settings.auto_rebuild_on_startup,
+    }]
 
 
 def test_create_app_does_not_run_lifespan_at_import_or_construction(monkeypatch):

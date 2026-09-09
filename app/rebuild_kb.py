@@ -4,7 +4,7 @@
 """
 
 from app.config import get_settings, validate_rag_environment
-from app.rag import rebuild_and_persist_index
+from app.rag.pipeline import rebuild_and_persist_index
 
 
 def main():

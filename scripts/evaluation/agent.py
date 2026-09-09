@@ -31,11 +31,11 @@ def safe_lower(text: Any) -> str:
 def init_rag_for_eval(force_rebuild: bool = False) -> None:
     """保留 Agent-only baseline 原有的 RAG 初始化语义。"""
     from app.config import get_settings, validate_startup_environment
-    from app.rag import (
+    from app.rag.pipeline import (
         get_rag_status,
-        needs_rebuild,
         rebuild_and_persist_index,
     )
+    from app.rag.store import needs_rebuild
 
     settings = get_settings()
     validate_startup_environment(settings)

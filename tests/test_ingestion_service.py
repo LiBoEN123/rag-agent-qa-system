@@ -233,7 +233,6 @@ def test_candidate_lifecycle_has_zero_rag_chroma_mcp_web_or_network_calls(
     calls = {
         "chroma_writes": 0,
         "rag_rebuilds": 0,
-        "rag_cache_writes": 0,
         "mcp_calls": 0,
         "web_calls": 0,
         "network_calls": 0,
@@ -253,18 +252,8 @@ def test_candidate_lifecycle_has_zero_rag_chroma_mcp_web_or_network_calls(
     )
     monkeypatch.setattr(
         rag_pipeline,
-        "rebuild_index",
-        forbidden("rag_rebuilds"),
-    )
-    monkeypatch.setattr(
-        rag_pipeline,
         "rebuild_and_persist_index",
         forbidden("rag_rebuilds"),
-    )
-    monkeypatch.setattr(
-        rag_pipeline,
-        "save_index_cache",
-        forbidden("rag_cache_writes"),
     )
     monkeypatch.setattr(
         mcp_client,
@@ -301,7 +290,6 @@ def test_candidate_lifecycle_has_zero_rag_chroma_mcp_web_or_network_calls(
     assert calls == {
         "chroma_writes": 0,
         "rag_rebuilds": 0,
-        "rag_cache_writes": 0,
         "mcp_calls": 0,
         "web_calls": 0,
         "network_calls": 0,

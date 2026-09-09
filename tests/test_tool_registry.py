@@ -161,7 +161,7 @@ def test_invoke_local_tool_runs_search_knowledge_base(
     tool_registry,
 ):
     """Graph 输入保留预检索候选，对外 evidence 只使用最终候选。"""
-    import app.rag as rag
+    from app.rag import pipeline
 
     prefetched_chunks = [
         {"chunk_id": "initial-a", "text": "初始候选 A", "hybrid_score": 0.4},
@@ -203,10 +203,9 @@ def test_invoke_local_tool_runs_search_knowledge_base(
         }
 
     monkeypatch.setattr(
-        rag,
+        pipeline,
         "search_relevant_chunks",
         fake_search_relevant_chunks,
-        raising=False
     )
     monkeypatch.setattr(
         "app.rag.graph.run_rag_subgraph",
@@ -242,7 +241,7 @@ def test_search_knowledge_base_exposes_multi_query_final_chunks(
     tool_registry,
 ):
     """模拟多查询改变候选集合后，公开 evidence 不回退到预检索结果。"""
-    import app.rag as rag
+    from app.rag import pipeline
 
     prefetched_chunks = [
         {"chunk_id": "initial-a", "text": "初始候选 A", "hybrid_score": 0.4}
@@ -254,10 +253,9 @@ def test_search_knowledge_base_exposes_multi_query_final_chunks(
     rag_call = {}
 
     monkeypatch.setattr(
-        rag,
+        pipeline,
         "search_relevant_chunks",
         lambda query, top_k=5: prefetched_chunks,
-        raising=False,
     )
 
     def fake_run_rag_subgraph(**kwargs):
@@ -374,7 +372,7 @@ def test_get_chunk_text_keeps_integer_and_string_ids(
     chunk_id,
 ):
     """合法整数和字符串 ID 经 Schema 规范化后进入真实 handler。"""
-    import app.rag as rag
+    from app.rag import pipeline
 
     received = []
 
@@ -382,7 +380,7 @@ def test_get_chunk_text_keeps_integer_and_string_ids(
         received.append(value)
         return {"found": True, "chunk_id": value, "text": "测试正文"}
 
-    monkeypatch.setattr(rag, "get_chunk_full_text", fake_get_chunk_full_text)
+    monkeypatch.setattr(pipeline, "get_chunk_full_text", fake_get_chunk_full_text)
     result = invoke_local_tool(
         registry=tool_registry,
         tool_name="get_chunk_text",
@@ -404,13 +402,13 @@ def test_list_documents_output_model_accepts_current_preview_shape(
     tool_registry,
 ):
     """文档列表生产输出模型接受当前普通字典预览结构。"""
-    import app.rag as rag
+    from app.rag import pipeline
 
     documents = [
         {"file_name": "a.md", "source_path": "data/a.md", "chunk_count": 2},
         {"file_name": "b.md", "source_path": "data/b.md", "chunk_count": 1},
     ]
-    monkeypatch.setattr(rag, "preview_docs", lambda: documents)
+    monkeypatch.setattr(pipeline, "preview_docs", lambda: documents)
 
     result = invoke_local_tool(
         registry=tool_registry,

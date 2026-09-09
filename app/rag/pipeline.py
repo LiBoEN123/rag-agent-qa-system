@@ -21,9 +21,7 @@ from app.rag.retrieval import (
 from app.rag.store import (
     build_current_manifest,
     _load_embedding_model,
-    index_cache_exists as index_cache_exists_impl,
     load_index_cache as load_index_cache_impl,
-    needs_rebuild as needs_rebuild_impl,
     save_manifest,
 )
 # 进程内索引状态。
@@ -131,20 +129,6 @@ def _sync_and_build_runtime(
     return bundle, sync_result
 
 
-def rebuild_index(
-    data_dir: str,
-    chunk_size: int | None = None,
-    chunk_overlap: int | None = None,
-):
-    """通过 LangChain 增量同步并发布内存 RAG runtime。"""
-    bundle, sync_result = _sync_and_build_runtime(
-        data_dir=data_dir,
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-    )
-    _publish_runtime_bundle(bundle)
-    return sync_result
-
 def rebuild_and_persist_index(
     data_dir: str,
     chunk_size: int | None = None,
@@ -177,38 +161,8 @@ def rebuild_and_persist_index(
 
 
 # =========================
-# 缓存与清单
+# 持久化索引恢复
 # =========================
-def needs_rebuild(
-    data_dir: str,
-    chunk_size: int | None = None,
-    chunk_overlap: int | None = None,
-):
-    """代理底层 manifest 检查，判断当前知识库是否需要重建。"""
-    settings = get_settings()
-    chunk_size = settings.chunk_size if chunk_size is None else chunk_size
-    chunk_overlap = (
-        settings.chunk_overlap if chunk_overlap is None else chunk_overlap
-    )
-    return needs_rebuild_impl(
-        data_dir=data_dir,
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap
-    )
-
-
-def index_cache_exists():
-    """检查本地索引缓存文件是否齐全。"""
-    return index_cache_exists_impl()
-
-
-def save_index_cache():
-    """拒绝旧 direct-write API；索引写入必须经过 LangChain sync。"""
-    raise RuntimeError(
-        "save_index_cache 已停用，请使用 rebuild_and_persist_index"
-    )
-
-
 def load_index_cache() -> tuple[bool, str]:
     """从磁盘缓存加载索引并恢复全局 RAG 状态。"""
     global chunks, texts, docs_registry, bm25, model, rerank_model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE, INDEX_SOURCE
