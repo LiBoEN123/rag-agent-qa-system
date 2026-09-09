@@ -129,15 +129,15 @@ Command 写入配对 ToolMessage、治理事件和内部 `knowledge_base_result`
 
 `tool_events.py` 在调用结束后一次性把治理事件转换成 observations、tool trace、
 迭代/工具/错误计数和连续指纹；没有 `framework_events_applied` 之类重放游标。
-Router decision、问题语义、references、业务 status 和最终 answer 只存在于
-`results.py` 使用的普通 Python 结果快照，不复制到第二个 Graph State。
+Router decision 和问题语义保留在 Runtime Invocation；`results.py` 从框架输出直接
+构造 `AgentRunResult`，不再维护包含 references、业务 status 和 answer 的临时结果状态。
 
 固定结果链为：
 
 ```text
 Router short-circuit 或 create_agent final state
 → app.agent.tool_events 投影（agent 路径）
-→ app.agent.results / app.agent.answer 归一化
+→ app.agent.results 确定性归一化（RAG status 直接映射最终 Result status）
 → AgentRunResult
 → model_dump(mode="json")
 → ChatService 附加受控 Query Rewrite trace
@@ -185,7 +185,6 @@ Agent trace 仍可按 `ENABLE_AGENT_TRACE_STORE` 单独保存。
 | `app/agent/guardrails.py` | 工具治理规则、预算、错误分类、停止原因和指纹 |
 | `app/agent/tool_events.py` | Framework event 到 observation、trace 和 metrics 的投影 |
 | `app/agent/results.py` | Framework output 到唯一 AgentRunResult、校验和 trace 快照 |
-| `app/agent/answer.py` | direct/clarify/RAG 结果更新 helper |
 | `app/tools/context.py` | 请求主体、权限、trace 和 RAG 请求参数 |
 | `app/tools/catalog.py` | 不可变 ToolSpec catalog、重名检查、配置缓存与名称导出 |
 | `app/tools/runtime.py` | 执行期权限、策略、审计、超时、重试、脱敏和输出校验 |

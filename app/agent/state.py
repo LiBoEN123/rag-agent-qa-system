@@ -1,18 +1,6 @@
-"""Agent 业务状态中的轻量类型。"""
+"""工具治理事件投影使用的轻量 observation 类型。"""
 
-from typing import Any, Literal, TypedDict
-
-
-AgentStatus = Literal[
-    "running",
-    "ok",
-    "clarify",
-    "direct_answer",
-    "tool_error",
-    "model_error",
-    "no_evidence",
-    "error",
-]
+from typing import Any, TypedDict
 
 
 class AgentObservation(TypedDict):
@@ -29,5 +17,4 @@ class AgentObservation(TypedDict):
 
 __all__ = [
     "AgentObservation",
-    "AgentStatus",
 ]

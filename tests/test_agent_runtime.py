@@ -3,7 +3,6 @@
 from copy import deepcopy
 
 from app.agent.results import (
-    build_agent_result,
     build_internal_error_result,
     build_short_circuit_result,
     resolve_llm_call_count,
@@ -12,31 +11,6 @@ from app.agent.results import (
 from app.agent.runtime import (
     prepare_agent_runtime_invocation,
 )
-
-
-def test_build_result_preserves_public_protocol_without_mutation():
-    state = {
-        "status": "clarify",
-        "final_answer": "请说明具体对象。",
-        "references": [],
-        "reason": "问题存在指代不明",
-        "decision": {"action": "clarify"},
-        "observations": [],
-        "tool_trace": [{"step": "decide"}],
-        "decompose_llm_used": False,
-        "answer_llm_used": False,
-        "llm_call_count": 0,
-    }
-    original = deepcopy(state)
-
-    result = build_agent_result(state).model_dump(mode="json")
-
-    assert state == original
-    assert result["status"] == "NEED_CLARIFICATION"
-    assert result["need_clarification"] is True
-    assert result["clarification_question"] == "请说明具体对象。"
-    assert result["action"] == "clarify"
-    assert result["references"] == []
 
 
 def test_resolve_llm_call_count_keeps_exact_or_minimum_usage():
