@@ -10,7 +10,6 @@ from app.agent.results import (
     build_short_circuit_result,
 )
 from app.agent.runtime import prepare_agent_runtime_invocation
-from app.agent.tool_events import framework_metrics, normalize_governance_events
 from app.config import AppSettings, get_settings
 from app.tools.context import ToolInvocationContext
 
@@ -57,13 +56,6 @@ class AgentRuntimeHarness:
         raw: Mapping[str, Any],
         result: Mapping[str, Any],
     ) -> dict[str, Any]:
-        raw_events = raw.get("governance_events")
-        events = (
-            [dict(item) for item in raw_events if isinstance(item, Mapping)]
-            if isinstance(raw_events, list)
-            else []
-        )
-        observations, _ = normalize_governance_events(events)
         status_map = {
             "OK": "ok",
             "NEED_CLARIFICATION": "clarify",
@@ -74,8 +66,6 @@ class AgentRuntimeHarness:
         }
         return {
             **raw,
-            **framework_metrics(events),
-            "observations": observations,
             "status": status_map.get(str(result.get("status") or ""), "error"),
             "final_answer": str(result.get("answer") or ""),
             "result": dict(result),

@@ -70,31 +70,25 @@ class AgentResultInvocation(Protocol):
     session_id: str | None
 
 
-def summarize_observations_for_result(
+def summarize_tool_trace_for_result(
     *,
     status: AgentResultStatus,
     reason: str,
-    observations: list[dict[str, Any]],
+    tool_trace: list[dict[str, Any]],
 ) -> str:
-    """从 observations 中提取 API 响应使用的工具结果摘要。"""
+    """从唯一公开 trace 中提取计入工具调用的结果摘要。"""
     if status is AgentResultStatus.NEED_CLARIFICATION:
         return "未调用工具，问题需要澄清"
-    if not observations:
-        return reason
-
     summaries = []
-    for observation in observations:
-        if observation.get("tool_name") == "search_knowledge_base":
-            output = observation.get("output")
-            output = output if isinstance(output, dict) else {}
-            chunks = output.get("chunks", [])
-            count = output.get(
-                "count",
-                len(chunks) if isinstance(chunks, list) else 0,
-            )
+    for trace in tool_trace:
+        # step_id 仅属于 counted call；handler_executed 会排除已计数的失败。
+        if trace.get("step") != "tool_call" or "step_id" not in trace:
+            continue
+        if trace.get("tool_name") == "search_knowledge_base":
+            count = trace.get("final_chunk_count", 0)
             summaries.append(f"知识库检索完成，召回 {count} 个 chunk")
             continue
-        summary = str(observation.get("summary") or "")
+        summary = str(trace.get("summary") or "")
         if summary:
             summaries.append(summary)
     return "；".join(summaries[-3:]) if summaries else reason
@@ -355,7 +349,7 @@ def build_framework_agent_result(
         if isinstance(raw_events, list)
         else []
     )
-    observations, event_trace = normalize_governance_events(events)
+    event_trace = normalize_governance_events(events)
     successful_models = sum(
         item.get("kind") == "model" and item.get("ok") for item in events
     )
@@ -454,8 +448,8 @@ def build_framework_agent_result(
         ),
         reason=reason,
         action=str(invocation.decision.get("action") or ""),
-        tool_result_summary=summarize_observations_for_result(
-            status=status, reason=reason, observations=observations,
+        tool_result_summary=summarize_tool_trace_for_result(
+            status=status, reason=reason, tool_trace=tool_trace,
         ),
         tool_trace=upsert_llm_usage_trace(
             tool_trace,

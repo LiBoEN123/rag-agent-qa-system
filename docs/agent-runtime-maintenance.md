@@ -127,8 +127,11 @@ Command 写入配对 ToolMessage、治理事件和内部 `knowledge_base_result`
 - `agent_elapsed_ms` 和 `stop_reason`；
 - 可选 `knowledge_base_result`。
 
-`tool_events.py` 在调用结束后一次性把治理事件转换成 observations、tool trace、
-迭代/工具/错误计数和连续指纹；没有 `framework_events_applied` 之类重放游标。
+`tool_events.py` 在调用结束后把治理事件一次性转换成公开 tool trace；
+`results.py` 直接使用同一份 trace 生成 `tool_result_summary`，不再保留 observation
+中间投影或无生产 caller 的 `framework_metrics`。只有 counted call 分配连续
+`step_id`；summary 以该字段区分未计数的 guardrail，仍保留已计数的 handler 前失败摘要。
+没有 `framework_events_applied` 之类重放游标。
 Router decision 和问题语义保留在 Runtime Invocation；`results.py` 从框架输出直接
 构造 `AgentRunResult`，不再维护包含 references、业务 status 和 answer 的临时结果状态。
 
@@ -136,7 +139,7 @@ Router decision 和问题语义保留在 Runtime Invocation；`results.py` 从�
 
 ```text
 Router short-circuit 或 create_agent final state
-→ app.agent.tool_events 投影（agent 路径）
+→ app.agent.tool_events 直接生成 public tool trace（agent 路径）
 → app.agent.results 确定性归一化（RAG status 直接映射最终 Result status）
 → AgentRunResult
 → model_dump(mode="json")
@@ -183,7 +186,7 @@ Agent trace 仍可按 `ENABLE_AGENT_TRACE_STORE` 单独保存。
 | `app/agent/framework_tools.py` | ToolSpec 到缓存 StructuredTool 的薄适配及 MCP 合并 |
 | `app/agent/tool_visibility.py` | 模型调用前按 Runtime Context 过滤本地可见工具 |
 | `app/agent/guardrails.py` | 工具治理规则、预算、错误分类、停止原因和指纹 |
-| `app/agent/tool_events.py` | Framework event 到 observation、trace 和 metrics 的投影 |
+| `app/agent/tool_events.py` | Governance event 到唯一公开 tool trace 的投影 |
 | `app/agent/results.py` | Framework output 到唯一 AgentRunResult、校验和 trace 快照 |
 | `app/tools/context.py` | 请求主体、权限、trace 和 RAG 请求参数 |
 | `app/tools/catalog.py` | 不可变 ToolSpec catalog、重名检查、配置缓存与名称导出 |

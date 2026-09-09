@@ -180,7 +180,10 @@ def _assert_success(output, model, calls):
     assert payload["ok"] is True
     assert payload["output"]["content_is_untrusted"] is True
     assert output["result"]["answer"] == "北京晴，20 摄氏度。"
-    assert output["tool_call_count"] == 1
+    assert sum(
+        bool(event.get("counted_call"))
+        for event in output.get("governance_events", [])
+    ) == 1
     assert output.get("knowledge_base_result") in (None, {})
     tool_trace = next(
         item
@@ -393,7 +396,10 @@ def test_repeated_mcp_calls_are_stopped_by_existing_guardrail(
     output = graph.invoke(_input(), context=_context())
 
     assert len(calls) == 2
-    assert output["tool_call_count"] == 2
+    assert sum(
+        bool(event.get("counted_call"))
+        for event in output.get("governance_events", [])
+    ) == 2
     assert output["stop_reason"] == "repeated_tool_call"
     blocked = next(
         message

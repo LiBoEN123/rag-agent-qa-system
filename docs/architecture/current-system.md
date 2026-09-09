@@ -138,7 +138,7 @@ Router 只决定 `agent`、`direct_answer` 或 `clarify`，不选择具体工具
 - `runtime.py`：参数校验、Router、请求 Context、Agent 构建/缓存和同步 invoke；
 - `streaming.py`：`astream` 消费与安全 SSE 事件投影；
 - `guardrails.py`：治理规则、预算、错误分类和指纹计算；
-- `tool_events.py`：append-only framework event 到 observations、tool trace 和 metrics；
+- `tool_events.py`：append-only governance event 一次性生成公开 tool trace；
 - `results.py`：短路或 Framework output 到唯一 `AgentRunResult`，以及同一结果 trace 快照；
 - `framework_middleware.py`：只在 LangChain 生命周期 Hook 中协调这些规则和 ToolMessage。
 
@@ -239,14 +239,19 @@ Web Search、Web Fetch、Web PDF Fetch、SQL 和 MCP 都是普通 ToolMessage �
 
 - `FrameworkAgentState`：`create_agent` 内部的 messages、append-only
   `governance_events`、累计耗时、停止原因和可选知识库结构化结果；
-- 普通 Python Result 快照：Router decision、observations、references、tool trace、
-  LLM 计数和最终状态，仅由 `results.py` 用于结果归一化与 trace 持久化。
+- `AgentRunResult`：`results.py` 直接构造的最终结果，包含 references、公开 tool trace、
+  LLM usage 和最终状态；`tool_result_summary` 仅从同一份公开 tool trace 生成。
+
+治理事件保留原始执行事实；`tool_events.py` 直接投影为模型、counted tool call 和
+guardrail trace。只有 counted call 分配连续 `step_id`，模型与 guardrail 不占工具编号。
+Result summary 按 `step == "tool_call"` 且含 `step_id` 选取同一计数范围，未计数的
+拦截不进入摘要；已计数但 handler 未执行的失败仍保留失败摘要。
 
 最终结果固定经过：
 
 ```text
 Router short-circuit 或 create_agent final state
-→ app.agent.tool_events 事件投影（agent 路径）
+→ app.agent.tool_events 直接生成 public tool trace（agent 路径）
 → app.agent.results 答案、状态与 LLM usage 归一化
 → AgentRunResult 校验
 → JSON-compatible dict

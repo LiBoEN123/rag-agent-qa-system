@@ -593,3 +593,101 @@ def test_trace_persistence_is_optional_and_best_effort(
     assert result["status"] == "OK"
     assert len(writes) == int(enabled)
     _validate_usage(result)
+
+
+@pytest.mark.parametrize("summaries", [["普通工具摘要"], ["一", "二", "三", "四", "五"]])
+def test_tool_result_summary_uses_last_three_public_tool_summaries(summaries):
+    events = []
+    for summary in summaries:
+        events.extend([
+            {"kind": "model", "ok": True},
+            {
+                "kind": "tool", "name": "custom_tool", "counted_call": True,
+                "handler_executed": True,
+                "result": {"ok": True, "summary": summary},
+            },
+            {
+                "kind": "tool", "name": "custom_tool", "counted_call": False,
+                "result": {"ok": False, "summary": "拦截不进入摘要", "error": "blocked"},
+            },
+        ])
+    result = build_framework_agent_result(
+        _invocation(), {"governance_events": events, "messages": [AIMessage(content="完成")]},
+    )
+    tools = [step for step in result["tool_trace"] if "step_id" in step]
+    assert [step["step_id"] for step in tools] == list(range(1, len(summaries) + 1))
+    assert [step["summary"] for step in tools] == summaries
+    assert result["tool_result_summary"] == "；".join(summaries[-3:])
+
+
+def test_knowledge_summary_uses_public_final_chunk_count():
+    output = _knowledge_output({"status": "OK", "answer": "知识库回答"})
+    output["knowledge_base_result"]["output"].update(
+        count=2, chunks=[{"chunk_id": "one-visible-hit"}],
+    )
+    result = build_framework_agent_result(_invocation(), output)
+    tool_trace = next(step for step in result["tool_trace"] if step["step"] == "tool_call")
+    assert len(tool_trace["hits"]) == 1
+    assert tool_trace["final_chunk_count"] == 2
+    assert result["tool_result_summary"] == "知识库检索完成，召回 2 个 chunk"
+
+
+@pytest.mark.parametrize("error_code", ["approval_required", "permission_denied", "agent_batch_aborted"])
+def test_guardrail_only_summary_falls_back_to_result_reason(error_code):
+    result = build_framework_agent_result(
+        _invocation(), {
+            "stop_reason": "approval_required",
+            "governance_events": [
+                {"kind": "model", "ok": True},
+                {
+                    "kind": "tool", "name": "custom_tool", "counted_call": False,
+                    "handler_executed": False, "error_code": error_code,
+                    "stop_reason": "approval_required",
+                    "result": {"ok": False, "error": "blocked", "summary": "不得使用"},
+                },
+            ],
+        },
+    )
+    assert result["tool_result_summary"] == result["reason"] == "approval_required"
+    trace = next(step for step in result["tool_trace"] if step["step"] == "tool_call")
+    assert "step_id" not in trace
+    assert trace["handler_executed"] is False
+    assert trace["will_return_to_agent_model"] is False
+
+
+@pytest.mark.parametrize("error_code", ["invalid_arguments", "approval_required", "permission_denied"])
+def test_counted_pre_handler_failure_keeps_failure_summary(error_code):
+    result = build_framework_agent_result(
+        _invocation(), {
+            "stop_reason": "fatal_tool_error",
+            "governance_events": [{
+                "kind": "tool", "name": "simple_calculator", "counted_call": True,
+                "handler_executed": False,
+                "result": {"ok": False, "error_code": error_code},
+            }],
+        },
+    )
+    trace = next(step for step in result["tool_trace"] if step["step"] == "tool_call")
+    assert trace["step_id"] == 1
+    assert trace["handler_executed"] is False
+    assert trace["success"] is False
+    assert result["tool_result_summary"] == trace["summary"] == "工具执行失败"
+
+
+def test_tool_result_summary_reuses_redacted_public_summary():
+    result = build_framework_agent_result(
+        _invocation(), {
+            "messages": [AIMessage(content="完成")],
+            "governance_events": [{
+                "kind": "tool", "name": "custom_tool", "counted_call": True,
+                "handler_executed": True,
+                "result": {"ok": True, "summary": "完成 token=raw-token password=raw-password"},
+            }],
+        },
+    )
+    trace = next(step for step in result["tool_trace"] if step["step"] == "tool_call")
+    assert result["tool_result_summary"] == trace["summary"] == (
+        "完成 token=***REDACTED*** password=***REDACTED***"
+    )
+    assert "raw-token" not in json.dumps(result)
+    assert "raw-password" not in json.dumps(result)

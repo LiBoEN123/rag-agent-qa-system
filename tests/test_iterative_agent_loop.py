@@ -165,7 +165,10 @@ def test_agent_loop_answers_without_calling_tools(monkeypatch):
     )
 
     assert len(model.received_messages) == 1
-    assert output["tool_call_count"] == 0
+    assert sum(
+        bool(event.get("counted_call"))
+        for event in output.get("governance_events", [])
+    ) == 0
     assert output["stop_reason"] == "completed"
     assert output["status"] == "ok"
     assert output["result"]["status"] == "OK"
@@ -224,7 +227,10 @@ def test_agent_loop_returns_single_tool_message_to_model(monkeypatch):
     assert payload["output"]["result"] == 3
     assert payload["runtime"]["attempt_count"] == 1
     assert payload["tool_call_id"]
-    assert output["tool_call_count"] == 1
+    assert sum(
+        bool(event.get("counted_call"))
+        for event in output.get("governance_events", [])
+    ) == 1
     assert output["result"]["answer"] == "计算结果是 3。"
 
 
@@ -254,7 +260,10 @@ def test_async_agent_loop_executes_tool_and_returns_to_model(monkeypatch):
     assert isinstance(tool_message, ToolMessage)
     assert tool_message.tool_call_id == "async-calc-call"
     assert json.loads(tool_message.content)["output"]["result"] == 3
-    assert output["tool_call_count"] == 1
+    assert sum(
+        bool(event.get("counted_call"))
+        for event in output.get("governance_events", [])
+    ) == 1
     assert output["result"]["answer"] == "异步计算结果是 3。"
 
 
@@ -301,8 +310,14 @@ def test_agent_loop_runs_two_sequential_tool_calls(monkeypatch):
         and message.tool_call_id == "calc-seq-1"
         for message in model.received_messages[2]
     )
-    assert output["tool_call_count"] == 2
-    assert [item["output"]["result"] for item in output["observations"]] == [
+    assert sum(
+        bool(event.get("counted_call"))
+        for event in output.get("governance_events", [])
+    ) == 2
+    assert [
+        item["output_summary"]["result"]
+        for item in output["result"]["tool_trace"] if "step_id" in item
+    ] == [
         3,
         12,
     ]
@@ -348,8 +363,14 @@ def test_agent_loop_executes_all_tool_calls_from_one_message(monkeypatch):
         "parallel-1",
         "parallel-2",
     ]
-    assert output["tool_call_count"] == 2
-    assert [item["output"]["result"] for item in output["observations"]] == [
+    assert sum(
+        bool(event.get("counted_call"))
+        for event in output.get("governance_events", [])
+    ) == 2
+    assert [
+        item["output_summary"]["result"]
+        for item in output["result"]["tool_trace"] if "step_id" in item
+    ] == [
         4,
         25,
     ]
@@ -395,8 +416,14 @@ def test_agent_loop_allows_model_to_correct_failed_tool_arguments(monkeypatch):
     assert first_tool_message.status == "error"
     assert first_payload["ok"] is False
     assert first_payload["error_code"] == "execution_error"
-    assert output["tool_error_count"] == 1
-    assert [item["success"] for item in output["observations"]] == [
+    assert sum(
+        bool(event.get("counted_call")) and not event.get("ok")
+        for event in output["governance_events"]
+    ) == 1
+    assert [
+        item["success"]
+        for item in output["result"]["tool_trace"] if "step_id" in item
+    ] == [
         False,
         True,
     ]
@@ -440,8 +467,13 @@ def test_agent_loop_stops_at_max_iterations(monkeypatch):
     )
 
     assert len(model.received_messages) == 2
-    assert output["iteration_count"] == 2
-    assert output["tool_call_count"] == 2
+    assert sum(
+        event.get("kind") == "model" for event in output["governance_events"]
+    ) == 2
+    assert sum(
+        bool(event.get("counted_call"))
+        for event in output.get("governance_events", [])
+    ) == 2
     assert output["stop_reason"] == "max_iterations_reached"
     assert output["status"] == "model_error"
     assert output["result"]["status"] == "MODEL_ERROR"
@@ -483,8 +515,11 @@ def test_agent_loop_stops_before_exceeding_tool_call_budget(monkeypatch):
     )
 
     assert len(model.received_messages) == 2
-    assert output["tool_call_count"] == 1
-    assert len(output["observations"]) == 1
+    assert sum(
+        bool(event.get("counted_call"))
+        for event in output.get("governance_events", [])
+    ) == 1
+    assert len([item for item in output["result"]["tool_trace"] if "step_id" in item]) == 1
     assert output["stop_reason"] == "max_tool_calls_reached"
     assert output["result"]["status"] == "MODEL_ERROR"
 
@@ -619,8 +654,11 @@ def test_agent_loop_model_failure_after_tool_does_not_replay_tool(monkeypatch):
     )
 
     assert len(model.received_messages) == 2
-    assert output["tool_call_count"] == 1
-    assert len(output["observations"]) == 1
+    assert sum(
+        bool(event.get("counted_call"))
+        for event in output.get("governance_events", [])
+    ) == 1
+    assert len([item for item in output["result"]["tool_trace"] if "step_id" in item]) == 1
     assert output["stop_reason"] == "agent_model_call_failed"
     assert output["result"]["status"] == "MODEL_ERROR"
 

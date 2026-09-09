@@ -185,8 +185,16 @@ def test_successful_zero_result_search_is_not_a_tool_error(monkeypatch):
     )
 
     assert result["seen_args"] == [{"query": "奖学金申请条件", "top_k": 5}]
-    assert result["output"]["tool_error_count"] == 0
-    assert result["output"]["observations"][0]["success"] is True
+    trace = [
+        step for step in result["output"]["result"]["tool_trace"]
+        if step["step"] == "tool_call"
+    ]
+    assert len(trace) == 1
+    assert trace[0]["success"] is True
+    assert trace[0]["final_chunk_count"] == 0
+    assert result["output"]["result"]["tool_result_summary"] == (
+        "知识库检索完成，召回 0 个 chunk"
+    )
     assert result["rag_calls"][0]["retrieved_chunks"] == []
     assert result["output"]["result"]["status"] == "NO_RELEVANT_INFO"
 

@@ -152,7 +152,10 @@ def test_max_tool_errors_stops_on_third_failure_without_another_model_call(
 
     assert calls == [1, 2, 3]
     assert len(model.received_messages) == 3
-    assert output["tool_error_count"] == 3
+    assert sum(
+        bool(event.get("counted_call")) and not event.get("ok")
+        for event in output["governance_events"]
+    ) == 3
     assert output["stop_reason"] == "max_tool_errors_reached"
     assert output["status"] == "model_error"
     assert output["result"]["status"] == "MODEL_ERROR"
@@ -179,8 +182,14 @@ def test_third_identical_call_is_blocked_before_structured_tool(monkeypatch):
     payload = _payloads(output)["r3"]
 
     assert calls == [1, 1]
-    assert output["tool_call_count"] == 2
-    assert output["consecutive_same_tool_call_count"] == 3
+    assert sum(
+        bool(event.get("counted_call"))
+        for event in output.get("governance_events", [])
+    ) == 2
+    tool_events = [event for event in output["governance_events"] if event["kind"] == "tool"]
+    assert len(tool_events) == 3
+    assert len({event["call_fingerprint"] for event in tool_events}) == 1
+    assert [event["counted_call"] for event in tool_events] == [True, True, False]
     assert output["stop_reason"] == "repeated_tool_call"
     assert payload["error_source"] == "agent_guardrail"
     assert payload["handler_executed"] is False
@@ -210,7 +219,9 @@ def test_same_tool_with_different_arguments_does_not_trigger_call_guard(
 
     assert calls == [1, 2]
     assert output["stop_reason"] == "completed"
-    assert output["consecutive_same_tool_call_count"] == 1
+    tool_events = [event for event in output["governance_events"] if event["kind"] == "tool"]
+    assert len(tool_events) == 2
+    assert tool_events[0]["call_fingerprint"] != tool_events[1]["call_fingerprint"]
 
 
 def test_second_identical_error_is_saved_then_stops(monkeypatch):
@@ -274,7 +285,9 @@ def test_same_error_code_with_different_arguments_is_not_same_error_loop(
     output = _invoke(monkeypatch, registry=registry, model=model)
 
     assert len(model.received_messages) == 3
-    assert output["consecutive_same_tool_error_count"] == 1
+    tool_events = [event for event in output["governance_events"] if event["kind"] == "tool"]
+    assert len(tool_events) == 2
+    assert tool_events[0]["error_fingerprint"] != tool_events[1]["error_fingerprint"]
     assert output["stop_reason"] == "completed"
 
 

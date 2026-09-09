@@ -1,9 +1,8 @@
-"""把框架治理事件投影为 observation、tool trace 与指标。"""
+"""把框架治理事件一次性投影为公开 tool trace。"""
 
 from collections.abc import Mapping
 from typing import Any
 
-from app.agent.state import AgentObservation
 from app.tools.audit import sanitize_tool_input, summarize_tool_output
 from app.tools.redaction import redact_sensitive_data
 from app.config import get_settings
@@ -27,23 +26,25 @@ def summarize_tool_result(tool_name: str, tool_result: dict[str, Any]) -> str:
         "get_chunk_text": "chunk 原文工具执行完成",
     }
     if tool_name == "search_knowledge_base":
-        count = (tool_result.get("output") or {}).get("count", 0)
+        output = tool_result.get("output")
+        count = output.get("count", 0) if isinstance(output, dict) else 0
         return f"检索到 {count} 个候选 chunk"
     return summaries.get(tool_name, f"{tool_name} 工具执行完成")
 
 
-def build_tool_observation(
+def build_tool_trace(
     *,
     step_id: int,
     tool_name: str,
+    tool_args: dict[str, Any],
     result: dict[str, Any],
     cost_ms: int,
-) -> AgentObservation:
-    """将一次框架工具结果规整为 AgentObservation。"""
+) -> dict[str, Any]:
+    """从标准工具结果直接构造兼容现有响应结构的公开 trace。"""
     if step_id < 1:
-        raise ValueError("observation step_id must be at least 1")
+        raise ValueError("tool trace step_id must be at least 1")
     if cost_ms < 0:
-        raise ValueError("observation cost_ms must be non-negative")
+        raise ValueError("tool trace cost_ms must be non-negative")
     success = bool(result.get("ok", result.get("status") == "success"))
     output = result.get("output") or {}
     if not isinstance(output, dict):
@@ -68,26 +69,6 @@ def build_tool_observation(
     if not success and not error:
         error = "Tool execution failed"
 
-    return {
-        "step_id": step_id,
-        "tool_name": tool_name,
-        "success": success,
-        "summary": summarize_tool_result(tool_name, result),
-        "output": output,
-        "error": error,
-        "cost_ms": cost_ms,
-    }
-
-
-def build_tool_trace(
-    *,
-    step_id: int,
-    tool_name: str,
-    tool_args: dict[str, Any],
-    result: dict[str, Any],
-    observation: AgentObservation,
-) -> dict[str, Any]:
-    """构造兼容现有响应结构的工具调用 trace。"""
     spec = next(
         (spec for spec in get_local_tool_specs(get_settings()) if spec.name == tool_name),
         None,
@@ -109,10 +90,10 @@ def build_tool_trace(
         "tool_args": sanitized_args,
         "sanitized_tool_args": sanitized_args,
         "tool_status": result.get("status", ""),
-        "success": observation["success"],
-        "summary": redact_sensitive_data(observation["summary"]),
-        "error": redact_sensitive_data(observation["error"]),
-        "cost_ms": observation["cost_ms"],
+        "success": success,
+        "summary": redact_sensitive_data(summarize_tool_result(tool_name, result)),
+        "error": redact_sensitive_data(error),
+        "cost_ms": cost_ms,
         "error_code": result.get("error_code", ""),
         "tool_call_id": result.get("tool_call_id", ""),
         "policy_decision": governance.get("decision", ""),
@@ -125,7 +106,6 @@ def build_tool_trace(
     }
 
     if tool_name == "search_knowledge_base":
-        output = result.get("output") or {}
         trace.update(
             {
                 "final_chunk_count": output.get("count", 0),
@@ -159,11 +139,9 @@ def build_tool_trace(
         trace["top_scores"] = redact_sensitive_data(trace["top_scores"])
         trace["hits"] = redact_sensitive_data(trace["hits"])
     elif spec is not None:
-        trace["output_summary"] = summarize_tool_output(
-            spec, observation["output"]
-        )
+        trace["output_summary"] = summarize_tool_output(spec, output)
     else:
-        trace["output_summary"] = redact_sensitive_data(observation["output"])
+        trace["output_summary"] = redact_sensitive_data(output)
 
     return trace
 
@@ -211,25 +189,19 @@ def _normalize_tool_event(
     event: Mapping[str, Any],
     *,
     step_id: int,
-) -> tuple[AgentObservation, dict[str, Any]]:
-    """把一次已执行工具事件归一化为 observation 与公开 trace。"""
+) -> dict[str, Any]:
+    """把一次计入工具调用的事件直接归一化为公开 trace。"""
     raw_result = event.get("result")
     result = raw_result if isinstance(raw_result, dict) else {}
     tool_name = str(event.get("name") or "")
     raw_args = event.get("args")
     tool_args = raw_args if isinstance(raw_args, dict) else {}
-    observation = build_tool_observation(
-        step_id=step_id,
-        tool_name=tool_name,
-        result=result,
-        cost_ms=max(0, int(event.get("cost_ms", 0) or 0)),
-    )
     trace = build_tool_trace(
         step_id=step_id,
         tool_name=tool_name,
         tool_args=tool_args,
         result=result,
-        observation=observation,
+        cost_ms=max(0, int(event.get("cost_ms", 0) or 0)),
     )
     trace.update(
         {
@@ -240,75 +212,35 @@ def _normalize_tool_event(
             "call_fingerprint": str(event.get("call_fingerprint") or ""),
         }
     )
-    return observation, trace
+    return trace
 
 
 def normalize_governance_events(
     events: list[dict[str, Any]],
-) -> tuple[list[AgentObservation], list[dict[str, Any]]]:
+) -> list[dict[str, Any]]:
     """把 append-only framework 事件一次性投影为稳定公开数据。"""
-    observations: list[AgentObservation] = []
     tool_trace: list[dict[str, Any]] = []
     model_index = 0
+    tool_step_id = 0
     for event in events:
         if event.get("kind") == "model":
             model_index += 1
             tool_trace.append(_model_trace(event, model_index))
             continue
         if event.get("counted_call"):
-            observation, trace = _normalize_tool_event(
+            tool_step_id += 1
+            trace = _normalize_tool_event(
                 event,
-                step_id=len(observations) + 1,
+                step_id=tool_step_id,
             )
-            observations.append(observation)
         else:
             trace = _guardrail_trace(event)
         tool_trace.append(trace)
-    return observations, tool_trace
-
-
-def framework_metrics(events: list[dict[str, Any]]) -> dict[str, Any]:
-    """从治理事件计算兼容计数和连续指纹。"""
-    calls = [
-        item
-        for item in events
-        if item.get("kind") == "tool"
-        and item.get("error_code") != "agent_batch_aborted"
-    ]
-    tools = [item for item in calls if item.get("counted_call")]
-    errors = [item for item in tools if not item.get("ok")]
-
-    def tail(key: str) -> tuple[str, int]:
-        value = str(calls[-1].get(key) or "") if calls else ""
-        count = 0
-        for item in reversed(calls):
-            if not value or str(item.get(key) or "") != value:
-                break
-            count += 1
-        return value, count
-
-    last_call, call_count = tail("call_fingerprint")
-    last_error = str(errors[-1].get("error_fingerprint") or "") if errors else ""
-    error_count = 0
-    for item in reversed(tools):
-        if item.get("ok") or str(item.get("error_fingerprint") or "") != last_error:
-            break
-        error_count += 1
-    return {
-        "iteration_count": sum(item.get("kind") == "model" for item in events),
-        "tool_call_count": len(tools),
-        "tool_error_count": len(errors),
-        "last_tool_call_fingerprint": last_call,
-        "consecutive_same_tool_call_count": call_count,
-        "last_tool_error_fingerprint": last_error,
-        "consecutive_same_tool_error_count": error_count,
-    }
+    return tool_trace
 
 
 __all__ = [
-    "build_tool_observation",
     "build_tool_trace",
-    "framework_metrics",
     "normalize_governance_events",
     "summarize_tool_result",
 ]

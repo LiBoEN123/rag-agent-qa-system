@@ -120,7 +120,10 @@ def test_tool_budget_limit_adds_messages_for_every_unexecuted_call(monkeypatch):
     messages = [item for item in output["messages"] if isinstance(item, ToolMessage)]
 
     assert handler_calls == [1]
-    assert output["tool_call_count"] == 1
+    assert sum(
+        bool(event.get("counted_call"))
+        for event in output.get("governance_events", [])
+    ) == 1
     assert output["stop_reason"] == "max_tool_calls_reached"
     assert {item.tool_call_id for item in messages} == {"budget-1", "budget-2"}
     blocked = next(item for item in messages if item.tool_call_id == "budget-2")
