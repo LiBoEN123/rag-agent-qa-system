@@ -2,16 +2,22 @@
 
 from copy import deepcopy
 
+import pytest
+
 from app.agent.results import create_agent_result
 from app.api.responses import build_chat_response_from_outcome
 from app.contracts.chat import AgentResultStatus
 from app.services.chat_models import ChatServiceOutcome
 
 
-def test_response_adapter_clamps_confidence_and_keeps_llm_usage():
+@pytest.mark.parametrize("llm_call_count", [0, 3, 7])
+def test_response_adapter_clamps_confidence_and_trusts_result_usage(llm_call_count):
     result = create_agent_result(
         status=AgentResultStatus.OK,
         answer="回答",
+        decompose_llm_used=True,
+        answer_llm_used=True,
+        llm_call_count=llm_call_count,
         tool_trace=[
             {
                 "step": "query_rewrite",
@@ -19,15 +25,16 @@ def test_response_adapter_clamps_confidence_and_keeps_llm_usage():
             },
             {
                 "step": "llm_usage",
-                "router_llm_used": False,
-                "decompose_llm_used": True,
-                "answer_llm_used": True,
+                "router_llm_used": True,
+                "decompose_llm_used": False,
+                "answer_llm_used": False,
                 "llm_call_count": 2,
             },
         ],
     )
     result["retrieval_confidence"] = 2.5
     result["answer_confidence"] = -1
+    original = deepcopy(result)
     outcome = ChatServiceOutcome(
         http_status=200,
         code=0,
@@ -46,7 +53,9 @@ def test_response_adapter_clamps_confidence_and_keeps_llm_usage():
     assert payload["data"]["router_llm_used"] is False
     assert payload["data"]["decompose_llm_used"] is True
     assert payload["data"]["answer_llm_used"] is True
-    assert payload["data"]["llm_call_count"] == 3
+    assert payload["data"]["llm_call_count"] == llm_call_count
+    assert payload["data"]["tool_trace"] == original["tool_trace"]
+    assert result == original
 
 
 def test_response_adapter_does_not_mutate_outcome_result():

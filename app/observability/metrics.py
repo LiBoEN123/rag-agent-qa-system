@@ -58,47 +58,8 @@ def should_write_bad_case(record: dict) -> bool:
     return False
 
 
-def extract_llm_usage(
-    tool_trace: list | None = None,
-    router_llm_used: bool | None = None,
-    decompose_llm_used: bool | None = None,
-    answer_llm_used: bool | None = None,
-    llm_call_count: int | None = None,
-) -> dict:
-    """从调用链追踪中提取各阶段的 LLM 使用情况。"""
-    query_rewrite_llm_used = False
-    for step in tool_trace or []:
-        if step.get("step") == "query_rewrite":
-            query_rewrite_llm_used = bool(step.get("rewrite_llm_used", False))
-            continue
-        if step.get("step") != "llm_usage":
-            continue
-        router_llm_used = bool(step.get("router_llm_used", router_llm_used or False))
-        decompose_llm_used = bool(
-            step.get("decompose_llm_used", decompose_llm_used or False)
-        )
-        answer_llm_used = bool(step.get("answer_llm_used", answer_llm_used or False))
-        llm_call_count = step.get("llm_call_count", llm_call_count)
-        break
-
-    router_llm_used = bool(router_llm_used)
-    decompose_llm_used = bool(decompose_llm_used)
-    answer_llm_used = bool(answer_llm_used)
-    if llm_call_count is None:
-        llm_call_count = sum(
-            (router_llm_used, decompose_llm_used, answer_llm_used)
-        )
-    llm_call_count = int(llm_call_count or 0) + int(query_rewrite_llm_used)
-    return {
-        "router_llm_used": router_llm_used,
-        "decompose_llm_used": decompose_llm_used,
-        "answer_llm_used": answer_llm_used,
-        "llm_call_count": max(0, llm_call_count),
-    }
-
-
 def collect_trace_metrics(result: dict) -> dict:
-    """从 Agent 结果中汇总检索、工具、耗时和模型指标。"""
+    """仅汇总 trace 独有的检索数量、工具活动和路由耗时。"""
     tool_trace = result.get("tool_trace") or []
     retrieved_count = 0
     tool_called = False
@@ -113,10 +74,6 @@ def collect_trace_metrics(result: dict) -> dict:
         "web_fetch",
         "web_pdf_fetch",
     }
-    rag_timings = result.get("timings")
-    if not isinstance(rag_timings, dict):
-        rag_timings = {}
-
     for step in tool_trace:
         if step.get("step") == "decide":
             route_cost_ms = max(
@@ -130,13 +87,6 @@ def collect_trace_metrics(result: dict) -> dict:
             tool_name = current_tool_name
             tool_called = True
             tool_success = tool_success or step.get("tool_status") == "success"
-        if (
-            not rag_timings
-            and step.get("step") == "compose_final_answer"
-            and step.get("mode") == "rag"
-            and isinstance(step.get("timings"), dict)
-        ):
-            rag_timings = step["timings"]
 
     return {
         "retrieved_count": retrieved_count,
@@ -144,14 +94,6 @@ def collect_trace_metrics(result: dict) -> dict:
         "tool_success": tool_success,
         "tool_name": tool_name,
         "route_cost_ms": route_cost_ms,
-        **extract_llm_usage(
-            tool_trace,
-            router_llm_used=bool(result.get("router_llm_used", False)),
-            decompose_llm_used=bool(result.get("decompose_llm_used", False)),
-            answer_llm_used=bool(result.get("answer_llm_used", False)),
-            llm_call_count=result.get("llm_call_count"),
-        ),
-        "timings": rag_timings,
     }
 
 

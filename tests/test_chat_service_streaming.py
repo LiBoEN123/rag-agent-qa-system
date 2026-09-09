@@ -1,6 +1,7 @@
 """ChatService 流式编排、Session 与 telemetry 的隔离测试。"""
 
 import asyncio
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -65,7 +66,9 @@ def _request(**overrides):
     return ChatServiceRequest(**values)
 
 
-def _build_service(runtime_events, *, sync_result=None, stream_error=None):
+def _build_service(
+    runtime_events, *, sync_result=None, stream_error=None, rewrite_llm_used=False,
+):
     calls = {
         "messages": [],
         "metrics": [],
@@ -103,7 +106,7 @@ def _build_service(runtime_events, *, sync_result=None, stream_error=None):
             "need_check": False,
             "need_rewrite": False,
             "reason": "no rewrite",
-            "rewrite_llm_used": False,
+            "rewrite_llm_used": rewrite_llm_used,
             "error": "",
         }
 
@@ -277,10 +280,14 @@ def test_cancelled_runtime_stream_propagates_and_finalizes_as_disconnect():
     assert calls["metrics"][0]["status"] == "client_disconnected"
 
 
-def test_unconverted_runtime_stream_exception_uses_invocation_fallback():
+@pytest.mark.parametrize("rewrite_llm_used", [True, False])
+def test_unconverted_runtime_stream_exception_uses_invocation_fallback(
+    rewrite_llm_used,
+):
     service, calls = _build_service(
         [],
         stream_error=RuntimeError("stream infrastructure failed"),
+        rewrite_llm_used=rewrite_llm_used,
     )
 
     events = _collect(service)
@@ -293,19 +300,36 @@ def test_unconverted_runtime_stream_exception_uses_invocation_fallback():
     assert len(calls["bad_cases"]) == 1
     assert calls["bad_cases"][0]["error_type"] == "internal_error"
     assert calls["metrics"][0]["client_disconnected"] is False
+    outcome = final.data["outcome"]
+    response = build_chat_response_from_outcome(outcome, trace_id="trace-1")
+    assert outcome.result["llm_call_count"] == int(rewrite_llm_used)
+    assert calls["metrics"][0]["llm_call_count"] == int(rewrite_llm_used)
+    assert response.data.llm_call_count == int(rewrite_llm_used)
 
 
-def test_sync_and_stream_final_use_identical_response_mapping():
+@pytest.mark.parametrize("rewrite_llm_used", [True, False])
+def test_sync_and_stream_final_use_identical_response_mapping(rewrite_llm_used):
     result = _result(
         answer="一致回答",
         answer_confidence=0.8,
         retrieval_confidence=0.7,
+        decompose_llm_used=True,
         answer_llm_used=True,
-        llm_call_count=1,
+        llm_call_count=2,
+        tool_trace=[{
+            "step": "llm_usage",
+            "router_llm_used": False,
+            "decompose_llm_used": True,
+            "answer_llm_used": True,
+            "llm_call_count": 2,
+        }],
+        timings={"llm_cost_ms": 7},
     )
-    service, _ = _build_service(
+    original = deepcopy(result)
+    service, calls = _build_service(
         [AgentRuntimeStreamEvent("result", {"result": result})],
         sync_result=result,
+        rewrite_llm_used=rewrite_llm_used,
     )
 
     sync_outcome = service.handle(_request(session_id=""))
@@ -325,6 +349,20 @@ def test_sync_and_stream_final_use_identical_response_mapping():
     ).model_dump(mode="json")
 
     assert stream_response == sync_response
+    expected_count = 3 if rewrite_llm_used else 2
+    assert sync_response["data"]["llm_call_count"] == expected_count
+    for outcome in (sync_outcome, stream_outcome):
+        assert outcome.result["llm_call_count"] == expected_count
+        trace = outcome.result["tool_trace"]
+        assert sum(step["step"] == "query_rewrite" for step in trace) == 1
+        assert trace[1:] == original["tool_trace"]
+    assert len(calls["metrics"]) == 2
+    for metrics in calls["metrics"]:
+        assert metrics["llm_call_count"] == expected_count
+        assert metrics["decompose_llm_used"] is True
+        assert metrics["answer_llm_used"] is True
+        assert metrics["llm_cost_ms"] == 7
+    assert result == original
 
 
 @pytest.mark.parametrize(

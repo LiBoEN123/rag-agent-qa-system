@@ -537,6 +537,8 @@ class ChatService:
             result,
             context.rewrite_trace,
         )
+        # 只在 ChatService 副本中合并请求级调用数，保留 Runtime trace 原值。
+        result["llm_call_count"] += int(context.metrics["query_rewrite_llm_used"])
         log_tool_call_chain(
             context.request.trace_id,
             result.get("tool_trace") or [],
@@ -611,13 +613,16 @@ class ChatService:
             code="MODEL_ERROR",
             message="处理失败，请稍后重试",
             question=context.original_question,
-            result=build_internal_error_result(
-                exc,
-                runtime_label="ChatService Agent invocation",
-                answer="",
-                reason="工具调用或模型调用异常",
-                tool_trace=[context.rewrite_trace],
-            ),
+            result={
+                **build_internal_error_result(
+                    exc,
+                    runtime_label="ChatService Agent invocation",
+                    answer="",
+                    reason="工具调用或模型调用异常",
+                    tool_trace=[context.rewrite_trace],
+                ),
+                "llm_call_count": context.metrics["llm_call_count"],
+            },
             response_status="error",
         )
 

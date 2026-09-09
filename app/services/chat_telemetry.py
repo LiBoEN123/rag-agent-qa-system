@@ -140,7 +140,7 @@ def apply_result_metrics(
     trace_metrics: Mapping[str, Any],
     policy: ChatStatusPolicy,
 ) -> None:
-    """把已校验 Result 的 trace 汇总到 metrics，不修改 Result。"""
+    """直接读取 Result usage/timings，另合入 trace 独有指标。"""
     metrics["status"] = policy.metric_status
     metrics["reference_count"] = len(result.get("references") or [])
     for key in (
@@ -148,14 +148,17 @@ def apply_result_metrics(
         "tool_called",
         "tool_success",
         "tool_name",
+        "route_cost_ms",
+    ):
+        metrics[key] = trace_metrics[key]
+    for key in (
         "router_llm_used",
         "decompose_llm_used",
         "answer_llm_used",
         "llm_call_count",
-        "route_cost_ms",
     ):
-        metrics[key] = trace_metrics[key]
-    timings = trace_metrics["timings"]
+        metrics[key] = result[key]
+    timings = result["timings"]
     for timing_key in _TIMING_METRIC_KEYS:
         metrics[timing_key] = int((timings.get(timing_key, 0) or 0))
     metrics["action"] = result.get("action", "")

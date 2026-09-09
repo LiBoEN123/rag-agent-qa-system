@@ -1,9 +1,11 @@
+from copy import deepcopy
 from dataclasses import fields
 from types import SimpleNamespace
 
 import pytest
 
 from app.agent.results import build_internal_error_result
+from app.api.responses import build_chat_response_from_outcome
 from app.contracts.chat import get_chat_status_policy
 from app.services.chat_service import (
     ChatService,
@@ -230,6 +232,7 @@ def test_rewrite_routes_and_runs_once_with_original_question_preserved():
         ("session-1", "assistant", "测试回答"),
     ]
     assert len(calls["metrics"]) == 1
+    assert outcome.result["llm_call_count"] == 1
     assert calls["metrics"][0]["llm_call_count"] == 1
     assert calls["metrics"][0]["route_cost_ms"] == 7
 
@@ -243,6 +246,50 @@ def test_question_without_rewrite_is_passed_through_without_extra_llm_count():
     assert calls["agent"][0]["original_question"] == "原始问题"
     assert calls["agent"][0]["effective_question"] == "原始问题"
     assert calls["metrics"][0]["llm_call_count"] == 0
+
+
+@pytest.mark.parametrize("rewrite_llm_used", [True, False])
+@pytest.mark.parametrize("has_rewrite_trace", [True, False])
+def test_chat_count_merges_rewrite_once_without_mutating_runtime(
+    rewrite_llm_used, has_rewrite_trace,
+):
+    runtime_result = build_runtime_result(
+        references=[],
+        decompose_llm_used=True,
+        answer_llm_used=True,
+        llm_call_count=2,
+    )
+    runtime_result["tool_trace"][-1].update(
+        decompose_llm_used=True,
+        answer_llm_used=True,
+        llm_call_count=2,
+    )
+    if has_rewrite_trace:
+        # 已有 trace 故意与 preprocessing facts 相反，计数仍须信任 context。
+        runtime_result["tool_trace"].insert(
+            0, {"step": "query_rewrite", "rewrite_llm_used": not rewrite_llm_used},
+        )
+    original = deepcopy(runtime_result)
+    service, calls = build_service(
+        runtime_result=lambda **kwargs: runtime_result,
+        rewrite_result={"rewrite_llm_used": rewrite_llm_used},
+    )
+
+    outcome = service.handle(make_request())
+    response = build_chat_response_from_outcome(outcome, trace_id="trace-1")
+
+    expected_count = 3 if rewrite_llm_used else 2
+    assert outcome.result["llm_call_count"] == expected_count
+    assert response.data.llm_call_count == expected_count
+    assert len(calls["metrics"]) == 1
+    assert calls["metrics"][0]["llm_call_count"] == expected_count
+    assert calls["metrics"][0]["llm_cost_ms"] == 3
+    trace = outcome.result["tool_trace"]
+    assert sum(step["step"] == "query_rewrite" for step in trace) == 1
+    assert [step for step in trace if step["step"] != "query_rewrite"] == [
+        step for step in original["tool_trace"] if step["step"] != "query_rewrite"
+    ]
+    assert runtime_result == original
 
 
 def test_agent_tool_task_has_no_router_level_rag_preflight():
@@ -448,8 +495,14 @@ def test_agent_internal_error_result_maps_to_http_500():
     } in outcome.result["tool_trace"]
 
 
-def test_runtime_exception_returns_compatible_error_and_writes_bad_case_once():
-    service, calls = build_service(runtime_result=RuntimeError("runtime failed"))
+@pytest.mark.parametrize("rewrite_llm_used", [True, False])
+def test_runtime_exception_returns_compatible_error_and_writes_bad_case_once(
+    rewrite_llm_used,
+):
+    service, calls = build_service(
+        runtime_result=RuntimeError("runtime failed"),
+        rewrite_result={"rewrite_llm_used": rewrite_llm_used},
+    )
 
     outcome = service.handle(make_request())
 
@@ -462,6 +515,10 @@ def test_runtime_exception_returns_compatible_error_and_writes_bad_case_once():
     assert calls["messages"] == []
     assert len(calls["metrics"]) == 1
     assert calls["metrics"][0]["status"] == "internal_error"
+    assert outcome.result["llm_call_count"] == int(rewrite_llm_used)
+    assert calls["metrics"][0]["llm_call_count"] == int(rewrite_llm_used)
+    response = build_chat_response_from_outcome(outcome, trace_id="trace-1")
+    assert response.data.llm_call_count == int(rewrite_llm_used)
 
 
 def test_service_exception_returns_internal_error_with_error_status():
