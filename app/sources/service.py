@@ -41,11 +41,13 @@ _SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40,64}$")
 class SourceIngestionError(RuntimeError):
     """不携带正文或远端异常细节的 source orchestration 失败。"""
 
+    # 保存来源入库错误码，并使用提供的消息初始化异常。
     def __init__(self, code: str, message: str) -> None:
         self.code = code
         super().__init__(message)
 
 
+# 校验 MCP 入库输出成功、正文完整且带有不可信标记和内容块列表。
 def _require_ingestion_output(result: Mapping[str, Any]) -> dict[str, Any]:
     if result.get("ok") is not True:
         raise SourceIngestionError("SOURCE_FETCH_FAILED", "受治理 MCP source fetch 失败")
@@ -71,6 +73,7 @@ def _require_ingestion_output(result: Mapping[str, Any]) -> dict[str, Any]:
     return output
 
 
+# 从内容块中匹配唯一的目标仓库文件，并提取正文及已解析的 SHA。
 def _github_payload(
     output: Mapping[str, Any],
     *,
@@ -121,11 +124,13 @@ def _github_payload(
     )
 
 
+# 仅在指定字段为字符串时返回其值，否则返回空值。
 def _text_field(values: Mapping[str, Any], name: str) -> str | None:
     value = values.get(name)
     return value if isinstance(value, str) else None
 
 
+# 从结构化内容或 JSON 文本块中提取网页正文及来源元数据。
 def _firecrawl_payload(
     output: Mapping[str, Any],
     *,
@@ -184,6 +189,7 @@ def _firecrawl_payload(
 class ExternalKnowledgeSourceService:
     """显式 operator/service source fetch、proposal、approval 与 indexing 用例。"""
 
+    # 配置申请主体、入库服务、索引依赖和 GitHub、Firecrawl 来源适配器。
     def __init__(
         self,
         *,
@@ -201,10 +207,12 @@ class ExternalKnowledgeSourceService:
         self._github_adapter = GitHubFileSourceAdapter()
         self._firecrawl_adapter = FirecrawlPageSourceAdapter()
 
+    # 返回当前来源服务使用的入库领域服务。
     @property
     def ingestion_service(self) -> IngestionService:
         return self._ingestion
 
+    # 查找调用者可见的 MCP 来源工具，并要求其声明为只读工具。
     def _tool(self, name: str, context: ToolInvocationContext):
         provider = get_mcp_tool_provider()
         if provider is None:
@@ -217,6 +225,7 @@ class ExternalKnowledgeSourceService:
             raise SourceIngestionError("SOURCE_TOOL_NOT_READ_ONLY", "source MCP tool 非只读")
         return tool
 
+    # 通过受治理的 MCP 入口抓取内容，并校验其满足完整入库输出要求。
     async def _fetch(
         self,
         name: str,
@@ -231,6 +240,7 @@ class ExternalKnowledgeSourceService:
         )
         return _require_ingestion_output(result)
 
+    # 以配置的申请主体和申请原因提交知识文档入库提案。
     def _propose(self, document, reason: str | None) -> IngestionCandidate:
         return self._ingestion.propose(
             document=document,
@@ -238,6 +248,7 @@ class ExternalKnowledgeSourceService:
             reason=reason,
         )
 
+    # 抓取并适配 GitHub 文件，将生成的知识文档提交为入库候选。
     async def propose_github_file(
         self,
         *,
@@ -263,6 +274,7 @@ class ExternalKnowledgeSourceService:
         document = self._github_adapter.to_document(payload, fetched_at=fetched_at)
         return self._propose(document, reason)
 
+    # 抓取网页主体 Markdown 并适配为知识文档，随后提交入库提案。
     async def propose_firecrawl_page(
         self,
         *,

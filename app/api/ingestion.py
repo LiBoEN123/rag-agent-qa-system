@@ -39,10 +39,12 @@ INGESTION_ADMIN_HEADER = "X-Ingestion-Admin-Key"
 CONTENT_PREVIEW_LIMIT = 2000
 
 
+# 禁止额外字段的知识入库管理接口模型基类。
 class _StrictAPIModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+# 描述 GitHub 文件入库提案的仓库、路径、版本和申请原因。
 class GitHubProposalRequest(_StrictAPIModel):
     owner: StrictStr = Field(min_length=1, max_length=128)
     repository: StrictStr = Field(min_length=1, max_length=128)
@@ -51,18 +53,22 @@ class GitHubProposalRequest(_StrictAPIModel):
     reason: StrictStr | None = Field(default=None, max_length=1000)
 
 
+# 描述网页入库提案的抓取地址和申请原因。
 class FirecrawlProposalRequest(_StrictAPIModel):
     url: StrictStr = Field(min_length=1, max_length=2048)
     reason: StrictStr | None = Field(default=None, max_length=1000)
 
 
+# 保存批准入库候选时可选的审批原因。
 class ApproveRequest(_StrictAPIModel):
     reason: StrictStr | None = Field(default=None, max_length=1000)
 
 
+# 保存拒绝入库候选时必须提供的审批原因。
 class RejectRequest(_StrictAPIModel):
     reason: StrictStr = Field(min_length=1, max_length=1000)
 
+    # 去除拒绝原因的首尾空白，并拒绝仅包含空白的输入。
     @field_validator("reason")
     @classmethod
     def _reason_required(cls, value: str) -> str:
@@ -71,6 +77,7 @@ class RejectRequest(_StrictAPIModel):
         return value
 
 
+# 封装候选摘要、审批信息、安全元数据、正文预览和最近索引结果。
 class CandidateDetailResponse(_StrictAPIModel):
     summary: IngestionCandidateSummary
     requester: IngestionRequester
@@ -83,6 +90,7 @@ class CandidateDetailResponse(_StrictAPIModel):
     latest_index_result: IngestionIndexRun | None = None
 
 
+# 集中保存入库管理接口所需的服务、索引记录仓库和管理员身份配置。
 @dataclass(frozen=True)
 class IngestionOperationsDependencies:
     ingestion_service: IngestionService
@@ -95,6 +103,7 @@ class IngestionOperationsDependencies:
 class IngestionAPIError(Exception):
     """稳定且不携带内部异常信息的 HTTP error。"""
 
+    # 保存接口错误的 HTTP 状态码、业务错误码和响应消息。
     def __init__(self, status_code: int, code: str, message: str) -> None:
         self.status_code = status_code
         self.code = code
@@ -102,6 +111,7 @@ class IngestionAPIError(Exception):
         super().__init__(code)
 
 
+# 将入库管理异常转换为统一的 JSON 错误响应。
 async def handle_ingestion_api_error(
     _request: Request,
     exc: IngestionAPIError,
@@ -112,10 +122,12 @@ async def handle_ingestion_api_error(
     )
 
 
+# 根据状态码、业务错误码和消息构造入库管理异常。
 def _error(status: int, code: str, message: str) -> IngestionAPIError:
     return IngestionAPIError(status, code, message)
 
 
+# 为管理员来源操作构造带指定权限的服务调用上下文。
 def _context(permission: str) -> ToolInvocationContext:
     return ToolInvocationContext(
         principal_id="ingestion-admin-api",
@@ -125,6 +137,7 @@ def _context(permission: str) -> ToolInvocationContext:
     )
 
 
+# 将外部来源错误映射为对外可用的 HTTP 状态码和固定错误消息。
 def _source_error(exc: SourceIngestionError) -> IngestionAPIError:
     code = exc.code
     mappings = {
@@ -145,6 +158,7 @@ def _source_error(exc: SourceIngestionError) -> IngestionAPIError:
     ))
 
 
+# 读取入库候选，并将持久化校验失败或候选缺失转换为接口错误。
 def _candidate(service: IngestionService, candidate_id: str) -> IngestionCandidate:
     try:
         candidate = service.repository.get(candidate_id)
@@ -158,6 +172,7 @@ def _candidate(service: IngestionService, candidate_id: str) -> IngestionCandida
     return candidate
 
 
+# 等待来源提案完成并返回候选摘要，统一转换抓取和输入校验错误。
 async def _proposal(
     operation: Awaitable[IngestionCandidate],
     service: IngestionService,
@@ -173,6 +188,7 @@ async def _proposal(
         ) from None
 
 
+# 执行审批操作并返回候选摘要，统一处理候选缺失和非法状态转换。
 def _review(
     operation: Callable[[], IngestionCandidate],
     service: IngestionService,
@@ -188,6 +204,7 @@ def _review(
         raise _error(404, "CANDIDATE_NOT_FOUND", "candidate 不存在") from None
 
 
+# 提取索引增删改及跳过数量，并校验为非负整数。
 def _counts(result: dict[str, int]) -> dict[str, int]:
     counts = {
         name: result.get(f"num_{name}")
@@ -209,6 +226,7 @@ def create_ingestion_router(deps: IngestionOperationsDependencies) -> APIRouter:
         auto_error=False,
     )
 
+    # 使用恒定时间比较校验管理员密钥，缺失或不匹配时拒绝请求。
     def require_admin(provided: str | None = Security(header)) -> None:
         configured = secret_value(deps.admin_api_key)
         if (
@@ -227,6 +245,7 @@ def create_ingestion_router(deps: IngestionOperationsDependencies) -> APIRouter:
         dependencies=[Depends(require_admin)],
     )
 
+    # 使用管理员的 GitHub 调用权限创建文件入库提案并返回摘要。
     @router.post("/sources/github", response_model=IngestionCandidateSummary, status_code=201)
     async def propose_github(req: GitHubProposalRequest):
         return await _proposal(
@@ -242,6 +261,7 @@ def create_ingestion_router(deps: IngestionOperationsDependencies) -> APIRouter:
             "GitHub",
         )
 
+    # 使用管理员的 Firecrawl 调用权限创建网页入库提案并返回摘要。
     @router.post("/sources/firecrawl", response_model=IngestionCandidateSummary, status_code=201)
     async def propose_firecrawl(req: FirecrawlProposalRequest):
         return await _proposal(
@@ -254,6 +274,7 @@ def create_ingestion_router(deps: IngestionOperationsDependencies) -> APIRouter:
             "Firecrawl",
         )
 
+    # 按状态和来源类型分页查询候选，并转换为摘要列表。
     @router.get("/candidates", response_model=list[IngestionCandidateSummary])
     def list_candidates(
         status: Annotated[IngestionCandidateStatus | None, Query()] = None,
@@ -273,6 +294,7 @@ def create_ingestion_router(deps: IngestionOperationsDependencies) -> APIRouter:
                 "candidate persistence validation 失败",
             ) from None
 
+    # 返回候选详情、受长度限制的正文预览及最近一次索引记录。
     @router.get("/candidates/{candidate_id}", response_model=CandidateDetailResponse)
     def candidate_detail(candidate_id: str):
         candidate = _candidate(deps.ingestion_service, candidate_id)
@@ -291,6 +313,7 @@ def create_ingestion_router(deps: IngestionOperationsDependencies) -> APIRouter:
             latest_index_result=deps.index_runs.latest(candidate_id),
         )
 
+    # 以管理员身份批准候选，记录审批原因并返回更新后的摘要。
     @router.post("/candidates/{candidate_id}/approve", response_model=IngestionCandidateSummary)
     def approve_candidate(candidate_id: str, req: ApproveRequest):
         return _review(
@@ -300,6 +323,7 @@ def create_ingestion_router(deps: IngestionOperationsDependencies) -> APIRouter:
             deps.ingestion_service,
         )
 
+    # 以管理员身份拒绝候选，记录拒绝原因并返回更新后的摘要。
     @router.post("/candidates/{candidate_id}/reject", response_model=IngestionCandidateSummary)
     def reject_candidate(candidate_id: str, req: RejectRequest):
         return _review(
@@ -309,6 +333,7 @@ def create_ingestion_router(deps: IngestionOperationsDependencies) -> APIRouter:
             deps.ingestion_service,
         )
 
+    # 仅对已批准候选执行索引，记录运行结果并统一处理失败。
     @router.post("/candidates/{candidate_id}/index", response_model=IngestionIndexRun)
     def index_candidate(candidate_id: str):
         candidate = _candidate(deps.ingestion_service, candidate_id)
@@ -338,6 +363,7 @@ def create_ingestion_router(deps: IngestionOperationsDependencies) -> APIRouter:
             pass
         raise error from None
 
+    # 按候选标识和运行状态分页查询索引执行记录。
     @router.get("/index-runs", response_model=list[IngestionIndexRun])
     def list_index_runs(
         candidate_id: Annotated[str | None, Query()] = None,

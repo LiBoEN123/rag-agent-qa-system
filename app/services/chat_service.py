@@ -383,6 +383,7 @@ class ChatService:
             perf_counter=self._deps.perf_counter,
         )
 
+    # 整理问题和会话信息，计算排队耗时并初始化请求上下文及观测记录。
     def _initialize_context(
         self,
         request: ChatServiceRequest,
@@ -422,6 +423,7 @@ class ChatService:
         log_chat_process_start(context, queue_wait_ms=queue_wait_ms)
         return context
 
+    # 为空问题构造 HTTP 400 澄清响应，并记录对应状态和原因。
     def _empty_question_outcome(
         self,
         context: ChatRequestContext,
@@ -657,6 +659,7 @@ class ChatService:
             response_status="error",
         )
 
+    # 保存当前轮次的用户消息和助手回复，持久化失败时记录警告。
     def _save_session_turn(self, context: ChatRequestContext) -> None:
         if not context.session_id:
             return
@@ -680,6 +683,7 @@ class ChatService:
                 str(exc)[:200],
             )
 
+    # 确保请求只收尾一次，按需保存会话并完成指标及日志记录。
     def _finalize(self, context: ChatRequestContext) -> None:
         if context.finalized:
             return

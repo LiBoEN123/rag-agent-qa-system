@@ -30,6 +30,7 @@ def prepare_content(content: str) -> tuple[str, bool]:
     return normalized.rstrip(" \t\n"), redacted != content
 
 
+# 递归校验元数据的 JSON 类型、有限数值、键名和各项大小限制。
 def _validate_json_value(
     value: Any,
     *,

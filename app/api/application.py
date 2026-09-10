@@ -88,6 +88,7 @@ def get_default_ingestion_dependencies(
     )
 
 
+# 在管理接口启用且尚未注册时，装配依赖并注册知识入库路由。
 def _register_ingestion_operations(
     application: FastAPI,
     settings: AppSettings,

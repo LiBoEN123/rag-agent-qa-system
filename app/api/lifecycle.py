@@ -13,6 +13,7 @@ from app.config import AppSettings
 logger = get_logger("chat_service")
 
 
+# 保存启动阶段使用的配置、索引重建判断和重建执行依赖。
 @dataclass(frozen=True)
 class StartupDependencies:
     settings: AppSettings

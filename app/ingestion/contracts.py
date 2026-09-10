@@ -106,6 +106,7 @@ class IngestionPrincipalType(str, Enum):
     SYSTEM = "system"
 
 
+# 作为禁止额外字段且禁止字段重新赋值的入库领域契约基类。
 class _FrozenContract(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -137,6 +138,7 @@ class KnowledgeDocument(_FrozenContract):
     metadata_redacted: bool = False
     trust_level: TrustLevel
 
+    # 在字段校验前规范化并脱敏正文和元数据，同时保留脱敏标记。
     @model_validator(mode="before")
     @classmethod
     def _prepare_untrusted_text_and_metadata(cls, data: Any) -> Any:
@@ -156,6 +158,7 @@ class KnowledgeDocument(_FrozenContract):
         ) or redacted
         return prepared
 
+    # 校验知识文档契约版本，拒绝当前程序不支持的版本。
     @field_validator("schema_version")
     @classmethod
     def _validate_schema_version(cls, value: int) -> int:
@@ -166,6 +169,7 @@ class KnowledgeDocument(_FrozenContract):
             )
         return value
 
+    # 去除标题首尾空白并脱敏，拒绝空标题。
     @field_validator("title")
     @classmethod
     def _sanitize_title(cls, value: str) -> str:
@@ -174,6 +178,7 @@ class KnowledgeDocument(_FrozenContract):
             raise ValueError("title 去除首尾空白后不能为空")
         return title
 
+    # 规范化可选来源信息，将空白值转为空值并拒绝包含凭据的内容。
     @field_validator("version", "mime_type", "language")
     @classmethod
     def _normalize_optional_provenance(cls, value: str | None) -> str | None:
@@ -186,6 +191,7 @@ class KnowledgeDocument(_FrozenContract):
             raise ValueError("provenance 字段不能包含凭据")
         return normalized
 
+    # 校验规范来源地址、稳定标识、正文哈希和规范化版本的一致性。
     @model_validator(mode="after")
     def _validate_identity_and_provenance(self) -> KnowledgeDocument:
         canonical_uri = canonicalize_source_uri(self.source_type, self.source_uri)
@@ -214,6 +220,7 @@ class IngestionRequester(_FrozenContract):
     principal_type: IngestionPrincipalType
     source: StrictStr
 
+    # 校验请求主体标识的格式和长度，并拒绝其中包含凭据。
     @field_validator("principal_id")
     @classmethod
     def _validate_principal_id(cls, value: str) -> str:
@@ -223,6 +230,7 @@ class IngestionRequester(_FrozenContract):
             raise ValueError("principal_id 不能包含凭据")
         return value
 
+    # 校验请求来源为符合约定的小写结构化标识。
     @field_validator("source")
     @classmethod
     def _validate_source(cls, value: str) -> str:
@@ -239,6 +247,7 @@ class IngestionApproval(_FrozenContract):
     decided_by: IngestionRequester | None = None
     reason: StrictStr | None = Field(default=None, max_length=1000, repr=False)
 
+    # 清理审批原因的首尾空白并脱敏，将空内容转为空值。
     @field_validator("reason")
     @classmethod
     def _sanitize_reason(cls, value: str | None) -> str | None:
@@ -247,6 +256,7 @@ class IngestionApproval(_FrozenContract):
         reason = redact_sensitive_text(value.strip())
         return reason or None
 
+    # 校验审批状态与决定人、决定时间及拒绝原因是否匹配。
     @model_validator(mode="after")
     def _validate_decision_fields(self) -> IngestionApproval:
         if self.status in {ApprovalStatus.PENDING, ApprovalStatus.NOT_REQUIRED}:
@@ -286,6 +296,7 @@ class IngestionCandidate(_FrozenContract):
     policy_reasons: tuple[PolicyReason, ...] = Field(min_length=1)
     approval: IngestionApproval
 
+    # 校验入库候选契约版本，拒绝当前程序不支持的版本。
     @field_validator("schema_version")
     @classmethod
     def _validate_schema_version(cls, value: int) -> int:
@@ -296,6 +307,7 @@ class IngestionCandidate(_FrozenContract):
             )
         return value
 
+    # 清理候选申请原因的首尾空白并脱敏，将空内容转为空值。
     @field_validator("reason")
     @classmethod
     def _sanitize_reason(cls, value: str | None) -> str | None:
@@ -304,6 +316,7 @@ class IngestionCandidate(_FrozenContract):
         reason = redact_sensitive_text(value.strip())
         return reason or None
 
+    # 校验候选标识与文档一致，并核对候选状态、审批状态和策略决定。
     @model_validator(mode="after")
     def _validate_identity_and_state(self) -> IngestionCandidate:
         if not is_stable_id(self.candidate_id, "cand_"):

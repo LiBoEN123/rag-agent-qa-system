@@ -34,6 +34,7 @@ _INTEGER_ADAPTER = TypeAdapter(int)
 class CompiledAgentRuntime(Protocol):
     """Runtime 和 Streaming 使用的 ``create_agent`` 可执行边界。"""
 
+    # 约定编译后运行时的同步调用接口，显式传入配置和工具上下文。
     def invoke(
         self,
         input_value: Mapping[str, object],
@@ -42,6 +43,7 @@ class CompiledAgentRuntime(Protocol):
         context: ToolInvocationContext,
     ) -> object: ...
 
+    # 约定编译后运行时的异步事件流接口及流模式、子图和版本参数。
     def astream(
         self,
         input_value: Mapping[str, object],
@@ -53,6 +55,7 @@ class CompiledAgentRuntime(Protocol):
         version: str,
     ) -> AsyncIterator[object]: ...
 
+    # 约定获取运行时图结构的接口，供检查和可视化使用。
     def get_graph(self, **kwargs: Any) -> Any: ...
 
 
@@ -63,6 +66,7 @@ def validate_runtime_counts(
 ) -> tuple[int, int]:
     """保留公开 Runtime 数字输入原有的边界约束。"""
 
+    # 将召回数量校验为指定范围内的整数，并拒绝布尔值。
     def validate(name: str, value: object, lower: int, upper: int) -> int:
         if isinstance(value, bool):
             raise ValueError(f"{name} must be an integer")

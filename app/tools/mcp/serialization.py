@@ -42,6 +42,7 @@ class McpSanitizationOutcome:
     error_code: str = ""
 
 
+# 保存清理后的文本、原生 MCP 内容块和入库专用内容表示。
 @dataclass(frozen=True, slots=True)
 class _SafeBlock:
     text: str
@@ -49,6 +50,7 @@ class _SafeBlock:
     ingestion_block: dict[str, Any]
 
 
+# 按字符上限截断文本并添加可容纳的截断标记，同时返回截断状态。
 def _truncate_text(value: str, limit: int) -> tuple[str, bool]:
     if len(value) <= limit:
         return value, False
@@ -57,6 +59,7 @@ def _truncate_text(value: str, limit: int) -> tuple[str, bool]:
     return value[: limit - len(TRUNCATED)] + TRUNCATED, True
 
 
+# 逐步收紧脱敏和裁剪限制，使结构化输出满足序列化长度上限。
 def _bounded_structured(value: Any, *, limit: int) -> tuple[Any, bool]:
     try:
         raw = json.dumps(
@@ -93,6 +96,7 @@ def _bounded_structured(value: Any, *, limit: int) -> tuple[Any, bool]:
     return {"truncated": True}, True
 
 
+# 重建资源地址以移除用户凭据、查询参数和片段，格式异常时返回占位符。
 def _safe_resource_uri(value: object) -> str:
     try:
         parsed = urlsplit(str(value))
@@ -106,6 +110,7 @@ def _safe_resource_uri(value: object) -> str:
     return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
 
 
+# 将内容块类型和非空元数据编码为稳定、紧凑的 JSON 摘要。
 def _summary(block_type: str, **metadata: object) -> str:
     payload = {"type": block_type}
     payload.update({key: value for key, value in metadata.items() if value is not None})
@@ -114,6 +119,7 @@ def _summary(block_type: str, **metadata: object) -> str:
     )
 
 
+# 脱敏文本和资源地址，将二进制等内容转为摘要，不支持的类型返回空值。
 def _safe_block(block: object) -> _SafeBlock | None:  # noqa: PLR0911
     if isinstance(block, types.TextContent):
         text = redact_sensitive_text(block.text)
@@ -346,6 +352,7 @@ def normalize_mcp_tool_message(
     return result
 
 
+# 生成 MCP 输出的类型、字段、文本长度和信任标记摘要，供审计使用。
 def summarize_mcp_output(value: object) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {"mode": "summary", "type": type(value).__name__}

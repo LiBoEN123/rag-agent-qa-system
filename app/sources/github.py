@@ -31,6 +31,7 @@ class GitHubFilePayload(BaseModel):
     resolved_sha: StrictStr | None = Field(default=None, max_length=64)
     mime_type: StrictStr | None = Field(default=None, max_length=255)
 
+    # 清理仓库所有者或仓库名的边界字符，并校验名称格式。
     @field_validator("owner", "repository")
     @classmethod
     def _normalize_repository_part(cls, value: str) -> str:
@@ -39,6 +40,7 @@ class GitHubFilePayload(BaseModel):
             raise ValueError("GitHub owner/repository 格式无效")
         return normalized
 
+    # 规范化仓库文件路径，拒绝空路径和相对路径段。
     @field_validator("path")
     @classmethod
     def _normalize_path(cls, value: str) -> str:
@@ -49,6 +51,7 @@ class GitHubFilePayload(BaseModel):
             raise ValueError("GitHub source path 不允许相对路径段")
         return normalized
 
+    # 清理可选字符串的首尾空白，并将空白内容转为空值。
     @field_validator("requested_ref", "mime_type")
     @classmethod
     def _normalize_optional(cls, value: str | None) -> str | None:
@@ -56,6 +59,7 @@ class GitHubFilePayload(BaseModel):
             return None
         return value.strip() or None
 
+    # 将非空 SHA 转为小写并校验其格式。
     @field_validator("resolved_sha")
     @classmethod
     def _validate_sha(cls, value: str | None) -> str | None:

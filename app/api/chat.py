@@ -122,6 +122,7 @@ def create_chat_router(chat_service: ChatService) -> APIRouter:
         encoder = ChatStreamSSEEncoder(trace_id=trace_id)
         service_stream = chat_service.stream(service_request)
 
+        # 编码服务事件，处理客户端断开和流异常，并确保关闭底层生成器。
         async def encoded_events():
             try:
                 iterator = service_stream.__aiter__()

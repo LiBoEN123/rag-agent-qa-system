@@ -32,6 +32,7 @@ _SEMVER_PATTERN = re.compile(
 )
 
 
+# 定义工具只读、内部写入、外部写入和破坏性操作的风险级别。
 class ToolRiskLevel(str, Enum):
     READ_ONLY = "read_only"
     INTERNAL_WRITE = "internal_write"
@@ -39,6 +40,7 @@ class ToolRiskLevel(str, Enum):
     DESTRUCTIVE = "destructive"
 
 
+# 定义审计输出不记录、仅摘要和脱敏内容三种记录方式。
 class ToolAuditOutputMode(str, Enum):
     NONE = "none"
     SUMMARY = "summary"
@@ -85,6 +87,7 @@ class ToolSpec(BaseModel):
         ToolAuditOutputMode.SUMMARY
     )
 
+    # 将字符串序列去重并转为元组，保留首次出现的顺序。
     @field_validator(
         "required_permissions", "sensitive_arg_fields", "sensitive_output_fields"
     )
@@ -92,6 +95,7 @@ class ToolSpec(BaseModel):
     def normalize_sequences(cls, value: Sequence[str]) -> tuple[str, ...]:
         return tuple(dict.fromkeys(value))
 
+    # 校验输出模式可稳定序列化为 JSON，并深拷贝以隔离外部修改。
     @field_validator("output_schema")
     @classmethod
     def copy_schema(cls, value: dict[Any, Any] | None) -> dict[Any, Any] | None:
@@ -103,6 +107,7 @@ class ToolSpec(BaseModel):
             return deepcopy(value)
         return value
 
+    # 校验输出契约声明、幂等重试限制及高风险工具的人工审批要求。
     @model_validator(mode="after")
     def validate_governance(self) -> Self:
         if self.output_model is None and self.output_schema is None:

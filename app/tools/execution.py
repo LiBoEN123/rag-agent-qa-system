@@ -65,6 +65,7 @@ _PUBLIC_ERROR_CODES = _GOVERNANCE_ERRORS | {
 }
 
 
+# 保存单次工具调用的输入、上下文、策略决定、审计状态和尝试次数。
 @dataclass(slots=True)
 class _Invocation:
     started_at: float
@@ -77,6 +78,7 @@ class _Invocation:
     attempt_count: int = 0
 
 
+# 保存框架重试模式及当前调用状态，供一次工具执行流程共享。
 @dataclass(slots=True)
 class _ExecutionScope:
     framework_retry: bool
@@ -91,6 +93,7 @@ _CURRENT_SCOPE: ContextVar[_ExecutionScope | None] = ContextVar(
 class ProjectToolFailure(Exception):
     """把已清洗的项目结果交给 LangChain retry/error middleware。"""
 
+    # 携带统一工具失败结果和重试标记，供框架重试中间件判断。
     def __init__(self, result: dict[str, Any], *, retryable: bool) -> None:
         super().__init__(str(result.get("error_code") or "tool_failure"))
         self.result = result
@@ -102,15 +105,18 @@ def enter_framework_execution() -> Token[_ExecutionScope | None]:
     return _CURRENT_SCOPE.set(_ExecutionScope(framework_retry=True))
 
 
+# 使用上下文令牌恢复进入框架工具执行前的作用域。
 def exit_framework_execution(token: Token[_ExecutionScope | None]) -> None:
     _CURRENT_SCOPE.reset(token)
 
 
+# 判断当前作用域是否已创建项目工具调用记录。
 def framework_execution_started() -> bool:
     scope = _CURRENT_SCOPE.get()
     return bool(scope and scope.invocation)
 
 
+# 仅将明确标记为可重试的项目工具失败交给框架重试。
 def retry_project_failure(exc: Exception) -> bool:
     return isinstance(exc, ProjectToolFailure) and exc.retryable
 
@@ -122,10 +128,12 @@ def project_failure_content(exc: Exception, _request: Any) -> str | None:
     return json.dumps(exc.result, ensure_ascii=False, sort_keys=True, default=str)
 
 
+# 根据幂等声明和重试上限计算工具允许的最大尝试次数。
 def _max_attempts(spec: ToolSpec) -> int:
     return 1 + spec.max_retries if spec.idempotent else 1
 
 
+# 汇总工具版本、尝试次数、执行耗时和超时信息。
 def _runtime(spec: ToolSpec, call: _Invocation, *, timed_out: bool = False) -> dict:
     return {
         "tool_version": spec.version,
@@ -137,6 +145,7 @@ def _runtime(spec: ToolSpec, call: _Invocation, *, timed_out: bool = False) -> d
     }
 
 
+# 将策略决定转换为包含风险、审批、参数指纹和缺失权限的治理信息。
 def _governance(decision: ToolPolicyDecision) -> dict:
     return {
         "decision": decision.decision.value,
@@ -147,12 +156,14 @@ def _governance(decision: ToolPolicyDecision) -> dict:
     }
 
 
+# 仅对允许公开的错误码保留限长消息，其余返回固定错误描述。
 def _safe_error(code: ToolErrorCode, message: str) -> str:
     if code in _PUBLIC_ERROR_CODES:
         return (message or f"工具执行未成功（{code.value}）")[:500]
     return f"工具执行未成功（{code.value}）"
 
 
+# 构造并写入工具审计事件，写入异常时记录错误类型并返回失败标记。
 def _emit(
     event: ToolAuditEventType,
     spec: ToolSpec,
@@ -199,6 +210,7 @@ def _emit(
         return False
 
 
+# 构造统一工具错误结果，附加运行信息、治理决定和审计写入状态。
 def _error_result(
     spec: ToolSpec,
     call: _Invocation,
@@ -222,6 +234,7 @@ def _error_result(
     return result
 
 
+# 记录失败审计事件，累计审计异常状态并返回统一错误结果。
 def _failure(
     spec: ToolSpec,
     call: _Invocation,
@@ -242,6 +255,7 @@ def _failure(
     )
 
 
+# 建立调用记录并执行策略及审计检查，未获放行时提前返回错误结果。
 def _start_invocation(
     scope: _ExecutionScope,
     spec: ToolSpec,

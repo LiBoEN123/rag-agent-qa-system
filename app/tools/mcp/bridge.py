@@ -45,19 +45,23 @@ logger = get_logger("chat_service")
 MCP_BRIDGE_VERSION = "1.0.0"
 
 
+# 计算从指定计时起点经过的毫秒数，并保证结果非负。
 def _elapsed_ms(started_at: float) -> int:
     return max(0, int((time.perf_counter() - started_at) * 1000))
 
 
+# 从框架运行时提取项目工具调用上下文，类型不匹配时返回空值。
 def _runtime_context(runtime: object | None) -> ToolInvocationContext | None:
     context = getattr(runtime, "context", None)
     return context if isinstance(context, ToolInvocationContext) else None
 
 
+# 读取运行时工具调用标识，并将缺失值统一为空字符串。
 def _runtime_call_id(runtime: object | None) -> str:
     return str(getattr(runtime, "tool_call_id", "") or "")
 
 
+# 生成仅包含参数数量和限量字段名的审计摘要。
 def _args_summary(args: dict[str, Any], settings: AppSettings) -> dict[str, Any]:
     return {
         "mode": "summary",
@@ -66,6 +70,7 @@ def _args_summary(args: dict[str, Any], settings: AppSettings) -> dict[str, Any]
     }
 
 
+# 构造 MCP 调用的桥接版本、尝试次数、耗时和超时元数据。
 def _result_runtime(
     *,
     started_at: float,
@@ -83,6 +88,7 @@ def _result_runtime(
     }
 
 
+# 构造 MCP 调用的准入决定、风险级别、审批要求和参数指纹。
 def _governance(
     args_fingerprint: str,
     *,
@@ -100,6 +106,7 @@ def _governance(
     }
 
 
+# 按服务配置将需审批的远程工具归为外部写入，其余归为只读。
 def _tool_risk_level(
     server_config: McpServerConfig | None,
     remote_tool_name: str,
@@ -112,6 +119,7 @@ def _tool_risk_level(
     return ToolRiskLevel.READ_ONLY
 
 
+# 使用错误文本构造标记为失败的原生 MCP 工具结果。
 def _error_result(message: str) -> types.CallToolResult:
     return types.CallToolResult(
         content=[types.TextContent(type="text", text=message)],
@@ -122,6 +130,7 @@ def _error_result(message: str) -> types.CallToolResult:
 class McpToolCallInterceptor:
     """在官方 adapter 转换前施加权限、审计、超时与 payload 安全策略。"""
 
+    # 保存运行配置、各 MCP 服务配置和调用审计写入器。
     def __init__(
         self,
         settings: AppSettings,
@@ -133,6 +142,7 @@ class McpToolCallInterceptor:
         self._server_configs = dict(server_configs)
         self._audit_sink = audit_sink or get_default_tool_audit_sink(settings)
 
+    # 写入带调用身份、参数及输出摘要的 MCP 审计事件，并返回写入状态。
     def _audit(
         self,
         *,
@@ -184,6 +194,7 @@ class McpToolCallInterceptor:
             )
             return False
 
+    # 为 MCP 结果附加运行、治理、审计、错误信息和不可信内容标记。
     def _response(
         self,
         result: types.CallToolResult,
@@ -228,6 +239,7 @@ class McpToolCallInterceptor:
         }
         return attach_mcp_execution_metadata(result, metadata)
 
+    # 检查权限和审批要求，在超时限制内调用远程工具并清理结果、记录审计。
     async def __call__(self, request: MCPToolCallRequest, handler):
         started_at = time.perf_counter()
         exposed_name = f"{request.server_name}_{request.name}"
@@ -449,6 +461,7 @@ class McpToolCallInterceptor:
         )
 
 
+# 为桥接层调用失败构造未执行远程工具的统一错误结果。
 def _bridge_failure(tool_name: str, args: dict[str, Any], message: str) -> dict:
     result = tool_error(
         tool_name,
@@ -486,6 +499,7 @@ def build_governed_mcp_tool(
     if not hasattr(raw_tool, "func"):
         raise ValueError("MCP adapter tool 不支持同步 facade")
 
+    # 同步执行 MCP 协程，已有事件循环时返回桥接错误。
     def invoke_mcp(
         runtime: ToolRuntime[ToolInvocationContext],
         **tool_args: Any,
@@ -518,6 +532,7 @@ def build_governed_mcp_tool(
     return raw_tool
 
 
+# 为直接调用携带工具上下文、调用标识、序列化模式及入库输出。
 @dataclass(slots=True)
 class _DirectRuntime:
     context: ToolInvocationContext

@@ -37,14 +37,17 @@ class CandidateRepository(Protocol):
 class InMemoryCandidateRepository:
     """线程安全且不会为同一 candidate_id 建立逻辑重复的内存存储。"""
 
+    # 初始化候选内存字典和保护读写操作的可重入锁。
     def __init__(self) -> None:
         self._candidates: dict[str, IngestionCandidate] = {}
         self._lock = RLock()
 
+    # 在锁保护下按候选标识读取记录，不存在时返回空值。
     def get(self, candidate_id: str) -> IngestionCandidate | None:
         with self._lock:
             return self._candidates.get(candidate_id)
 
+    # 在锁保护下幂等保存候选，拒绝同一标识对应不同领域状态。
     def save(self, candidate: IngestionCandidate) -> IngestionCandidate:
         with self._lock:
             existing = self._candidates.get(candidate.candidate_id)
@@ -65,10 +68,12 @@ class InMemoryCandidateRepository:
             self._candidates[candidate.candidate_id] = candidate
             return candidate
 
+    # 在锁保护下返回当前保存的候选数量。
     def count(self) -> int:
         with self._lock:
             return len(self._candidates)
 
+    # 按状态和来源筛选候选，按申请时间及标识倒序返回分页结果。
     def list(
         self,
         *,

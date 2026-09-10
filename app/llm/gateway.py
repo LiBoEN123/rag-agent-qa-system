@@ -220,6 +220,7 @@ def _parse_json_object(text: str) -> dict[str, Any]:
 class ModelGateway:
     """在统一消息协议上执行 LangChain 调用并规整结果与异常。"""
 
+    # 保存模型用途角色和底层 LangChain 模型实例。
     def __init__(
         self,
         *,

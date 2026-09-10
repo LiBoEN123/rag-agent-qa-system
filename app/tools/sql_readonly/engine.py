@@ -57,6 +57,7 @@ def _readonly_sqlite_url(settings: AppSettings) -> URL:
 def _configure_sqlite_readonly(engine: Engine) -> None:
     """为连接池中的每个 SQLite DBAPI 连接启用 query_only。"""
 
+    # 为新建 SQLite 连接启用仅查询模式，并确保关闭设置游标。
     @event.listens_for(engine, "connect")
     def set_sqlite_query_only(dbapi_connection, _connection_record) -> None:
         cursor = dbapi_connection.cursor()
@@ -139,6 +140,7 @@ def statement_timeout(
     driver_connection = connection.connection.driver_connection
     deadline = time.monotonic() + timeout_ms / 1000.0
 
+    # 供 SQLite 进度回调检查截止时间，超时后标记状态并中断查询。
     def interrupt_when_expired() -> int:
         if time.monotonic() < deadline:
             return 0

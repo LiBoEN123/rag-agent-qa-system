@@ -91,11 +91,13 @@ class _DeferredAgentModel:
 class _GovernedBoundModel:
     """在模型边界记录成功/失败，交给 ``after_model`` 写入状态。"""
 
+    # 保存底层模型、可用工具名称及模型能力信息，供调用和治理记录使用。
     def __init__(self, model: Any, *, available_tool_names: list[str]) -> None:
         self._model = model
         self._available_tool_names = list(available_tool_names)
         self.profile = getattr(model, "profile", {})
 
+    # 为模型消息附加成功状态、调用耗时和工具请求统计。
     def _success(self, output: Any, started: int) -> Any:
         if not isinstance(output, AIMessage):
             return output
@@ -116,6 +118,7 @@ class _GovernedBoundModel:
             }
         )
 
+    # 将模型异常转换为携带失败治理记录的统一模型消息。
     @staticmethod
     def _failure(started: int, exc: Exception) -> AIMessage:
         event = {

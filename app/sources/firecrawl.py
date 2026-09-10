@@ -29,6 +29,7 @@ class FirecrawlPagePayload(BaseModel):
     version: StrictStr | None = Field(default=None, max_length=256)
     status_code: int | None = Field(default=None, ge=100, le=599)
 
+    # 将非空网页地址转换为 Firecrawl 来源使用的规范地址。
     @field_validator("requested_url", "final_url")
     @classmethod
     def _canonicalize_url(cls, value: str | None) -> str | None:
@@ -36,6 +37,7 @@ class FirecrawlPagePayload(BaseModel):
             return None
         return canonicalize_source_uri(KnowledgeSourceType.FIRECRAWL, value)
 
+    # 清理可选字符串的首尾空白，并将空白内容转为空值。
     @field_validator("title", "mime_type", "language", "version")
     @classmethod
     def _normalize_optional(cls, value: str | None) -> str | None:

@@ -9,6 +9,7 @@ class DecodedUvicornAccessFilter(logging.Filter):
 
     marker = "decoded_uvicorn_access"
 
+    # 解码访问日志中的请求路径并转义不可打印字符，保留日志记录。
     def filter(self, record: logging.LogRecord) -> bool:
         args = record.args
         if not isinstance(args, tuple) or len(args) != 5:

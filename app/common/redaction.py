@@ -81,6 +81,7 @@ def redact_sensitive_data(
     }
     active_ids: set[int] = set()
 
+    # 递归脱敏并限制输出大小，处理嵌套深度、循环引用和不支持的类型。
     def visit(item: Any, depth: int) -> Any:
         if item is None or isinstance(item, (bool, int, float)):
             return item

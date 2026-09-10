@@ -9,6 +9,7 @@ from app.tools.context import ToolInvocationContext, has_permission
 class ProjectToolVisibilityMiddleware(AgentMiddleware):
     """只过滤本地工具；MCP BaseTool 沿用其独立权限路径。"""
 
+    # 根据调用者权限筛选模型可见的项目工具。
     @staticmethod
     def visible_request(request: ModelRequest) -> ModelRequest:
         context = request.runtime.context
@@ -27,8 +28,10 @@ class ProjectToolVisibilityMiddleware(AgentMiddleware):
             ]
         )
 
+    # 同步调用模型前，按权限更新请求中的可见工具列表。
     def wrap_model_call(self, request, handler):
         return handler(self.visible_request(request))
 
+    # 异步调用模型前，按权限更新请求中的可见工具列表。
     async def awrap_model_call(self, request, handler):
         return await handler(self.visible_request(request))

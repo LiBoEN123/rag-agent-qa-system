@@ -23,6 +23,7 @@ from app.config import AppSettings
 logger = get_logger("chat_service")
 
 
+# 集中保存诊断接口所需的配置、检索预览和指标读取依赖。
 @dataclass(frozen=True)
 class DiagnosticsDependencies:
     settings_provider: Callable[[], AppSettings]

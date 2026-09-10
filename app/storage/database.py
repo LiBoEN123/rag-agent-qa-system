@@ -12,6 +12,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 from app.config import get_settings
 
 
+# 作为应用存储模型的 SQLAlchemy 声明基类，统一持有表元数据。
 class Base(DeclarativeBase): ...
 
 
@@ -61,6 +62,7 @@ agent_steps = Table(
 )
 
 
+# 映射入库候选表，保存查询字段和完整的候选契约 JSON。
 class _IngestionCandidateRecord(Base):
     __tablename__ = "ingestion_candidates"
 
@@ -78,6 +80,7 @@ class _IngestionCandidateRecord(Base):
     )
 
 
+# 映射索引运行表，保存执行状态、时间、变更计数和错误信息。
 class _IngestionIndexRunRecord(Base):
     __tablename__ = "ingestion_index_runs"
 
@@ -126,6 +129,7 @@ def get_engine(db_path: Path | None = None) -> Engine:
         return _engines[path]
 
 
+# 按数据库引擎缓存会话工厂，并在提交后保留已加载的对象属性。
 @lru_cache(maxsize=None)
 def _session_factory(engine: Engine) -> sessionmaker[Session]:
     return sessionmaker(engine, expire_on_commit=False)

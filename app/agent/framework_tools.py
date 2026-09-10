@@ -46,6 +46,7 @@ def build_local_tool(
         runtime=(ToolRuntime[ToolInvocationContext], ...),
     )
 
+    # 校验框架注入的调用上下文，并交给项目工具执行入口处理。
     def invoke_project_tool(
         runtime: ToolRuntime[ToolInvocationContext], **tool_args: Any
     ) -> dict[str, Any]:

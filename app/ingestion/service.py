@@ -46,6 +46,7 @@ _POLICY_REQUESTER = IngestionRequester(
 class IngestionService:
     """只管理候选 domain state；不认识 RAG、Chroma、MCP 或 HTTP。"""
 
+    # 校验正文长度上限，并配置候选仓库和允许的来源类型。
     def __init__(
         self,
         repository: CandidateRepository | None = None,
@@ -176,6 +177,7 @@ class IngestionService:
             requested_at=candidate.requested_at,
         )
 
+    # 根据策略决定生成候选初始状态和对应的审批记录。
     @staticmethod
     def _initial_state(decision, timestamp, reasons):
         if decision is PolicyDecisionType.ALLOW:
@@ -198,6 +200,7 @@ class IngestionService:
             ),
         )
 
+    # 读取待审批候选，候选不存在或已结束审批时抛出领域异常。
     def _require_pending(self, candidate_id: str) -> IngestionCandidate:
         candidate = self._repository.get(candidate_id)
         if candidate is None:
@@ -209,6 +212,7 @@ class IngestionService:
             )
         return candidate
 
+    # 更新候选状态和审批信息，重新校验领域契约后替换仓库记录。
     def _replace_state(
         self,
         candidate: IngestionCandidate,

@@ -220,6 +220,7 @@ def _tool_state_command(
 class ProjectToolExecutionMiddleware(AgentMiddleware):
     """仅为本地 ProjectStructuredTool 建立 retry scope 和校验错误契约。"""
 
+    # 从工具调用请求中取出项目工具，其他类型返回空值。
     @staticmethod
     def _project_tool(request: ToolCallRequest):
         from app.agent.framework_tools import ProjectStructuredTool
@@ -230,6 +231,7 @@ class ProjectToolExecutionMiddleware(AgentMiddleware):
             else None
         )
 
+    # 将尚未进入项目执行流程的工具消息转为统一的参数校验失败结果。
     @staticmethod
     def _validated_output(request, tool, output):
         if framework_execution_started() or not isinstance(output, ToolMessage):

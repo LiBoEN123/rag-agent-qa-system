@@ -24,6 +24,7 @@ _SENSITIVE_QUERY_KEYS = DEFAULT_SENSITIVE_KEYS | {
 _SOURCE_TYPES = {"local_file", "upload", "github", "web", "firecrawl"}
 
 
+# 从枚举或字符串提取来源类型，并校验是否属于支持范围。
 def _source_type_value(source_type: object) -> str:
     value = getattr(source_type, "value", source_type)
     if not isinstance(value, str) or value not in _SOURCE_TYPES:
@@ -31,6 +32,7 @@ def _source_type_value(source_type: object) -> str:
     return value
 
 
+# 清理来源地址首尾空白，拒绝空地址、超长地址和控制字符。
 def _reject_unsafe_uri(raw_uri: str) -> str:
     uri = raw_uri.strip()
     if not uri:
@@ -42,6 +44,7 @@ def _reject_unsafe_uri(raw_uri: str) -> str:
     return uri
 
 
+# 将本地绝对路径或文件地址转换为规范的本地文件 URI。
 def _canonicalize_file_uri(raw_uri: str) -> str:
     if raw_uri.lower().startswith("file:"):
         parts = urlsplit(raw_uri)
@@ -60,6 +63,7 @@ def _canonicalize_file_uri(raw_uri: str) -> str:
     return path.absolute().as_uri()
 
 
+# 校验网页地址并拒绝凭据参数，统一主机和默认端口并移除片段。
 def _canonicalize_http_uri(raw_uri: str) -> str:
     parts = urlsplit(raw_uri)
     scheme = parts.scheme.lower()
@@ -90,6 +94,7 @@ def _canonicalize_http_uri(raw_uri: str) -> str:
     return urlunsplit((scheme, host, parts.path or "/", parts.query, ""))
 
 
+# 校验 GitHub 来源地址，统一仓库标识并拒绝凭据及相对路径段。
 def _canonicalize_github_uri(raw_uri: str) -> str:
     parts = urlsplit(raw_uri)
     if parts.scheme.lower() != "github" or not parts.hostname:
@@ -111,6 +116,7 @@ def _canonicalize_github_uri(raw_uri: str) -> str:
     return f"github://{owner}/{repository}/{file_path}"
 
 
+# 校验上传来源地址，统一命名空间大小写并移除路径末尾斜杠。
 def _canonicalize_upload_uri(raw_uri: str) -> str:
     parts = urlsplit(raw_uri)
     if parts.scheme.lower() != "upload" or not parts.hostname:
@@ -138,6 +144,7 @@ def canonicalize_source_uri(source_type: object, source_uri: str) -> str:
     return _canonicalize_upload_uri(raw_uri)
 
 
+# 使用固定分隔符拼接文本片段，并生成 SHA-256 十六进制摘要。
 def _sha256(*parts: str) -> str:
     payload = "\x1f".join(parts).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
