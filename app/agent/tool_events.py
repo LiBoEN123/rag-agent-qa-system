@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from app.tools.audit import sanitize_tool_input, summarize_tool_output
-from app.tools.redaction import redact_sensitive_data
+from app.common.redaction import redact_sensitive_data
 from app.config import get_settings
 from app.tools.catalog import get_local_tool_specs
 

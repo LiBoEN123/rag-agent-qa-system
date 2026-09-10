@@ -11,7 +11,7 @@ from app.config import AppSettings
 from app.tools.mcp.bridge import build_governed_mcp_tool
 from app.tools.mcp.config import McpConfig
 from app.tools.mcp.provider import CachedMcpTool
-from app.tools.redaction import redact_sensitive_text
+from app.common.redaction import redact_sensitive_text
 
 
 _EXPOSED_TOOL_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,99}$")

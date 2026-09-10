@@ -13,7 +13,7 @@ from mcp import types
 
 from app.config import AppSettings
 from app.tools.errors import ToolErrorCode
-from app.tools.redaction import TRUNCATED, redact_sensitive_data, redact_sensitive_text
+from app.common.redaction import TRUNCATED, redact_sensitive_data, redact_sensitive_text
 from app.tools.result import tool_error, tool_success
 
 

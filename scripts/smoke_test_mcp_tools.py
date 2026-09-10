@@ -22,7 +22,7 @@ from app.tools.mcp.client import (  # noqa: E402
     initialize_mcp_runtime,
 )
 from app.tools.mcp.provider import get_mcp_tool_provider  # noqa: E402
-from app.tools.redaction import redact_sensitive_data  # noqa: E402
+from app.common.redaction import redact_sensitive_data  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:

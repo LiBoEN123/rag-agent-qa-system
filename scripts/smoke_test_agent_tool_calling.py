@@ -23,7 +23,7 @@ from app.agent.framework_tools import get_local_tools  # noqa: E402
 from app.llm.factory import get_answer_model  # noqa: E402
 from app.tools.context import build_default_tool_context  # noqa: E402
 from app.config import get_settings  # noqa: E402
-from app.tools.redaction import redact_sensitive_data  # noqa: E402
+from app.common.redaction import redact_sensitive_data  # noqa: E402
 
 
 SCENARIOS = (
