@@ -37,7 +37,7 @@ from app.observability.metrics import (
     now_iso,
     write_bad_cases,
 )
-from app.storage.session import append_message, get_history
+from app.storage.memory import append_message_sqlite, get_history_sqlite
 from app.services.chat_models import (
     ChatRequestContext,
     ChatServiceOutcome,
@@ -109,12 +109,12 @@ def get_default_chat_service_dependencies() -> ChatServiceDependencies:
     """构造只引用现有函数、且不执行外部调用的默认依赖。"""
     return ChatServiceDependencies(
         settings_provider=get_settings,
-        get_history=get_history,
+        get_history=get_history_sqlite,
         rewrite_query_with_history=rewrite_query_with_history,
         run_agent=run_agent,
         log_and_write_metrics=log_and_write_metrics,
         write_bad_cases=write_bad_cases,
-        append_message=append_message,
+        append_message=append_message_sqlite,
         now_iso=now_iso,
         perf_counter=time.perf_counter,
     )
@@ -459,7 +459,17 @@ class ChatService:
             if request.decompose_top_k is not None
             else settings.decompose_top_k
         )
-        history = self._deps.get_history(context.session_id)
+        try:
+            history = self._deps.get_history(context.session_id)
+        except Exception as exc:
+            logger.warning(
+                "[trace_id=%s] [session_store] history_read_failed "
+                "session_id=%s error=%s",
+                context.request.trace_id,
+                context.session_id,
+                str(exc)[:200],
+            )
+            history = []
         rewrite_result = self._deps.rewrite_query_with_history(
             question=context.original_question,
             history=history,

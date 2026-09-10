@@ -15,7 +15,7 @@ from app.services.chat_service import (
     ChatService,
     get_default_chat_service_dependencies,
 )
-from app.storage.session import clear_session, get_history
+from app.storage.memory import clear_session_sqlite, get_history_sqlite
 
 
 @pytest.fixture(autouse=True)
@@ -171,7 +171,7 @@ def test_chat_langgraph_internal_error_result_returns_http_500():
 def test_chat_uses_rewritten_question_for_follow_up():
     """验证 /chat 第二轮追问会用改写后的问题进入 LangGraph。"""
     session_id = "api_follow_up_session"
-    clear_session(session_id)
+    clear_session_sqlite(session_id)
     rewrite_calls = []
 
     def fake_rewrite(question, history, trace_id=""):
@@ -214,6 +214,11 @@ def test_chat_uses_rewritten_question_for_follow_up():
             "reason": "测试通过",
             "action": "agent",
             "tool_result_summary": "测试",
+            "router_llm_used": False,
+            "decompose_llm_used": False,
+            "answer_llm_used": False,
+            "llm_call_count": 0,
+            "timings": {},
             "tool_trace": [
                 {
                     "step": "llm_usage",
@@ -250,6 +255,8 @@ def test_chat_uses_rewritten_question_for_follow_up():
     rewritten_question = (
         "普通本科四年制专业中，休学创业学生的最长学习年限是多少？"
     )
+    assert body["code"] == 0
+    assert body["data"]["status"] == "ok"
     assert rewrite_calls[1]["question"] == "那休学创业呢？"
     assert rewrite_calls[1]["history"][0] == {
         "role": "user",
@@ -264,7 +271,7 @@ def test_chat_uses_rewritten_question_for_follow_up():
         == rewritten_question
     )
     assert body["data"]["tool_trace"][0]["rewritten"] is True
-    clear_session(session_id)
+    clear_session_sqlite(session_id)
 
 
 def test_chat_uses_agent_runtime_once_and_keeps_rewrite_api_protocol():
@@ -343,7 +350,7 @@ def test_chat_uses_agent_runtime_once_and_keeps_rewrite_api_protocol():
     assert body["data"]["answer"] == "agent answer"
     assert body["data"]["question"] == "原始问题"
     assert body["data"]["tool_trace"][0]["step"] == "query_rewrite"
-    assert get_history("runtime-switch-session") == [
+    assert get_history_sqlite("runtime-switch-session") == [
         {"role": "user", "content": "原始问题"},
         {"role": "assistant", "content": "agent answer"},
     ]

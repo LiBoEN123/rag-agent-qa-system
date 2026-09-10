@@ -65,6 +65,7 @@ def build_runtime_result(status="OK", answer="测试回答", **overrides):
 def build_service(
     *,
     history=None,
+    history_error: Exception | None = None,
     rewrite_result=None,
     rewrite_error: Exception | None = None,
     runtime_result=None,
@@ -101,6 +102,8 @@ def build_service(
 
     def fake_get_history(session_id):
         calls["history"].append(session_id)
+        if history_error is not None:
+            raise history_error
         return list(history)
 
     def fake_rewrite(question, history, trace_id=""):
@@ -535,6 +538,23 @@ def test_service_exception_returns_internal_error_with_error_status():
     assert len(calls["bad_cases"]) == 1
     assert calls["bad_cases"][0]["error_type"] == "internal_error"
     assert calls["metrics"][0]["status"] == "internal_error"
+
+
+def test_history_failure_falls_back_to_empty_history():
+    """历史读取失败仍以空历史改写、执行 Agent 并完成指标收尾。"""
+    service, calls = build_service(history_error=RuntimeError("history unavailable"))
+
+    outcome = service.handle(make_request())
+
+    assert calls["history"] == ["session-1"]
+    assert calls["rewrite"] == [
+        {"question": "原始问题", "history": [], "trace_id": "trace-1"}
+    ]
+    assert len(calls["agent"]) == 1
+    assert outcome.code == 0
+    assert outcome.http_status == 200
+    assert outcome.response_status == "ok"
+    assert len(calls["metrics"]) == 1
 
 
 def test_session_failure_does_not_change_success_outcome():

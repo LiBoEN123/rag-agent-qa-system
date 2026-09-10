@@ -17,7 +17,7 @@ from app.services.chat_service import (
 )
 from app.services.chat_models import ChatServiceRequest
 from app.storage.database import clear_storage_engine_cache
-from app.storage.session import append_message, get_history
+from app.storage.memory import append_message_sqlite, get_history_sqlite
 from app.storage.traces import get_agent_run, get_agent_steps
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
@@ -231,7 +231,7 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
 
     def persist_message(session_id, role, content):
         session_writes.append((session_id, role, content))
-        append_message(session_id, role, content)
+        append_message_sqlite(session_id, role, content)
 
     def rewrite(question, history, trace_id=""):
         return {
@@ -248,7 +248,7 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
 
     dependencies = ChatServiceDependencies(
         settings_provider=lambda: settings,
-        get_history=get_history,
+        get_history=get_history_sqlite,
         rewrite_query_with_history=rewrite,
         run_agent=run_agent,
         log_and_write_metrics=lambda record: metric_writes.append(dict(record)),
@@ -305,7 +305,7 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
         ),
     ]
     clear_storage_engine_cache()
-    assert get_history("session-chat-integration") == [
+    assert get_history_sqlite("session-chat-integration") == [
         {"role": "user", "content": "请走完整 Agent 工具主路径"},
         {"role": "assistant", "content": "ChatService 主路径完成。"},
     ]
