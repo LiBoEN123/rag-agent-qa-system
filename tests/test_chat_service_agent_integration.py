@@ -20,7 +20,6 @@ from app.services.chat_service import (
 from app.services.chat_models import ChatServiceRequest
 from app.storage.database import clear_storage_engine_cache
 from app.storage.memory import append_message_sqlite, get_history_sqlite
-from app.storage.traces import get_agent_run, get_agent_steps
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from tests.support.local_tools import local_tools
@@ -223,7 +222,6 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
         tool_default_principal_id="chat-user",
         tool_default_permissions=("knowledge_base:read",),
         tool_audit_enabled=False,
-        enable_agent_trace_store=True,
     )
 
     session_writes: list[tuple[str, str, str]] = []
@@ -311,16 +309,16 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
         {"role": "user", "content": "请走完整 Agent 工具主路径"},
         {"role": "assistant", "content": "ChatService 主路径完成。"},
     ]
-    stored_run = get_agent_run("trace-chat-integration")
-    assert stored_run["session_id"] == "session-chat-integration"
-    assert stored_run["final_answer"] == outcome.result["answer"]
-    assert stored_run["status"] == "OK"
-    stored_steps = get_agent_steps("trace-chat-integration")
-    # ChatService 在 Agent 已持久化后才追加 query_rewrite 步骤。
-    assert [json.loads(step["observation_json"]) for step in stored_steps] == [
-        step for step in outcome.result["tool_trace"] if step.get("step") != "query_rewrite"
+    tool_calls = [
+        step for step in outcome.result["tool_trace"] if step.get("step") == "tool_call"
     ]
-    assert any(step["tool_name"] == "chat_echo" for step in stored_steps)
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["tool_name"] == "chat_echo"
+    assert tool_calls[0]["handler_executed"] is True
+    assert {step["step"] for step in outcome.result["tool_trace"]} >= {
+        "query_rewrite", "decide", "tool_call", "llm_usage", "compose_final_answer",
+    }
+    assert outcome.result["references"] == []
     assert len(metric_writes) == 1
     decide_trace = next(
         step

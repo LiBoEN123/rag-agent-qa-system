@@ -87,14 +87,7 @@ def test_internal_error_result_keeps_compatible_schema():
     ]
 
 
-def test_runtime_short_circuit_uses_one_trace_snapshot_and_saves_result(
-    monkeypatch,
-):
-    saved = []
-    monkeypatch.setattr(
-        "app.agent.results.maybe_save_agent_trace",
-        lambda **kwargs: saved.append(kwargs),
-    )
+def test_runtime_short_circuit_uses_one_trace_snapshot():
     invocation = prepare_agent_runtime_invocation(
         original_question="你是谁？",
         effective_question="你是谁？",
@@ -110,5 +103,6 @@ def test_runtime_short_circuit_uses_one_trace_snapshot_and_saves_result(
         item.get("step") == "llm_usage"
         for item in result["tool_trace"]
     ) == 1
-    assert saved[0]["rewritten_question"] == ""
-    assert saved[0]["tool_trace"] == result["tool_trace"]
+    assert result["status"] == "OK"
+    assert result["answer"]
+    assert result["action"] == "direct_answer"

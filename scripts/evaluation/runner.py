@@ -131,7 +131,6 @@ def build_evaluation_settings(
     """复制无生产写入的评测快照；MCP 只由显式 Extended profile 开启。"""
     return settings.model_copy(
         update={
-            "enable_agent_trace_store": False,
             "tool_audit_enabled": mcp_enabled,
             "mcp_tools_enabled": mcp_enabled,
             "sqlite_db_path": output_dir / ".isolated" / "app.sqlite",

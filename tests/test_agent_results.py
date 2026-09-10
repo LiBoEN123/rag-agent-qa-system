@@ -12,14 +12,12 @@ from app.agent.guardrails import AgentStopReason
 
 from app.agent.results import (
     AgentRunResult,
-    build_agent_runtime_error_result,
     build_framework_agent_result,
     build_short_circuit_result,
     create_agent_result,
     build_internal_error_result,
 )
 from app.contracts.chat import AgentResultStatus
-from app.storage.traces import get_agent_run, get_agent_steps
 
 
 def _valid_payload(**updates):
@@ -225,9 +223,11 @@ def test_short_circuit_clarify_preserves_contract_and_input(
     _validate_usage(result)
 
 
-def test_short_circuit_direct_answer_keeps_capability_text_and_trace():
+def test_short_circuit_direct_answer_keeps_capability_text_and_trace(settings_env):
+    settings = settings_env()
     result = build_short_circuit_result(_invocation("direct_answer", reason="能力介绍"))
 
+    assert not settings.sqlite_db_path.exists()
     assert result["status"] == "OK"
     assert result["answer"] == (
         "我是一个 RAG 知识库问答助手。"
@@ -283,7 +283,9 @@ def test_rag_result_maps_directly_without_losing_fields_or_mutating_input(
     rag_status,
     result_status,
     trace_status,
+    settings_env,
 ):
+    settings = settings_env()
     rag_result = {
         "status": rag_status,
         "answer": "RAG 回答或澄清问题",
@@ -302,6 +304,7 @@ def test_rag_result_maps_directly_without_losing_fields_or_mutating_input(
 
     result = build_framework_agent_result(invocation, output)
 
+    assert not settings.sqlite_db_path.exists()
     assert output == original_output and invocation == original_invocation
     assert result["status"] == result_status
     for field in (
@@ -402,7 +405,10 @@ def test_rag_reference_filter_and_timing_defaults_remain_compatible(references):
 
 
 @pytest.mark.parametrize("stop_reason", ["", "completed"])
-def test_framework_final_ai_content_and_governance_trace_are_preserved(stop_reason):
+def test_framework_final_ai_content_and_governance_trace_are_preserved(
+    stop_reason, settings_env,
+):
+    settings = settings_env()
     output = {
         "messages": [
             HumanMessage(content="问题"),
@@ -439,12 +445,18 @@ def test_framework_final_ai_content_and_governance_trace_are_preserved(stop_reas
 
     result = build_framework_agent_result(_invocation(), output)
 
+    assert not settings.sqlite_db_path.exists()
     assert output == original
     assert result["status"] == "OK"
     assert result["answer"] == "第一段\n第二段"
     assert result["reason"] == "Agent model produced final answer"
     assert result["references"] == [] and result["timings"] == {}
     assert result["tool_result_summary"] == "工具摘要"
+    tool_calls = [step for step in result["tool_trace"] if step["step"] == "tool_call"]
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["tool_name"] == "custom_tool"
+    assert tool_calls[0]["summary"] == "工具摘要"
+    assert tool_calls[0]["step_id"] == 1
     assert result["tool_trace"][-2] == {
         "step": "compose_final_answer",
         "mode": "agent_loop",
@@ -530,68 +542,6 @@ def test_model_stop_reasons_keep_stable_fail_closed_answers(stop_reason):
         else "本次请求达到 Agent 执行上限，已安全停止。请缩小问题范围后重试。"
     )
     assert result["tool_trace"][-2]["mode"] == "error"
-    _validate_usage(result)
-
-
-@pytest.mark.parametrize(
-    "branch", ["direct_answer", "clarify", "framework", "rag", "runtime_error"]
-)
-def test_final_result_and_persisted_trace_match(branch, settings_env):
-    settings_env(enable_agent_trace_store=True)
-    invocation = _invocation(branch)
-    if branch in {"direct_answer", "clarify"}:
-        invocation.effective_question = invocation.original_question
-        result = build_short_circuit_result(invocation)
-    elif branch == "runtime_error":
-        result = build_agent_runtime_error_result(
-            write_bad_cases=None,
-            bad_case=None,
-            trace_id=invocation.trace_id,
-            session_id=invocation.session_id,
-            original_question=invocation.original_question,
-            effective_question=invocation.effective_question,
-            exc=RuntimeError("private detail"),
-        )
-    else:
-        output = (
-            _knowledge_output({"status": "OK", "answer": "RAG 回答"})
-            if branch == "rag"
-            else {"messages": [AIMessage(content="最终回答")]}
-        )
-        result = build_framework_agent_result(invocation, output)
-
-    saved = get_agent_run(invocation.trace_id)
-    assert saved["session_id"] == invocation.session_id
-    assert saved["question"] == invocation.original_question
-    assert saved["rewritten_question"] == (
-        "" if branch in {"direct_answer", "clarify"} else invocation.effective_question
-    )
-    assert saved["final_answer"] == result["answer"]
-    assert saved["status"] == result["status"]
-    assert saved["reason"] == result["reason"]
-    assert [
-        json.loads(step["observation_json"])
-        for step in get_agent_steps(invocation.trace_id)
-    ] == result["tool_trace"]
-    assert AgentRunResult.model_validate(result).model_dump(mode="json") == result
-
-
-@pytest.mark.parametrize("enabled", [True, False])
-def test_trace_persistence_is_optional_and_best_effort(
-    enabled, monkeypatch, settings_env
-):
-    settings_env(enable_agent_trace_store=enabled)
-    writes = []
-
-    def fail_save(**kwargs):
-        writes.append(kwargs)
-        raise OSError("storage unavailable")
-
-    monkeypatch.setattr("app.agent.results.save_agent_trace", fail_save)
-    result = build_short_circuit_result(_invocation("direct_answer"))
-
-    assert result["status"] == "OK"
-    assert len(writes) == int(enabled)
     _validate_usage(result)
 
 

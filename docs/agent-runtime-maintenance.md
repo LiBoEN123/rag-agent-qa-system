@@ -173,7 +173,7 @@ Agent Runtime 缓存。
 
 当前没有 Interrupt/Resume、Replay、Time Travel 或跨请求图恢复语义，因此没有 Agent
 Checkpointer 配置与数据库。SQLite session 历史仍是 Query Rewrite 的应用级存储，
-Agent trace 仍可按 `ENABLE_AGENT_TRACE_STORE` 单独保存。
+Agent trace 通过 `AgentRunResult.tool_trace` 返回，不再单独持久化到 SQLite。
 
 ## 文件职责
 

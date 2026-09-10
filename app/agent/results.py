@@ -9,10 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.agent.guardrails import AgentStopReason
 from app.agent.router import RouteDecision
 from app.agent.tool_events import normalize_governance_events
-from app.common.logging import get_logger
-from app.config import get_settings
 from app.contracts.chat import AgentResultStatus
-from app.storage.traces import save_agent_trace
 
 
 INTERNAL_ERROR_MESSAGE = "Agent 内部执行异常，请稍后重试"
@@ -32,8 +29,6 @@ _TRACE_STATUSES = {
     AgentResultStatus.MODEL_ERROR: "model_error",
     AgentResultStatus.INTERNAL_ERROR: "error",
 }
-
-logger = get_logger("chat_service")
 
 
 class AgentRunResult(BaseModel):
@@ -64,10 +59,6 @@ class AgentResultInvocation(Protocol):
 
     decision: RouteDecision
     route_cost_ms: int
-    original_question: str
-    effective_question: str
-    trace_id: str
-    session_id: str | None
 
 
 def summarize_tool_trace_for_result(
@@ -210,59 +201,11 @@ def _stop_result(reason: str) -> tuple[AgentResultStatus, str]:
     return status, final_answer
 
 
-def maybe_save_agent_trace(
-    *,
-    trace_id: str,
-    session_id: str | None,
-    question: str,
-    rewritten_question: str = "",
-    final_answer: str = "",
-    status: str = "",
-    reason: str = "",
-    tool_trace: list[dict[str, Any]] | None = None,
-    total_cost_ms: int = 0,
-) -> None:
-    """按配置保存已构造的 Agent Result trace，失败不影响主流程。"""
-    if not get_settings().enable_agent_trace_store:
-        return
-
-    try:
-        save_agent_trace(
-            trace_id=trace_id,
-            session_id=session_id,
-            question=question,
-            rewritten_question=rewritten_question,
-            final_answer=final_answer,
-            status=status,
-            reason=reason,
-            tool_trace=tool_trace or [],
-            total_cost_ms=total_cost_ms,
-        )
-    except Exception as exc:
-        logger.warning("保存 Agent trace 失败，忽略持久化错误: %s", exc)
-
-
 def _finalize_agent_result(
-    invocation: AgentResultInvocation,
     result: AgentRunResult,
 ) -> dict[str, Any]:
-    """序列化已校验的最终 Result，并持久化同一份公开 trace。"""
-    serialized = result.model_dump(mode="json")
-    maybe_save_agent_trace(
-        trace_id=invocation.trace_id,
-        session_id=invocation.session_id,
-        question=invocation.original_question,
-        rewritten_question=(
-            invocation.effective_question
-            if invocation.effective_question != invocation.original_question
-            else ""
-        ),
-        final_answer=serialized["answer"],
-        status=serialized["status"],
-        reason=serialized["reason"],
-        tool_trace=serialized["tool_trace"],
-    )
-    return serialized
+    """序列化并返回已校验的最终 Result。"""
+    return result.model_dump(mode="json")
 
 
 def build_short_circuit_result(
@@ -335,7 +278,7 @@ def build_short_circuit_result(
         llm_call_count=0,
         timings={},
     )
-    return _finalize_agent_result(invocation, result)
+    return _finalize_agent_result(result)
 
 
 def build_framework_agent_result(
@@ -463,7 +406,7 @@ def build_framework_agent_result(
         llm_call_count=llm_call_count,
         timings=timings,
     )
-    return _finalize_agent_result(invocation, result)
+    return _finalize_agent_result(result)
 
 
 def create_agent_result(
@@ -595,24 +538,11 @@ def build_agent_runtime_error_result(
         runtime_route="agent_runtime",
         runtime_label="Agent Runtime",
     )
-    result = build_internal_error_result(
+    return build_internal_error_result(
         exc,
         runtime_label="Agent Runtime",
         trace_step="agent_runtime_error",
     )
-    maybe_save_agent_trace(
-        trace_id=trace_id,
-        session_id=session_id,
-        question=original_question,
-        rewritten_question=(
-            effective_question if effective_question != original_question else ""
-        ),
-        final_answer=result.get("answer", ""),
-        status=result.get("status", ""),
-        reason=result.get("reason", ""),
-        tool_trace=result.get("tool_trace", []),
-    )
-    return result
 
 
 def build_empty_question_result() -> dict[str, Any]:
@@ -639,7 +569,6 @@ __all__ = [
     "build_short_circuit_result",
     "create_agent_result",
     "get_route_decision_for_trace",
-    "maybe_save_agent_trace",
     "resolve_llm_call_count",
     "upsert_llm_usage_trace",
 ]

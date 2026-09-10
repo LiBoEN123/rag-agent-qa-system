@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from threading import Lock
 
-from sqlalchemy import Column, Index, Integer, Table, Text, create_engine, literal
+from sqlalchemy import Column, Index, Integer, Table, Text, create_engine
 from sqlalchemy.engine import URL, Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -31,33 +31,6 @@ messages = Table(
     Column("content", Text, nullable=False),
     Column("created_at", Text, nullable=False),
     Index("idx_messages_session_id_id", "session_id", "id"),
-    sqlite_autoincrement=True,
-)
-agent_runs = Table(
-    "agent_runs", Base.metadata,
-    Column("trace_id", Text, primary_key=True, nullable=True),
-    Column("session_id", Text),
-    Column("question", Text, nullable=False),
-    Column("rewritten_question", Text),
-    Column("final_answer", Text),
-    Column("status", Text),
-    Column("reason", Text),
-    Column("created_at", Text, nullable=False),
-    Column("total_cost_ms", Integer, server_default=literal(0)),
-)
-agent_steps = Table(
-    "agent_steps", Base.metadata,
-    Column("id", Integer, primary_key=True, nullable=True),
-    Column("trace_id", Text, nullable=False),
-    Column("step_id", Integer),
-    Column("action", Text),
-    Column("tool_name", Text),
-    Column("tool_args_json", Text),
-    Column("observation_json", Text),
-    Column("status", Text),
-    Column("cost_ms", Integer, server_default=literal(0)),
-    Column("created_at", Text, nullable=False),
-    Index("idx_agent_steps_trace_id_id", "trace_id", "id"),
     sqlite_autoincrement=True,
 )
 
@@ -141,7 +114,7 @@ def get_session_factory(db_path: Path | None = None) -> sessionmaker[Session]:
 
 
 def init_db(db_path: Path | None = None) -> None:
-    """按唯一 metadata 创建全部六张表及索引，保留已有数据。"""
+    """创建当前应用声明的全部表及索引，保留已有数据。"""
     Base.metadata.create_all(get_engine(db_path))
 
 

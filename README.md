@@ -127,7 +127,7 @@ Phase 6B 的 Model private marker 是已接受设计，不是待迁移 TODO。�
 - 支持 ChromaDB 持久化，默认将向量、chunk 文本、metadata 和文档注册信息保存到 `data/chroma/`。
 - 启动时基于 manifest 判断是否需要重建索引；知识库文件、chunk 参数、embedding/rerank 模型或 pipeline 版本变化会触发重建。
 - 多轮会话历史保存在 `SQLITE_DB_PATH` 指定的 SQLite 数据库中，每个 `session_id` 默认读取最近 6 条 user/assistant 消息，服务重启后仍可继续使用。
-- 设置 `ENABLE_AGENT_TRACE_STORE=true` 后，Agent 的运行摘要和步骤明细会写入同一 SQLite 数据库的 `agent_runs`、`agent_steps` 表。
+- Agent trace 通过 `AgentRunResult.tool_trace` 返回，供 API、Evaluation 和运行时诊断使用。旧数据库可能保留历史 `agent_runs`、`agent_steps` 表；应用不再读写或删除这些表，新数据库不再创建它们。
 - `/chat` 请求支持继承或生成 `trace_id`，响应头返回 `X-Trace-Id` 和 `X-Total-Cost-Ms`；`/chat/stream` 只在响应头返回 `X-Trace-Id`，真实总耗时位于 `final.data.total_cost_ms`。
 - metrics 记录 Query Rewrite、路由、Agent、检索、问题拆分、重排、上下文构造、LLM 调用、结构化结果规范化等阶段耗时和 LLM 调用次数。
 - bad case 日志用于定位失败样例，包括模型结构化输出校验失败、引用异常、工具异常、内部异常和索引未就绪。
@@ -441,8 +441,7 @@ Tool Runtime 与 Agent Runtime 缓存；生产服务通常直接重启进程。�
 | `AGENT_MAX_CONSECUTIVE_SAME_TOOL_CALLS` | 连续完全相同调用最多执行次数，默认 `2` |
 | `AGENT_MAX_CONSECUTIVE_SAME_TOOL_ERRORS` | 连续相同调用与错误码停止阈值，默认 `2` |
 | `AGENT_MAX_TOTAL_COST_MS` | Agent 模型与工具累计协作式耗时预算（毫秒），默认 `120000` |
-| `ENABLE_AGENT_TRACE_STORE` | 是否将 Agent 运行摘要和步骤写入 SQLite，默认 `false` |
-| `SQLITE_DB_PATH` | 会话历史、可选 Agent trace、ingestion candidate/index run 共用的 SQLite 文件路径，默认 `./data/app.sqlite` |
+| `SQLITE_DB_PATH` | 会话历史、ingestion candidate/index run 共用的 SQLite 文件路径，默认 `./data/app.sqlite` |
 | `ENABLE_QUERY_REWRITE` | 是否启用多轮追问改写，默认 `true` |
 | `QUERY_REWRITE_API_KEY` | 追问改写模型 API Key；为空时复用回答模型 Key |
 | `QUERY_REWRITE_MODEL_NAME` | 追问改写模型名称 |
@@ -493,7 +492,6 @@ AGENT_MAX_TOOL_ERRORS=3
 AGENT_MAX_CONSECUTIVE_SAME_TOOL_CALLS=2
 AGENT_MAX_CONSECUTIVE_SAME_TOOL_ERRORS=2
 AGENT_MAX_TOTAL_COST_MS=120000
-ENABLE_AGENT_TRACE_STORE=false
 SQLITE_DB_PATH=./data/app.sqlite
 
 ENABLE_QUERY_REWRITE=true
@@ -877,7 +875,7 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   │   ├── chat_service.py      # 同步/流式 Query Rewrite、Runtime、状态策略和会话编排
 │   │   └── chat_telemetry.py    # metrics、bad case、stream accounting 和调用链收尾
 │   ├── llm/                     # 统一模型工厂、调用网关、Schema 和错误类型
-│   ├── storage/                 # SQLite、session 和 Agent trace 存储
+│   ├── storage/                 # SQLite 会话历史和 ingestion 存储
 │   ├── observability/
 │   │   ├── __init__.py          # trace_id 生成
 │   │   └── metrics.py           # 指标、bad case 和 trace 汇总

@@ -3,13 +3,11 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import datetime, timezone
-import json
 from pathlib import Path
 import sqlite3
 
 import pytest
 from sqlalchemy import event
-from sqlalchemy.exc import StatementError
 
 from app.ingestion import (
     InMemoryCandidateRepository,
@@ -35,13 +33,6 @@ from app.storage.memory import (
     append_message_sqlite,
     clear_session_sqlite,
     get_history_sqlite,
-)
-from app.storage.traces import (
-    get_agent_run,
-    get_agent_steps,
-    save_agent_run,
-    save_agent_steps,
-    save_agent_trace,
 )
 
 
@@ -134,15 +125,19 @@ def legacy_db(tmp_path):
 def test_fresh_schema_matches_frozen_raw_sql_and_shared_metadata(tmp_path, legacy_db):
     path = tmp_path / "fresh.sqlite3"
     init_db(path)
-    assert _schema(path) == _schema(legacy_db[0])
+    retained_schema = {
+        name: table for name, table in _schema(legacy_db[0]).items()
+        if name not in {"agent_runs", "agent_steps"}
+    }
+    assert _schema(path) == retained_schema
     assert set(_schema(path)) == set(Base.metadata.tables) == {
-        "sessions", "messages", "agent_runs", "agent_steps",
+        "sessions", "messages",
         "ingestion_candidates", "ingestion_index_runs",
     }
-    assert sum(len(table["indexes"]) for table in _schema(path).values()) == 9
+    assert sum(len(table["indexes"]) for table in _schema(path).values()) == 7
     metadata_only = tmp_path / "metadata-only.sqlite3"
     Base.metadata.create_all(get_engine(metadata_only))
-    assert _schema(metadata_only) == _schema(legacy_db[0])
+    assert _schema(metadata_only) == retained_schema
 
 
 def test_legacy_reads_and_repeated_init_preserve_all_existing_rows_and_schema(legacy_db):
@@ -153,16 +148,6 @@ def test_legacy_reads_and_repeated_init_preserve_all_existing_rows_and_schema(le
     assert get_history_sqlite("s1", db_path=path) == [
         {"role": "user", "content": "旧问题"}, {"role": "assistant", "content": "旧回答"},
     ]
-    assert get_agent_run("t1", path) == {
-        "trace_id": "t1", "session_id": "s1", "question": "旧问题",
-        "rewritten_question": "改写", "final_answer": "旧回答", "status": "OK",
-        "reason": "完成", "created_at": LOCAL_TIME, "total_cost_ms": 12,
-    }
-    assert get_agent_steps("t1", path) == [{
-        "id": 11, "trace_id": "t1", "step_id": 2, "action": "tool_call", "tool_name": "search",
-        "tool_args_json": '{"query": "旧问题"}', "observation_json": '{"step_id": 2}',
-        "status": "success", "cost_ms": 5, "created_at": LOCAL_TIME,
-    }]
     assert SQLiteCandidateRepository(path).get(candidate.candidate_id) == candidate
     run = SQLiteIndexRunRepository(path).latest(candidate.candidate_id)
     assert (run.id, run.status, run.started_at) == (17, IndexRunStatus.RUNNING, UTC_TIME)
@@ -172,13 +157,10 @@ def test_legacy_reads_and_repeated_init_preserve_all_existing_rows_and_schema(le
 
 def test_legacy_writes_replace_delete_and_restart_without_migration(legacy_db):
     path, candidate = legacy_db
-    schema_before = _schema(path)
+    rows_before, schema_before = _rows(path), _schema(path)
+    init_db(path)
     append_message_sqlite("s1", "user", "追加", path)
     append_message_sqlite("s2", "user", "保留", path)
-    save_agent_trace(
-        trace_id="t1", session_id="s1", question="新问题", final_answer="新回答",
-        tool_trace=[{"step_id": 3, "tool_name": "new"}], db_path=path,
-    )
     candidates, runs = SQLiteCandidateRepository(path), SQLiteIndexRunRepository(path)
     approved = IngestionService(candidates).approve(
         candidate.candidate_id, decided_by=REQUESTER, decided_at=UTC_TIME,
@@ -188,18 +170,18 @@ def test_legacy_writes_replace_delete_and_restart_without_migration(legacy_db):
     running = runs.create_running(second.candidate_id)
     failed = runs.fail(running.id, error_code="SAFE_ERROR")
     assert running.id > 17
-    assert get_agent_steps("t1", path)[0]["id"] > 11
     assert get_history_sqlite("s1", limit=1, db_path=path)[0]["content"] == "追加"
     clear_session_sqlite("s1", path)
     clear_storage_engine_cache()
     assert get_history_sqlite("s1", db_path=path) == []
     assert get_history_sqlite("s2", db_path=path) == [{"role": "user", "content": "保留"}]
-    assert get_agent_run("t1", path)["final_answer"] == "新回答"
-    assert get_agent_steps("t1", path)[0]["tool_name"] == "new"
     assert SQLiteCandidateRepository(path).get(candidate.candidate_id) == approved
     assert SQLiteCandidateRepository(path).get(second.candidate_id) == second
     assert SQLiteIndexRunRepository(path).list() == [failed, completed]
     assert _schema(path) == schema_before
+    rows_after = _rows(path)
+    for name in ("agent_runs", "agent_steps"):
+        assert rows_after[name] == rows_before[name]
 
 
 @pytest.mark.parametrize("session_id, content", [(None, "x"), (" ", "x"), ("s", ""), ("s", " ")])
@@ -250,67 +232,6 @@ def test_message_insert_failure_rolls_back_session_upsert(tmp_path):
     assert _rows(path) == before
 
 
-def test_trace_replace_resets_all_fields_and_preserves_sqlite_rowid_semantics(tmp_path, monkeypatch):
-    path = tmp_path / "app.sqlite3"
-    timestamps = iter([LOCAL_TIME, LOCAL_TIME, "2026-09-05T09:00:00.000"])
-    monkeypatch.setattr("app.storage.traces.now_iso", lambda: next(timestamps))
-    save_agent_run(trace_id="t", session_id="s", question="old", rewritten_question="old",
-                   final_answer="长" * 10001, status="OK", reason="old", total_cost_ms=12, db_path=path)
-    assert get_agent_run("t", path)["final_answer"] == "长" * 10000
-    save_agent_run(trace_id="other", session_id=None, question="other", db_path=path)
-    with closing(sqlite3.connect(path)) as connection:
-        old_rowid = connection.execute("SELECT rowid FROM agent_runs WHERE trace_id='t'").fetchone()[0]
-    save_agent_run(trace_id=" t ", session_id=None, question=None, db_path=path)
-    assert get_agent_run("t", path) == {
-        "trace_id": "t", "session_id": None, "question": "", "rewritten_question": "",
-        "final_answer": "", "status": "", "reason": "", "created_at": "2026-09-05T09:00:00.000",
-        "total_cost_ms": 0,
-    }
-    with closing(sqlite3.connect(path)) as connection:
-        assert connection.execute("SELECT rowid FROM agent_runs WHERE trace_id='t'").fetchone()[0] > old_rowid
-    assert get_agent_run("other", path)["question"] == "other"
-
-
-@pytest.mark.parametrize("value, expected", [(None, 0), ("bad", 0), ("12", 12), (-1, -1)])
-def test_trace_integer_normalization(tmp_path, value, expected):
-    path = tmp_path / "app.sqlite3"
-    save_agent_trace(trace_id="t", session_id=None, question="q", total_cost_ms=value,
-                     tool_trace=[{"cost_ms": value}], db_path=path)
-    assert get_agent_run("t", path)["total_cost_ms"] == expected
-    assert get_agent_steps("t", path)[0]["cost_ms"] == expected
-
-
-def test_trace_steps_order_json_empty_noop_and_failed_replacement_rolls_back(tmp_path):
-    path = tmp_path / "app.sqlite3"
-    item = {"step_id": 8, "step": "旧步骤", "tool_status": "success",
-            "tool_args": {"中文": Path("目录/文件"), "time": UTC_TIME}}
-    save_agent_steps(trace_id="t", tool_trace=[item, {"step_id": 1}, "invalid-item"], db_path=path)
-    steps = get_agent_steps("t", path)
-    assert [step["step_id"] for step in steps] == [8, 1, None]
-    assert [step["id"] for step in steps] == sorted(step["id"] for step in steps)
-    assert steps[0]["tool_args_json"] == json.dumps(item["tool_args"], ensure_ascii=False, default=str)
-    assert steps[0]["observation_json"] == json.dumps(item, ensure_ascii=False, default=str)
-    assert (steps[0]["action"], steps[0]["status"]) == ("旧步骤", "success")
-    assert steps[2]["observation_json"] == "{}"
-    save_agent_steps(trace_id="t", tool_trace=[], db_path=path)
-    assert get_agent_steps("t", path) == steps
-    with pytest.raises(StatementError):
-        save_agent_steps(trace_id="t", tool_trace=[{"step_id": 3}, {"step_id": []}], db_path=path)
-    assert get_agent_steps("t", path) == steps
-    clear_storage_engine_cache()
-    assert get_agent_steps("t", path) == steps
-
-
-def test_missing_traces_and_empty_trace_writes(tmp_path):
-    path = tmp_path / "app.sqlite3"
-    save_agent_trace(trace_id=" ", session_id=None, question="q", tool_trace=[{}], db_path=path)
-    assert get_agent_run("", path) is None
-    assert get_agent_steps(" ", path) == []
-    assert not path.exists()
-    assert get_agent_run("missing", path) is None
-    assert get_agent_steps("missing", path) == []
-
-
 def test_shared_engine_factory_paths_threads_and_dispose(tmp_path, monkeypatch, settings_env):
     path = tmp_path / "nested" / "中文?#.sqlite3"
     settings_env(sqlite_db_path=path)
@@ -342,7 +263,6 @@ def test_shared_engine_factory_paths_threads_and_dispose(tmp_path, monkeypatch, 
 
 @pytest.mark.parametrize("table, values", [
     ("messages", {"session_id": "s", "role": "user", "content": "q", "created_at": LOCAL_TIME}),
-    ("agent_steps", {"trace_id": "t", "created_at": LOCAL_TIME}),
     ("ingestion_index_runs", {"candidate_id": "c", "status": "running", "started_at": UTC_TIME.isoformat()}),
 ])
 @pytest.mark.parametrize("legacy", [False, True])

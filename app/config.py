@@ -247,7 +247,6 @@ class AppSettings(BaseSettings):
         ge=1,
         le=3_600_000,
     )
-    enable_agent_trace_store: bool = False
 
     # 工具运行时与治理
     tool_runtime_max_workers: int = Field(default=8, ge=1)

@@ -40,7 +40,7 @@ app.api
 | `app.rag` | 索引、检索、重排、生成、引用和独立 RAG Graph | llm、storage、observability 及基础层 | api、services、agent、tools |
 | `app.ingestion` | 永久知识进入前的 source、identity、provenance、trust、policy 与 approval domain | common | api、services、agent、tools、rag、llm、storage、observability |
 | `app.llm` | 模型传输、工厂、错误和模型 Schema | contracts、config、common | rag、tools、agent、services、api |
-| `app.storage` | SQLite、session、trace、ingestion repository 持久化适配 | ingestion 及基础层 | api、services、agent、tools、rag、sources |
+| `app.storage` | SQLite session、ingestion repository 持久化适配 | ingestion 及基础层 | api、services、agent、tools、rag、sources |
 | `app.observability` | 框架无关 metrics、trace ID 和日志数据处理 | storage 及基础层 | 业务层、FastAPI、Starlette |
 | `app.contracts` | 跨层稳定值对象和状态策略 | 无 | config、common 及所有应用/基础设施层 |
 | `app.config` | 唯一 AppSettings、配置 helper、校验和惰性缓存 | 无内部 package | contracts、common 及所有上层 |
