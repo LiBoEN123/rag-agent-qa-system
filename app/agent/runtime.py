@@ -107,7 +107,10 @@ def get_compiled_agent_runtime(
 ) -> CompiledAgentRuntime:
     """Local 权限变化共用编译缓存；仅额外 MCP 工具集合需要构图。"""
     resolved_settings = settings or get_settings()
-    if tool_context is None or not list_mcp_tools_for_context(tool_context):
+    if tool_context is None or not list_mcp_tools_for_context(
+        tool_context,
+        settings=resolved_settings,
+    ):
         return _get_cached_framework_agent(resolved_settings)
 
     governance = ProjectToolGovernanceMiddleware(settings=resolved_settings)

@@ -78,7 +78,7 @@ async def initialize_mcp_runtime(settings: AppSettings) -> McpRuntime | None:
         client,
         config=config,
         settings=settings,
-        local_tool_names=set(get_local_tool_names()),
+        local_tool_names=set(get_local_tool_names(settings)),
     )
     provider = McpToolProvider(entries, settings=settings)
     runtime = _install_runtime(McpRuntime(client=client, provider=provider))

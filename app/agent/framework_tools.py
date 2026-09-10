@@ -102,9 +102,10 @@ def resolve_agent_tools(
     context: ToolInvocationContext, settings: AppSettings | None = None
 ) -> list[BaseTool]:
     """本地工具全部注册；MCP 继续使用当前请求的独立可见性路径。"""
-    tools: list[BaseTool] = list(get_local_tools(settings or get_settings()))
+    resolved_settings = settings or get_settings()
+    tools: list[BaseTool] = list(get_local_tools(resolved_settings))
     seen = {tool.name for tool in tools}
-    for tool in list_mcp_tools_for_context(context):
+    for tool in list_mcp_tools_for_context(context, settings=resolved_settings):
         if tool.name in seen:
             raise ValueError(f"tool {tool.name!r} 在本地与 MCP 工具源中重复")
         seen.add(tool.name)

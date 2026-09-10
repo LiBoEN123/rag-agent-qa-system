@@ -98,7 +98,7 @@ def test_hidden_registered_tool_cannot_execute(monkeypatch, settings_factory, mo
 @pytest.mark.parametrize("mode", ["sync", "async"])
 def test_mcp_base_tool_survives_local_filter(monkeypatch, settings_factory, server, mode):
     external = StructuredTool.from_function(lambda value: value, name=f"{server}_read", description="MCP fixture")
-    monkeypatch.setattr(framework_tools, "list_mcp_tools_for_context", lambda context: [external])
+    monkeypatch.setattr(framework_tools, "list_mcp_tools_for_context", lambda context, *, settings: [external])
     settings = settings_factory()
     context = ToolInvocationContext(permissions=(f"mcp:{server}",))
     tools = framework_tools.resolve_agent_tools(context, settings)
