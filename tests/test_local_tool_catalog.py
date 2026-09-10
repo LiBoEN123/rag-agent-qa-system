@@ -37,9 +37,15 @@ def test_catalog_rejects_duplicate_names_once(monkeypatch, settings_factory):
 
 def test_default_catalog_contract_is_fresh_and_complete(settings_factory):
     settings = settings_factory()
-    expected = [spec.to_contract_dict() for spec in catalog.get_local_tool_specs(settings)]
+    from copy import deepcopy
+
     contracts = framework_tools.get_local_tool_contracts(settings)
-    assert contracts == expected
+    expected = deepcopy(contracts)
+    specs = catalog.get_local_tool_specs(settings)
+    assert [contract["name"] for contract in contracts] == [spec.name for spec in specs]
+    for spec, contract in zip(specs, contracts, strict=True):
+        assert contract["args_schema"] == spec.args_model.model_json_schema()
+        assert contract["output_schema"] == spec.output_model.model_json_schema()
     contracts[0]["args_schema"]["properties"].clear()
     assert framework_tools.get_local_tool_contracts(settings) == expected
 

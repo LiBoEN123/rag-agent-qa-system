@@ -20,7 +20,7 @@ def _spec(**overrides) -> ToolSpec:
         "name": "policy_tool",
         "version": "1.2.3",
         "description": "策略测试工具",
-        "output_schema": {},
+        "output_model": PolicyArgs,
         "handler": lambda args, context: {},
         "args_model": PolicyArgs,
         "required_permissions": ("document:write",),

@@ -1,5 +1,7 @@
 """Agent 错误预算、循环防护与终止治理的真实工具链测试。"""
 
+from pydantic import RootModel
+
 import json
 
 from langchain_core.messages import AIMessage, ToolMessage
@@ -56,7 +58,7 @@ def _spec(
         name=name,
         version="1.0.0",
         description=f"执行 {name} 的受控 Agent 错误恢复测试工具",
-        output_schema={"value": "integer"},
+        output_model=RootModel[dict],
         handler=handler,
         args_model=ValueArgs,
         risk_level=risk_level,

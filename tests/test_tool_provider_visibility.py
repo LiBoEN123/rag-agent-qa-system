@@ -1,5 +1,7 @@
 """请求级工具可见性与 ProjectStructuredTool 最终授权边界测试。"""
 
+from pydantic import RootModel
+
 import json
 
 import pytest
@@ -52,7 +54,7 @@ def _spec(
         name=name,
         version="1.0.0",
         description=description,
-        output_schema={"text": "string"},
+        output_model=RootModel[dict],
         handler=handler,
         args_model=TextArgs,
         risk_level=risk_level,

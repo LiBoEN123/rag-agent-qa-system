@@ -1,5 +1,7 @@
 """Runtime inspection CLI 的公开架构契约。"""
 
+from pydantic import RootModel
+
 import json
 from importlib import import_module
 
@@ -292,7 +294,7 @@ def test_inspection_does_not_initialize_model_or_handler(
             name="inspection_probe",
             version="1.0.0",
             description="仅用于验证 Runtime inspection 不执行 handler",
-            output_schema={"value": "integer"},
+            output_model=RootModel[dict],
             handler=forbidden,
             args_model=ProbeArgs,
         )

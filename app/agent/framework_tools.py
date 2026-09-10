@@ -22,9 +22,6 @@ class ProjectStructuredTool(StructuredTool):
 
     project_spec: SkipValidation[ToolSpec] = Field(exclude=True, repr=False)
     project_settings: SkipValidation[AppSettings] = Field(exclude=True, repr=False)
-    project_policy_engine: SkipValidation[ToolPolicyEngine] = Field(
-        exclude=True, repr=False
-    )
     project_audit_sink: SkipValidation[ToolAuditSink] = Field(exclude=True, repr=False)
 
 
@@ -39,6 +36,7 @@ def build_local_tool(
     resolved_settings = settings or get_settings()
     resolved_policy = policy_engine or ToolPolicyEngine()
     resolved_audit = audit_sink or get_default_tool_audit_sink(resolved_settings)
+    # KEEP_RUNTIME_SCHEMA：当前框架会丢弃空模型的 runtime，且严格模型拒绝额外注入字段。
     runtime_schema = create_model(
         f"{spec.args_model.__name__}Runtime",
         __base__=spec.args_model,
@@ -70,7 +68,6 @@ def build_local_tool(
         metadata={"tool_version": spec.version},
         project_spec=spec,
         project_settings=resolved_settings,
-        project_policy_engine=resolved_policy,
         project_audit_sink=resolved_audit,
     )
 
@@ -85,12 +82,26 @@ def get_local_tools(settings: AppSettings) -> tuple[ProjectStructuredTool, ...]:
 
 
 def local_tool_contract(tool: ProjectStructuredTool) -> dict[str, Any]:
-    """导出原生工具的声明 schema 与治理元数据，保留历史输入别名。"""
-    contract = tool.project_spec.to_contract_dict()
-    # 注入模型唯一基类就是 StructuredTool 的原始参数模型；不含 runtime。
-    args_model = tool.get_input_schema().__bases__[0]
-    contract.update(name=tool.name, description=tool.description, args_schema=args_model.model_json_schema())
-    return contract
+    """唯一契约导出入口；业务模型引用保留原始 schema 的 title、别名和约束。"""
+    spec = tool.project_spec
+    return {
+        "name": tool.name,
+        "version": spec.version,
+        "description": tool.description,
+        "args_schema": spec.args_model.model_json_schema(),
+        "output_schema": spec.output_model.model_json_schema(),
+        "args_model": spec.args_model.__name__,
+        "output_model": spec.output_model.__name__,
+        "risk_level": spec.risk_level.value,
+        "required_permissions": list(spec.required_permissions),
+        "timeout": spec.timeout,
+        "max_retries": spec.max_retries,
+        "idempotent": spec.idempotent,
+        "requires_approval": spec.requires_approval,
+        "sensitive_arg_fields": list(spec.sensitive_arg_fields),
+        "sensitive_output_fields": list(spec.sensitive_output_fields),
+        "audit_output_mode": spec.audit_output_mode.value,
+    }
 
 
 def get_local_tool_contracts(settings: AppSettings) -> list[dict[str, Any]]:

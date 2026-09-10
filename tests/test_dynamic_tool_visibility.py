@@ -1,5 +1,7 @@
 """真实 create_agent.invoke/astream 的权限 schema、MCP 与隐藏调用回归。"""
 
+from pydantic import RootModel
+
 import asyncio
 import json
 
@@ -79,7 +81,7 @@ def test_hidden_registered_tool_cannot_execute(monkeypatch, settings_factory, mo
         value: str
 
     calls = []
-    hidden = ToolSpec(name="hidden_tool", version="1.0.0", description="private description", args_model=Args, output_schema={}, required_permissions=("a:read",), handler=lambda args, context: calls.append(context))
+    hidden = ToolSpec(name="hidden_tool", version="1.0.0", description="private description", args_model=Args, output_model=RootModel[dict], required_permissions=("a:read",), handler=lambda args, context: calls.append(context))
     public = hidden.model_copy(update={"name": "public_tool", "required_permissions": ()})
     model = SchemaModel({"name": "hidden_tool", "args": {"value": "forged"}, "id": "hidden-call", "type": "tool_call"})
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
@@ -115,7 +117,7 @@ def test_missing_runtime_fails_closed(settings_factory):
     class Args(BaseModel):
         value: str
 
-    spec = ToolSpec(name="public_tool", version="1.0.0", description="public", args_model=Args, output_schema={}, handler=lambda a, c: calls.append(c))
+    spec = ToolSpec(name="public_tool", version="1.0.0", description="public", args_model=Args, output_model=RootModel[dict], handler=lambda a, c: calls.append(c))
     tool = framework_tools.build_local_tool(spec, settings=settings_factory())
     with pytest.raises(ValueError, match="runtime"):
         tool.invoke({"value": "no runtime"})

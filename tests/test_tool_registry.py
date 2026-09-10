@@ -1,5 +1,7 @@
 import json
 
+from pydantic import RootModel
+
 import pytest
 from pydantic import ValidationError
 
@@ -30,7 +32,9 @@ def test_tool_registry_names_include_builtin_tools(tool_registry):
 
 def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
     """验证八个注册生产工具发布完整且符合要求的 V2 契约。"""
-    specs = [item.to_contract_dict() for item in tool_registry]
+    from app.agent.framework_tools import build_local_tool, local_tool_contract
+
+    specs = [local_tool_contract(build_local_tool(item)) for item in tool_registry]
     specs_by_name = {spec["name"]: spec for spec in specs}
     expected_permissions = {
         "search_knowledge_base": ["knowledge_base:read"],
@@ -81,13 +85,7 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
             "web_pdf_fetch": "WebPdfFetchOutput",
         }[name]
         assert spec["args_schema"] == registered.args_model.model_json_schema()
-        if registered.output_model is not None:
-            assert (
-                spec["output_schema"]
-                == registered.output_model.model_json_schema()
-            )
-        else:
-            assert spec["output_schema"] == registered.output_schema
+        assert spec["output_schema"] == registered.output_model.model_json_schema()
         assert "handler" not in spec
 
     web = specs_by_name["web_search"]
@@ -489,7 +487,7 @@ def test_execution_entry_validates_args_before_handler():
             name="search_knowledge_base",
             version="1.0.0",
             description="检索知识库",
-            output_schema={},
+            output_model=RootModel[dict],
             handler=fake_handler,
             args_model=SearchKnowledgeBaseArgs,
         )
@@ -522,7 +520,7 @@ def test_execution_entry_uses_structured_tool_validation_before_handler():
             name="search_knowledge_base",
             version="1.0.0",
             description="检索知识库",
-            output_schema={},
+            output_model=RootModel[dict],
             handler=fake_handler,
             args_model=SearchKnowledgeBaseArgs,
         )

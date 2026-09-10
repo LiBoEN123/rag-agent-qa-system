@@ -1,5 +1,7 @@
 """迭代式 Agent Loop 的消息、工具治理和预算回归测试。"""
 
+from pydantic import RootModel
+
 import asyncio
 import json
 
@@ -698,7 +700,7 @@ def test_agent_selected_knowledge_search_keeps_rag_citation_path(
             name="search_knowledge_base",
             version="1.0.0",
             description="从测试知识库检索证据",
-            output_schema={"chunks": "list"},
+            output_model=RootModel[dict],
             handler=lambda args, context: tool_success(
                 "search_knowledge_base",
                 args,

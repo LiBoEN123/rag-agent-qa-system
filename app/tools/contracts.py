@@ -1,9 +1,7 @@
 """由 Pydantic 校验的工具声明与项目治理契约。"""
 
-import json
 import re
 from collections.abc import Callable, Sequence
-from copy import deepcopy
 from enum import Enum
 from typing import Annotated, Any, Self
 from pydantic import (
@@ -63,7 +61,7 @@ def _legacy_timeout(value: Any) -> float:
 
 
 class ToolSpec(BaseModel):
-    """本地工具的冻结声明；通用字段交给 StructuredTool，治理字段由项目执行。"""
+    """本地工具的冻结构建声明；框架导出契约，项目执行治理及输出校验。"""
 
     model_config = ConfigDict(frozen=True, extra="forbid", arbitrary_types_allowed=True)
     name: Annotated[TrimmedString, StringConstraints(pattern=_NAME_PATTERN)]
@@ -71,8 +69,7 @@ class ToolSpec(BaseModel):
     description: TrimmedString
     handler: ToolHandler
     args_model: type[BaseModel]
-    output_schema: Annotated[dict[Any, Any], Field(strict=True)] | None = None
-    output_model: type[BaseModel] | None = None
+    output_model: type[BaseModel]
     risk_level: Annotated[ToolRiskLevel, _strict_string] = ToolRiskLevel.READ_ONLY
     required_permissions: Sequence[Permission] = ()
     timeout: Annotated[float, BeforeValidator(_legacy_timeout)] = Field(
@@ -95,25 +92,9 @@ class ToolSpec(BaseModel):
     def normalize_sequences(cls, value: Sequence[str]) -> tuple[str, ...]:
         return tuple(dict.fromkeys(value))
 
-    # 校验输出模式可稳定序列化为 JSON，并深拷贝以隔离外部修改。
-    @field_validator("output_schema")
-    @classmethod
-    def copy_schema(cls, value: dict[Any, Any] | None) -> dict[Any, Any] | None:
-        if value is not None:
-            try:
-                json.dumps(value, allow_nan=False, sort_keys=True)
-            except (TypeError, ValueError) as exc:
-                raise ValueError("必须可稳定序列化为 JSON") from exc
-            return deepcopy(value)
-        return value
-
-    # 校验输出契约声明、幂等重试限制及高风险工具的人工审批要求。
+    # 校验幂等重试限制及高风险工具的人工审批要求。
     @model_validator(mode="after")
     def validate_governance(self) -> Self:
-        if self.output_model is None and self.output_schema is None:
-            raise ValueError("缺少 output_model 时必须显式声明 output_schema")
-        if self.output_model is not None and self.output_schema is not None:
-            raise ValueError("output_schema 不能与 output_model 同时声明")
         if not self.idempotent and self.max_retries > 0:
             raise ValueError("非幂等工具不能声明自动重试")
         if (
@@ -122,41 +103,6 @@ class ToolSpec(BaseModel):
         ):
             raise ValueError("必须要求人工审批")
         return self
-
-    @property
-    def args_schema(self) -> dict[str, Any]:
-        """从唯一权威 args_model 派生参数 JSON Schema。"""
-        return self.args_model.model_json_schema()
-
-    def resolved_output_schema(self) -> dict[str, Any]:
-        """优先从 output_model 派生，否则返回显式输出契约副本。"""
-        if self.output_model is not None:
-            return self.output_model.model_json_schema()
-        assert self.output_schema is not None
-        return deepcopy(self.output_schema)
-
-    def to_contract_dict(self) -> dict[str, Any]:
-        """返回不含运行时对象且可 JSON 序列化的完整契约。"""
-        return {
-            "name": self.name,
-            "version": self.version,
-            "description": self.description,
-            "args_schema": self.args_schema,
-            "output_schema": self.resolved_output_schema(),
-            "args_model": self.args_model.__name__,
-            "output_model": (
-                self.output_model.__name__ if self.output_model is not None else None
-            ),
-            "risk_level": self.risk_level.value,
-            "required_permissions": list(self.required_permissions),
-            "timeout": self.timeout,
-            "max_retries": self.max_retries,
-            "idempotent": self.idempotent,
-            "requires_approval": self.requires_approval,
-            "sensitive_arg_fields": list(self.sensitive_arg_fields),
-            "sensitive_output_fields": list(self.sensitive_output_fields),
-            "audit_output_mode": self.audit_output_mode.value,
-        }
 
 
 __all__ = [

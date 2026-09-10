@@ -1,5 +1,7 @@
 """知识库工具从 Agent Model 到 RAG 子图的严格真实链路测试。"""
 
+from pydantic import RootModel
+
 import json
 
 from langchain_core.messages import AIMessage, ToolMessage
@@ -70,7 +72,7 @@ def _invoke_knowledge_graph(
             name="search_knowledge_base",
             version="1.0.0",
             description="检索本地测试知识库并返回受控证据 chunk",
-            output_schema={"count": "integer", "chunks": "list"},
+            output_model=RootModel[dict],
             handler=handler,
             args_model=SearchKnowledgeBaseArgs,
             required_permissions=("knowledge_base:read",),
@@ -245,7 +247,7 @@ def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
             name="search_knowledge_base",
             version="1.0.0",
             description="检索本地测试知识库",
-            output_schema={"count": "integer", "chunks": "list"},
+            output_model=RootModel[dict],
             handler=unavailable_handler,
             args_model=SearchKnowledgeBaseArgs,
             required_permissions=("knowledge_base:read",),

@@ -410,14 +410,13 @@ def execute_project_tool(
             "tool result status is inconsistent",
         )
     output = raw.get("output")
-    if spec.output_model is not None:
-        try:
-            output = spec.output_model.model_validate(output).model_dump(mode="json")
-        except ValidationError:
-            return _failure(
-                spec, call, audit_sink, ToolErrorCode.OUTPUT_VALIDATION_ERROR,
-                "工具输出不符合声明的 schema",
-            )
+    try:
+        output = spec.output_model.model_validate(output).model_dump(mode="json")
+    except ValidationError:
+        return _failure(
+            spec, call, audit_sink, ToolErrorCode.OUTPUT_VALIDATION_ERROR,
+            "工具输出不符合声明的 schema",
+        )
     result = dict(raw)
     result.update(
         status="success",

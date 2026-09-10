@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, Field
 
+from app.agent.framework_tools import build_local_tool, local_tool_contract
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import (
     ToolRiskLevel,
@@ -53,19 +54,10 @@ def _make_spec(**overrides: Any) -> ToolSpec:
         "name": "echo_tool",
         "version": "1.0.0",
         "description": "回显输入",
-        "output_schema": {
-            "type": "object",
-            "properties": {"value": {"type": "string"}},
-            "required": ["value"],
-        },
+        "output_model": EchoOutput,
         "handler": echo_handler,
         "args_model": EchoArgs,
     }
-    if (
-        overrides.get("output_model") is not None
-        and "output_schema" not in overrides
-    ):
-        values.pop("output_schema")
     values.update(overrides)
     return ToolSpec(**values)
 
@@ -107,7 +99,7 @@ def test_tool_spec_normalizes_and_serializes_contract():
         "ticket:create",
     )
 
-    contract_spec = spec.to_contract_dict()
+    contract_spec = local_tool_contract(build_local_tool(spec))
     json.dumps(contract_spec)
 
     assert "handler" not in contract_spec
@@ -132,17 +124,17 @@ def test_tool_spec_normalizes_and_serializes_contract():
 
 
 def test_tool_spec_derives_fresh_deterministic_schemas():
-    """重复导出由模型派生的稳定副本，且显式输出 fallback 不被外部修改。"""
-    spec = _make_spec()
+    """重复导出模型派生的稳定副本，外部修改不影响工具契约。"""
+    tool = build_local_tool(_make_spec())
 
-    first = spec.to_contract_dict()
+    first = local_tool_contract(tool)
     first["args_schema"]["properties"].clear()
     first["output_schema"]["properties"].clear()
-    second = spec.to_contract_dict()
+    second = local_tool_contract(tool)
 
     assert set(second["args_schema"]["properties"]) == {"value", "repeat"}
     assert set(second["output_schema"]["properties"]) == {"value"}
-    assert second == spec.to_contract_dict()
+    assert second == local_tool_contract(tool)
     json.dumps(second)
 
 
@@ -152,21 +144,14 @@ def test_tool_spec_rejects_manual_args_schema():
         _make_spec(args_schema={"value": "string"})
 
 
-def test_tool_spec_requires_exactly_one_output_contract_source():
-    """输出模型与显式 fallback 必须二选一。"""
-    with pytest.raises(ValueError, match="缺少 output_model"):
-        _make_spec(output_schema=None)
-    with pytest.raises(ValueError, match="不能与 output_model 同时声明"):
-        _make_spec(
-            output_model=EchoOutput,
-            output_schema={"value": "string"},
-        )
-
-
-def test_tool_spec_rejects_non_json_output_fallback():
-    """显式输出 fallback 必须保持 Registry contract 可 JSON 序列化。"""
-    with pytest.raises(ValueError, match="必须可稳定序列化为 JSON"):
-        _make_spec(output_schema={"value": object()})
+def test_tool_spec_requires_output_model_and_rejects_manual_schema():
+    """所有工具使用输出模型，不能通过手写 schema 绕过输出校验。"""
+    with pytest.raises(ValueError, match="output_model"):
+        _make_spec(output_model=None)
+    with pytest.raises(ValueError, match="output_model"):
+        ToolSpec(**_make_spec().model_dump(exclude={"output_model"}))
+    with pytest.raises(ValueError, match="output_schema"):
+        _make_spec(output_schema={"value": "string"})
 
 
 @pytest.mark.parametrize(
@@ -270,5 +255,4 @@ def test_high_risk_tool_requires_approval(risk_level):
             risk_level=risk_level,
             requires_approval=False,
         )
-
 

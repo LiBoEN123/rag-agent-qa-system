@@ -1,5 +1,7 @@
 """ChatService 到真实 Agent Graph、Provider 和本地工具的主路径测试。"""
 
+from pydantic import RootModel
+
 import json
 from importlib import import_module
 from pathlib import Path
@@ -192,7 +194,7 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
             name="chat_echo",
             version="1.0.0",
             description="回显 ChatService 集成测试文本",
-            output_schema={"text": "string"},
+            output_model=RootModel[dict],
             handler=handler,
             args_model=ChatEchoArgs,
         )

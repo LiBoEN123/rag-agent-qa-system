@@ -1,5 +1,7 @@
 """Registry-driven Agent 的动态工具与请求隔离回归测试。"""
 
+from pydantic import RootModel
+
 import json
 
 import pytest
@@ -87,7 +89,7 @@ def _register_dynamic_tools(
             name="echo_text",
             version="1.0.0",
             description="回显传入的 text，用于需要原样返回测试文本的场景",
-            output_schema={"text": "string"},
+            output_model=RootModel[dict],
             handler=echo_handler,
             args_model=EchoTextArgs,
         )
@@ -97,7 +99,7 @@ def _register_dynamic_tools(
             name="join_texts",
             version="1.0.0",
             description="按 separator 拼接 parts 列表并返回拼接文本",
-            output_schema={"text": "string"},
+            output_model=RootModel[dict],
             handler=join_handler,
             args_model=JoinTextsArgs,
         )
@@ -159,17 +161,13 @@ def test_tool_spec_builds_framework_structured_tool_from_provider():
     assert tool.description == next((item for item in registry if item.name == "join_texts"), None).description
     assert issubclass(tool.args_schema, JoinTextsArgs)
     assert "runtime" not in tool.tool_call_schema.model_fields
-    exported = next(
-        spec
-        for spec in [item.to_contract_dict() for item in registry]
-        if spec["name"] == "join_texts"
-    )
+    exported = framework_tools.local_tool_contract(tool)
     framework_schema = tool.tool_call_schema.model_json_schema()
     assert exported["args_schema"]["properties"] == framework_schema["properties"]
     assert exported["args_schema"]["required"] == framework_schema["required"]
     assert exported["args_schema"]["properties"]["separator"]["default"] == " "
-    assert [item.to_contract_dict() for item in registry] == [item.to_contract_dict() for item in registry]
-    json.dumps([item.to_contract_dict() for item in registry])
+    assert framework_tools.local_tool_contract(tool) == exported
+    json.dumps(exported)
 
     join_spec = next((item for item in registry if item.name == "join_texts"), None)
     assert join_spec is not None
@@ -378,7 +376,7 @@ def test_provider_request_isolation(monkeypatch):
                 name=tool_name,
                 version="1.0.0",
                 description=f"仅供 {trace_id} 使用的请求隔离工具",
-                output_schema={"value": "string"},
+                output_model=RootModel[dict],
                 handler=handler,
                 args_model=RequestArgs,
             )
@@ -433,7 +431,7 @@ def test_direct_execution_entry_still_enforces_runtime_permissions():
             name="protected_echo",
             version="1.0.0",
             description="需要 dynamic:use 权限的测试回显工具",
-            output_schema={"text": "string"},
+            output_model=RootModel[dict],
             handler=handler,
             args_model=EchoTextArgs,
             required_permissions=("dynamic:use",),

@@ -64,14 +64,6 @@ def _handle_get_chunk_text(
     return get_chunk_text(args["chunk_id"])
 
 
-def _handle_search_knowledge_base(
-    args: dict,
-    context: ToolInvocationContext,
-) -> dict:
-    """适配知识库检索工具的参数格式。"""
-    return search_knowledge_base(args, context)
-
-
 def _handle_compare_documents(
     args: dict,
     context: ToolInvocationContext,
@@ -93,7 +85,7 @@ def get_local_tool_specs(settings: AppSettings) -> tuple[ToolSpec, ...]:
                 "不用于互联网搜索。"
             ),
             output_model=SearchKnowledgeBaseOutput,
-            handler=_handle_search_knowledge_base,
+            handler=search_knowledge_base,
             args_model=SearchKnowledgeBaseArgs,
             risk_level=ToolRiskLevel.READ_ONLY,
             required_permissions=("knowledge_base:read",),

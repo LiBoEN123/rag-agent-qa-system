@@ -1,5 +1,7 @@
 """Agent 工具调用和累计耗时预算的 Graph 集成测试。"""
 
+from pydantic import RootModel
+
 import json
 
 from langchain_core.messages import AIMessage, ToolMessage
@@ -39,7 +41,7 @@ def _setup(monkeypatch, *, model, handler, max_tool_calls=10, max_elapsed_ms=120
             name="budget_tool",
             version="1.0.0",
             description="用于验证 Agent 预算消息完整性的测试工具",
-            output_schema={"value": "integer"},
+            output_model=RootModel[dict],
             handler=handler,
             args_model=BudgetArgs,
         )
