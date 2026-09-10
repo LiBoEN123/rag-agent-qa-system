@@ -560,3 +560,11 @@ def test_extended_metrics_keep_origin_server_and_confusion_separate():
         "mcp:github -> mcp:github": 1,
         "web -> local": 1,
     }
+
+
+def test_first_tool_any_of_empty_trace_keeps_existing_baseline_contract():
+    row = _score(
+        expected=ExpectedOutcome(first_tool_any_of=["a", "b"]),
+        result={"status": "OK", "answer": "fixture", "tool_trace": []},
+    )
+    assert "first_tool_mismatch" not in row["failure_reasons"]

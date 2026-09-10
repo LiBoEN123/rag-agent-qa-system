@@ -15,6 +15,12 @@ scripts/compare_evaluation_runs.py
 仍需注意的评测口径限制。完整数据合同和指标定义另见
 `docs/evaluation/baseline-v2.md`。
 
+工具包含关系和完整工具序列由固定版本 `deepeval==3.9.6` 的
+`ToolCorrectnessMetric` 在本地确定性评分；首工具备选、状态、权限、审批、MCP
+安全和 RAG baseline 合同继续由项目维护。不要求 Cloud 登录，不自动上传评测内容，
+不启动 DeepEval pytest runner；继续使用下列项目入口。版本兼容性、迁移范围及
+离线验证见 [FRAMEWORK-SLIM-4 审计与结果](../../docs/evaluation/framework-slim-4.md)。
+
 ## 一、先选择正确的启动方式
 
 | 目的 | 推荐命令 | 是否调用真实模型 | 是否运行 Agent | 是否运行独立 RAG 题集 | 是否访问真实 Web |

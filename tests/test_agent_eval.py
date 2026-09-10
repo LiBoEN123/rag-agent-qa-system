@@ -7,10 +7,11 @@ from scripts.evaluation.agent import (
     extract_reference_sources,
 )
 
+from scripts.evaluation.contracts import ExpectedOutcome
 
 def test_check_tool_output_keys_reads_tool_result_output():
     case = {
-        "expected_tool_output_keys": [
+        "tool_output_keys": [
             "doc_a_evidence",
             "doc_b_evidence",
             "comparison",
@@ -26,14 +27,14 @@ def test_check_tool_output_keys_reads_tool_result_output():
         }
     }
 
-    check = check_tool_output_keys(case, result)
+    check = check_tool_output_keys(ExpectedOutcome.model_validate(case), result)
 
     assert check["tool_output_keys_pass"] is True
     assert check["tool_output_keys_missing"] == []
 
 
 def test_check_tool_output_keys_reports_missing_from_trace_output():
-    case = {"expected_tool_output_keys": ["comparison", "conflict_detected"]}
+    case = {"tool_output_keys": ["comparison", "conflict_detected"]}
     result = {
         "tool_trace": [
             {
@@ -44,7 +45,7 @@ def test_check_tool_output_keys_reports_missing_from_trace_output():
         ]
     }
 
-    check = check_tool_output_keys(case, result)
+    check = check_tool_output_keys(ExpectedOutcome.model_validate(case), result)
 
     assert check["tool_output_keys_pass"] is False
     assert check["tool_output_keys_missing"] == ["conflict_detected"]
@@ -72,10 +73,7 @@ def test_agent_helpers_extract_real_tool_trace_keywords_and_sources():
 
     actual = extract_actual_fields(result)
     keyword = check_keywords(
-        {
-            "expected_keywords": ["学习年限", "差异"],
-            "min_keyword_hits": 2,
-        },
+        ExpectedOutcome(keywords=["学习年限", "差异"], min_keyword_hits=2),
         result,
     )
 

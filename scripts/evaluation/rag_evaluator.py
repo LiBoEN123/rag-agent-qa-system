@@ -3,7 +3,7 @@
 用途：装配预测、当前 chunk 索引、确定性检索指标、可选 LLM judge 和报告写入。
 输入：RAG 评测集、预测文件、top-k、索引位置、judge 配置与可选只读缓存。
 输出：逐题指标、分组汇总、judge 明细，以及 CSV/JSONL 评测产物。
-边界：判分公式分别由 ``rag.evaluation`` 与 ``rag.retrieval`` 维护；本模块只负责编排兼容接口。
+边界：判分公式分别由 ``rag.evaluation`` 与 ``rag.retrieval`` 维护；本模块只负责编排。
 """
 
 from __future__ import annotations
@@ -13,18 +13,14 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from scripts.evaluation.rag import evaluation as _evaluation
-from scripts.evaluation.rag import judge as _judge
+from scripts.evaluation.rag.evaluation import evaluate
 from scripts.evaluation.rag.common import (
-    ChunkIndex,
     load_eval,
     load_predictions,
     point_texts,
     warn,
 )
 from scripts.evaluation.rag.judge import (
-    FORBIDDEN_JUDGE_SYSTEM_PROMPT,
-    KEY_POINT_JUDGE_SYSTEM_PROMPT,
     LLMJudgeConfig,
     LLMJudgeError,
     make_judge_config,
@@ -33,99 +29,6 @@ from scripts.evaluation.rag.judge import (
 )
 from scripts.evaluation.rag.report import write_csv, write_jsonl, write_summary_csv
 from scripts.evaluation.rag.retrieval import load_chunk_index
-
-
-def call_judge_llm(
-    system_prompt: str,
-    user_prompt: str,
-    judge_config: LLMJudgeConfig,
-    trace_id: str = "",
-) -> str:
-    """转交到底层 judge 网关，保留便于测试替换的兼容调用点。"""
-    return _judge.call_judge_llm(system_prompt, user_prompt, judge_config, trace_id=trace_id)
-
-
-def call_judge_json(
-    system_prompt: str,
-    user_prompt: str,
-    judge_config: LLMJudgeConfig,
-    trace_id: str = "",
-) -> Tuple[Dict[str, Any], str]:
-    """调用并解析 judge JSON，同时允许测试替换本模块的 LLM 调用函数。"""
-    return _judge.call_judge_json(
-        system_prompt,
-        user_prompt,
-        judge_config,
-        trace_id=trace_id,
-        call_judge_llm_fn=call_judge_llm,
-    )
-
-
-def evaluate_key_points_with_llm(
-    question: str,
-    gold_answer: str,
-    gold_key_points: List[Any],
-    model_answer: str,
-    evidence: List[str] | None = None,
-    judge_config: LLMJudgeConfig | None = None,
-    category: str = "",
-    expected_behavior: str = "",
-    qid: str = "",
-) -> Dict[str, Any]:
-    """按标准关键点执行语义覆盖判断，并返回规范化结果。"""
-    return _judge.evaluate_key_points_with_llm(
-        question=question,
-        gold_answer=gold_answer,
-        gold_key_points=gold_key_points,
-        model_answer=model_answer,
-        evidence=evidence,
-        judge_config=judge_config,
-        category=category,
-        expected_behavior=expected_behavior,
-        qid=qid,
-        call_judge_json_fn=call_judge_json,
-    )
-
-
-def evaluate_forbidden_with_llm(
-    question: str,
-    model_answer: str,
-    forbidden_points: List[Any],
-    evidence: List[str] | None = None,
-    judge_config: LLMJudgeConfig | None = None,
-    gold_answer: str = "",
-    qid: str = "",
-) -> Dict[str, Any]:
-    """按禁用信息点执行语义命中判断，并返回规范化结果。"""
-    return _judge.evaluate_forbidden_with_llm(
-        question=question,
-        model_answer=model_answer,
-        forbidden_points=forbidden_points,
-        evidence=evidence,
-        judge_config=judge_config,
-        gold_answer=gold_answer,
-        qid=qid,
-        call_judge_json_fn=call_judge_json,
-    )
-
-
-def evaluate(
-    eval_items: List[Dict[str, Any]],
-    preds: Dict[str, Dict[str, Any]],
-    chunk_index: ChunkIndex,
-    k: int,
-    judge_config: LLMJudgeConfig | None = None,
-) -> Tuple[List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]]]:
-    """转交逐题评分实现，并注入本模块可替换的 judge 适配函数。"""
-    return _evaluation.evaluate(
-        eval_items,
-        preds,
-        chunk_index,
-        k,
-        judge_config=judge_config,
-        key_point_evaluator=evaluate_key_points_with_llm,
-        forbidden_evaluator=evaluate_forbidden_with_llm,
-    )
 
 
 def load_judge_cache_report(path: Path) -> Dict[str, Dict[str, Any]]:
@@ -249,7 +152,7 @@ def run_rag_evaluation(
             max_retries=0,
             max_tokens=0,
         )
-        rows, summary, judge_details = _evaluation.evaluate(
+        rows, summary, judge_details = evaluate(
             eval_items,
             preds,
             chunk_index,
@@ -326,16 +229,6 @@ def run_rag_evaluation(
 
 
 __all__ = [
-    "ChunkIndex",
-    "FORBIDDEN_JUDGE_SYSTEM_PROMPT",
-    "KEY_POINT_JUDGE_SYSTEM_PROMPT",
-    "LLMJudgeConfig",
-    "LLMJudgeError",
-    "call_judge_json",
-    "call_judge_llm",
-    "evaluate",
-    "evaluate_forbidden_with_llm",
-    "evaluate_key_points_with_llm",
     "load_judge_cache_report",
     "make_cached_judge_evaluators",
     "run_rag_evaluation",

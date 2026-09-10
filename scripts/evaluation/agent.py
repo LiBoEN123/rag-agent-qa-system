@@ -21,6 +21,7 @@ from scripts.evaluation.contracts import (
     AgentEvaluationDataset,
     ExpectedOutcome,
 )
+from scripts.evaluation.deepeval_adapter import tool_correctness
 
 
 def safe_lower(text: Any) -> str:
@@ -106,12 +107,12 @@ def _build_search_text(result: dict[str, Any]) -> str:
 
 
 def check_keywords(
-    case: dict[str, Any],
+    expected: ExpectedOutcome,
     result: dict[str, Any],
 ) -> dict[str, Any]:
     """检查结果文本是否命中评测用例要求的关键词。"""
-    expected = case.get("expected_keywords", []) or []
-    if not expected:
+    keywords = expected.keywords
+    if not keywords:
         return {
             "keyword_pass": True,
             "keyword_hits": [],
@@ -120,10 +121,9 @@ def check_keywords(
             "keyword_required": 0,
         }
     search_text = safe_lower(_build_search_text(result))
-    hits = [item for item in expected if safe_lower(item) in search_text]
-    missing = [item for item in expected if item not in hits]
-    default_required = max(1, math.ceil(len(expected) * 0.6))
-    required = int(case.get("min_keyword_hits", default_required))
+    hits = [item for item in keywords if safe_lower(item) in search_text]
+    missing = [item for item in keywords if item not in hits]
+    required = expected.min_keyword_hits
     return {
         "keyword_pass": len(hits) >= required,
         "keyword_hits": hits,
@@ -172,12 +172,12 @@ def _extract_tool_output(result: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def check_tool_output_keys(
-    case: dict[str, Any],
+    expected: ExpectedOutcome,
     result: dict[str, Any],
 ) -> dict[str, Any]:
     """按 case 要求检查工具输出中是否包含指定字段。"""
-    expected = case.get("expected_tool_output_keys", []) or []
-    if not expected:
+    keys = expected.tool_output_keys
+    if not keys:
         return {
             "tool_output_keys_pass": True,
             "tool_output_keys_expected": [],
@@ -185,13 +185,13 @@ def check_tool_output_keys(
         }
     output = _extract_tool_output(result)
     missing = (
-        [key for key in expected if key not in output]
+        [key for key in keys if key not in output]
         if isinstance(output, dict)
-        else list(expected)
+        else list(keys)
     )
     return {
         "tool_output_keys_pass": not missing,
-        "tool_output_keys_expected": expected,
+        "tool_output_keys_expected": keys,
         "tool_output_keys_missing": missing,
     }
 
@@ -274,15 +274,6 @@ def capture_tool_output_keys() -> Iterator[list[dict[str, Any]]]:
 def _rate(numerator: int, denominator: int) -> float:
     """安全计算四位小数比率。"""
     return round(numerator / denominator, 4) if denominator else 0.0
-
-
-def _expected_as_legacy(expected: ExpectedOutcome) -> dict[str, Any]:
-    """把 v2 字段映射为旧 evaluator 的纯函数输入。"""
-    return {
-        "expected_keywords": expected.keywords,
-        "min_keyword_hits": expected.min_keyword_hits,
-        "expected_tool_output_keys": expected.tool_output_keys,
-    }
 
 
 def _check_sources(
@@ -413,7 +404,7 @@ def _check_tool_output_schema(
     tool_output_records: list[dict[str, Any]] | None,
 ) -> dict[str, Any]:
     """优先检查评测边界捕获的真实字段名，兼容旧完整输出。"""
-    legacy = check_tool_output_keys(_expected_as_legacy(expected), result)
+    legacy = check_tool_output_keys(expected, result)
     if not expected.tool_output_keys or tool_output_records is None:
         return legacy
 
@@ -543,7 +534,7 @@ def score_agent_turn(
     tool_catalog: Mapping[str, Mapping[str, Any]] | None = None,
     allowed_mcp_servers: tuple[str, ...] = (),
 ) -> dict[str, Any]:
-    """复用旧纯函数并补齐 v2 的多原因判分。"""
+    """结合 DeepEval 工具判分与项目确定性合同，保留 v2 多原因诊断。"""
     metrics = dict(metrics or {})
     actual = extract_actual_fields(result)
     calls = _tool_calls(result)
@@ -593,8 +584,7 @@ def score_agent_turn(
         ),
         matching_external[0] if matching_external else {},
     )
-    legacy_case = _expected_as_legacy(expected)
-    keyword = check_keywords(legacy_case, result)
+    keyword = check_keywords(expected, result)
     source = _check_sources(expected, result)
     forbidden = _check_forbidden(expected, result)
     tool_output = _check_tool_output_schema(
@@ -625,12 +615,11 @@ def score_agent_turn(
             or actual["actual_tool"] == expected.first_tool
             or actual["actual_tool"] in expected.first_tool_any_of
         ),
-        "tools_contains": all(
-            tool in actual_tools for tool in expected.tools_contains
+        "tools_contains": tool_correctness(
+            expected.tools_contains, actual_tools,
         ),
-        "tool_sequence": (
-            not expected.tool_sequence
-            or actual_tools == expected.tool_sequence
+        "tool_sequence": tool_correctness(
+            expected.tool_sequence, actual_tools, exact=True,
         ),
         "tool_status_sequence": (
             not expected.tool_status_sequence
@@ -1019,7 +1008,9 @@ def calculate_agent_metrics(
         }[key]
         return _rate(
             sum(
-                row[actual_key] == row["expected"][key]
+                tool_correctness(row["expected"][key], row[actual_key], exact=True)
+                if key == "tool_sequence"
+                else row[actual_key] == row["expected"][key]
                 for row in applicable
             ),
             len(applicable),
