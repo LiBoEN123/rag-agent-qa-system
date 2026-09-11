@@ -178,6 +178,7 @@ def sanitize_mcp_call_result(
     server_alias: str,
     remote_tool_name: str,
     profile: McpSerializationProfile = McpSerializationProfile.AGENT,
+    preserve_source_content: bool = False,
 ) -> McpSanitizationOutcome:
     """把不可信 payload 净化为仍由官方 adapter 转换的 CallToolResult。"""
     if not isinstance(value, types.CallToolResult):
@@ -251,7 +252,7 @@ def sanitize_mcp_call_result(
         "server": server_alias,
         "tool": remote_tool_name,
         "truncated": truncated,
-        "serialization_profile": McpSerializationProfile.INGESTION.value,
+        "serialization_profile": resolved_profile.value,
         "content_blocks": ingestion_blocks,
     }
     if structured is not None:
@@ -263,7 +264,10 @@ def sanitize_mcp_call_result(
         truncated=truncated,
         ingestion_output=(
             ingestion_output
-            if resolved_profile is McpSerializationProfile.INGESTION
+            if (
+                resolved_profile is McpSerializationProfile.INGESTION
+                or preserve_source_content
+            )
             else None
         ),
     )

@@ -19,6 +19,7 @@ from app.agent.guardrails import (
     sum_governance_event_costs,
 )
 from app.config import AppSettings, get_settings
+from app.sources.service import promote_tool_result
 from app.tools.context import ToolInvocationContext
 from app.tools.errors import ToolErrorCode
 from app.tools.execution import (
@@ -439,6 +440,34 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
             known_tool=request.tool is not None,
             settings=self._settings,
         )
+        # ToolRuntime 私有通道只保留本次已净化 source payload，不进入模型消息或 State。
+        source_output = getattr(request.runtime, "mcp_ingestion_output", None)
+        if hasattr(request.runtime, "mcp_ingestion_output"):
+            delattr(request.runtime, "mcp_ingestion_output")
+        metadata = request.tool.metadata if request.tool is not None else None
+        if (
+            metadata
+            and metadata.get("knowledge_promotion")
+            and event.get("ok") is True
+            and event.get("handler_executed") is True
+        ):
+            try:
+                candidate = promote_tool_result(
+                    result=result,
+                    metadata=metadata,
+                    args=args,
+                    source_output=source_output,
+                    context=request.runtime.context,
+                    settings=self._settings,
+                )
+                if candidate is not None:
+                    event["knowledge_candidate_id"] = candidate.candidate_id
+                    event["knowledge_promotion_status"] = candidate.status.value
+                else:
+                    event["knowledge_promotion_status"] = "skipped"
+            except Exception:
+                # 来源校验或持久化失败不改变已成功的只读工具调用，也不泄漏正文/异常。
+                event["knowledge_promotion_status"] = "failed"
         return self._finish_tool_call(request, output, message, result, event, key)
 
     def wrap_tool_call(

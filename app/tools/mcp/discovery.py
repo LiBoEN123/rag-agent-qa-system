@@ -120,6 +120,7 @@ async def discover_mcp_tools(
                         remote_tool_name=remote_name,
                         description=_safe_description(raw_tool.description),
                         approval_required=approval_required,
+                        knowledge_promotion=server.knowledge_promotion.get(remote_name),
                     ),
                 )
             )

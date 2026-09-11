@@ -38,6 +38,43 @@ candidate ID 或 approval 状态。服务端分别只授予 `mcp:github` 或 `mc
 只返回 `IngestionService.summarize()` 生成的安全摘要。详情最多返回 2000 字正文预览和
 已经过 ingestion contract 清理的 metadata，没有 full-content endpoint。
 
+## Agent 工具结果提出候选（默认关闭）
+
+在部署者的 MCP Server 配置中显式添加 `knowledge_promotion`，键为远端工具名，
+值为已有 source 类型。例如在 `servers.github` 中添加：
+
+```json
+"knowledge_promotion": {"get_file_contents": "github"}
+```
+
+在 `servers.firecrawl` 中添加：
+
+```json
+"knowledge_promotion": {"firecrawl_scrape": "firecrawl"}
+```
+
+这些工具还必须位于该 Server 的 `allowed_tools` 中，并保持只读。省略该映射或使用
+`{}` 就关闭 promotion。配置经 discovery 写入受控 `BaseTool.metadata`；远端 MCP
+metadata、工具正文或模型参数不能开启 promotion，也不能设定 trust。
+
+`ProjectToolGovernanceMiddleware.wrap_tool_call/awrap_tool_call` 共用的完成钩子确认
+工具执行成功后，用现有 source 提取函数和 adapter 构建 `KnowledgeDocument`，再调用
+`IngestionService(SQLiteCandidateRepository(settings.sqlite_db_path)).propose()`。
+候选默认是 `pending / untrusted_external`，管理 API 的列表、审批和索引接口可直接操作。
+创建候选不依赖管理 API 是否启用；人工管理仍须启用上面的 API 并提供管理 key。
+
+GitHub 必须返回匹配 owner/repository/path、带合法 SHA 的完整文本资源。Firecrawl
+必须请求 `formats=["markdown"]`，返回完整 markdown、有效页面 URL 和 2xx status。
+工具错误、权限/治理拦截、审计失败、缺失来源、格式错误、空正文或任何截断均不入候选。
+promotion 校验/持久化失败不改变成功的只读 ToolResult，治理事件仅附安全状态和候选 ID。
+
+Agent 仍使用原来的长度上限（默认 12,000 字符）；净化器在本次 `ToolRuntime` 中暂存
+安全 source 内容块，完成后移除，不把这些内容块或候选正文追加到模型消息。没有重抓取，
+也不把摘要或截断文本转为永久知识。较长正文仍应通过已有显式 source API 提案。
+
+同一 source/content hash 复用既有 candidate ID；重新读取已审批/拒绝的候选不会重置
+审批状态。只有显式 `/approve` 后再调用 `/index` 才会执行增量索引和 RAG runtime reload。
+
 ## 持久化与双阶段操作
 
 `SQLiteCandidateRepository` 使用现有 `SQLITE_DB_PATH` 的 `ingestion_candidates` 表，完整

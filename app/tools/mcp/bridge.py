@@ -400,6 +400,7 @@ class McpToolCallInterceptor:
                 server_alias=request.server_name,
                 remote_tool_name=request.name,
                 profile=profile,
+                preserve_source_content=request.name in server_config.knowledge_promotion,
             )
             if not outcome.ok or outcome.result is None:
                 error = outcome.error
@@ -428,8 +429,9 @@ class McpToolCallInterceptor:
                     event_type = ToolAuditEventType.FAILED
                 else:
                     event_type = ToolAuditEventType.SUCCEEDED
-                    if outcome.ingestion_output is not None and hasattr(
-                        request.runtime, "mcp_ingestion_output"
+                    if outcome.ingestion_output is not None and (
+                        hasattr(request.runtime, "mcp_ingestion_output")
+                        or request.name in server_config.knowledge_promotion
                     ):
                         request.runtime.mcp_ingestion_output = outcome.ingestion_output
 
@@ -490,6 +492,7 @@ def build_governed_mcp_tool(
     remote_tool_name: str,
     description: str,
     approval_required: bool = False,
+    knowledge_promotion: str | None = None,
 ) -> BaseTool:
     """在官方 tool 本身只补充同步入口与项目 metadata。"""
     exposed_name = f"{server_alias}_{remote_tool_name}"
@@ -529,6 +532,8 @@ def build_governed_mcp_tool(
         ),
         "approval_required": approval_required,
     }
+    if knowledge_promotion is not None:
+        raw_tool.metadata["knowledge_promotion"] = knowledge_promotion
     return raw_tool
 
 

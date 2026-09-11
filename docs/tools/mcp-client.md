@@ -277,6 +277,10 @@ timeout、transport、脱敏和审计，但文本上限为 1,000,000 字符，�
 `EmbeddedResource(TextResourceContents)` 正文。普通 Agent 调用仍默认使用 12,000 字符
 profile，工具参数 schema 中不存在 profile 字段，完整正文不会进入 Agent context。
 
+部署者也可为 GitHub file / Firecrawl scrape 显式开启
+[Agent candidate promotion](../ingestion/operations-api.md#agent-工具结果提出候选默认关闭)。
+它保留普通 Agent 上限，只使用本次完整的 source 内容块提出 pending 候选，仍须人工审批和显式索引。
+
 ingestion 结果一旦 `truncated=true` 就不能产生可索引文档；超过 1,000,000 字符同样
 fail closed。截断结果的 `content_blocks` 不保留正文，只保留类型、MIME、URI 和字符数等
 有限摘要。审计仍只记录字段、正文字符数、截断标志和状态，不记录完整正文。

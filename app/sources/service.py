@@ -16,6 +16,7 @@ from app.config import AppSettings
 from app.ingestion import (
     INGESTION_MAX_CONTENT_CHARS,
     IngestionCandidate,
+    IngestionPrincipalType,
     IngestionRequester,
     IngestionService,
     KnowledgeSourceType,
@@ -24,6 +25,7 @@ from app.rag import pipeline as rag_pipeline
 from app.rag.indexing import candidate_to_langchain_documents, sync_documents
 from app.sources.firecrawl import FirecrawlPagePayload, FirecrawlPageSourceAdapter
 from app.sources.github import GitHubFilePayload, GitHubFileSourceAdapter
+from app.storage.ingestion import SQLiteCandidateRepository
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolRiskLevel
 from app.tools.mcp.bridge import invoke_mcp_tool
@@ -48,14 +50,18 @@ class SourceIngestionError(RuntimeError):
 
 
 # 校验 MCP 入库输出成功、正文完整且带有不可信标记和内容块列表。
-def _require_ingestion_output(result: Mapping[str, Any]) -> dict[str, Any]:
+def _require_ingestion_output(
+    result: Mapping[str, Any],
+    *,
+    profile: McpSerializationProfile = McpSerializationProfile.INGESTION,
+) -> dict[str, Any]:
     if result.get("ok") is not True:
         raise SourceIngestionError("SOURCE_FETCH_FAILED", "受治理 MCP source fetch 失败")
     output = result.get("output")
     if not isinstance(output, dict):
         raise SourceIngestionError("SOURCE_PAYLOAD_INVALID", "MCP source payload 无效")
-    if output.get("serialization_profile") != McpSerializationProfile.INGESTION.value:
-        raise SourceIngestionError("SOURCE_PAYLOAD_INVALID", "缺少 ingestion output profile")
+    if output.get("serialization_profile") != profile.value:
+        raise SourceIngestionError("SOURCE_PAYLOAD_INVALID", "source output profile 不匹配")
     if output.get("truncated") is not False:
         blocks = output.get("content_blocks")
         if isinstance(blocks, list) and any(
@@ -135,6 +141,7 @@ def _firecrawl_payload(
     output: Mapping[str, Any],
     *,
     requested_url: str,
+    require_markdown: bool = False,
 ) -> FirecrawlPagePayload:
     payloads: list[Mapping[str, Any]] = []
     structured = output.get("structured_content")
@@ -156,7 +163,8 @@ def _firecrawl_payload(
     selected: Mapping[str, Any] | None = None
     content: str | None = None
     for candidate in payloads:
-        for key in ("markdown", "content", "text"):
+        keys = ("markdown",) if require_markdown else ("markdown", "content", "text")
+        for key in keys:
             value = candidate.get(key)
             if isinstance(value, str):
                 selected, content = candidate, value
@@ -168,6 +176,11 @@ def _firecrawl_payload(
             "SOURCE_PAYLOAD_INVALID",
             "Firecrawl scrape 未返回可证明完整的正文",
         )
+    if require_markdown and (
+        selected.get("success", True) is not True
+        or selected.get("truncated", False) is not False
+    ):
+        raise SourceIngestionError("SOURCE_PAYLOAD_INVALID", "Firecrawl page 失败或不完整")
     metadata = selected.get("metadata")
     metadata = metadata if isinstance(metadata, Mapping) else {}
     version = _text_field(metadata, "etag") or _text_field(metadata, "lastModified")
@@ -183,6 +196,75 @@ def _firecrawl_payload(
         language=_text_field(metadata, "language"),
         version=version,
         status_code=status_code,
+    )
+
+
+def promote_tool_result(
+    *,
+    result: Mapping[str, Any],
+    metadata: Mapping[str, Any],
+    args: dict[str, Any],
+    source_output: object,
+    context: ToolInvocationContext,
+    settings: AppSettings,
+) -> IngestionCandidate | None:
+    """仅将显式声明的完整 source payload 提交到现有持久候选流程。"""
+    source = metadata.get("knowledge_promotion")
+    expected_tool = {"github": _GITHUB_TOOL, "firecrawl": _FIRECRAWL_TOOL}.get(source)
+    if (
+        expected_tool is None
+        or metadata.get("tool_origin") != "mcp"
+        or metadata.get("risk_level") != ToolRiskLevel.READ_ONLY.value
+        or result.get("tool_name") != expected_tool
+        or result.get("ok") is not True
+        or result.get("governance", {}).get("decision") != "allow"
+        or result.get("audit", {}).get("write_failed") is not False
+    ):
+        return None
+    output = _require_ingestion_output(
+        {"ok": result["ok"], "output": source_output},
+        profile=McpSerializationProfile.AGENT,
+    )
+    if (
+        output.get("server") != metadata.get("mcp_server")
+        or output.get("tool") != metadata.get("remote_tool_name")
+        or f"{output.get('server')}_{output.get('tool')}" != expected_tool
+        or result.get("output", {}).get("truncated") is not False
+    ):
+        return None
+    if source == "github":
+        payload = _github_payload(
+            output,
+            owner=args["owner"],
+            repository=args["repo"],
+            path=args["path"],
+            requested_ref=args.get("ref"),
+        )
+        if payload.resolved_sha is None:
+            return None
+        document = GitHubFileSourceAdapter().to_document(payload)
+    else:
+        if args.get("formats") != ["markdown"]:
+            return None
+        payload = _firecrawl_payload(
+            output, requested_url=args["url"], require_markdown=True
+        )
+        if (
+            payload.final_url is None
+            or payload.status_code is None
+            or not 200 <= payload.status_code < 300
+        ):
+            return None
+        document = FirecrawlPageSourceAdapter().to_document(payload)
+    if not document.content.strip():
+        return None
+    return IngestionService(SQLiteCandidateRepository(settings.sqlite_db_path)).propose(
+        document=document,
+        requester=IngestionRequester(
+            principal_id=context.principal_id,
+            principal_type=IngestionPrincipalType(context.principal_type.value),
+            source="agent-tool-promotion",
+        ),
     )
 
 
