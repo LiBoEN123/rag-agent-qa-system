@@ -2,21 +2,14 @@
 
 from __future__ import annotations
 
-import inspect
 from functools import lru_cache
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from langchain_openai import ChatOpenAI
+
 from app.config import get_settings, secret_value
 from app.llm.errors import ModelCallError
-
-try:
-    from langchain_openai import ChatOpenAI
-except ImportError as exc:  # pragma: no cover - 仅在依赖尚未安装时触发
-    ChatOpenAI = None  # type: ignore[assignment,misc]
-    _LANGCHAIN_IMPORT_ERROR: Exception | None = exc
-else:
-    _LANGCHAIN_IMPORT_ERROR = None
 
 
 def _openai_base_url(api_url: str) -> str:
@@ -31,22 +24,6 @@ def _openai_base_url(api_url: str) -> str:
     if path.endswith(suffix):
         path = path[: -len(suffix)]
     return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment)).rstrip("/")
-
-
-def _parameter_name(modern: str, legacy: str) -> str:
-    """根据已安装 ChatOpenAI 签名选择新旧版本都可接受的参数名。"""
-    if ChatOpenAI is None:
-        return modern
-    try:
-        parameters = inspect.signature(ChatOpenAI).parameters
-    except (TypeError, ValueError):
-        return modern
-    if modern in parameters or any(
-        item.kind is inspect.Parameter.VAR_KEYWORD
-        for item in parameters.values()
-    ):
-        return modern
-    return legacy if legacy in parameters else modern
 
 
 def _create_model(
@@ -65,22 +42,14 @@ def _create_model(
     model_name = (model_name or "").strip()
     if not api_url or not model_name:
         return None
-    if ChatOpenAI is None:
-        raise ModelCallError(
-            "LangChain 模型客户端不可用，请安装 langchain-openai。",
-            detail=type(_LANGCHAIN_IMPORT_ERROR).__name__ if _LANGCHAIN_IMPORT_ERROR else "ImportError",
-            provider="langchain",
-            model_name=model_name,
-            retryable=False,
-        )
 
     kwargs: dict[str, Any] = {
-        _parameter_name("model", "model_name"): model_name,
-        _parameter_name("api_key", "openai_api_key"): api_key or "not-required",
-        _parameter_name("base_url", "openai_api_base"): _openai_base_url(api_url),
+        "model": model_name,
+        "api_key": api_key or "not-required",
+        "base_url": _openai_base_url(api_url),
         "temperature": temperature,
         "max_tokens": max_tokens,
-        _parameter_name("timeout", "request_timeout"): timeout,
+        "timeout": timeout,
         "max_retries": max(0, int(max_retries)),
     }
     try:
