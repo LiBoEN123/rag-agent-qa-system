@@ -5,6 +5,7 @@ pydantic-settings
 requests
 requests-hardened==1.3.0
 httpx
+httpx-sse
 ddgs
 trafilatura==2.1.0
 numpy

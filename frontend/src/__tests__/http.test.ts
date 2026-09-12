@@ -5,7 +5,7 @@ import { http, ingestionHttp, ingestionAdminKey, setIngestionAdminKey, apiErrorM
 afterEach(() => setIngestionAdminKey(''))
 
 describe('管理员凭据与公开错误', () => {
-  it('管理员 key 只发送给 ingestion，普通聊天和诊断请求不带 key', async () => {
+  it('管理员 key 只发送给 ingestion，公开诊断请求不带 key', async () => {
     const sent: InternalAxiosRequestConfig[] = []
     const adapter: AxiosAdapter = async (config) => {
       sent.push(config)
@@ -13,7 +13,7 @@ describe('管理员凭据与公开错误', () => {
     }
     setIngestionAdminKey('test-only-admin-key')
     await ingestionHttp.get('/admin/ingestion/candidates', { adapter })
-    await http.post('/chat', { question: '测试' }, { adapter })
+    await http.post('/search', { question: '测试' }, { adapter })
     await http.get('/health', { adapter })
     expect(sent.map((config) => config.headers.get('X-Ingestion-Admin-Key'))).toEqual(['test-only-admin-key', undefined, undefined])
     expect(localStorage.length).toBe(0)
@@ -23,7 +23,7 @@ describe('管理员凭据与公开错误', () => {
 
   it('管理员 client 拒绝普通端点和外站地址', async () => {
     setIngestionAdminKey('test-only-admin-key')
-    await expect(ingestionHttp.get('/chat')).rejects.toThrow('管理员请求地址无效')
+    await expect(ingestionHttp.get('/search')).rejects.toThrow('管理员请求地址无效')
     await expect(ingestionHttp.get('https://example.com/admin/ingestion/candidates')).rejects.toThrow('管理员请求地址无效')
     await expect(ingestionHttp.get('/admin/ingestion/candidates', { baseURL: 'https://example.com' })).rejects.toThrow('管理员请求地址无效')
   })

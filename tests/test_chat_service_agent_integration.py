@@ -2,6 +2,7 @@
 
 from pydantic import RootModel
 
+import asyncio
 import json
 from importlib import import_module
 from pathlib import Path
@@ -11,7 +12,7 @@ from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_tools
 from app.agent import runtime as agent_runtime
-from app.agent.runtime import reset_agent_runtime, run_agent
+from app.agent.runtime import reset_agent_runtime
 from app.rag import graph as rag_graph
 from app.services.chat_service import (
     ChatService,
@@ -26,6 +27,15 @@ from tests.support.local_tools import local_tools
 from app.tools.result import tool_success
 
 
+def collect_outcome(service, request):
+    async def collect():
+        events = [event async for event in service.stream(request)]
+        assert events[-1].event == "done"
+        return events[-2].data["outcome"]
+
+    return asyncio.run(collect())
+
+
 class ChatEchoArgs(BaseModel):
     text: str
 
@@ -35,6 +45,9 @@ class ChatAgentModel:
         self.calls = 0
         self.received_messages: list[list] = []
         self.bound_tool_names: list[str] = []
+
+    async def ainvoke(self, messages):
+        return self.invoke(messages)
 
     def bind_tools(self, tools):
         self.bound_tool_names = [tool.name for tool in tools]
@@ -250,7 +263,6 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
         settings_provider=lambda: settings,
         get_history=get_history_sqlite,
         rewrite_query_with_history=rewrite,
-        run_agent=run_agent,
         log_and_write_metrics=lambda record: metric_writes.append(dict(record)),
         write_bad_cases=lambda record: bad_cases.append(dict(record)),
         append_message=persist_message,
@@ -260,7 +272,8 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
     service = ChatService(dependencies)
 
     try:
-        outcome = service.handle(
+        outcome = collect_outcome(
+            service,
             ChatServiceRequest(
                 question="请走完整 Agent 工具主路径",
                 top_k=5,
@@ -443,7 +456,6 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
         settings_provider=lambda: settings,
         get_history=lambda session_id: [],
         rewrite_query_with_history=rewrite,
-        run_agent=run_agent,
         log_and_write_metrics=lambda record: metric_writes.append(dict(record)),
         write_bad_cases=lambda record: None,
         append_message=lambda session_id, role, content: session_writes.append(
@@ -454,7 +466,8 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
     )
 
     try:
-        outcome = ChatService(dependencies).handle(
+        outcome = collect_outcome(
+            ChatService(dependencies),
             ChatServiceRequest(
                 question="今天有哪些重要的 Python 新闻？",
                 top_k=5,
@@ -632,7 +645,6 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
         settings_provider=lambda: settings,
         get_history=lambda session_id: [],
         rewrite_query_with_history=rewrite,
-        run_agent=run_agent,
         log_and_write_metrics=lambda record: metric_writes.append(dict(record)),
         write_bad_cases=lambda record: None,
         append_message=lambda session_id, role, content: session_writes.append(
@@ -651,7 +663,8 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
     monkeypatch.setattr("app.services.chat_service.logger.info", record_log)
 
     try:
-        outcome = ChatService(dependencies).handle(
+        outcome = collect_outcome(
+            ChatService(dependencies),
             ChatServiceRequest(
                 question="读取搜索到的公开 PDF",
                 top_k=5,

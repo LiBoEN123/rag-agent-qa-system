@@ -97,9 +97,8 @@ LangChain create_agent
 → Agent
 ```
 
-`/chat`、`/chat/stream`、`ChatService` 和 stream projector 中没有 SQL 特判，因此两种
-入口自动共享动态可见性、Pydantic 参数校验、权限、超时、审计、错误治理和 Tool
-Trace。SSE `tool` 事件仍只公开 `tool_name`、`phase`、`status` 和完成时的
+`/chat/stream`、`ChatService` 和 stream projector 中没有 SQL 特判，聊天路径继续使用
+动态可见性、Pydantic 参数校验、权限、超时、审计、错误治理和 Tool Trace。SSE `tool` 事件仍只公开 `tool_name`、`phase`、`status` 和完成时的
 `cost_ms`；SQL 文本、行数据和 Schema 不进入 SSE tool 事件。
 
 ## 手动冒烟

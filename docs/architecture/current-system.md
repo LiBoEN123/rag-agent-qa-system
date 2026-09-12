@@ -13,8 +13,8 @@ LangGraph 实现独立 RAG Graph，但它只由本地知识库工具调用，不
 
 ```text
 FastAPI application
-→ Chat Router
-→ ChatService
+→ POST /chat/stream
+→ ChatService.stream
 → Query Rewrite
 → Agent Runtime
 → create_agent
@@ -24,7 +24,8 @@ FastAPI application
 → AgentRunResult
 → ChatStatusPolicy
 → ChatServiceOutcome
-→ ChatResponse（同步 JSON 或 SSE final）
+→ ChatResponse（SSE final.data.response）
+→ done
 ```
 
 本地知识库分支为：
@@ -59,7 +60,7 @@ create_agent
 - MCP Bridge / Interceptor 独立治理远端 MCP；MCP 不进入本地 ToolRuntime。
 - 独立 RAG Graph 只由知识库工具调用，是唯一专用业务工作流 Graph。
 - Framework State 只保存框架运行所需状态；`AgentRunResult` 是 Runtime 输出边界。
-- `ChatStatusPolicy` 唯一决定 HTTP、公开状态与 metrics 状态；同步和 SSE 共用它。
+- `ChatStatusPolicy` 唯一决定业务目标 HTTP 状态、公开状态与 metrics 状态，结果通过 SSE final 公开。
 
 ### Explicitly Accepted Design
 
@@ -92,16 +93,14 @@ Chat Router、health Router 和 diagnostics Router；真实 RAG/Agent/MCP 资源
 初始化。`app.api.chat` 只把 HTTP 请求转换为 `ChatServiceRequest`，调用已注入的
 `ChatService`，再通过 `app.api.responses` 的单一函数构造响应。
 
-`ChatService` 是同步与流式应用流程协调器：取得请求级 Settings 快照、读取 session
-历史、执行 Query Rewrite、调用 `run_agent()` 或 `stream_agent()`、应用唯一状态策略、
+`ChatService` 编排唯一流式聊天流程：取得请求级 Settings 快照、读取 session
+历史、执行 Query Rewrite、调用 `stream_agent()`、应用唯一状态策略、
 安排 session 保存，并委托 `chat_telemetry` 完成 metrics、bad case、流式事件记账和
-调用链收尾。两条入口共享请求准备和 Result 收尾，差异只保留在同步/异步 Runtime
-执行方式和流式中间事件；`ChatServiceDependencies` 只表达 Settings、模型/Runtime、
+调用链收尾。`stream()` 复用现有请求准备和 Result 收尾；`ChatServiceDependencies` 只表达 Settings、模型/Runtime、
 Session、持久化和时钟等外部边界，不注入稳定的 trace 构造/汇总纯函数。Service 模型
 不包含 FastAPI Request/Response，也不维护第二套 Agent State。
 
 ```text
-handle  → prepare → run_agent    → finish Result → finalize
 stream  → prepare → stream_agent → finish Result → finalize
 ```
 
@@ -110,8 +109,9 @@ stream  → prepare → stream_agent → finish Result → finalize
 最终答案一致性和 `client_disconnected`。客户端取消仍关闭下游 Agent stream，且不保存
 未完成的 assistant turn。
 
-`POST /chat` 保持同步 JSON 行为；`POST /chat/stream` 由同一个 Router 闭包和同一个
-Service 实例提供 SSE。流式执行直接调用
+`POST /chat/stream` 是唯一聊天 HTTP 入口，包括空问题也经过 `ChatService.stream()`，
+以 `final.data.http_status` 表达业务状态。内部 `run_agent()` 仍供直接 Runtime 调用，
+ChatService 不再依赖它。流式执行直接调用
 `create_agent.astream(updates/messages/values, subgraphs=False, version=v2)`，安全投影只
 输出允许的进度、工具状态和回答增量；`final` 仍调用唯一
 `build_chat_response_from_outcome()`。完整 HTTP/事件/安全合同见
@@ -145,7 +145,7 @@ Router 只决定 `agent`、`direct_answer` 或 `clarify`，不选择具体工具
 `framework_middleware.py` 不依赖 `runtime.py`；`.importlinter` 和 Runtime Inspection 同时
 固化这条边界。系统不再维护事件游标或父图适配节点。
 
-同步入口直接使用 `create_agent.invoke()`，流式入口直接使用
+内部同步 Runtime 直接使用 `create_agent.invoke()`，聊天流式入口直接使用
 `create_agent.astream()`。两者共享输入准备和最终结果归一化，因此公开
 `AgentRunResult`、status、references、LLM 计数与 tool trace 语义一致。
 
@@ -205,7 +205,7 @@ StructuredTool
 可选 MCP Client 工具源默认关闭。显式启用后，FastAPI 启动期使用官方
 `langchain-mcp-adapters.MultiServerMCPClient` discovery 并缓存受治理的只读工具。
 MCP adapter 工具与本地工具进入同一个 `create_agent`，继续受请求权限、调用预算、
-错误分类、重复调用和安全输出边界约束。`/chat`、`/chat/stream`、ChatService 与 SSE
+错误分类、重复调用和安全输出边界约束。`/chat/stream`、ChatService 与 SSE
 projector 没有 MCP 专属分支。MCP BaseTool 不再由 framework tools 二次包装，而是直接
 经过同一个原生 Tool Middleware。MCP 不进入本地 ToolRuntime；其执行链保持为
 `ToolNode → ProjectToolGovernanceMiddleware → McpToolProvider 提供的 governed MCP

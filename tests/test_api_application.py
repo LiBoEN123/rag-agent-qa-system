@@ -1,6 +1,7 @@
 """FastAPI 组合根、路由和生命周期隔离测试。"""
 
 import asyncio
+import json
 from dataclasses import fields, replace
 from types import SimpleNamespace
 from unittest.mock import Mock, call
@@ -10,8 +11,6 @@ from fastapi import Response
 
 import app.api.application as api_application
 from app.agent.results import (
-    build_empty_question_result,
-    build_internal_error_result,
     create_agent_result,
 )
 from app.api.diagnostics import create_diagnostics_router
@@ -19,6 +18,7 @@ from app.api.schemas import ChatRequest, SearchResponse
 from app.contracts.chat import AgentResultStatus
 from app.rag import pipeline
 from app.services.chat_models import ChatServiceOutcome
+from app.services.chat_stream_models import ChatStreamEvent
 
 
 class RecordingService:
@@ -26,9 +26,11 @@ class RecordingService:
         self.outcome = outcome
         self.requests = []
 
-    def handle(self, request):
+    async def stream(self, request):
         self.requests.append(request)
-        return self.outcome
+        yield ChatStreamEvent("start", {"session_id_present": bool(request.session_id)})
+        yield ChatStreamEvent("final", {"outcome": self.outcome, "total_cost_ms": 1})
+        yield ChatStreamEvent("done", {"reason": "completed"})
 
 
 def success_outcome(answer: str = "测试回答") -> ChatServiceOutcome:
@@ -90,10 +92,10 @@ def test_create_app_returns_independent_instances_and_services(monkeypatch):
     first_app = api_application.create_app()
     second_app = api_application.create_app()
     first_endpoint = next(
-        route.endpoint for route in first_app.routes if route.path == "/chat"
+        route.endpoint for route in first_app.routes if route.path == "/chat/stream"
     )
     second_endpoint = next(
-        route.endpoint for route in second_app.routes if route.path == "/chat"
+        route.endpoint for route in second_app.routes if route.path == "/chat/stream"
     )
 
     class RequestState:
@@ -102,16 +104,22 @@ def test_create_app_returns_independent_instances_and_services(monkeypatch):
     class Request:
         state = RequestState()
 
-    assert first_endpoint(
-        ChatRequest(question="first"),
-        Request(),
-        Response(),
-    ).data.answer == "first"
-    assert second_endpoint(
-        ChatRequest(question="second"),
-        Request(),
-        Response(),
-    ).data.answer == "second"
+        async def is_disconnected(self):
+            return False
+
+    async def answer(endpoint, question):
+        response = await endpoint(ChatRequest(question=question), Request())
+        chunks = [chunk async for chunk in response.body_iterator]
+        for block in b"".join(chunks).decode().split("\n\n"):
+            if "event: final\n" in block:
+                data = next(
+                    line[6:] for line in block.splitlines() if line.startswith("data: ")
+                )
+                return json.loads(data)["data"]["response"]["data"]["answer"]
+        raise AssertionError("missing final")
+
+    assert asyncio.run(answer(first_endpoint, "first")) == "first"
+    assert asyncio.run(answer(second_endpoint, "second")) == "second"
 
 
 def test_application_registers_middleware_and_all_routes():
@@ -127,7 +135,7 @@ def test_application_registers_middleware_and_all_routes():
 
     assert {
         ("GET", "/health"),
-        ("POST", "/chat"),
+        ("POST", "/chat/stream"),
         ("GET", "/docs-preview"),
         ("GET", "/chunks-preview"),
         ("POST", "/search"),
@@ -610,113 +618,7 @@ def test_main_exposes_factory_created_app():
     from app.main import app
 
     assert app.title == "Mini Rag API"
-    assert any(route.path == "/chat" for route in app.routes)
-
-
-def test_application_factory_chat_success_and_health():
-    service = RecordingService(success_outcome())
-    application = api_application.create_app(chat_service=service)
-    chat_endpoint = next(
-        route.endpoint
-        for route in application.routes
-        if route.path == "/chat"
-    )
-    health_endpoint = next(
-        route.endpoint
-        for route in application.routes
-        if route.path == "/health"
-    )
-
-    class RequestState:
-        trace_id = "trace-http"
-        request_enter_time = "2026-07-29T10:00:00.000"
-        request_enter_perf = 10.0
-
-    class Request:
-        state = RequestState()
-
-    http_response = Response()
-    response = chat_endpoint(
-        ChatRequest(question="测试问题"),
-        Request(),
-        http_response,
-    )
-    health = health_endpoint()
-
-    assert http_response.status_code == 200
-    assert response.trace_id == "trace-http"
-    assert response.data.answer == "测试回答"
-    assert health == {
-        "code": 0,
-        "message": "success",
-        "data": {"status": "ok"},
-    }
-
-
-def test_application_factory_clarify_empty_and_runtime_error():
-    outcomes = [
-        ChatServiceOutcome(
-            http_status=200,
-            code="NEED_CLARIFICATION",
-            message="问题信息不足，需要补充后再回答",
-            question="测试问题",
-            result=create_agent_result(
-                status=AgentResultStatus.NEED_CLARIFICATION,
-                need_clarification=True,
-                clarification_question="请补充对象",
-            ),
-            response_status="clarify",
-        ),
-        ChatServiceOutcome(
-            http_status=400,
-            code="EMPTY_QUESTION",
-            message="问题不能为空，请输入你想查询的内容",
-            question="",
-            result=build_empty_question_result(),
-            response_status="clarify",
-        ),
-        ChatServiceOutcome(
-            http_status=500,
-            code="MODEL_ERROR",
-            message="处理失败，请稍后重试",
-            question="测试问题",
-            result=build_internal_error_result(
-                RuntimeError("runtime unavailable"),
-                runtime_label="ChatService Agent invocation",
-                reason="工具调用或模型调用异常",
-            ),
-            response_status="error",
-        ),
-    ]
-
-    for outcome, expected_status in zip(
-        outcomes,
-        (200, 400, 500),
-        strict=True,
-    ):
-        service = RecordingService(outcome)
-        application = api_application.create_app(chat_service=service)
-        endpoint = next(
-            route.endpoint
-            for route in application.routes
-            if route.path == "/chat"
-        )
-
-        class Request:
-            class state:
-                trace_id = "trace-status"
-
-        response = Response()
-        endpoint(
-            ChatRequest(question=outcome.question),
-            Request(),
-            response,
-        )
-        assert response.status_code == expected_status
-
-    clarify = outcomes[0]
-    assert clarify.result["need_clarification"] is True
-    assert clarify.result["references"] == []
+    assert any(route.path == "/chat/stream" for route in app.routes)
 
 
 def test_metrics_summary_only_has_current_chat_metric_statuses():

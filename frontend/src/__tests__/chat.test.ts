@@ -1,12 +1,12 @@
 import { defineComponent, nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { streamChat, sendChat, type ChatStreamEvent } from '../api/chat'
+import { streamChat, type ChatStreamEvent } from '../api/chat'
 import type { ChatResponse } from '../api/types'
 import { useChat } from '../composables/useChat'
 import { useSession } from '../composables/useSession'
 
-vi.mock('../api/chat', () => ({ streamChat: vi.fn(), sendChat: vi.fn() }))
+vi.mock('../api/chat', () => ({ streamChat: vi.fn() }))
 
 const finalResponse: ChatResponse = {
   code: 'NEED_CLARIFICATION', message: '请补充问题', trace_id: 'trace-1',
@@ -108,6 +108,7 @@ describe('chat conversation', () => {
     expect(wrapper.text()).toContain('未收到 done')
     expect(wrapper.vm.messages[1]?.state).toBe('error')
     expect(wrapper.vm.sending).toBe(false)
+    expect(streamChat).toHaveBeenCalledOnce()
   })
 
   it('keeps the authoritative final details when the stream closes before done', async () => {
@@ -166,13 +167,10 @@ describe('chat conversation', () => {
     expect(next.vm.messages[1]?.state).toBe('cancelled')
   })
 
-  it('also consumes the ordinary /chat response', async () => {
-    vi.mocked(sendChat).mockResolvedValue(finalResponse)
+  it('ignores empty questions without opening a stream', async () => {
     const wrapper = mountChat()
-    await wrapper.vm.send('测试问题', 5, 5, false)
-    expect(sendChat).toHaveBeenCalledOnce()
+    await wrapper.vm.send('   ', 5, 5)
     expect(streamChat).not.toHaveBeenCalled()
-    expect(wrapper.vm.messages[1]?.response).toEqual(finalResponse)
-    expect(wrapper.text()).toContain('请问哪一年？')
+    expect(wrapper.vm.messages).toHaveLength(0)
   })
 })

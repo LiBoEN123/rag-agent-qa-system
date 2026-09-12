@@ -8,8 +8,8 @@ Parent Agent Graph；LangGraph 只继续承载框架内部 model/tools 循环和
 
 | 顺序 | 文件 | 只需要理解 |
 | --- | --- | --- |
-| 1 | `app/api/application.py`、`app/api/chat.py`、`app/api/streaming.py` | FastAPI 如何组装，以及同步 JSON/SSE 如何进入 ChatService |
-| 2 | `app/services/chat_service.py`、`chat_models.py`、`chat_stream_models.py`、`chat_telemetry.py` | 同步/流式应用流程和 telemetry 分工 |
+| 1 | `app/api/application.py`、`app/api/chat.py`、`app/api/streaming.py` | FastAPI 如何组装，以及 SSE 如何进入 ChatService |
+| 2 | `app/services/chat_service.py`、`chat_models.py`、`chat_stream_models.py`、`chat_telemetry.py` | 流式应用流程和 telemetry 分工 |
 | 3 | `app/contracts/chat.py` | Result status 如何唯一决定 HTTP、API 和 metrics 状态 |
 | 4 | `app/agent/runtime.py` | 普通 Python Router、请求准备、Agent 缓存和同步 invoke |
 | 5 | `app/agent/streaming.py` | 直接 astream、消息缓冲和安全事件投影 |
@@ -25,23 +25,23 @@ Parent Agent Graph；LangGraph 只继续承载框架内部 model/tools 循环和
 
 ```text
 FastAPI application
-→ Chat Router
-→ ChatService
+→ POST /chat/stream
+→ ChatService.stream
 → Session History / Query Rewrite
 → app.agent.runtime.prepare_agent_runtime_invocation
 → 普通 Python route_agent_action
   ├─ direct_answer / clarify → 普通 Python 结果归一化
-  └─ agent → create_agent.invoke
-             → ProjectToolGovernanceMiddleware.wrap_tool_call
+  └─ agent → create_agent.astream
+             → ProjectToolGovernanceMiddleware.awrap_tool_call
              → 请求级 StructuredTool / governed MCP BaseTool
              → ToolMessage + Command State Update
              → tool_events 投影 → results 结果归一化
 → AgentRunResult
 → ChatStatusPolicy
-→ ChatResponse
+→ SSE final.data.response / done
 ```
 
-流式入口只替换执行方式：
+流式事件的投影和编码路径：
 
 ```text
 POST /chat/stream
@@ -53,7 +53,7 @@ POST /chat/stream
 → SSE final / done
 ```
 
-同步与流式入口共享参数校验、Router、ToolInvocationContext、recursion limit 和最终
+内部同步 Runtime 与聊天流式入口共享参数校验、Router、ToolInvocationContext、recursion limit 和最终
 结果归一化。流式 projector 不把内部 State、ToolMessage、工具参数/原始结果、
 reasoning 或 RAG JSON 交给 API；最终结果仍经过唯一 `ChatStatusPolicy` 和
 `build_chat_response_from_outcome()`。

@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { sendChat, streamChat, type ChatStreamEvent } from '../api/chat'
-import { http } from '../api/http'
+import { streamChat, type ChatStreamEvent } from '../api/chat'
 import type { ChatResponse } from '../api/types'
 
 const start = { event: 'start', data: { session_id_present: true } }
@@ -88,23 +87,39 @@ describe('POST chat SSE transport', () => {
   })
 
   it('keeps public HTTP errors and disables network retries', async () => {
-    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ code: 'EMPTY_QUESTION', message: '问题不能为空' }), { status: 400, headers: { 'Content-Type': 'application/json' } }))
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ code: 'REQUEST_VALIDATION_ERROR', message: '请求格式无效' }), { status: 422, headers: { 'Content-Type': 'application/json' } }))
     vi.stubGlobal('fetch', fetch)
-    await expect(streamChat({ question: '' }, new AbortController().signal, vi.fn())).rejects.toThrow('问题不能为空')
+    await expect(streamChat({ question: '' }, new AbortController().signal, vi.fn())).rejects.toThrow('请求格式无效')
     expect(fetch).toHaveBeenCalledOnce()
     fetch.mockRejectedValue(new TypeError('Failed to fetch'))
     await expect(streamChat({ question: '测试问题' }, new AbortController().signal, vi.fn())).rejects.toThrow('Failed to fetch')
     expect(fetch).toHaveBeenCalledTimes(2)
   })
-})
 
-describe('ordinary chat response', () => {
-  it('retains an authoritative business failure response even when HTTP status is not successful', async () => {
-    const failure: ChatResponse = {
-      ...chatResponse, code: 'MODEL_ERROR', message: '模型调用失败',
-      data: { ...chatResponse.data, status: 'error', answer: '本轮无法完成回答。' },
-    }
-    vi.spyOn(http, 'post').mockResolvedValueOnce({ data: failure, status: 503 })
-    expect(await sendChat({ question: '测试问题' }, new AbortController().signal)).toEqual(failure)
+  it('consumes an empty question as HTTP 200 with final business status 400', async () => {
+    const emptyFinal = { event: 'final', data: {
+      ...final.data, http_status: 400,
+      response: { ...chatResponse, code: 'EMPTY_QUESTION', message: '问题不能为空',
+        data: { ...chatResponse.data, answer: '', status: 'clarify', need_clarification: true, clarification_question: '请输入问题' } },
+    } }
+    const fetch = vi.fn().mockResolvedValue(response([start, emptyFinal, { event: 'done', data: { reason: 'completed' } }]))
+    vi.stubGlobal('fetch', fetch)
+    const received: ChatStreamEvent[] = []
+    await streamChat({ question: '   ' }, new AbortController().signal, (event) => received.push(event))
+    expect(received.map((event) => event.event)).toEqual(['start', 'final', 'done'])
+    expect(received[1]?.data).toEqual(emptyFinal.data)
+    expect(fetch).toHaveBeenCalledOnce()
   })
+
+  it.each([
+    ['"sequence":2', '"sequence":3'],
+    ['"trace_id":"trace-api","sequence":2', '"trace_id":"other-trace","sequence":2'],
+  ])('rejects missing sequence or changed trace without retrying (%s)', async (before, after) => {
+    const body = await response([start, final, { event: 'done', data: { reason: 'completed' } }]).text()
+    const fetch = vi.fn().mockResolvedValue(new Response(body.replace(before, after), { headers: { 'Content-Type': 'text/event-stream' } }))
+    vi.stubGlobal('fetch', fetch)
+    await expect(streamChat({ question: '测试问题' }, new AbortController().signal, vi.fn())).rejects.toThrow('信封无效或事件缺失')
+    expect(fetch).toHaveBeenCalledOnce()
+  })
+
 })

@@ -1,4 +1,4 @@
-"""``/chat`` HTTP 接口的并发性能评测程序。
+"""``/chat/stream`` SSE 接口的并发性能评测程序。
 
 用途：在指定并发级别下重复调用已启动的聊天接口，观察吞吐、延迟与失败分布。
 输入：服务地址、性能用例 JSON、并发级别、重复次数、预热次数和请求超时。
@@ -21,6 +21,7 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
+from httpx_sse import SSEError, aconnect_sse
 
 
 DEFAULT_CASES = Path("data/eval/performance_cases.json")
@@ -129,41 +130,76 @@ async def send_request(
     references: list[Any] = []
     error_type = ""
     error_message = ""
+    completed_at: float | None = None
     try:
-        response = await client.post(
+        async with aconnect_sse(
+            client,
+            "POST",
             chat_url,
             json={"question": case["question"], "top_k": top_k},
             headers={"X-Trace-Id": trace_id},
-        )
-        http_status = response.status_code
-        try:
-            payload = response.json()
-        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
-            payload = {}
-            error_type = "invalid_json"
-            error_message = "response body is not a JSON object"
-        # 只提取稳定响应合同中的字段，额外字段不进入性能结果。
-        if isinstance(payload, dict):
-            business_code = payload.get("code")
-            data = payload.get("data")
-            if isinstance(data, dict):
-                status = str(data.get("status") or "")
-                answer = str(data.get("answer") or "")
-                raw_references = data.get("references")
-                if isinstance(raw_references, list):
-                    references = raw_references
-        else:
-            error_type = "invalid_json"
-            error_message = "response JSON must be an object"
-        if not error_type and http_status != 200:
-            error_type = "http_error"
-            error_message = f"HTTP {http_status}"
-        elif not error_type and not _business_success(business_code):
+        ) as source:
+            http_status = source.response.status_code
+            if http_status != 200:
+                error_type = "http_error"
+                error_message = f"HTTP {http_status}"
+            else:
+                terminal = ""
+                async for event in source.aiter_sse():
+                    if not event.data:  # SSE keep-alive
+                        continue
+                    envelope = event.json()
+                    data = envelope.get("data") if isinstance(envelope, dict) else None
+                    if not isinstance(data, dict):
+                        raise ValueError("SSE event data must be an object")
+                    if (
+                        terminal
+                        and event.event != "done"
+                        and not (terminal == "final" and event.event == "error")
+                    ):
+                        raise ValueError("unexpected event after terminal result")
+                    if event.event == "final":
+                        payload = data.get("response")
+                        result = (
+                            payload.get("data") if isinstance(payload, dict) else None
+                        )
+                        if not (
+                            isinstance(result, dict)
+                            and isinstance(payload.get("code"), (int, str))
+                            and isinstance(data.get("http_status"), int)
+                            and isinstance(result.get("status"), str)
+                            and isinstance(result.get("answer"), str)
+                            and isinstance(result.get("references"), list)
+                        ):
+                            raise ValueError("final is missing the chat response")
+                        business_code = payload["code"]
+                        status = result["status"]
+                        answer = result["answer"]
+                        references = result["references"]
+                        terminal = "final"
+                    elif event.event == "error":
+                        terminal = "error"
+                        error_type = "stream_error"
+                        error_message = "chat stream failed"
+                    elif event.event == "done":
+                        expected = {"final": "completed", "error": "error"}.get(
+                            terminal
+                        )
+                        if expected is None or data.get("reason") != expected:
+                            raise ValueError("done does not match final/error")
+                        completed_at = time.perf_counter()
+                        break
+                if completed_at is None:
+                    raise ValueError("stream ended without done")
+        if not error_type and not _business_success(business_code):
             error_type = "business_error"
             error_message = f"business code={business_code!r}"
         elif not error_type and not answer:
             error_type = "empty_answer"
             error_message = "response answer is empty"
+    except (ValueError, SSEError) as exc:
+        error_type = "invalid_stream"
+        error_message = str(exc)
     except httpx.TimeoutException as exc:
         error_type = "timeout"
         error_message = str(exc) or type(exc).__name__
@@ -173,7 +209,8 @@ async def send_request(
     except Exception as exc:  # pragma: no cover - CLI 边界的兜底保护
         error_type = "unexpected_error"
         error_message = f"{type(exc).__name__}: {exc}"
-    latency_ms = round((time.perf_counter() - started) * 1000, 2)
+    finished = completed_at if completed_at is not None else time.perf_counter()
+    latency_ms = round((finished - started) * 1000, 2)
     return {
         "trace_id": trace_id,
         "concurrency": concurrency,
@@ -296,7 +333,7 @@ async def run_benchmark(
     top_k: int,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """复用一个异步客户端完成预热和各级并发的正式测量。"""
-    chat_url = f"{base_url.rstrip('/')}/chat"
+    chat_url = f"{base_url.rstrip('/')}/chat/stream"
     limits = httpx.Limits(
         max_connections=max(concurrency_levels),
         max_keepalive_connections=max(concurrency_levels),

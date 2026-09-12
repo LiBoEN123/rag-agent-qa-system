@@ -1,5 +1,5 @@
 import { fetchEventSource } from '@microsoft/fetch-event-source'
-import { http, apiResponseError } from './http'
+import { apiResponseError } from './http'
 import type { ChatRequest, ChatResponse } from './types'
 
 interface StreamData {
@@ -23,13 +23,6 @@ function isChatResponse(value: unknown): value is ChatResponse {
     typeof response.message === 'string' && typeof response.trace_id === 'string' && !!response.data &&
     typeof response.data.answer === 'string' && typeof response.data.status === 'string' &&
     Array.isArray(response.data.references) && Array.isArray(response.data.tool_trace)
-}
-
-export async function sendChat(request: ChatRequest, signal: AbortSignal): Promise<ChatResponse> {
-  // A business failure may still carry the authoritative ChatResponse, including trace details.
-  const response = await http.post<unknown>('/chat', request, { signal, validateStatus: () => true })
-  if (isChatResponse(response.data)) return response.data
-  throw apiResponseError(response.status, response.data)
 }
 
 export async function streamChat(

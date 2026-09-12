@@ -11,7 +11,7 @@ Model Governance 边界见 [ADR 0006](docs/adr/0006-framework-native-agent-runti
 外部只读工具接入见
 [受治理的 MCP Client 工具源](docs/tools/mcp-client.md)。
 
-本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。同步 `/chat` 与 SSE `/chat/stream` 复用唯一的 LangChain `create_agent` 模型—工具循环；传入 `session_id` 时还会结合 SQLite 中最近的会话历史对短追问做 Query Rewrite。
+本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。聊天通过唯一公开入口 `/chat/stream` 执行 LangChain `create_agent` 模型—工具循环；传入 `session_id` 时还会结合 SQLite 中最近的会话历史对短追问做 Query Rewrite。
 
 ## 项目亮点
 
@@ -26,8 +26,8 @@ Model Governance 边界见 [ADR 0006](docs/adr/0006-framework-native-agent-runti
 - 多轮追问改写：同一 `session_id` 下通过 SQLite 保留最近会话历史，短追问和指代问题会先改写成独立检索问题。
 - 工具调用：支持知识库检索、公开网页搜索与受治理的正文提取、文档工具、计算，以及默认关闭的 allowlist 只读 SQL 与 Streamable HTTP MCP Client 工具源。
 - 引用绑定和拒答机制：模型输出的 `Reference N` 会绑定回真实文件与 chunk；证据不足或引用支撑不足时拒答。
-- 同步与流式聊天：保留 `/chat` JSON 合同，并提供 `/chat/stream` 的 progress、tool、安全答案增量和权威 final SSE 事件。
-- 可观测性：每次同步或流式聊天请求记录 `trace_id`、阶段耗时、状态、工具调用、引用数量和 LLM 调用次数。
+- 流式聊天：唯一公开入口 `POST /chat/stream`，响应 `Content-Type: text/event-stream`，提供 progress、tool、安全答案增量和权威 final SSE 事件。
+- 可观测性：每次聊天请求记录 `trace_id`、阶段耗时、状态、工具调用、引用数量和 LLM 调用次数。
 - bad case 日志：对模型格式异常、引用异常、工具异常、索引未就绪等失败样例做结构化记录。
 - 离线评测闭环：支持批量生成预测结果，并从答案质量、检索命中、行为约束和可选 LLM Judge 语义判断等维度评测。
 
@@ -84,7 +84,7 @@ Phase 6B 的 Model private marker 是已接受设计，不是待迁移 TODO。�
 2. 文本清洗：统一清理不可见字符、空白和文档噪声。
 3. 文档切分：Markdown 先按标题层级切分并保留标题路径，普通文本按段落和标点递归切分。
 4. 建立索引：构建 BM25 关键词索引，并使用 SentenceTransformer 生成 embedding；向量、chunk 和 metadata 持久化到 ChromaDB。
-5. 多轮改写：`/chat` 如果传入 `session_id`，会读取最近历史；短追问或指代问题会先改写成独立问题。
+5. 多轮改写：`/chat/stream` 如果传入 `session_id`，会读取最近历史；短追问或指代问题会先改写成独立问题。
 6. Agent 执行：ChatService 把改写后的问题交给 Agent Runtime；普通 Python Router 执行一次粗粒度路由。普通问题直接进入 `create_agent`，由 Agent Model 根据 Provider 动态提供的工具描述、参数 Schema、AIMessage 与 ToolMessage 迭代选择工具或生成最终回答。`direct_answer` 和 `clarify` 不调用 Agent Model。Agent 选择知识库检索后，由该工具调用独立 RAG Graph。
 7. 查询拆分：启用 `ENABLE_QUERY_DECOMPOSE` 后，复杂问题可由拆分模型生成子问题。
 8. 混合召回：查询时同时执行 BM25 和 embedding 召回，合并候选 chunk。
@@ -128,7 +128,7 @@ Phase 6B 的 Model private marker 是已接受设计，不是待迁移 TODO。�
 - 启动时基于 manifest 判断是否需要重建索引；知识库文件、chunk 参数、embedding/rerank 模型或 pipeline 版本变化会触发重建。
 - 多轮会话历史保存在 `SQLITE_DB_PATH` 指定的 SQLite 数据库中，每个 `session_id` 默认读取最近 6 条 user/assistant 消息，服务重启后仍可继续使用。
 - Agent trace 通过 `AgentRunResult.tool_trace` 返回，供 API、Evaluation 和运行时诊断使用。旧数据库可能保留历史 `agent_runs`、`agent_steps` 表；应用不再读写或删除这些表，新数据库不再创建它们。
-- `/chat` 请求支持继承或生成 `trace_id`，响应头返回 `X-Trace-Id` 和 `X-Total-Cost-Ms`；`/chat/stream` 只在响应头返回 `X-Trace-Id`，真实总耗时位于 `final.data.total_cost_ms`。
+- `/chat/stream` 请求支持继承或生成 `trace_id`，响应头返回 `X-Trace-Id`，真实总耗时位于 `final.data.total_cost_ms`。
 - metrics 记录 Query Rewrite、路由、Agent、检索、问题拆分、重排、上下文构造、LLM 调用、结构化结果规范化等阶段耗时和 LLM 调用次数。
 - bad case 日志用于定位失败样例，包括模型结构化输出校验失败、引用异常、工具异常、内部异常和索引未就绪。
 
@@ -177,8 +177,8 @@ Server 只编辑这一个 local JSON，不需要修改 Python、`AppSettings`、
 `.env.example` 或 `TOOL_DEFAULT_PERMISSIONS`。`enabled=false` 的 Server 不进入 adapter
 connections、不 discovery，也不会建立网络连接。
 
-MCP Tool 保持 adapter `StructuredTool`，不会反向转换成 `ToolSpec`；同步 `/chat` 使用
-MCP 专属最小 async-to-sync bridge，流式 `/chat/stream` 直接 await coroutine。输出被
+MCP Tool 保持 adapter `StructuredTool`，不会反向转换成 `ToolSpec`；`/chat/stream`
+直接 await coroutine，内部同步 Runtime 保留 MCP 专属最小 bridge。输出被
 视为不可信外部数据并脱敏、限长，image/audio/resource 等第一版不进入模型上下文。
 所有调用继续经过现有 Agent Guardrail、ToolResult、审计和 SSE 白名单投影。配置、
 安全边界和冒烟命令见[受治理的 MCP Client 工具源](docs/tools/mcp-client.md)。
@@ -187,7 +187,7 @@ MCP 专属最小 async-to-sync bridge，流式 `/chat/stream` 直接 await corou
 
 `web_search` 使用开源 `ddgs` 的公共 Python API 搜索公开互联网中的当前或外部信息，只返回有限的 `title`、`url` 和 `snippet`。它与 `search_knowledge_base` 的边界不同：后者读取本地受控知识库并调用独立 RAG Graph；Web Search 是普通 Agent 工具，结果形成 ToolMessage 后回到 Agent Model，不进入 RAG Graph。
 
-Web Search 默认关闭可见性。要让默认 `/chat` 服务主体看到它，必须显式配置：
+Web Search 默认关闭可见性。要让默认 `/chat/stream` 服务主体看到它，必须显式配置：
 
 ```env
 TOOL_DEFAULT_PERMISSIONS=knowledge_base:read,web:search
@@ -352,7 +352,7 @@ npm run dev
 Vue 地址为 `http://localhost:5173`，FastAPI 为 `http://127.0.0.1:8000`。
 API 使用同源相对路径，经 Vite proxy 访问后端；需要修改目标时复制
 `frontend/.env.example` 为 `frontend/.env`，设置 `VITE_DEV_PROXY_TARGET` 后重启 Vite。
-页面使用 hash 路由（例如 `/#/ingestion`），避免页面路径与 `/chat`、`/search` API 冲突。
+页面使用 hash 路由（例如 `/#/ingestion`），避免页面路径与 `/chat/stream`、`/search` API 冲突。
 
 知识入库管理需在**后端**配置 `INGESTION_ADMIN_API_ENABLED=true` 和
 `INGESTION_ADMIN_API_KEY=<你的管理员密钥>`，然后重启后端。密钥在入库页的密码框中输入，
@@ -360,8 +360,8 @@ API 使用同源相对路径，经 Vite proxy 访问后端；需要修改目标�
 在「待审批知识」刷新 Agent 已生成的候选，查看安全预览后批准，再单独点击「写入知识库」。
 「索引记录」可检查结果；GitHub / Firecrawl 手动提案位于「来源提案」。
 
-聊天默认使用 `/chat/stream`，增量用于即时展示，`final.data.response` 更新本轮权威结果。
-可显式关闭「流式回答」使用 `/chat`；中断不会自动重试。session ID 保存在 sessionStorage，
+聊天只使用 `/chat/stream`，`answer_delta` 用于增量展示，`final.data.response` 更新本轮权威结果，
+`done` 表示流结束。中断不会自动重试。session ID 保存在 sessionStorage，
 聊天记录保留在内存；「新建对话」生成新 ID 并清空记录。
 
 前端验证：`npm run typecheck`、`npm run test -- --run`、`npm run build`。
@@ -398,7 +398,7 @@ Tool Runtime 与 Agent Runtime 缓存；生产服务通常直接重启进程。�
 | `CHROMA_PERSIST_DIR` | ChromaDB 本地持久化目录，示例：`./data/chroma` |
 | `CHROMA_COLLECTION_NAME` | 保留的旧 ChromaDB collection，默认 `mini_rag_chunks` |
 | `CHROMA_INDEX_COLLECTION_NAME` | LangChain 增量索引 collection，默认 `mini_rag_chunks_v2` |
-| `TOP_K` | `/chat` 和 `/search` 默认召回条数 |
+| `TOP_K` | `/chat/stream` 和 `/search` 默认召回条数 |
 | `DECOMPOSE_TOP_K` | 多子问题召回合并后的候选上限 |
 | `CHUNK_SIZE` | chunk 最大长度 |
 | `CHUNK_OVERLAP` | 相邻 chunk 重叠长度 |
@@ -549,26 +549,11 @@ DECOMPOSE_API_URL=http://127.0.0.1:11434/v1/chat/completions
 | `/health` | GET | 健康检查 |
 | `/docs-preview` | GET | 查看已加载文档列表 |
 | `/chunks-preview` | GET | 查看 chunk 预览，支持 `max_len`、`limit`、`file_name` |
-| `/chat` | POST | 完整 Agent + RAG 问答入口 |
-| `/chat/stream` | POST | 复用同一业务链的 SSE 聊天入口；`final` 是权威结果 |
+| `/chat/stream` | POST | 唯一聊天 HTTP 入口；SSE `final.data.response` 是权威结果 |
 | `/search` | POST | 只执行检索和 rerank，不调用回答模型 |
 | `/decide` | POST | 只返回 Agent 路由决策，不执行工具或 RAG |
 | `/kb_summary` | POST | 返回知识库 ready 状态、文档数、chunk 数和 `index_source` |
-| `/metrics-summary` | GET | 汇总最近 N 条同步/流式聊天请求指标 |
-
-### `/chat` 请求示例
-
-```bash
-curl -X POST "http://127.0.0.1:8000/chat" \
-  -H "Content-Type: application/json" \
-  -H "X-Trace-Id: demo-trace-001" \
-  -d '{
-    "question": "普通本科四年制专业学生现在最长学习年限是不是 8 年？",
-    "top_k": 5,
-    "decompose_top_k": 10,
-    "session_id": "demo_session_001"
-  }'
-```
+| `/metrics-summary` | GET | 汇总最近 N 条聊天请求指标 |
 
 ### `/chat/stream` SSE 示例
 
@@ -579,9 +564,11 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
   -d '{"question":"缓考应该如何办理？","top_k":5}'
 ```
 
-合法非空问题返回 `HTTP 200 text/event-stream`，事件边界为
-`start → progress/tool/answer_delta... → final → done`。空问题在建流前保持
-`HTTP 400 application/json`；业务错误通过标准 `final.data.response` 表达。部分 RAG
+通过 Schema 校验的问题返回 `HTTP 200 text/event-stream`，正常事件边界为
+`start → progress/tool/answer_delta... → final → done`。空问题也建流，事件为
+`start → final → done(completed)`，其中 `final.data.http_status=400`、
+`final.data.response.code=EMPTY_QUESTION`。请求 Schema 错误仍在建流前返回 HTTP 422 JSON。
+`answer_delta` 用于增量 UX，`final.data.response` 是权威 ChatResponse，`done` 表示流结束。部分 RAG
 请求可能没有 `answer_delta`，完整答案始终在 `final`。事件字段、安全过滤、断开语义
 和 Python 冒烟命令见 [聊天流式 API 文档](docs/api/chat-streaming.md)。
 
@@ -609,7 +596,7 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
 
 ### 多轮追问与 Query Rewrite
 
-`/chat` 的 `session_id` 是可选字段。为空时系统按单轮问题处理；非空时系统会读取该会话最近 6 条 user/assistant 消息，并在问题像短追问或包含“这个、那个、它、上面、刚才”等指代词时尝试改写成独立问题。
+`/chat/stream` 的 `session_id` 是可选字段。为空时系统按单轮问题处理；非空时系统会读取该会话最近 6 条 user/assistant 消息，并在问题像短追问或包含“这个、那个、它、上面、刚才”等指代词时尝试改写成独立问题。
 
 改写逻辑的优先级是：先用规则判断是否需要改写；如果 `ENABLE_QUERY_REWRITE=true` 且改写模型配置可用，就调用改写模型；如果改写模型不可用或返回异常，会回退为“基于上一轮问题的追问”格式，保证主链路仍可继续。
 
@@ -659,15 +646,15 @@ GET /metrics-summary?limit=20
 
 ## Agent 路由与工具
 
-正常 `/chat` 的确定性 Router action：
+正常 `/chat/stream` 的确定性 Router action：
 
 | action | 路径 |
 | --- | --- |
 | `agent` | 普通问题统一进入 LangChain `create_agent` |
 | `direct_answer` | 由 Answer Composer 生成系统能力说明，不把 Router 的内部 reason 直接暴露为用户回答 |
-| `clarify` | 明确指代不明时追问；完全空问题仍由 ChatService 在进入 Runtime 前返回兼容的 400 响应 |
+| `clarify` | 明确指代不明时追问；完全空问题由 ChatService 在进入 Runtime 前生成 final，业务 http_status 为 400 |
 
-如果 `/chat` 传入 `session_id`，Query Rewrite 会在 Agent Router 之前执行；Router 看到的是改写后的有效问题，响应中的 `data.question` 仍保留原始输入，改写细节记录在 `data.tool_trace` 的 `query_rewrite` step 中。
+如果 `/chat/stream` 传入 `session_id`，Query Rewrite 会在 Agent Router 之前执行；Router 看到的是改写后的有效问题，响应中的 `data.question` 仍保留原始输入，改写细节记录在 `data.tool_trace` 的 `query_rewrite` step 中。
 
 Router 不调用独立模型，也不解析具体工具 action。普通问题进入 `create_agent` 后，Agent Model 根据可见性 Middleware 绑定的 StructuredTool/Pydantic Schema 选择本地 catalog 工具或获授权的 MCP 工具；本地执行统一经过 `execute_project_tool`，MCP 执行通过官方 adapter 和项目 bridge 后进入相同 Agent 治理。
 
@@ -706,17 +693,17 @@ python scripts/cache_models.py
 
 ## 日志与可观测性
 
-`/chat` 与 `/chat/stream` 会为每次请求生成或继承 `trace_id`：
+`/chat/stream` 会为每次请求生成或继承 `trace_id`：
 
 - 请求头可传入 `X-Trace-Id`。
-- 两个入口都在响应头返回 `X-Trace-Id`；只有同步 `/chat` 返回准确的 `X-Total-Cost-Ms`。
-- 同步响应体和每个 SSE 信封都包含 `trace_id`；流式真实总耗时位于 `final`。
+- 响应头返回 `X-Trace-Id`；完整业务耗时位于 `final.data.total_cost_ms`。
+- 每个 SSE 信封及 `final.data.response` 都包含 `trace_id`。
 
 日志文件：
 
 | 文件 | 说明 |
 | --- | --- |
-| `logs/metrics.jsonl` | 每次同步/流式聊天的耗时、状态、action、引用数、工具信息、Query Rewrite、LLM 与流事件统计 |
+| `logs/metrics.jsonl` | 每次聊天的耗时、状态、action、引用数、工具信息、Query Rewrite、LLM 与流事件统计 |
 | `logs/tool_calls.jsonl` | 每次工具调用的输入、输出、耗时和是否成功 |
 | `logs/bad_cases.jsonl` | 模型结构化输出校验失败、引用异常、工具异常、内部异常、索引未就绪等失败样例 |
 
@@ -827,7 +814,7 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   ├── main.py                  # 正式 ASGI 入口：app.main:app
 │   ├── api/
 │   │   ├── application.py       # FastAPI 组合根、lifespan 和 Router 注册
-│   │   ├── chat.py              # /chat 与 /chat/stream HTTP Router
+│   │   ├── chat.py              # /chat/stream HTTP Router
 │   │   ├── streaming.py         # SSE 信封、白名单投影与编码
 │   │   ├── health.py            # 轻量进程存活检查
 │   │   ├── middleware.py        # HTTP trace 和端到端耗时
@@ -888,7 +875,7 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   ├── services/
 │   │   ├── chat_models.py       # 框架无关请求、结果和内部上下文
 │   │   ├── chat_stream_models.py # 框架无关流事件合同
-│   │   ├── chat_service.py      # 同步/流式 Query Rewrite、Runtime、状态策略和会话编排
+│   │   ├── chat_service.py      # 流式 Query Rewrite、Runtime、状态策略和会话编排
 │   │   └── chat_telemetry.py    # metrics、bad case、stream accounting 和调用链收尾
 │   ├── llm/                     # 统一模型工厂、调用网关、Schema 和错误类型
 │   ├── storage/                 # SQLite 会话历史和 ingestion 存储
@@ -906,7 +893,7 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 ├── scripts/
 │   ├── run_evaluation_baseline.py # Evaluation Baseline v2 统一入口
 │   ├── compare_evaluation_runs.py # 两轮 v2 结果比较
-│   ├── benchmark_chat_api.py    # /chat 串行与并发性能测试
+│   ├── benchmark_chat_api.py    # /chat/stream 串行与并发性能测试
 │   ├── smoke_test_online_tools.py # Online Tool 真实连通性子命令
 │   ├── smoke_test_agent_tool_calling.py # 模型 Tool Calling 协议
 │   ├── smoke_test_chat_stream.py # /chat/stream 安全摘要冒烟客户端

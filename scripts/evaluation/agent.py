@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import statistics
 import time
@@ -1289,7 +1290,7 @@ def execute_agent_case(
     """通过真实 ChatService 执行一个完全隔离的 Agent case。"""
     from dataclasses import replace
 
-    from app.agent.runtime import run_agent
+    from app.agent.streaming import stream_agent
     from app.services.chat_models import ChatServiceRequest
     from app.services.chat_service import (
         ChatService,
@@ -1305,7 +1306,7 @@ def execute_agent_case(
         tuple(case.mcp_servers),
     )
 
-    def run_runtime(**kwargs: Any) -> dict[str, Any]:
+    async def run_runtime(**kwargs: Any):
         """为真实 Agent 运行时注入评测专用身份与权限上下文。"""
         kwargs["tool_context"] = ToolInvocationContext(
             trace_id=str(kwargs.get("trace_id") or ""),
@@ -1315,13 +1316,14 @@ def execute_agent_case(
             permissions=permissions,
             source="evaluation_baseline_v2",
         )
-        return run_agent(**kwargs)
+        async for event in stream_agent(**kwargs):
+            yield event
 
     dependencies = replace(
         base,
         settings_provider=lambda: settings,
         get_history=session.get_history,
-        run_agent=run_runtime,
+        stream_agent=run_runtime,
         log_and_write_metrics=lambda item: captured_metrics.append(dict(item)),
         write_bad_cases=lambda item: None,
         append_message=session.append_message,
@@ -1336,15 +1338,24 @@ def execute_agent_case(
         trace_id = f"evaluation-{case.id}-turn-{turn_index}"
         started = time.perf_counter()
         with capture_tool_output_keys() as tool_output_records:
-            outcome = service.handle(
-                ChatServiceRequest(
-                    question=question,
-                    top_k=top_k,
-                    decompose_top_k=decompose_top_k,
-                    session_id=session_id,
-                    trace_id=trace_id,
-                )
-            )
+            async def collect_turn():
+                outcome = None
+                async for event in service.stream(
+                    ChatServiceRequest(
+                        question=question,
+                        top_k=top_k,
+                        decompose_top_k=decompose_top_k,
+                        session_id=session_id,
+                        trace_id=trace_id,
+                    )
+                ):
+                    if event.event == "final":
+                        outcome = event.data["outcome"]
+                if outcome is None:
+                    raise RuntimeError("chat stream ended without final")
+                return outcome
+
+            outcome = asyncio.run(collect_turn())
         elapsed_ms = (time.perf_counter() - started) * 1000
         result = dict(outcome.result)
         latest_metrics = captured_metrics[-1] if captured_metrics else {}

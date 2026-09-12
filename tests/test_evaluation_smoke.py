@@ -11,7 +11,8 @@ from scripts.evaluation.contracts import AgentEvaluationCase
 
 @pytest.mark.parametrize("tool", ["", "simple_calculator"], ids=["direct", "local_tool"])
 def test_minimal_agent_smoke(tool, settings_factory, monkeypatch, tmp_path):
-    from app.agent import framework_tools, runtime
+    from app.agent import framework_tools, streaming
+    from app.agent.streaming import AgentRuntimeStreamEvent
     from app.agent.results import create_agent_result
     from app.contracts.chat import AgentResultStatus
     from app.services import chat_service
@@ -27,7 +28,7 @@ def test_minimal_agent_smoke(tool, settings_factory, monkeypatch, tmp_path):
         },
     ))
 
-    def fake_runtime(**kwargs):
+    async def fake_runtime(**kwargs):
         calls = []
         if tool:
             spec = next(s for s in get_local_tool_specs(settings) if s.name == tool)
@@ -37,12 +38,12 @@ def test_minimal_agent_smoke(tool, settings_factory, monkeypatch, tmp_path):
             )
             assert output["ok"] and output["output"]["result"] == 3
             calls.append({"step": "tool_call", "tool_name": tool, "tool_status": "success"})
-        return create_agent_result(
+        yield AgentRuntimeStreamEvent("result", {"result": create_agent_result(
             status=AgentResultStatus.OK, answer="3" if tool else "你好", action="agent",
             tool_trace=calls,
-        )
+        )})
 
-    monkeypatch.setattr(runtime, "run_agent", fake_runtime)
+    monkeypatch.setattr(streaming, "stream_agent", fake_runtime)
     case = AgentEvaluationCase.model_validate({
         "id": tool or "direct", "version": 2, "suite": "core", "category": "smoke",
         "question": "1+2" if tool else "你好", "expected": {

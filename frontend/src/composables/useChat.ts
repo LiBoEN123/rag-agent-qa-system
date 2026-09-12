@@ -1,5 +1,5 @@
 import { onScopeDispose, reactive, readonly, ref, watch } from 'vue'
-import { sendChat, streamChat, type ChatStreamEvent } from '../api/chat'
+import { streamChat, type ChatStreamEvent } from '../api/chat'
 import { apiErrorMessage } from '../api/http'
 import type { ChatResponse } from '../api/types'
 import { useSession } from './useSession'
@@ -77,7 +77,7 @@ function applyEvent(message: ChatMessage, event: ChatStreamEvent): void {
 export function useChat() {
   onScopeDispose(cancel)
 
-  async function send(question: string, topK: number, decomposeTopK: number, streaming = true): Promise<void> {
+  async function send(question: string, topK: number, decomposeTopK: number): Promise<void> {
     if (!question.trim() || sending.value) return
     const controller = new AbortController()
     const message = reactive<ChatMessage>({ id: crypto.randomUUID(), role: 'assistant', content: '', state: 'pending', steps: [] })
@@ -86,17 +86,9 @@ export function useChat() {
     sending.value = true
     const request = { question: question.trim(), top_k: topK, decompose_top_k: decomposeTopK, session_id: sessionId.value }
     try {
-      if (streaming) {
-        await streamChat(request, controller.signal, (event) => {
-          if (!controller.signal.aborted) applyEvent(message, event)
-        })
-      } else {
-        const response = await sendChat(request, controller.signal)
-        if (!controller.signal.aborted) {
-          applyFinal(message, response)
-          message.state = 'completed'
-        }
-      }
+      await streamChat(request, controller.signal, (event) => {
+        if (!controller.signal.aborted) applyEvent(message, event)
+      })
     } catch (error: unknown) {
       if (!controller.signal.aborted) {
         message.state = 'error'

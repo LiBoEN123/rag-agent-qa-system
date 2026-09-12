@@ -3,11 +3,9 @@
 import asyncio
 
 from fastapi import APIRouter, Request, Response
-from fastapi.responses import JSONResponse
 from fastapi.sse import EventSourceResponse
 
-from app.api.responses import build_chat_response_from_outcome
-from app.api.schemas import ChatRequest, ChatResponse
+from app.api.schemas import ChatRequest
 from app.api.streaming import ChatStreamSSEEncoder
 from app.observability import create_trace_id
 from app.services.chat_stream_models import ChatStreamEvent
@@ -21,7 +19,7 @@ def _build_service_request(
     *,
     trace_id: str,
 ) -> ChatServiceRequest:
-    """把同步和流式入口的相同 HTTP 上下文适配为服务请求。"""
+    """把聊天 HTTP 上下文适配为服务请求。"""
     return ChatServiceRequest(
         question=req.question,
         top_k=req.top_k,
@@ -52,30 +50,6 @@ def create_chat_router(chat_service: ChatService) -> APIRouter:
     """创建只负责 HTTP 输入输出适配的聊天路由。"""
     router = APIRouter()
 
-    @router.post("/chat", response_model=ChatResponse)
-    def ask_api(
-        req: ChatRequest,
-        request: Request,
-        response: Response,
-    ) -> ChatResponse:
-        """读取 HTTP 上下文、调用应用服务并设置响应状态。"""
-        trace_id = (
-            getattr(request.state, "trace_id", "")
-            or create_trace_id()
-        )
-        outcome = chat_service.handle(
-            _build_service_request(
-                req,
-                request,
-                trace_id=trace_id,
-            )
-        )
-        response.status_code = outcome.http_status
-        return build_chat_response_from_outcome(
-            outcome,
-            trace_id=trace_id,
-        )
-
     @router.post(
         "/chat/stream",
         response_model=None,
@@ -85,17 +59,13 @@ def create_chat_router(chat_service: ChatService) -> APIRouter:
                 "description": "聊天 SSE 事件流",
                 "content": {"text/event-stream": {}},
             },
-            400: {
-                "description": "空问题",
-                "model": ChatResponse,
-            },
         },
     )
     async def ask_stream(
         req: ChatRequest,
         request: Request,
     ):
-        """在建流前处理空问题，其余事件只做 HTTP/SSE 适配。"""
+        """所有通过 Schema 校验的问题统一进入服务事件流。"""
         trace_id = (
             getattr(request.state, "trace_id", "")
             or create_trace_id()
@@ -105,20 +75,6 @@ def create_chat_router(chat_service: ChatService) -> APIRouter:
             request,
             trace_id=trace_id,
         )
-        if not (req.question or "").strip():
-            outcome = await asyncio.to_thread(
-                chat_service.handle,
-                service_request,
-            )
-            response = build_chat_response_from_outcome(
-                outcome,
-                trace_id=trace_id,
-            )
-            return JSONResponse(
-                status_code=outcome.http_status,
-                content=response.model_dump(mode="json"),
-            )
-
         encoder = ChatStreamSSEEncoder(trace_id=trace_id)
         service_stream = chat_service.stream(service_request)
 

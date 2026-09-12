@@ -21,7 +21,7 @@ describe('入库 API 边界', () => {
     http.defaults.adapter = adapter
     ingestionHttp.defaults.adapter = adapter
     setIngestionAdminKey('test-only-admin-key')
-    await http.post('/chat', { question: '你好' })
+    await http.post('/search', { question: '你好' })
     await listCandidates({ status: 'pending', source_type: 'github', limit: 20, offset: 40 })
     expect(requests[0]!.headers.has('X-Ingestion-Admin-Key')).toBe(false)
     expect(requests[1]!.headers.get('X-Ingestion-Admin-Key')).toBe('test-only-admin-key')

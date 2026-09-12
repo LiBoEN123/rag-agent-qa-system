@@ -11,6 +11,7 @@ from app.agent import framework_tools
 from app.agent.results import create_agent_result
 from app.config import AppSettings
 from app.contracts.chat import AgentResultStatus
+from app.agent.streaming import AgentRuntimeStreamEvent
 from app.services.chat_service import ChatServiceDependencies
 from app.tools.context import PrincipalType, ToolInvocationContext
 from tests.support.local_tools import visible_tools
@@ -356,7 +357,7 @@ def test_in_memory_multi_turn_uses_chat_service_history_and_isolation(
     tmp_path,
     monkeypatch,
 ):
-    from app.agent import runtime as agent_runtime
+    from app.agent import streaming as agent_streaming
     from app.services import chat_service
 
     settings = _settings(tmp_path)
@@ -377,8 +378,8 @@ def test_in_memory_multi_turn_uses_chat_service_history_and_isolation(
             "reason": "fake",
         }
 
-    def fake_runtime(**kwargs):
-        return create_agent_result(
+    async def fake_runtime(**kwargs):
+        yield AgentRuntimeStreamEvent("result", {"result": create_agent_result(
             status=AgentResultStatus.OK,
             answer="回答",
             action="agent",
@@ -391,13 +392,13 @@ def test_in_memory_multi_turn_uses_chat_service_history_and_isolation(
             ],
             answer_llm_used=True,
             llm_call_count=1,
-        )
+        )})
 
     dependencies = ChatServiceDependencies(
         settings_provider=lambda: settings,
         get_history=lambda session_id: [],
         rewrite_query_with_history=fake_rewrite,
-        run_agent=fake_runtime,
+        stream_agent=fake_runtime,
         log_and_write_metrics=lambda item: None,
         write_bad_cases=lambda item: None,
         append_message=lambda session_id, role, content: None,
@@ -410,8 +411,8 @@ def test_in_memory_multi_turn_uses_chat_service_history_and_isolation(
         lambda: dependencies,
     )
     monkeypatch.setattr(
-        agent_runtime,
-        "run_agent",
+        agent_streaming,
+        "stream_agent",
         fake_runtime,
     )
     dataset = AgentEvaluationDataset.model_validate(

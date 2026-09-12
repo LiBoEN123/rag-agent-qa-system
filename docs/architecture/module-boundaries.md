@@ -63,8 +63,8 @@ Observability 和基础层都不能导入 API。ChatService 继续接收框架�
 FastAPI 与 Starlette 只允许出现在 `app.api`；`app.main` 只导入 application
 factory 并公开 `app`。
 
-- `app/api/middleware.py` 拥有 `/chat` trace ID、`request_enter_time`、
-  `request_enter_perf` 和 `X-Trace-Id`/`X-Total-Cost-Ms`。
+- `app/api/middleware.py` 拥有 `/chat/stream` trace ID、`request_enter_time`、
+  `request_enter_perf` 和 `X-Trace-Id`；完整耗时由 SSE final 提供。
 - `app/api/http_logging.py` 拥有 Uvicorn access-log URL 解码与控制字符转义。
 - `app/api/application.py` 拥有 FastAPI 实例、Router 注册和 lifespan 组合。
 - `app/api/lifecycle.py` 拥有 RAG/Agent 初始化与 Runtime 关闭细节。

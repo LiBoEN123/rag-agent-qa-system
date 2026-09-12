@@ -24,7 +24,6 @@ from app.contracts.chat import (
     ChatStatusPolicy,
     get_chat_status_policy,
 )
-from app.agent.runtime import run_agent
 from app.agent.streaming import (
     AgentRuntimeStreamEvent,
     stream_agent,
@@ -94,7 +93,6 @@ class ChatServiceDependencies:
     settings_provider: Callable[[], AppSettings]
     get_history: Callable[[str | None], list[dict]]
     rewrite_query_with_history: Callable[..., dict]
-    run_agent: Callable[..., dict[str, Any]]
     log_and_write_metrics: Callable[[dict], None]
     write_bad_cases: Callable[[dict], None]
     append_message: Callable[[str | None, str, str], None]
@@ -111,7 +109,6 @@ def get_default_chat_service_dependencies() -> ChatServiceDependencies:
         settings_provider=get_settings,
         get_history=get_history_sqlite,
         rewrite_query_with_history=rewrite_query_with_history,
-        run_agent=run_agent,
         log_and_write_metrics=log_and_write_metrics,
         write_bad_cases=write_bad_cases,
         append_message=append_message_sqlite,
@@ -126,36 +123,11 @@ def create_default_chat_service() -> ChatService:
 
 
 class ChatService:
-    """以同步或流式方式执行同一套完整聊天业务流程。"""
+    """以流式方式执行完整聊天业务流程。"""
 
     def __init__(self, dependencies: ChatServiceDependencies):
         """保存可替换依赖；构造阶段不执行检索、模型或数据库调用。"""
         self._deps = dependencies
-
-    def handle(self, request: ChatServiceRequest) -> ChatServiceOutcome:
-        """处理聊天请求，并保证 session 与 metrics 在统一出口收尾。"""
-        context = self._initialize_context(request)
-        try:
-            if not context.original_question:
-                return self._empty_question_outcome(context)
-
-            settings = self._deps.settings_provider()
-            self._prepare_request(context, settings=settings)
-            agent_start = self._deps.perf_counter()
-            self._log_agent_start(context)
-            try:
-                result = self._invoke_agent(context)
-            except Exception as exc:
-                return self._agent_invocation_exception_outcome(context, exc)
-            return self._finish_agent_result(
-                context,
-                result,
-                agent_start=agent_start,
-            )
-        except Exception as exc:
-            return self._service_exception_outcome(context, exc)
-        finally:
-            self._finalize(context)
 
     async def stream(
         self,
@@ -522,19 +494,6 @@ class ChatService:
         logger.info(
             "[trace_id=%s] [agent] runtime_start agent_runtime=create_agent",
             context.request.trace_id,
-        )
-
-    def _invoke_agent(self, context: ChatRequestContext) -> dict[str, Any]:
-        """调用同步 Agent Runtime；Result 解释统一留给收尾入口。"""
-        return self._deps.run_agent(
-            write_bad_cases=self._deps.write_bad_cases,
-            original_question=context.original_question,
-            effective_question=context.effective_question,
-            top_k=context.final_top_k,
-            decompose_top_k=context.decompose_top_k,
-            trace_id=context.request.trace_id,
-            session_id=context.session_id or None,
-            bad_case=context.bad_case,
         )
 
     def _finish_agent_result(

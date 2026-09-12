@@ -105,7 +105,7 @@ python scripts/run_evaluation_baseline.py --agent-only \
 
 ## 隔离边界
 
-多轮 Agent case 使用真实 `ChatService` 流程，但注入内存 session adapter 和
+多轮 Agent case 消费真实 `ChatService.stream()` 的 final/done，但注入内存 session adapter 和
 no-op metrics/bad-case writer。每个 case 使用独立 session，结束后清空。
 评测 Settings 快照关闭 Agent trace store 和 tool audit 写入，并把所有备用路径限定在
 本次 output 目录下。因此评测不会写生产 SQLite、
@@ -322,7 +322,7 @@ CI 只运行数据校验，不运行真实模型、索引或网络。真实 base
 
 - `run_evaluation_baseline.py`：离线产品质量评测；
 - `compare_evaluation_runs.py`：两次正式结果对比；
-- `benchmark_chat_api.py`：正在运行的 `/chat` HTTP 性能测试；
+- `benchmark_chat_api.py`：正在运行的 `/chat/stream` SSE 性能测试，以收到 done 为完成边界；
 - `smoke_test_online_tools.py`：真实搜索、网页和 PDF 连通性；
 - `smoke_test_agent_tool_calling.py`：模型供应商 Tool Calling 协议；
 - `inspect_agent_runtime.py`：CI 架构合同；

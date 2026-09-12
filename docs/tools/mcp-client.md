@@ -25,7 +25,7 @@ governed StructuredTool，不再经过 framework 二次 wrapper。两类 BaseToo
 Access Policy、审批、远端超时、审计和序列化仍只在 MCP Bridge 内执行。
 
 MCP Tool 不进入本地 RAG；只有本地 `search_knowledge_base` 会调用独立 RAG Graph。
-`/chat`、`/chat/stream`、ChatService、Agent Runtime 和 SSE Schema 都没有 MCP 特判。
+`/chat/stream`、ChatService、Agent Runtime 和 SSE Schema 都没有 MCP 特判。
 
 ## 第一版范围
 
@@ -290,7 +290,7 @@ fail closed。截断结果的 `content_blocks` 不保留正文，只保留类型
 官方 MCP `StructuredTool` 以 coroutine 为主。项目包装器保留原始 MCP Tool Schema，
 并提供两个执行入口：
 
-- `/chat → graph.invoke`：只对 MCP Tool 使用最小同步 bridge，在没有运行中 event loop
+- 内部 `run_agent → create_agent.invoke`：只对 MCP Tool 使用最小同步 bridge，在没有运行中 event loop
   的 ToolNode 工作线程中执行 `asyncio.run()`；
 - `/chat/stream → create_agent.astream`：直接 await 原生 MCP coroutine。
 

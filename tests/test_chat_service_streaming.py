@@ -2,11 +2,12 @@
 
 import asyncio
 from copy import deepcopy
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
-from app.agent.results import create_agent_result
+from app.agent.results import build_internal_error_result, create_agent_result
 from app.api.responses import build_chat_response_from_outcome
 from app.contracts.chat import AgentResultStatus
 from app.agent.streaming import AgentRuntimeStreamEvent
@@ -67,7 +68,11 @@ def _request(**overrides):
 
 
 def _build_service(
-    runtime_events, *, sync_result=None, stream_error=None, rewrite_llm_used=False,
+    runtime_events,
+    *,
+    stream_error=None,
+    rewrite_llm_used=False,
+    **overrides,
 ):
     calls = {
         "messages": [],
@@ -77,14 +82,6 @@ def _build_service(
         "stream_kwargs": [],
     }
     clock = IncrementingClock()
-    resolved_sync_result = sync_result or next(
-        (
-            event.data["result"]
-            for event in runtime_events
-            if event.event == "result"
-        ),
-        _result(),
-    )
 
     async def fake_stream(**kwargs):
         calls["stream_kwargs"].append(kwargs)
@@ -114,7 +111,6 @@ def _build_service(
         settings_provider=lambda: SimpleNamespace(top_k=5, decompose_top_k=10),
         get_history=lambda session_id: [],
         rewrite_query_with_history=fake_rewrite,
-        run_agent=lambda **kwargs: dict(resolved_sync_result),
         log_and_write_metrics=lambda record: calls["metrics"].append(dict(record)),
         write_bad_cases=lambda record: calls["bad_cases"].append(dict(record)),
         append_message=lambda session_id, role, content: calls["messages"].append(
@@ -124,7 +120,7 @@ def _build_service(
         perf_counter=clock,
         stream_agent=fake_stream,
     )
-    return ChatService(dependencies), calls
+    return ChatService(replace(dependencies, **overrides)), calls
 
 
 def _collect(service, request=None):
@@ -134,8 +130,22 @@ def _collect(service, request=None):
     return asyncio.run(collect())
 
 
-def test_direct_answer_streams_ordered_deltas_final_and_done_once():
-    result = _result(answer="完整回答")
+def test_direct_answer_streams_ordered_deltas_final_and_done_once(monkeypatch):
+    logs = []
+    monkeypatch.setattr(
+        "app.services.chat_service.logger.info",
+        lambda msg, *args: logs.append(msg % args),
+    )
+    result = _result(
+        answer="完整回答",
+        tool_trace=[
+            {
+                "step": "decide",
+                "decision_type": "direct_answer",
+                "route_cost_ms": 7,
+            }
+        ],
+    )
     service, calls = _build_service(
         [
             AgentRuntimeStreamEvent(
@@ -154,11 +164,10 @@ def test_direct_answer_streams_ordered_deltas_final_and_done_once():
 
     assert event_names[0] == "start"
     assert event_names[-2:] == ["final", "done"]
-    assert "".join(
-        event.data["text"]
-        for event in events
-        if event.event == "answer_delta"
-    ) == "完整回答"
+    assert (
+        "".join(event.data["text"] for event in events if event.event == "answer_delta")
+        == "完整回答"
+    )
     assert final.data["outcome"].result["answer"] == "完整回答"
     assert final.data["outcome"].code == 0
     assert calls["messages"] == [
@@ -169,6 +178,8 @@ def test_direct_answer_streams_ordered_deltas_final_and_done_once():
     assert len(calls["metrics"]) == 1
     metrics = calls["metrics"][0]
     assert metrics["streaming"] is True
+    assert metrics["route_cost_ms"] == 7
+    assert metrics["llm_call_count"] == 0
     assert metrics["answer_delta_count"] == 2
     assert metrics["streamed_answer_chars"] == 4
     assert metrics["stream_event_count"] == len(events)
@@ -177,9 +188,43 @@ def test_direct_answer_streams_ordered_deltas_final_and_done_once():
     assert metrics["streamed_answer_matches_final"] is True
     assert metrics["client_disconnected"] is False
     assert calls["bad_cases"] == []
+    assert len(calls["stream_kwargs"]) == 1
+    kwargs = calls["stream_kwargs"][0]
+    assert {
+        key: kwargs[key]
+        for key in (
+            "original_question",
+            "effective_question",
+            "top_k",
+            "decompose_top_k",
+            "trace_id",
+            "session_id",
+        )
+    } == {
+        "original_question": "测试问题",
+        "effective_question": "测试问题",
+        "top_k": 4,
+        "decompose_top_k": 8,
+        "trace_id": "trace-1",
+        "session_id": "session-1",
+    }
+    assert "decision" not in kwargs
+    assert callable(kwargs["write_bad_cases"])
+    assert kwargs["bad_case"]["question"] == "测试问题"
+    assert "rag_ready_check_cost_ms" not in metrics
+    assert [line for line in logs if "runtime_start agent_runtime=" in line] == [
+        "[trace_id=trace-1] [agent] runtime_start agent_runtime=create_agent"
+    ]
 
 
-def test_rag_stream_has_safe_progress_tool_and_authoritative_final_without_delta():
+def test_rag_stream_has_safe_progress_tool_and_authoritative_final_without_delta(
+    monkeypatch,
+):
+    logs = []
+    monkeypatch.setattr(
+        "app.services.chat_service.logger.info",
+        lambda msg, *args: logs.append(msg % args),
+    )
     references = [
         {
             "reference_id": "Reference 1",
@@ -192,7 +237,24 @@ def test_rag_stream_has_safe_progress_tool_and_authoritative_final_without_delta
             "rerank_score": 0.95,
         }
     ]
-    result = _result(answer="RAG 完整回答", references=references)
+    result = _result(
+        answer="RAG 完整回答",
+        references=references,
+        tool_trace=[
+            {
+                "step": "tool_call",
+                "tool_name": "search_knowledge_base",
+                "tool_status": "success",
+                "cost_ms": 15,
+            },
+            {
+                "step": "tool_call",
+                "tool_name": "get_chunk_text",
+                "tool_status": "success",
+                "cost_ms": 2,
+            },
+        ],
+    )
     service, calls = _build_service(
         [
             AgentRuntimeStreamEvent(
@@ -224,6 +286,10 @@ def test_rag_stream_has_safe_progress_tool_and_authoritative_final_without_delta
     assert final.data["outcome"].result["references"] == references
     assert calls["metrics"][0]["answer_delta_count"] == 0
     assert calls["metrics"][0]["streamed_answer_matches_final"] is None
+    assert final.data["outcome"].result["tool_trace"][1:] == result["tool_trace"]
+    assert [line for line in logs if "tool_call_chain=" in line] == [
+        "[trace_id=trace-1] [agent] tool_call_chain=search_knowledge_base(success,15ms) -> get_chunk_text(success,2ms)"
+    ]
 
 
 def test_closing_service_stream_marks_disconnect_and_does_not_save_partial_answer():
@@ -308,7 +374,10 @@ def test_unconverted_runtime_stream_exception_uses_invocation_fallback(
 
 
 @pytest.mark.parametrize("rewrite_llm_used", [True, False])
-def test_sync_and_stream_final_use_identical_response_mapping(rewrite_llm_used):
+@pytest.mark.parametrize("has_rewrite_trace", [True, False])
+def test_final_merges_rewrite_metrics_once_without_mutating_runtime(
+    rewrite_llm_used, has_rewrite_trace
+):
     result = _result(
         answer="一致回答",
         answer_confidence=0.8,
@@ -316,97 +385,196 @@ def test_sync_and_stream_final_use_identical_response_mapping(rewrite_llm_used):
         decompose_llm_used=True,
         answer_llm_used=True,
         llm_call_count=2,
-        tool_trace=[{
-            "step": "llm_usage",
-            "router_llm_used": False,
-            "decompose_llm_used": True,
-            "answer_llm_used": True,
-            "llm_call_count": 2,
-        }],
+        tool_trace=[
+            {
+                "step": "llm_usage",
+                "router_llm_used": False,
+                "decompose_llm_used": True,
+                "answer_llm_used": True,
+                "llm_call_count": 2,
+            }
+        ],
         timings={"llm_cost_ms": 7},
     )
+    if has_rewrite_trace:
+        result["tool_trace"].insert(
+            0, {"step": "query_rewrite", "rewrite_llm_used": not rewrite_llm_used}
+        )
     original = deepcopy(result)
     service, calls = _build_service(
         [AgentRuntimeStreamEvent("result", {"result": result})],
-        sync_result=result,
         rewrite_llm_used=rewrite_llm_used,
     )
 
-    sync_outcome = service.handle(_request(session_id=""))
     stream_events = _collect(service, _request(session_id=""))
     stream_outcome = next(
-        event.data["outcome"]
-        for event in stream_events
-        if event.event == "final"
+        event.data["outcome"] for event in stream_events if event.event == "final"
     )
-    sync_response = build_chat_response_from_outcome(
-        sync_outcome,
-        trace_id="trace-1",
-    ).model_dump(mode="json")
-    stream_response = build_chat_response_from_outcome(
-        stream_outcome,
-        trace_id="trace-1",
-    ).model_dump(mode="json")
-
-    assert stream_response == sync_response
+    response = build_chat_response_from_outcome(stream_outcome, trace_id="trace-1")
     expected_count = 3 if rewrite_llm_used else 2
-    assert sync_response["data"]["llm_call_count"] == expected_count
-    for outcome in (sync_outcome, stream_outcome):
-        assert outcome.result["llm_call_count"] == expected_count
-        trace = outcome.result["tool_trace"]
-        assert sum(step["step"] == "query_rewrite" for step in trace) == 1
-        assert trace[1:] == original["tool_trace"]
-    assert len(calls["metrics"]) == 2
-    for metrics in calls["metrics"]:
-        assert metrics["llm_call_count"] == expected_count
-        assert metrics["decompose_llm_used"] is True
-        assert metrics["answer_llm_used"] is True
-        assert metrics["llm_cost_ms"] == 7
+    assert response.data.llm_call_count == expected_count
+    trace = stream_outcome.result["tool_trace"]
+    assert sum(step["step"] == "query_rewrite" for step in trace) == 1
+    assert [step for step in trace if step["step"] != "query_rewrite"] == [
+        step for step in original["tool_trace"] if step["step"] != "query_rewrite"
+    ]
+    assert len(calls["metrics"]) == 1
+    metrics = calls["metrics"][0]
+    assert metrics["llm_call_count"] == expected_count
+    assert metrics["decompose_llm_used"] is True
+    assert metrics["answer_llm_used"] is True
+    assert metrics["llm_cost_ms"] == 7
+    assert calls["messages"] == []
     assert result == original
 
 
 @pytest.mark.parametrize(
-    ("status", "expected_code", "expected_public_status"),
+    ("status", "code", "public_status", "http_status", "metric_status"),
     [
+        ("OK", 0, "ok", 200, "success"),
+        ("NEED_CLARIFICATION", "NEED_CLARIFICATION", "clarify", 200, "clarify"),
         (
-            AgentResultStatus.NEED_CLARIFICATION,
-            "NEED_CLARIFICATION",
-            "clarify",
-        ),
-        (
-            AgentResultStatus.NO_RELEVANT_INFO,
+            "NO_RELEVANT_INFO",
             "NO_RELEVANT_INFO",
             "no_evidence",
+            200,
+            "no_relevant_info",
         ),
-        (AgentResultStatus.TOOL_ERROR, "TOOL_ERROR", "error"),
-        (AgentResultStatus.MODEL_ERROR, "MODEL_ERROR", "error"),
-        (AgentResultStatus.INTERNAL_ERROR, "INTERNAL_ERROR", "error"),
+        ("TOOL_ERROR", "TOOL_ERROR", "error", 200, "tool_error"),
+        ("MODEL_ERROR", "MODEL_ERROR", "error", 200, "model_error"),
+        ("INTERNAL_ERROR", "INTERNAL_ERROR", "error", 500, "internal_error"),
+        ("UNKNOWN", "INTERNAL_ERROR", "error", 500, "internal_error"),
     ],
 )
 def test_business_statuses_stay_in_final_and_never_become_stream_error(
     status,
-    expected_code,
-    expected_public_status,
+    code,
+    public_status,
+    http_status,
+    metric_status,
 ):
     result = _result(
-        status=status,
-        answer="不可公开答案" if status is not AgentResultStatus.OK else "",
-        need_clarification=status is AgentResultStatus.NEED_CLARIFICATION,
-        clarification_question=(
-            "请补充具体对象"
-            if status is AgentResultStatus.NEED_CLARIFICATION
-            else ""
-        ),
+        answer="测试回答",
+        need_clarification=status == "NEED_CLARIFICATION",
+        clarification_question="请补充具体对象",
     )
-    service, _ = _build_service(
+    result["status"] = status
+    service, calls = _build_service(
         [AgentRuntimeStreamEvent("result", {"result": result})]
     )
-
     events = _collect(service)
-    final = next(event for event in events if event.event == "final")
-    outcome = final.data["outcome"]
-
+    outcome = next(event.data["outcome"] for event in events if event.event == "final")
     assert all(event.event != "error" for event in events)
-    assert outcome.code == expected_code
-    assert outcome.response_status == expected_public_status
+    assert (outcome.code, outcome.response_status, outcome.http_status) == (
+        code,
+        public_status,
+        http_status,
+    )
+    assert len(calls["messages"]) == 2
+    assert len(calls["metrics"]) == 1
+    assert calls["metrics"][0]["status"] == metric_status
     assert events[-1] == ChatStreamEvent("done", {"reason": "completed"})
+
+
+def test_empty_question_stream_skips_business_and_finalizes_once():
+    def forbidden(*args, **kwargs):
+        pytest.fail("empty question must skip business dependencies")
+
+    service, calls = _build_service(
+        [],
+        settings_provider=forbidden,
+        get_history=forbidden,
+        rewrite_query_with_history=forbidden,
+    )
+    events = _collect(service, _request(question="   "))
+    assert [event.event for event in events] == ["start", "final", "done"]
+    outcome = events[1].data["outcome"]
+    assert (outcome.http_status, outcome.code, outcome.response_status) == (
+        400,
+        "EMPTY_QUESTION",
+        "clarify",
+    )
+    assert outcome.result["need_clarification"] is True
+    assert events[-1].data == {"reason": "completed"}
+    assert calls["stream_kwargs"] == calls["messages"] == calls["bad_cases"] == []
+    assert len(calls["metrics"]) == 1
+    assert calls["metrics"][0]["status"] == "clarify"
+
+
+def test_service_failure_finishes_with_internal_error_and_no_runtime():
+    def fail(*args, **kwargs):
+        raise RuntimeError("unexpected chat failure")
+
+    service, calls = _build_service([], rewrite_query_with_history=fail)
+    events = _collect(service)
+    assert [event.event for event in events][-2:] == ["final", "done"]
+    outcome = events[-2].data["outcome"]
+    assert (outcome.http_status, outcome.code, outcome.response_status) == (
+        500,
+        "INTERNAL_ERROR",
+        "error",
+    )
+    assert calls["stream_kwargs"] == calls["messages"] == []
+    assert len(calls["bad_cases"]) == len(calls["metrics"]) == 1
+    assert (
+        calls["bad_cases"][0]["error_type"]
+        == calls["metrics"][0]["status"]
+        == "internal_error"
+    )
+
+
+@pytest.mark.parametrize(
+    "boundary", ["get_history", "append_message", "log_and_write_metrics"]
+)
+def test_storage_failures_preserve_successful_stream(boundary):
+    seen = []
+
+    def fail(*args, **kwargs):
+        seen.append(args)
+        raise RuntimeError("storage unavailable")
+
+    def rewrite(question, history, trace_id):
+        assert history == []
+        return {"rewritten_question": question, "rewrite_llm_used": False}
+
+    service, calls = _build_service(
+        [AgentRuntimeStreamEvent("result", {"result": _result()})],
+        rewrite_query_with_history=rewrite,
+        **{boundary: fail},
+    )
+    events = _collect(service)
+    assert events[-2].data["outcome"].code == 0
+    assert events[-1].data == {"reason": "completed"}
+    assert len(calls["stream_kwargs"]) == 1
+    assert len(seen) == 1
+    if boundary != "log_and_write_metrics":
+        assert len(calls["metrics"]) == 1
+
+
+def test_internal_runtime_error_remains_redacted_in_final_response():
+    result = build_internal_error_result(
+        RuntimeError("/home/test-user/checkpoints.sqlite api_key=sk-test-secret"),
+        runtime_label="Agent",
+        trace_step="agent_error",
+    )
+    service, _ = _build_service([AgentRuntimeStreamEvent("result", {"result": result})])
+    outcome = _collect(service)[-2].data["outcome"]
+    response = build_chat_response_from_outcome(outcome, trace_id="trace-1")
+    assert (outcome.http_status, response.code, response.data.status) == (
+        500,
+        "INTERNAL_ERROR",
+        "error",
+    )
+    assert response.data.reason == "Agent 内部执行异常，请稍后重试"
+    assert {
+        "step": "agent_error",
+        "status": "error",
+        "error": "internal_error",
+    } in response.data.tool_trace
+    for private in (
+        "/home/test-user",
+        "checkpoints.sqlite",
+        "sk-test-secret",
+        "RuntimeError",
+    ):
+        assert private not in response.model_dump_json()
