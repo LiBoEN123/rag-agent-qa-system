@@ -333,24 +333,40 @@ Health:  http://127.0.0.1:8000/health
 
 首次启动可能会下载 embedding / rerank 模型权重并构建索引；后续如果知识库文件和索引参数没有变化，会复用本地 ChromaDB 和 manifest 缓存。
 
-## Demo 页面
+## Vue 前端
 
-项目提供了一个 Streamlit Demo 页面，用于通过浏览器体验问答、检索和路由调试。先启动 FastAPI 后端：
+Vue 3 + TypeScript 是主要 Demo / 管理界面，提供智能问答、检索调试、知识库、知识入库和系统诊断。需要 Node.js 22.12+（已用 22.21.1 验证）。先启动 FastAPI 后端：
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-再启动 Demo 页面：
+另一个终端启动前端：
 
 ```bash
-streamlit run demo/streamlit_app.py
+cd frontend
+npm install
+npm run dev
 ```
 
-页面默认连接 `http://127.0.0.1:8000`，也可以在侧边栏修改后端地址。聊天面板默认
-调用 `/chat/stream`，实时展示安全的处理阶段、工具状态和直接回答文本增量，并只把
-`final.data.response` 写入本轮完整消息；RAG 请求没有 `answer_delta` 时会继续显示进度
-并等待 `final`。侧边栏可显式切换到同步 `/chat`，流建立后不会自动重发同步请求。
+Vue 地址为 `http://localhost:5173`，FastAPI 为 `http://127.0.0.1:8000`。
+API 使用同源相对路径，经 Vite proxy 访问后端；需要修改目标时复制
+`frontend/.env.example` 为 `frontend/.env`，设置 `VITE_DEV_PROXY_TARGET` 后重启 Vite。
+页面使用 hash 路由（例如 `/#/ingestion`），避免页面路径与 `/chat`、`/search` API 冲突。
+
+知识入库管理需在**后端**配置 `INGESTION_ADMIN_API_ENABLED=true` 和
+`INGESTION_ADMIN_API_KEY=<你的管理员密钥>`，然后重启后端。密钥在入库页的密码框中输入，
+仅保留在浏览器内存，刷新页面即清除；不要放入 `VITE_*`、URL 或仓库。
+在「待审批知识」刷新 Agent 已生成的候选，查看安全预览后批准，再单独点击「写入知识库」。
+「索引记录」可检查结果；GitHub / Firecrawl 手动提案位于「来源提案」。
+
+聊天默认使用 `/chat/stream`，增量用于即时展示，`final.data.response` 更新本轮权威结果。
+可显式关闭「流式回答」使用 `/chat`；中断不会自动重试。session ID 保存在 sessionStorage，
+聊天记录保留在内存；「新建对话」生成新 ID 并清空记录。
+
+前端验证：`npm run typecheck`、`npm run test -- --run`、`npm run build`。
+`npm run preview` 可在 `http://localhost:4173` 本地预览构建结果，仍使用相同代理；
+`dist/` 是静态资源，本阶段不包含生产托管部署。
 
 ## 环境变量
 
@@ -899,8 +915,9 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   ├── summarize_logs.py        # metrics/bad_cases 日志汇总
 │   ├── cache_models.py          # 预下载 embedding/rerank 模型
 │   └── evaluation/              # Runner、Agent/RAG evaluator、Judge 与报告内部包
-├── demo/
-│   └── streamlit_app.py         # Streamlit Demo 页面
+├── frontend/                    # Vue 3 + TypeScript Demo / 管理界面
+│   ├── src/                     # 页面、composable 与薄 API client
+│   └── vite.config.ts           # 开发 / 本地预览代理与 Vitest 配置
 ├── docs/
 │   ├── architecture/
 │   │   ├── current-system.md    # 当前实现的主要架构入口
@@ -967,7 +984,6 @@ docker run --rm -p 8000:8000 --env-file .env \
 - 继续优化 Query Rewrite 对跨轮限定、复杂指代和历史冲突的处理能力。
 - 在现有编译、Ruff、Import Linter、Runtime inspection、评测数据校验和 pytest
   基础上增加 Docker 构建检查；真实基线经过人工审查后再决定是否加入回退阈值门禁。
-- 为 Streamlit Demo 增加更多调试视图，例如 Query Rewrite、Router 决策和检索命中对比。
 
 ## 已知限制
 

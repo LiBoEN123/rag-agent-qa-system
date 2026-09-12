@@ -27,7 +27,6 @@ sqlglot
 pypdf
 python-docx
 huggingface-hub
-streamlit
 pytest
 deepeval==3.9.6
 ruff

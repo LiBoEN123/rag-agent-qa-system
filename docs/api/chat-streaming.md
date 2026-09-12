@@ -109,10 +109,11 @@ python scripts/smoke_test_chat_stream.py \
 完整答案、工具原始结果、网页/PDF/chunk 正文或凭据。它是人工真实服务检查，不在
 Pytest/CI 中运行。
 
-## Streamlit Demo
+## Vue Demo
 
-`demo/streamlit_app.py` 的聊天面板默认使用本接口。页面把 `progress` 和 `tool` 显示为
-请求状态，把安全 `answer_delta` 写入临时占位框；只有收到并校验 `final` 后，才把完整
-`ChatResponse` 保存到前端消息历史。没有 delta 的 RAG 请求会保持进度提示并等待
-`final`。侧边栏保留显式同步模式，但流已经建立或收到事件后不会自动调用 `/chat`
-重试，避免重复工具调用、Session 写入和 metrics。
+`frontend/src/views/ChatView.vue` 默认使用本接口，POST SSE 由
+`@microsoft/fetch-event-source` 处理。页面展示 `progress` 和 `tool`，即时显示
+`answer_delta`，收到 `final.data.response` 后用完整 `ChatResponse` 覆盖本轮结果。
+没有 delta 的 RAG 请求继续显示进度并等待 `final`。聊天页可显式关闭「流式回答」
+使用同步 `/chat`；中断、切换页面或取消生成不会自动重发 POST。
+流收到 final 后若未正常 done，保留 final 并显示中断错误。新建对话会中止旧请求并清空消息。
