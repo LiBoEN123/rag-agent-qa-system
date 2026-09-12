@@ -89,7 +89,7 @@ class _DeferredAgentModel:
 
 
 class _GovernedBoundModel:
-    """在模型边界记录成功/失败，交给 ``after_model`` 写入状态。"""
+    """在模型边界记录成功/失败，交给 ``aafter_model`` 写入状态。"""
 
     # 保存底层模型、可用工具名称及模型能力信息，供调用和治理记录使用。
     def __init__(self, model: Any, *, available_tool_names: list[str]) -> None:
@@ -131,14 +131,6 @@ class _GovernedBoundModel:
             content="Agent model unavailable",
             additional_kwargs={_MODEL_GOVERNANCE_KEY: event},
         )
-
-    def invoke(self, messages):
-        """同步调用实际绑定模型并转换异常。"""
-        started = _now_ms()
-        try:
-            return self._success(self._model.invoke(messages), started)
-        except Exception as exc:
-            return self._failure(started, exc)
 
     async def ainvoke(self, messages):
         """异步调用实际绑定模型并保持相同事件语义。"""

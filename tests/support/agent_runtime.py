@@ -20,11 +20,6 @@ class AgentRuntimeHarness:
     def __init__(self, settings: AppSettings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def compile(self, **kwargs) -> "AgentRuntimeHarness":
-        """与旧测试构造习惯兼容；不创建第二个 Graph。"""
-        del kwargs
-        return self
-
     @property
     def nodes(self):
         """暴露 ``create_agent`` 自身节点，不包含项目 Parent Graph 节点。"""
@@ -70,28 +65,6 @@ class AgentRuntimeHarness:
             "final_answer": str(result.get("answer") or ""),
             "result": dict(result),
         }
-
-    def invoke(
-        self,
-        input_value: Mapping[str, Any],
-        *,
-        context: ToolInvocationContext | None = None,
-        **kwargs,
-    ) -> dict[str, Any]:
-        """直接调用唯一 Agent Runtime，并返回测试可观察快照。"""
-        del kwargs
-        invocation = self._prepare(input_value, context)
-        if invocation.agent is None:
-            result = build_short_circuit_result(invocation)
-            return self._merge_state({}, result)
-        raw = invocation.agent.invoke(
-            invocation.agent_input,
-            config=invocation.agent_config,
-            context=invocation.tool_context,
-        )
-        assert isinstance(raw, Mapping)
-        result = build_framework_agent_result(invocation, raw)
-        return self._merge_state(raw, result)
 
     async def astream(
         self,

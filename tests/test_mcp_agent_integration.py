@@ -1,5 +1,6 @@
-"""create_agent 对 MCP Tool 的同步、异步与 Guardrail 集成测试。"""
+"""create_agent 对 MCP Tool 的异步执行与 Guardrail 集成测试。"""
 
+import pytest
 import asyncio
 import json
 
@@ -39,13 +40,10 @@ class FakeAgentModel:
         self.bound_tool_names = [tool.name for tool in self.bound_tools]
         return self
 
-    def invoke(self, messages, **kwargs):
+    async def ainvoke(self, messages, **kwargs):
         del kwargs
         self.received_messages.append(list(messages))
         return self.responses.pop(0)
-
-    async def ainvoke(self, messages, **kwargs):
-        return self.invoke(messages, **kwargs)
 
 
 def _server_config(**overrides):
@@ -194,47 +192,8 @@ def _assert_success(output, model, calls):
     assert tool_trace["attempt_count"] == 1
 
 
-def test_mcp_tool_runs_through_sync_agent_and_native_async_bridge(
-    monkeypatch,
-    settings_factory,
-):
-    settings = settings_factory()
-    sync_calls = []
-    sync_model = FakeAgentModel(_responses())
-    sync_graph, source_tool = _setup(
-        monkeypatch, settings, sync_model, sync_calls
-    )
-    sync_output = sync_graph.invoke(_input(), context=_context())
-    _assert_success(sync_output, sync_model, sync_calls)
-    assert sync_model.bound_tools == [source_tool]
-
-    async_calls = []
-    async_model = FakeAgentModel(_responses())
-    _, async_tool = _setup(monkeypatch, settings, async_model, async_calls)
-    async_result = asyncio.run(
-        invoke_mcp_tool(
-            async_tool,
-            {"location": "Beijing"},
-            context=_context(),
-        )
-    )
-    assert async_calls == [("Beijing", "trace-mcp-agent")]
-    assert async_result["ok"] is True
-    assert async_result["output"]["content_is_untrusted"] is True
-    assert (
-        async_result["output"]
-        == json.loads(
-            next(
-                message
-                for messages in sync_model.received_messages
-                for message in messages
-                if isinstance(message, ToolMessage)
-            ).content
-        )["output"]
-    )
-
-
-def test_default_service_principal_sees_and_executes_config_authorized_server(
+@pytest.mark.asyncio
+async def test_default_service_principal_sees_and_executes_config_authorized_server(
     monkeypatch,
     settings_factory,
 ):
@@ -259,12 +218,13 @@ def test_default_service_principal_sees_and_executes_config_authorized_server(
         source="mcp_agent_test",
     )
 
-    output = graph.invoke(_input(), context=context)
+    output = [state async for state in graph.astream(_input(), context=context)][-1]
 
     _assert_success(output, model, calls)
 
 
-def test_mcp_external_write_stops_agent_for_human_approval(
+@pytest.mark.asyncio
+async def test_mcp_external_write_stops_agent_for_human_approval(
     monkeypatch,
     settings_factory,
 ):
@@ -279,7 +239,7 @@ def test_mcp_external_write_stops_agent_for_human_approval(
         server_config=_server_config(approval_required_tools=["get_weather"]),
     )
 
-    output = graph.invoke(_input(), context=_context())
+    output = [state async for state in graph.astream(_input(), context=_context())][-1]
 
     assert calls == []
     assert len(model.received_messages) == 1
@@ -370,7 +330,8 @@ def test_mcp_tool_runs_through_create_agent_astream(
     _assert_success(output, model, calls)
 
 
-def test_repeated_mcp_calls_are_stopped_by_existing_guardrail(
+@pytest.mark.asyncio
+async def test_repeated_mcp_calls_are_stopped_by_existing_guardrail(
     monkeypatch,
     settings_factory,
 ):
@@ -393,7 +354,7 @@ def test_repeated_mcp_calls_are_stopped_by_existing_guardrail(
     settings = settings_factory(agent_max_consecutive_same_tool_calls=2)
     graph, _ = _setup(monkeypatch, settings, model, calls)
 
-    output = graph.invoke(_input(), context=_context())
+    output = [state async for state in graph.astream(_input(), context=_context())][-1]
 
     assert len(calls) == 2
     assert sum(

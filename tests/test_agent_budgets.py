@@ -1,5 +1,6 @@
 """Agent 工具调用和累计耗时预算的 Graph 集成测试。"""
 
+import pytest
 from pydantic import RootModel
 
 import json
@@ -28,7 +29,7 @@ class BudgetModel:
     def bind_tools(self, tools):
         return self
 
-    def invoke(self, messages):
+    async def ainvoke(self, messages):
         self.calls += 1
         return self.response
 
@@ -65,8 +66,8 @@ def _setup(monkeypatch, *, model, handler, max_tool_calls=10, max_elapsed_ms=120
     return build_agent_harness(settings)
 
 
-def _invoke(graph):
-    return graph.invoke(
+async def _invoke(graph):
+    return [state async for state in graph.astream(
         {
             "original_question": "预算测试",
             "effective_question": "预算测试",
@@ -82,10 +83,11 @@ def _invoke(graph):
             principal_id="budget-test",
             source="agent_budget_test",
         ),
-    )
+    )][-1]
 
 
-def test_tool_budget_limit_adds_messages_for_every_unexecuted_call(monkeypatch):
+@pytest.mark.asyncio
+async def test_tool_budget_limit_adds_messages_for_every_unexecuted_call(monkeypatch):
     handler_calls: list[int] = []
 
     def handler(args, context):
@@ -118,7 +120,7 @@ def test_tool_budget_limit_adds_messages_for_every_unexecuted_call(monkeypatch):
         max_tool_calls=1,
     )
 
-    output = _invoke(graph)
+    output = await _invoke(graph)
     messages = [item for item in output["messages"] if isinstance(item, ToolMessage)]
 
     assert handler_calls == [1]
@@ -133,7 +135,8 @@ def test_tool_budget_limit_adds_messages_for_every_unexecuted_call(monkeypatch):
     assert str(blocked.content).startswith("Tool call limit exceeded")
 
 
-def test_model_elapsed_budget_blocks_tool_without_real_sleep(monkeypatch):
+@pytest.mark.asyncio
+async def test_model_elapsed_budget_blocks_tool_without_real_sleep(monkeypatch):
     handler_calls: list[int] = []
 
     def handler(args, context):
@@ -162,7 +165,7 @@ def test_model_elapsed_budget_blocks_tool_without_real_sleep(monkeypatch):
         max_elapsed_ms=10,
     )
 
-    output = _invoke(graph)
+    output = await _invoke(graph)
     payload = json.loads(
         next(
             item

@@ -46,14 +46,11 @@ class ChatAgentModel:
         self.received_messages: list[list] = []
         self.bound_tool_names: list[str] = []
 
-    async def ainvoke(self, messages):
-        return self.invoke(messages)
-
     def bind_tools(self, tools):
         self.bound_tool_names = [tool.name for tool in tools]
         return self
 
-    def invoke(self, messages):
+    async def ainvoke(self, messages):
         self.calls += 1
         self.received_messages.append(list(messages))
         if self.calls == 1:
@@ -76,7 +73,7 @@ class ChatWebSearchModel(ChatAgentModel):
         super().__init__()
         self.selected_url = ""
 
-    def invoke(self, messages):
+    async def ainvoke(self, messages):
         self.calls += 1
         self.received_messages.append(list(messages))
         if self.calls == 1:
@@ -127,7 +124,7 @@ class ChatWebPdfModel(ChatAgentModel):
         super().__init__()
         self.selected_url = ""
 
-    def invoke(self, messages):
+    async def ainvoke(self, messages):
         self.calls += 1
         self.received_messages.append(list(messages))
         if self.calls == 1:

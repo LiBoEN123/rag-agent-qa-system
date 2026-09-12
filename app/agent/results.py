@@ -528,7 +528,7 @@ def build_agent_runtime_error_result(
     effective_question: str,
     exc: Exception,
 ) -> dict[str, Any]:
-    """把同步与流式 Runtime 异常转换成同一脱敏内部错误结果。"""
+    """把流式 Runtime 异常转换成脱敏内部错误结果。"""
     _write_internal_bad_case(
         write_bad_cases=write_bad_cases,
         bad_case=bad_case,

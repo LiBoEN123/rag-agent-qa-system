@@ -1,9 +1,9 @@
-"""唯一 Agent Runtime：准备请求、执行 ``create_agent`` 并返回 AgentResult。"""
+"""Agent Runtime 的参数校验、Router、上下文准备与构图缓存。"""
 
 from __future__ import annotations
 
 import time
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import Any, Protocol, cast
@@ -14,34 +14,17 @@ from pydantic import TypeAdapter, ValidationError
 import app.agent.framework_tools as framework_tools
 from app.agent.framework_agent import build_framework_agent
 from app.agent.framework_middleware import ProjectToolGovernanceMiddleware
-from app.agent.results import (
-    build_agent_runtime_error_result,
-    build_framework_agent_result,
-    build_short_circuit_result,
-)
 from app.agent.router import RouteDecision, route_agent_action
-from app.common.logging import get_logger
 from app.config import AppSettings, get_settings
 from app.tools.context import ToolInvocationContext, build_default_tool_context
 from app.tools.mcp.provider import list_mcp_tools_for_context
 
-
-logger = get_logger("chat_service")
 
 _INTEGER_ADAPTER = TypeAdapter(int)
 
 
 class CompiledAgentRuntime(Protocol):
     """Runtime 和 Streaming 使用的 ``create_agent`` 可执行边界。"""
-
-    # 约定编译后运行时的同步调用接口，显式传入配置和工具上下文。
-    def invoke(
-        self,
-        input_value: Mapping[str, object],
-        *,
-        config: Mapping[str, object],
-        context: ToolInvocationContext,
-    ) -> object: ...
 
     # 约定编译后运行时的异步事件流接口及流模式、子图和版本参数。
     def astream(
@@ -219,73 +202,11 @@ def prepare_agent_runtime_invocation(
     )
 
 
-def run_agent(
-    write_bad_cases: Callable[[dict[str, Any]], None] | None,
-    top_k: int,
-    decompose_top_k: int,
-    trace_id: str = "",
-    session_id: str | None = None,
-    bad_case: dict[str, Any] | None = None,
-    *,
-    original_question: str,
-    effective_question: str,
-    tool_context: ToolInvocationContext | None = None,
-) -> dict[str, Any]:
-    """路由后直接执行 ``create_agent`` 并返回已验证 Result。"""
-    resolved_original = (original_question or "").strip()
-    resolved_effective = (effective_question or "").strip()
-    try:
-        invocation = prepare_agent_runtime_invocation(
-            top_k=top_k,
-            decompose_top_k=decompose_top_k,
-            trace_id=trace_id,
-            session_id=session_id,
-            original_question=resolved_original,
-            effective_question=resolved_effective,
-            tool_context=tool_context,
-        )
-        logger.info(
-            "[trace_id=%s] [agent] runtime_start action=%s session_id_present=%s",
-            trace_id,
-            invocation.decision.get("action", ""),
-            bool((session_id or "").strip()),
-        )
-        if invocation.agent is None:
-            result = build_short_circuit_result(invocation)
-        else:
-            output = invocation.agent.invoke(
-                invocation.agent_input,
-                config=invocation.agent_config,
-                context=invocation.tool_context,
-            )
-            if not isinstance(output, Mapping):
-                raise RuntimeError("create_agent did not produce a valid state")
-            result = build_framework_agent_result(invocation, output)
-        logger.info(
-            "[trace_id=%s] [agent] runtime_end status=%s",
-            trace_id,
-            result.get("status", ""),
-        )
-        return result
-    except Exception as exc:
-        logger.exception("[trace_id=%s] [agent] runtime_failed", trace_id)
-        return build_agent_runtime_error_result(
-            write_bad_cases=write_bad_cases,
-            bad_case=bad_case,
-            trace_id=trace_id,
-            session_id=session_id,
-            original_question=resolved_original,
-            effective_question=resolved_effective,
-            exc=exc,
-        )
-
-
 __all__ = [
     "AgentRuntimeInvocation",
     "CompiledAgentRuntime",
     "get_compiled_agent_runtime",
     "prepare_agent_runtime_invocation",
     "reset_agent_runtime",
-    "run_agent",
     "validate_runtime_counts",
 ]

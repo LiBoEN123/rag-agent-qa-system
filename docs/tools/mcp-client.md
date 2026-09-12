@@ -20,7 +20,7 @@ Schema 转换成 LangChain `StructuredTool`，因此不会把 MCP Tool 反向转
 `ToolSpec`。本地 StructuredTool 按配置缓存，并由 Model Middleware 按请求权限过滤；MCP 工具保留 Bridge 已生成的
 governed StructuredTool，不再经过 framework 二次 wrapper。两类 BaseTool 都由
 `create_agent` ToolNode 的原生
-`ProjectToolGovernanceMiddleware.wrap_tool_call/awrap_tool_call` 截获，共用调用数、
+`ProjectToolGovernanceMiddleware.awrap_tool_call` 截获，共用调用数、
 错误数、重复调用、累计耗时、同批 fail-closed 和 ToolMessage pairing；MCP Server
 Access Policy、审批、远端超时、审计和序列化仍只在 MCP Bridge 内执行。
 
@@ -169,7 +169,7 @@ JSON，然后重启服务。不需要修改 Python、`AppSettings`、`.env`、`.
 
 ## Discovery、allowlist 与名称隔离
 
-FastAPI lifespan 在 RAG 和同步 Graph 准备完成后执行一次：
+FastAPI lifespan 在 RAG 初始化和 Agent 构图完成后执行一次：
 
 ```text
 读取并校验配置
@@ -285,22 +285,19 @@ ingestion 结果一旦 `truncated=true` 就不能产生可索引文档；超过 
 fail closed。截断结果的 `content_blocks` 不保留正文，只保留类型、MIME、URI 和字符数等
 有限摘要。审计仍只记录字段、正文字符数、截断标志和状态，不记录完整正文。
 
-## 同步与流式执行
+## 异步执行
 
-官方 MCP `StructuredTool` 以 coroutine 为主。项目包装器保留原始 MCP Tool Schema，
-并提供两个执行入口：
+官方 MCP `StructuredTool` 保留原始 Schema 和 coroutine。`build_governed_mcp_tool()`
+只补充项目描述与 metadata，执行沿用官方 adapter：
 
-- 内部 `run_agent → create_agent.invoke`：只对 MCP Tool 使用最小同步 bridge，在没有运行中 event loop
-  的 ToolNode 工作线程中执行 `asyncio.run()`；
-- `/chat/stream → create_agent.astream`：直接 await 原生 MCP coroutine。
+- Agent：`ChatService.stream → stream_agent → create_agent.astream → async ToolNode → MCP coroutine`；
+- 显式 source / ingestion：`await invoke_mcp_tool() → await tool.ainvoke() → MCP coroutine`。
 
-同步 bridge 不使用 `nest_asyncio`，不创建永久 event-loop thread，也不改造整个项目为
-async。如果误从已有 event loop 调用同步入口，会返回受控
-`mcp_execution_error`，而不是嵌套 `asyncio.run()`。
+输出通过现有 `tool_success()` / `tool_error()` 结构，再由 `parse_tool_result()` 和
+`ProjectToolGovernanceMiddleware.awrap_tool_call` 计算 success/error、重复调用、
+错误预算、总耗时和停止原因。本地同步工具继续由框架调度。
 
-两条路径最终都返回现有 `tool_success()` / `tool_error()` 结构，再由
-`parse_tool_result()` 和 `ProjectToolGovernanceMiddleware` 计算 success/error、重复调用、
-错误预算、总耗时和停止原因。MCP 项目层重试固定为零，避免与 adapter/HTTP 层形成多层
+MCP 项目层重试固定为零，避免与 adapter/HTTP 层形成多层
 重试。
 
 ## 错误、审计与 SSE

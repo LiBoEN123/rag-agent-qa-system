@@ -34,7 +34,7 @@ class VisibilityModel:
         self.bound_tool_names = [tool.name for tool in tools]
         return self
 
-    def invoke(self, messages):
+    async def ainvoke(self, messages):
         self.received_messages.append(list(messages))
         return self.responses.pop(0)
 def _spec(
@@ -72,14 +72,14 @@ def _call(name: str, text: str, call_id: str) -> dict:
     }
 
 
-def _invoke_graph(monkeypatch, registry, model, context):
+async def _invoke_graph(monkeypatch, registry, model, context):
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
         "get_local_tools",
         lambda settings: local_tools(registry),
     )
-    return build_agent_harness().invoke(
+    return [state async for state in build_agent_harness().astream(
         {
             "original_question": "验证权限感知工具可见性",
             "effective_question": "验证权限感知工具可见性",
@@ -90,7 +90,7 @@ def _invoke_graph(monkeypatch, registry, model, context):
             "session_id": context.session_id,
         },
         context=context,
-    )
+    )][-1]
 
 
 def _visible(spec, *, context):
@@ -210,7 +210,8 @@ def test_production_web_permissions_are_independent(
     assert ("web_pdf_fetch" in names) is has_fetch
 
 
-def test_agent_binds_visible_tools_and_executes_authorized_tool(monkeypatch):
+@pytest.mark.asyncio
+async def test_agent_binds_visible_tools_and_executes_authorized_tool(monkeypatch):
     registry = []
     calls: list = []
     registry.append(_spec("public_tool", calls))
@@ -232,7 +233,7 @@ def test_agent_binds_visible_tools_and_executes_authorized_tool(monkeypatch):
         permissions=("documents:read",),
         source="visibility_test",
     )
-    output = _invoke_graph(monkeypatch, registry, model, context)
+    output = await _invoke_graph(monkeypatch, registry, model, context)
     assert model.bound_tool_names == ["public_tool", "private_tool"]
     assert len(calls) == 1
     execution_context = calls[0][2]
@@ -243,7 +244,8 @@ def test_agent_binds_visible_tools_and_executes_authorized_tool(monkeypatch):
     assert output["result"]["answer"] == "authorized tool complete"
 
 
-def test_forged_hidden_tool_is_denied_by_execution_policy(monkeypatch):
+@pytest.mark.asyncio
+async def test_forged_hidden_tool_is_denied_by_execution_policy(monkeypatch):
     registry = []
     calls: list = []
     secret_description = "SECRET CAPABILITY DESCRIPTION"
@@ -267,7 +269,7 @@ def test_forged_hidden_tool_is_denied_by_execution_policy(monkeypatch):
     )
     context = ToolInvocationContext(trace_id="trace-hidden")
 
-    output = _invoke_graph(monkeypatch, registry, model, context)
+    output = await _invoke_graph(monkeypatch, registry, model, context)
     message = next(m for m in output["messages"] if isinstance(m, ToolMessage))
     payload = json.loads(message.content)
     assert model.bound_tool_names == ["public_tool"]

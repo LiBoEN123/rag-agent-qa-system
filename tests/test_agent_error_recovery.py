@@ -1,5 +1,6 @@
 """Agent 错误预算、循环防护与终止治理的真实工具链测试。"""
 
+import pytest
 from pydantic import RootModel
 
 import json
@@ -33,7 +34,7 @@ class FakeModel:
         self.bound_tools = list(tools)
         return self
 
-    def invoke(self, messages):
+    async def ainvoke(self, messages):
         self.received_messages.append(list(messages))
         return self.responses.pop(0)
 def _call(tool_name: str, value: int | None, call_id: str) -> dict:
@@ -68,7 +69,7 @@ def _spec(
     )
 
 
-def _invoke(
+async def _invoke(
     monkeypatch,
     *,
     registry: list[ToolSpec],
@@ -104,7 +105,7 @@ def _invoke(
         source="agent_error_recovery_test",
         idempotency_key="idem-test",
     )
-    return build_agent_harness(settings).invoke(
+    return [state async for state in build_agent_harness(settings).astream(
         {
             "original_question": "执行测试工具",
             "effective_question": "执行测试工具",
@@ -115,7 +116,7 @@ def _invoke(
             "session_id": resolved_context.session_id,
         },
         context=resolved_context,
-    )
+    )][-1]
 
 
 def _payloads(output) -> dict[str, dict]:
@@ -126,7 +127,8 @@ def _payloads(output) -> dict[str, dict]:
     }
 
 
-def test_max_tool_errors_stops_on_third_failure_without_another_model_call(
+@pytest.mark.asyncio
+async def test_max_tool_errors_stops_on_third_failure_without_another_model_call(
     monkeypatch,
 ):
     calls: list[int] = []
@@ -150,7 +152,7 @@ def test_max_tool_errors_stops_on_third_failure_without_another_model_call(
         ]
     )
 
-    output = _invoke(monkeypatch, registry=registry, model=model)
+    output = await _invoke(monkeypatch, registry=registry, model=model)
 
     assert calls == [1, 2, 3]
     assert len(model.received_messages) == 3
@@ -163,7 +165,8 @@ def test_max_tool_errors_stops_on_third_failure_without_another_model_call(
     assert output["result"]["status"] == "MODEL_ERROR"
 
 
-def test_third_identical_call_is_blocked_before_structured_tool(monkeypatch):
+@pytest.mark.asyncio
+async def test_third_identical_call_is_blocked_before_structured_tool(monkeypatch):
     calls: list[int] = []
 
     def handler(args, context):
@@ -180,7 +183,7 @@ def test_third_identical_call_is_blocked_before_structured_tool(monkeypatch):
         ]
     )
 
-    output = _invoke(monkeypatch, registry=registry, model=model)
+    output = await _invoke(monkeypatch, registry=registry, model=model)
     payload = _payloads(output)["r3"]
 
     assert calls == [1, 1]
@@ -198,7 +201,8 @@ def test_third_identical_call_is_blocked_before_structured_tool(monkeypatch):
     assert payload["stop_reason"] == "repeated_tool_call"
 
 
-def test_same_tool_with_different_arguments_does_not_trigger_call_guard(
+@pytest.mark.asyncio
+async def test_same_tool_with_different_arguments_does_not_trigger_call_guard(
     monkeypatch,
 ):
     calls: list[int] = []
@@ -217,7 +221,7 @@ def test_same_tool_with_different_arguments_does_not_trigger_call_guard(
         ]
     )
 
-    output = _invoke(monkeypatch, registry=registry, model=model)
+    output = await _invoke(monkeypatch, registry=registry, model=model)
 
     assert calls == [1, 2]
     assert output["stop_reason"] == "completed"
@@ -226,7 +230,8 @@ def test_same_tool_with_different_arguments_does_not_trigger_call_guard(
     assert tool_events[0]["call_fingerprint"] != tool_events[1]["call_fingerprint"]
 
 
-def test_second_identical_error_is_saved_then_stops(monkeypatch):
+@pytest.mark.asyncio
+async def test_second_identical_error_is_saved_then_stops(monkeypatch):
     calls: list[int] = []
 
     def handler(args, context):
@@ -247,7 +252,7 @@ def test_second_identical_error_is_saved_then_stops(monkeypatch):
         ]
     )
 
-    output = _invoke(monkeypatch, registry=registry, model=model)
+    output = await _invoke(monkeypatch, registry=registry, model=model)
     payload = _payloads(output)["s2"]
 
     assert calls == [1, 1]
@@ -257,7 +262,8 @@ def test_second_identical_error_is_saved_then_stops(monkeypatch):
     assert payload["stop_reason"] == "repeated_tool_error"
 
 
-def test_same_error_code_with_different_arguments_is_not_same_error_loop(
+@pytest.mark.asyncio
+async def test_same_error_code_with_different_arguments_is_not_same_error_loop(
     monkeypatch,
 ):
     def handler(args, context):
@@ -284,7 +290,7 @@ def test_same_error_code_with_different_arguments_is_not_same_error_loop(
         ]
     )
 
-    output = _invoke(monkeypatch, registry=registry, model=model)
+    output = await _invoke(monkeypatch, registry=registry, model=model)
 
     assert len(model.received_messages) == 3
     tool_events = [event for event in output["governance_events"] if event["kind"] == "tool"]
@@ -293,7 +299,8 @@ def test_same_error_code_with_different_arguments_is_not_same_error_loop(
     assert output["stop_reason"] == "completed"
 
 
-def test_approval_required_stops_and_aborts_later_batch_call(monkeypatch):
+@pytest.mark.asyncio
+async def test_approval_required_stops_and_aborts_later_batch_call(monkeypatch):
     approval_calls: list[int] = []
     later_calls: list[int] = []
 
@@ -328,7 +335,7 @@ def test_approval_required_stops_and_aborts_later_batch_call(monkeypatch):
         ]
     )
 
-    output = _invoke(monkeypatch, registry=registry, model=model)
+    output = await _invoke(monkeypatch, registry=registry, model=model)
     payloads = _payloads(output)
 
     assert approval_calls == []
@@ -341,7 +348,8 @@ def test_approval_required_stops_and_aborts_later_batch_call(monkeypatch):
     assert payloads["later"]["handler_executed"] is False
 
 
-def test_missing_idempotency_key_stops_without_handler_or_model_retry(
+@pytest.mark.asyncio
+async def test_missing_idempotency_key_stops_without_handler_or_model_retry(
     monkeypatch,
 ):
     calls: list[int] = []
@@ -369,7 +377,7 @@ def test_missing_idempotency_key_stops_without_handler_or_model_retry(
         source="agent_error_recovery_test",
     )
 
-    output = _invoke(
+    output = await _invoke(
         monkeypatch,
         registry=registry,
         model=model,
@@ -382,7 +390,8 @@ def test_missing_idempotency_key_stops_without_handler_or_model_retry(
     assert _payloads(output)["write"]["handler_executed"] is False
 
 
-def test_runtime_unavailable_is_terminal(monkeypatch):
+@pytest.mark.asyncio
+async def test_runtime_unavailable_is_terminal(monkeypatch):
     from app.tools import execution
     from app.tools.runtime import ProjectToolExecutorError
 
@@ -403,7 +412,7 @@ def test_runtime_unavailable_is_terminal(monkeypatch):
         raise ProjectToolExecutorError
 
     monkeypatch.setattr(execution, "run_with_timeout", unavailable)
-    output = _invoke(monkeypatch, registry=registry, model=model)
+    output = await _invoke(monkeypatch, registry=registry, model=model)
 
     assert calls == []
     assert len(model.received_messages) == 1
@@ -411,7 +420,8 @@ def test_runtime_unavailable_is_terminal(monkeypatch):
     assert _payloads(output)["runtime"]["failure_kind"] == "terminal_runtime"
 
 
-def test_hidden_tool_is_denied_and_public_batch_call_is_aborted(monkeypatch):
+@pytest.mark.asyncio
+async def test_hidden_tool_is_denied_and_public_batch_call_is_aborted(monkeypatch):
     protected_calls: list[int] = []
     normal_calls: list[int] = []
 
@@ -451,7 +461,7 @@ def test_hidden_tool_is_denied_and_public_batch_call_is_aborted(monkeypatch):
         source="agent_error_recovery_test",
     )
 
-    output = _invoke(
+    output = await _invoke(
         monkeypatch,
         registry=registry,
         model=model,
@@ -468,7 +478,8 @@ def test_hidden_tool_is_denied_and_public_batch_call_is_aborted(monkeypatch):
     assert payloads["normal"]["handler_executed"] is False
 
 
-def test_structured_tool_validation_error_is_corrected_next_round(monkeypatch):
+@pytest.mark.asyncio
+async def test_structured_tool_validation_error_is_corrected_next_round(monkeypatch):
     calls: list[int] = []
 
     def handler(args, context):
@@ -485,7 +496,7 @@ def test_structured_tool_validation_error_is_corrected_next_round(monkeypatch):
         ]
     )
 
-    output = _invoke(monkeypatch, registry=registry, model=model)
+    output = await _invoke(monkeypatch, registry=registry, model=model)
     first_payload = json.loads(model.received_messages[1][-1].content)
 
     assert calls == [7]
@@ -496,7 +507,8 @@ def test_structured_tool_validation_error_is_corrected_next_round(monkeypatch):
     assert output["result"]["answer"] == "corrected"
 
 
-def test_execution_error_can_switch_tools(monkeypatch):
+@pytest.mark.asyncio
+async def test_execution_error_can_switch_tools(monkeypatch):
     executed: list[str] = []
 
     def first_handler(args, context):
@@ -523,7 +535,7 @@ def test_execution_error_can_switch_tools(monkeypatch):
         ]
     )
 
-    output = _invoke(monkeypatch, registry=registry, model=model)
+    output = await _invoke(monkeypatch, registry=registry, model=model)
 
     assert executed == ["first", "second"]
     assert output["result"]["answer"] == "used fallback tool"

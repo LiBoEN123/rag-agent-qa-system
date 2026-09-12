@@ -47,7 +47,7 @@ class FakeAgentModel:
         self.bound_tool_names = [tool.name for tool in tools]
         return self
 
-    def invoke(self, messages):
+    async def ainvoke(self, messages):
         self.received_messages.append(list(messages))
         return self.responses.pop(0)
 
@@ -106,7 +106,7 @@ def _register_dynamic_tools(
     )
 
 
-def _invoke_dynamic_graph(
+async def _invoke_dynamic_graph(
     monkeypatch,
     *,
     registry: list[ToolSpec],
@@ -131,10 +131,10 @@ def _invoke_dynamic_graph(
         "trace_id": context.trace_id,
         "session_id": context.session_id,
     }
-    return build_agent_harness().invoke(
+    return [state async for state in build_agent_harness().astream(
         graph_input,
         context=context,
-    )
+    )][-1]
 
 
 def test_tool_spec_builds_framework_structured_tool_from_provider():
@@ -183,7 +183,8 @@ def test_tool_spec_builds_framework_structured_tool_from_provider():
     assert contexts == [context]
 
 
-def test_agent_discovers_and_calls_echo_without_core_tool_mapping(monkeypatch):
+@pytest.mark.asyncio
+async def test_agent_discovers_and_calls_echo_without_core_tool_mapping(monkeypatch):
     """注册 echo_text 后，现有 Agent Graph 可直接发现、调用并继续回答。"""
     registry = []
     contexts: list[ToolInvocationContext] = []
@@ -212,7 +213,7 @@ def test_agent_discovers_and_calls_echo_without_core_tool_mapping(monkeypatch):
         source="registry_driven_test",
     )
 
-    output = _invoke_dynamic_graph(
+    output = await _invoke_dynamic_graph(
         monkeypatch,
         registry=registry,
         model=model,
@@ -235,7 +236,8 @@ def test_agent_discovers_and_calls_echo_without_core_tool_mapping(monkeypatch):
     assert next((item for item in get_local_tool_specs(get_settings()) if item.name == "echo_text"), None) is None
 
 
-def test_new_tool_request_reaches_agent_without_router_changes(monkeypatch):
+@pytest.mark.asyncio
+async def test_new_tool_request_reaches_agent_without_router_changes(monkeypatch):
     """新工具和新口吻经固定 route 入口后仍由 Agent 动态发现。"""
     registry = []
     contexts: list[ToolInvocationContext] = []
@@ -261,7 +263,7 @@ def test_new_tool_request_reaches_agent_without_router_changes(monkeypatch):
         source="registry_driven_route_test",
     )
 
-    output = _invoke_dynamic_graph(
+    output = await _invoke_dynamic_graph(
         monkeypatch,
         registry=registry,
         model=model,
@@ -277,7 +279,8 @@ def test_new_tool_request_reaches_agent_without_router_changes(monkeypatch):
     assert contexts[0].effective_question == "请用刚增加的处理能力原样接住这句话"
 
 
-def test_agent_binds_different_dynamic_args_schema(monkeypatch):
+@pytest.mark.asyncio
+async def test_agent_binds_different_dynamic_args_schema(monkeypatch):
     """动态发现不是单字符串特判，列表和默认参数 Schema 同样可执行。"""
     registry = []
     contexts: list[ToolInvocationContext] = []
@@ -304,7 +307,7 @@ def test_agent_binds_different_dynamic_args_schema(monkeypatch):
         source="registry_driven_test",
     )
 
-    _invoke_dynamic_graph(
+    await _invoke_dynamic_graph(
         monkeypatch,
         registry=registry,
         model=model,
@@ -318,7 +321,8 @@ def test_agent_binds_different_dynamic_args_schema(monkeypatch):
     assert payload["output"] == {"text": "registry driven"}
 
 
-def test_unknown_model_tool_call_is_structured_and_recoverable(monkeypatch):
+@pytest.mark.asyncio
+async def test_unknown_model_tool_call_is_structured_and_recoverable(monkeypatch):
     """模型伪造未注册名称时不执行 callable，并可读取错误后继续决策。"""
     registry = []
     contexts: list[ToolInvocationContext] = []
@@ -340,7 +344,7 @@ def test_unknown_model_tool_call_is_structured_and_recoverable(monkeypatch):
         ]
     )
 
-    output = _invoke_dynamic_graph(
+    output = await _invoke_dynamic_graph(
         monkeypatch,
         registry=registry,
         model=model,
@@ -357,14 +361,15 @@ def test_unknown_model_tool_call_is_structured_and_recoverable(monkeypatch):
     assert output["result"]["answer"] == "unknown tool handled"
 
 
-def test_provider_request_isolation(monkeypatch):
+@pytest.mark.asyncio
+async def test_provider_request_isolation(monkeypatch):
     """两个请求的独立 Registry、工具列表和 Context 不会相互泄漏。"""
     seen: list[tuple[str, str]] = []
 
     class RequestArgs(BaseModel):
         value: str
 
-    def run_request(tool_name: str, trace_id: str):
+    async def run_request(tool_name: str, trace_id: str):
         registry = []
 
         def handler(args, context):
@@ -397,7 +402,7 @@ def test_provider_request_isolation(monkeypatch):
                 AIMessage(content=trace_id),
             ]
         )
-        _invoke_dynamic_graph(
+        await _invoke_dynamic_graph(
             monkeypatch,
             registry=registry,
             model=model,
@@ -409,8 +414,8 @@ def test_provider_request_isolation(monkeypatch):
         )
         return model.bound_tool_names
 
-    assert run_request("request_a_tool", "trace-a") == ["request_a_tool"]
-    assert run_request("request_b_tool", "trace-b") == ["request_b_tool"]
+    assert await run_request("request_a_tool", "trace-a") == ["request_a_tool"]
+    assert await run_request("request_b_tool", "trace-b") == ["request_b_tool"]
     assert seen == [
         ("request_a_tool", "trace-a"),
         ("request_b_tool", "trace-b"),

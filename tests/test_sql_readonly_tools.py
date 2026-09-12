@@ -174,12 +174,13 @@ class SqlToolCallingModel:
         self.bound_tool_names = [tool.name for tool in tools]
         return self
 
-    def invoke(self, messages):
+    async def ainvoke(self, messages):
         self.received_messages.append(list(messages))
         return self.responses.pop(0)
 
 
-def test_framework_agent_calls_all_sql_tools_through_registry_runtime(
+@pytest.mark.asyncio
+async def test_framework_agent_calls_all_sql_tools_through_registry_runtime(
     monkeypatch,
     sql_registry,
     sql_settings,
@@ -197,7 +198,7 @@ def test_framework_agent_calls_all_sql_tools_through_registry_runtime(
         source="sql_agent_test",
     )
 
-    output = build_agent_harness(sql_settings).invoke(
+    output = [state async for state in build_agent_harness(sql_settings).astream(
         {
             "original_question": "查看学生表",
             "effective_question": "查看学生表",
@@ -208,7 +209,7 @@ def test_framework_agent_calls_all_sql_tools_through_registry_runtime(
             "session_id": context.session_id,
         },
         context=context,
-    )
+    )][-1]
 
     assert SQL_TOOL_NAMES <= set(model.bound_tool_names)
     tool_messages = [

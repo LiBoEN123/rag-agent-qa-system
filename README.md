@@ -177,8 +177,9 @@ Server 只编辑这一个 local JSON，不需要修改 Python、`AppSettings`、
 `.env.example` 或 `TOOL_DEFAULT_PERMISSIONS`。`enabled=false` 的 Server 不进入 adapter
 connections、不 discovery，也不会建立网络连接。
 
-MCP Tool 保持 adapter `StructuredTool`，不会反向转换成 `ToolSpec`；`/chat/stream`
-直接 await coroutine，内部同步 Runtime 保留 MCP 专属最小 bridge。输出被
+MCP Tool 保持 adapter `StructuredTool`，不会反向转换成 `ToolSpec`；
+`ChatService.stream → stream_agent → create_agent.astream` 经异步 ToolNode 直接 await
+原生 MCP coroutine。输出被
 视为不可信外部数据并脱敏、限长，image/audio/resource 等第一版不进入模型上下文。
 所有调用继续经过现有 Agent Guardrail、ToolResult、审计和 SSE 白名单投影。配置、
 安全边界和冒烟命令见[受治理的 MCP Client 工具源](docs/tools/mcp-client.md)。
@@ -838,7 +839,7 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   │   ├── framework_tools.py   # 动态框架工具与 Context 适配
 │   │   ├── tool_events.py       # Framework 事件到 observation/trace/metrics 的投影
 │   │   ├── guardrails.py        # 治理规则、预算、错误分类、Stop Reason 与指纹
-│   │   ├── runtime.py           # 请求准备、Router、Agent 缓存与同步 invoke
+│   │   ├── runtime.py           # 请求准备、Router 与 Agent 缓存
 │   │   └── streaming.py         # 直接 astream 与安全 Agent 事件投影
 │   ├── rag/
 │   │   ├── __init__.py          # RAG 公共门面和依赖注入

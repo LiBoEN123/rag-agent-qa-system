@@ -249,9 +249,11 @@ def inspect_runtime(
             "Agent Runtime calls deterministic router before create_agent",
         ),
         _check(
-            "runtime_invokes_create_agent_directly",
-            "invocation.agent.invoke(" in runtime_source,
-            "sync Runtime directly invokes create_agent graph",
+            "runtime_only_prepares_agent_invocation",
+            "def prepare_agent_runtime_invocation(" in runtime_source
+            and ".invoke(" not in runtime_source
+            and ".astream(" not in runtime_source,
+            "runtime prepares input; streaming owns Agent execution",
         ),
         _check(
             "middleware_does_not_depend_on_runtime",
@@ -260,7 +262,7 @@ def inspect_runtime(
         ),
         _check(
             "native_tool_middleware_hooks",
-            "def wrap_tool_call(" in middleware_source
+            "def wrap_tool_call(" not in middleware_source
             and "def awrap_tool_call(" in middleware_source,
             "project governance overrides LangChain native tool hooks",
         ),
@@ -270,8 +272,9 @@ def inspect_runtime(
             and _GovernedBoundModel.__name__ in framework_agent_source
             and _MODEL_GOVERNANCE_KEY == "_project_model_governance"
             and "_MODEL_GOVERNANCE_KEY" in framework_agent_source
-            and "after_model" in ProjectToolGovernanceMiddleware.__dict__
+            and "after_model" not in ProjectToolGovernanceMiddleware.__dict__
             and "aafter_model" in ProjectToolGovernanceMiddleware.__dict__
+            and "invoke" not in _GovernedBoundModel.__dict__
             and "wrap_model_call" not in ProjectToolGovernanceMiddleware.__dict__
             and "awrap_model_call"
             not in ProjectToolGovernanceMiddleware.__dict__
@@ -341,11 +344,11 @@ def inspect_runtime(
         _check(
             "local_visibility_is_model_middleware",
             "request.override(" in visibility_source
-            and "def wrap_model_call(" in visibility_source
+            and "def wrap_model_call(" not in visibility_source
             and "def awrap_model_call(" in visibility_source
             and "isinstance(tool, ProjectStructuredTool)" in visibility_source
             and not (PROJECT_ROOT / "app" / "tools" / "providers" / "local.py").exists(),
-            "LangChain middleware filters local tools in sync and async model calls",
+            "LangChain async model middleware filters local tools",
         ),
         _check(
             "mcp_governance_is_independent",
@@ -425,7 +428,7 @@ def inspect_runtime(
                 _GovernedBoundModel.__name__,
             ],
             "marker": _MODEL_GOVERNANCE_KEY,
-            "state_hooks": ["after_model", "aafter_model"],
+            "state_hooks": ["aafter_model"],
             "model_wrap_hooks_overridden": False,
             "status": "accepted_model_governance_boundary",
         },

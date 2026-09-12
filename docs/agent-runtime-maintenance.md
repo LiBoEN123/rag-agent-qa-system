@@ -11,7 +11,7 @@ Parent Agent Graph；LangGraph 只继续承载框架内部 model/tools 循环和
 | 1 | `app/api/application.py`、`app/api/chat.py`、`app/api/streaming.py` | FastAPI 如何组装，以及 SSE 如何进入 ChatService |
 | 2 | `app/services/chat_service.py`、`chat_models.py`、`chat_stream_models.py`、`chat_telemetry.py` | 流式应用流程和 telemetry 分工 |
 | 3 | `app/contracts/chat.py` | Result status 如何唯一决定 HTTP、API 和 metrics 状态 |
-| 4 | `app/agent/runtime.py` | 普通 Python Router、请求准备、Agent 缓存和同步 invoke |
+| 4 | `app/agent/runtime.py` | 普通 Python Router、请求准备、Agent 缓存 |
 | 5 | `app/agent/streaming.py` | 直接 astream、消息缓冲和安全事件投影 |
 | 6 | `app/agent/framework_agent.py` | `create_agent`、最小内部 State 和 Middleware 顺序 |
 | 7 | `app/agent/framework_middleware.py` | LangChain 生命周期 Hook、同批 fail-closed 与 RAG 终止协调 |
@@ -19,7 +19,7 @@ Parent Agent Graph；LangGraph 只继续承载框架内部 model/tools 循环和
 | 9 | `app/tools/runtime.py` | 单次本地工具调用的权限、审批、审计、超时、重试和输出校验 |
 | 10 | `app/tools/knowledge_base.py`、`app/rag/graph/` | 知识库 Tool 如何调用独立 RAG Graph |
 | 11 | `app/agent/guardrails.py`、`tool_events.py`、`results.py`、`answer.py` | 治理计算、事件投影、RAG 映射与 Result 合同 |
-| 12 | `app/tools/mcp/` | 可选 MCP discovery、权限、同步/异步 bridge 和安全输出 |
+| 12 | `app/tools/mcp/` | 可选 MCP discovery、权限、原生 coroutine 和安全输出 |
 
 ## 主调用链
 
@@ -28,6 +28,7 @@ FastAPI application
 → POST /chat/stream
 → ChatService.stream
 → Session History / Query Rewrite
+→ app.agent.streaming.stream_agent
 → app.agent.runtime.prepare_agent_runtime_invocation
 → 普通 Python route_agent_action
   ├─ direct_answer / clarify → 普通 Python 结果归一化
@@ -53,8 +54,9 @@ POST /chat/stream
 → SSE final / done
 ```
 
-内部同步 Runtime 与聊天流式入口共享参数校验、Router、ToolInvocationContext、recursion limit 和最终
-结果归一化。流式 projector 不把内部 State、ToolMessage、工具参数/原始结果、
+`runtime.py` 负责参数校验、Router、ToolInvocationContext、recursion limit 和构图缓存；
+`stream_agent()` 是唯一 Agent executor，消费最终 `values` 后构造 Result。
+流式 projector 不把内部 State、ToolMessage、工具参数/原始结果、
 reasoning 或 RAG JSON 交给 API；最终结果仍经过唯一 `ChatStatusPolicy` 和
 `build_chat_response_from_outcome()`。
 
@@ -68,13 +70,15 @@ Router 只决定 `agent`、`direct_answer` 或 `clarify`，不决定具体工具
 `build_framework_agent()` 只构造一次 `create_agent`：
 
 - Runtime 为模型绑定和实际 ToolNode 执行构造同一请求级 governed 工具集合；
-- `ProjectToolGovernanceMiddleware` 通过原生 `wrap_tool_call/awrap_tool_call` 记录
+- `ProjectToolGovernanceMiddleware` 通过原生 `awrap_tool_call` 记录
   append-only 治理事件并实施项目停止语义；
 - `ModelCallLimitMiddleware` 与 `ToolCallLimitMiddleware` 实施框架调用上限；
 - `max_concurrency=1` 让同批 terminal fail-closed 行为确定。
 
-项目 Middleware 必须成对提供同步和异步 hook。同步入口调用 `wrap_*`，流式入口
-调用 `awrap_*`；只实现一套会导致另一条传输路径绕开治理或直接失败。
+项目 Middleware 只覆盖异步执行与生命周期 hooks：`awrap_tool_call`、
+`awrap_model_call`、`abefore_model`、`aafter_model`、`aafter_agent`。
+停止跳转的 `hook_config(can_jump_to=["end"])` 声明在 `abefore_model` 上。
+纯计算 helper 与本地同步 `ToolSpec.handler` 保留；框架负责调度本地工具。
 
 ## Model Governance：已接受边界
 
@@ -84,9 +88,9 @@ Router 只决定 `agent`、`direct_answer` 或 `clarify`，不决定具体工具
 `KEEP_CURRENT_MODEL_MARKER` / `PHASE6B_SKIPPED`。
 
 当前固定链为 `_DeferredAgentModel → _GovernedBoundModel → AIMessage private marker →
-after_model/aafter_model → FrameworkAgentState`。Inspection 应把它报告为
+aafter_model → FrameworkAgentState`。Inspection 应把它报告为
 `accepted_model_governance_boundary`，不能把 private marker 当作残留协议或 TODO。
-未来只有升级依赖并重新通过 sync、async、streaming 三条隔离门禁后才重新评估；不要用
+未来只有升级依赖并重新通过异步模型与流式执行隔离门禁后才重新评估；不要用
 ContextVar、thread-local、pending event dict、全局缓存或额外 Model Graph Node 替代它。
 
 ## 工具与 RAG 边界
@@ -179,7 +183,7 @@ Agent trace 通过 `AgentRunResult.tool_trace` 返回，不再单独持久化到
 
 | 文件 | 责任 |
 | --- | --- |
-| `app/agent/runtime.py` | 参数校验、Router、请求 Context、Agent 缓存和同步 invoke |
+| `app/agent/runtime.py` | 参数校验、Router、请求 Context、Agent 缓存 |
 | `app/agent/streaming.py` | 直接 astream、安全 projector、取消传播和最终状态捕获 |
 | `app/agent/framework_agent.py` | `create_agent` 与最小 Framework State |
 | `app/agent/framework_middleware.py` | LangChain 模型/工具生命周期 Hook 和 RAG 终止协调 |
@@ -199,7 +203,7 @@ Agent trace 通过 `AgentRunResult.tool_trace` 返回，不再单独持久化到
 
 | 现象 | 首先检查 |
 | --- | --- |
-| Router 执行两次 | 是否绕开 `run_agent()` / `stream_agent()` 又手动调用 Router |
+| Router 执行两次 | 是否绕开 `stream_agent()` 的请求准备又手动调用 Router |
 | 模型看不到本地工具 | Visibility Middleware、ToolSpec `required_permissions`、Runtime Context |
 | Catalog 中存在但 Agent 不可见 | `request.override(tools=...)` 的权限过滤结果 |
 | 工具可见但执行被拒绝 | ToolRuntime 权限、审批、幂等和策略 |
@@ -207,7 +211,7 @@ Agent trace 通过 `AgentRunResult.tool_trace` 返回，不再单独持久化到
 | 重复调用未停止 | governance event 指纹与连续计数 |
 | 知识库未返回引用 | 工具结果是否含合法 `rag_result`，RAG 状态和引用验证 |
 | 流式泄漏参数或正文 | `project_agent_stream_part()` 白名单与 tainted buffer |
-| 同步/流式结果不一致 | 两入口的最终 `build_framework_agent_result()` 输入 |
+| 流式最终结果不一致 | 最终 `values` 与 `build_framework_agent_result()` 输入 |
 | MCP 工具不存在 | 启动期 discovery、Server allowlist、默认主体/请求权限 |
 | 配置变更不生效 | `.env` 非热更新；清缓存或重启进程 |
 
@@ -248,11 +252,11 @@ git diff --check
 
 Inspection 直接读取 `create_agent.get_graph()` / `get_graph(xray=True)` 和模型可见的
 Pydantic JSON Schema；不会初始化真实模型、执行 handler、访问网络或读取/重建 RAG
-索引。它同时检查 Parent Graph 文件/符号不存在、同步/流式入口直接调用
-`invoke/astream`、知识库 Tool 调用独立 RAG Graph、默认工具和可选 SQL/MCP 合同、
+索引。它同时检查 Parent Graph 文件/符号不存在、请求准备与执行分离、
+`stream_agent` 直接调用 `astream`、知识库 Tool 调用独立 RAG Graph、默认工具和可选 SQL/MCP 合同、
 Result/Status Policy、应用组合根和当前架构文档。实际模块方向由官方 `lint-imports`
 全量判定。
 
-Inspection 还锁定 `ProjectToolGovernanceMiddleware` 的原生同步/异步 Tool Hook、
+Inspection 还锁定 `ProjectToolGovernanceMiddleware` 的原生异步 Tool Hook、
 `framework_tools.py` 不手工构造 `ToolCallRequest`、项目私有 Tool artifact marker 不存在，
 以及 MCP 工具不经过 framework 二次包装。

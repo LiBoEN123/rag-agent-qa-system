@@ -1,4 +1,4 @@
-"""真实 create_agent.invoke/astream 的权限 schema、MCP 与隐藏调用回归。"""
+"""真实 create_agent.astream 的权限 schema、MCP 与隐藏调用回归。"""
 
 from pydantic import RootModel
 
@@ -26,20 +26,14 @@ class SchemaModel:
         self.schemas.append({tool.name: tool.tool_call_schema.model_json_schema() for tool in tools})
         return self
 
-    def invoke(self, messages):
+    async def ainvoke(self, messages):
         if self.forced_call and not any(isinstance(m, ToolMessage) for m in messages):
             return AIMessage(content="", tool_calls=[self.forced_call])
         return AIMessage(content="done")
 
-    async def ainvoke(self, messages):
-        return self.invoke(messages)
 
-
-def invoke(agent, context, mode):
+def stream(agent, context):
     inputs = {"messages": [("user", "check tool schemas")]}
-    if mode == "sync":
-        return agent.invoke(inputs, context=context)
-
     async def stream():
         output = None
         async for output in agent.astream(inputs, context=context, stream_mode="values"):
@@ -49,9 +43,8 @@ def invoke(agent, context, mode):
     return asyncio.run(stream())
 
 
-@pytest.mark.parametrize("mode", ["sync", "async"])
 @pytest.mark.parametrize("sql_enabled", [False, True])
-def test_native_agent_binds_exact_schemas_for_each_context(monkeypatch, settings_factory, mode, sql_enabled, sql_business_db):
+def test_native_agent_binds_exact_schemas_for_each_context(monkeypatch, settings_factory, sql_enabled, sql_business_db):
     settings = settings_factory(sql_tool_enabled=sql_enabled, sql_database_url=f"sqlite:///{sql_business_db}", sql_allowed_tables=("students",))
     tools = framework_tools.get_local_tools(settings)
     model = SchemaModel()
@@ -68,15 +61,14 @@ def test_native_agent_binds_exact_schemas_for_each_context(monkeypatch, settings
         (ToolInvocationContext(permissions=("knowledge_base:read", "web:search")), ["search_knowledge_base", "web_search", *kb[1:]]),
     ]
     for context, expected in cases:
-        invoke(agent, context, mode)
+        stream(agent, context)
         schemas = model.schemas[-1]
         assert list(schemas) == expected
         assert schemas == {t.name: t.tool_call_schema.model_json_schema() for t in tools if t.name in expected}
         assert all("runtime" not in schema["properties"] for schema in schemas.values())
 
 
-@pytest.mark.parametrize("mode", ["sync", "async"])
-def test_hidden_registered_tool_cannot_execute(monkeypatch, settings_factory, mode):
+def test_hidden_registered_tool_cannot_execute(monkeypatch, settings_factory):
     class Args(BaseModel):
         value: str
 
@@ -86,7 +78,7 @@ def test_hidden_registered_tool_cannot_execute(monkeypatch, settings_factory, mo
     model = SchemaModel({"name": "hidden_tool", "args": {"value": "forged"}, "id": "hidden-call", "type": "tool_call"})
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     settings = settings_factory()
-    output = invoke(build_framework_agent(settings, tools=local_tools([hidden, public], settings)), ToolInvocationContext(), mode)
+    output = stream(build_framework_agent(settings, tools=local_tools([hidden, public], settings)), ToolInvocationContext())
     message = next(m for m in output["messages"] if isinstance(m, ToolMessage))
     result = json.loads(message.content)
     assert all(list(s) == ["public_tool"] for s in model.schemas)
@@ -97,8 +89,7 @@ def test_hidden_registered_tool_cannot_execute(monkeypatch, settings_factory, mo
 
 
 @pytest.mark.parametrize("server", ["github", "firecrawl"])
-@pytest.mark.parametrize("mode", ["sync", "async"])
-def test_mcp_base_tool_survives_local_filter(monkeypatch, settings_factory, server, mode):
+def test_mcp_base_tool_survives_local_filter(monkeypatch, settings_factory, server):
     external = StructuredTool.from_function(lambda value: value, name=f"{server}_read", description="MCP fixture")
     monkeypatch.setattr(framework_tools, "list_mcp_tools_for_context", lambda context, *, settings: [external])
     settings = settings_factory()
@@ -106,7 +97,7 @@ def test_mcp_base_tool_survives_local_filter(monkeypatch, settings_factory, serv
     tools = framework_tools.resolve_agent_tools(context, settings)
     model = SchemaModel()
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
-    invoke(build_framework_agent(settings, tools=tools), context, mode)
+    stream(build_framework_agent(settings, tools=tools), context)
     assert list(model.schemas[-1]) == ["simple_calculator", external.name]
     assert tools[-1] is external
 

@@ -51,7 +51,7 @@ create_agent
 - ChatService 拥有 Query Rewrite、session、Agent 调用、状态策略和 telemetry 编排。
 - JSON 形态的业务模型输出由 `app.llm.schemas` 定义，并统一经过 `ModelGateway` 的原生
   Structured Output 或受控文本 fallback；业务模块不自行解析模型 JSON。
-- Agent Runtime 以普通 Python 执行唯一 Router，并直接调用 `create_agent`。
+- `runtime.py` 以普通 Python 准备请求和 Router；`stream_agent` 唯一执行 `create_agent.astream`。
 - LangChain `create_agent` 是唯一 Agent Loop；项目不再包裹 Parent Agent Graph。
 - Project Governance Middleware 拥有模型事件消费、Tool Hook、预算和 fail-closed 语义。
 - Local catalog 以不可变 tuple 缓存全部本地 StructuredTool；Model Middleware 只按请求
@@ -67,8 +67,8 @@ create_agent
 Phase 6B 的正式结论是 `KEEP_CURRENT_MODEL_MARKER` / `PHASE6B_SKIPPED`。当前
 LangChain 1.3.14 的原生异步 Model Middleware 门禁无法可靠通过，因此保留
 `_DeferredAgentModel → _GovernedBoundModel → AIMessage private marker →
-after_model/aafter_model → FrameworkAgentState`。这是已接受的内部模型治理边界，不是
-待迁移技术债；只有依赖升级后重新通过 sync、async 和 streaming 三条门禁，才可复议。
+aafter_model → FrameworkAgentState`。这是已接受的内部模型治理边界，不是
+待迁移技术债；只有依赖升级后重新通过异步模型与流式执行门禁，才可复议。
 
 ToolNode 同批调用共享输入 State，因此 `_batch_events` 与 `max_concurrency=1` 继续承担
 terminal 后续调用的确定性 fail-closed。这也是明确保留的并发安全语义。
@@ -110,8 +110,8 @@ stream  → prepare → stream_agent → finish Result → finalize
 未完成的 assistant turn。
 
 `POST /chat/stream` 是唯一聊天 HTTP 入口，包括空问题也经过 `ChatService.stream()`，
-以 `final.data.http_status` 表达业务状态。内部 `run_agent()` 仍供直接 Runtime 调用，
-ChatService 不再依赖它。流式执行直接调用
+以 `final.data.http_status` 表达业务状态。Agent 执行统一经过
+`ChatService.stream → stream_agent`，直接调用
 `create_agent.astream(updates/messages/values, subgraphs=False, version=v2)`，安全投影只
 输出允许的进度、工具状态和回答增量；`final` 仍调用唯一
 `build_chat_response_from_outcome()`。完整 HTTP/事件/安全合同见
@@ -129,14 +129,14 @@ Router 只决定 `agent`、`direct_answer` 或 `clarify`，不选择具体工具
 
 `create_agent` 是唯一 Agent Loop，其图只包含框架自己的 `model ↔ tools` 循环。动态
 工具由 Runtime 按当前请求权限解析，并在构造本次 `create_agent` 时绑定；
-`ProjectToolGovernanceMiddleware.wrap_tool_call/awrap_tool_call` 直接包裹框架 ToolNode
+`ProjectToolGovernanceMiddleware.awrap_tool_call` 直接包裹框架 ToolNode
 调用，保留模型/工具调用计数、错误分类、重复调用检测、累计耗时、同批 fail-closed、
 停止原因和 ToolMessage 配对。工具治理结果通过原生 `Command(update=...)` 写入
 `FrameworkAgentState`，不再借用 `ToolMessage.artifact` 传递项目私有事件。Agent 内部
 职责固定为：
 
-- `runtime.py`：参数校验、Router、请求 Context、Agent 构建/缓存和同步 invoke；
-- `streaming.py`：`astream` 消费与安全 SSE 事件投影；
+- `runtime.py`：参数校验、Router、请求 Context、Agent 构建/缓存；
+- `streaming.py`：唯一 Agent executor，消费 `astream` 并安全投影 SSE 事件；
 - `guardrails.py`：治理规则、预算、错误分类和指纹计算；
 - `tool_events.py`：append-only governance event 一次性生成公开 tool trace；
 - `results.py`：短路或 Framework output 到唯一 `AgentRunResult`，以及同一结果 trace 快照；
@@ -145,9 +145,10 @@ Router 只决定 `agent`、`direct_answer` 或 `clarify`，不选择具体工具
 `framework_middleware.py` 不依赖 `runtime.py`；`.importlinter` 和 Runtime Inspection 同时
 固化这条边界。系统不再维护事件游标或父图适配节点。
 
-内部同步 Runtime 直接使用 `create_agent.invoke()`，聊天流式入口直接使用
-`create_agent.astream()`。两者共享输入准备和最终结果归一化，因此公开
-`AgentRunResult`、status、references、LLM 计数与 tool trace 语义一致。
+唯一执行链为 `ChatService.stream → stream_agent → create_agent.astream`。
+模型适配器只提供 `ainvoke`，项目 Middleware 只覆盖异步 hooks；最终 `values` 状态
+由 `build_framework_agent_result` 归一化，保留公开 `AgentRunResult`、status、references、
+LLM 计数与 tool trace 语义。本地同步工具由框架调度，MCP 由异步 ToolNode 直接 await coroutine。
 
 ## 工具系统与治理边界
 
@@ -174,7 +175,7 @@ cached tuple[ProjectStructuredTool, ...]
 → request.override(tools=visible_tools)
 
 create_agent ToolNode
-→ ProjectToolGovernanceMiddleware.wrap_tool_call / awrap_tool_call
+→ ProjectToolGovernanceMiddleware.awrap_tool_call
 → cached StructuredTool
 → execute_project_tool()
 → ToolSpec.handler
@@ -226,7 +227,7 @@ CrossEncoder 重排、Evidence Gate、Context Build、回答生成、结构化�
 绑定和验证。模型调用失败与结构化输出校验失败仍分别映射为 `MODEL_ERROR` 和
 `MODEL_BAD_OUTPUT`。工具成功结果包含 RAG 的答案、引用、状态、置信度、timings 与 trace，并形成与
 原 tool call ID 配对的普通 ToolMessage。Middleware 在同一个原生 Command 中把该消息、
-治理事件和 `knowledge_base_result` 写入 State，下一轮 `before_model` 直接读取 State
+治理事件和 `knowledge_base_result` 写入 State，下一轮 `abefore_model` 直接读取 State
 并结束 Agent Model，Result builder 采用 RAG 的权威结果；不存在 `Command.PARENT`、
 `pending_rag_result` 或父图条件边。
 
@@ -308,7 +309,7 @@ git diff --check
 Runtime Inspection 检查直接 `create_agent` 节点、Parent Graph 文件/符号不存在、默认
 ToolSpec 与可选 SQL/MCP 合同、本地工具唯一执行入口和 Runtime handler 所有权、MCP
 独立治理、原生 Tool Middleware Hook、项目 artifact 协议不存在、知识库 Tool 到 RAG
-Graph 的边界、同步/流式直接调用、唯一 Result/Status
+Graph 的边界、唯一流式执行入口、唯一 Result/Status
 Policy、应用组合根和当前文档。Import Linter 负责完整生产 import graph。自动测试用
 fake 隔离模型、网络、RAG 索引和生产持久化副作用。
 

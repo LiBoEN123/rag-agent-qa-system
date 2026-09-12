@@ -44,7 +44,7 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "create_agent_is_only_agent_loop",
         "no_parent_agent_graph",
         "router_is_plain_python",
-        "runtime_invokes_create_agent_directly",
+        "runtime_only_prepares_agent_invocation",
         "middleware_does_not_depend_on_runtime",
         "native_tool_middleware_hooks",
         "accepted_model_governance_boundary",
@@ -91,7 +91,7 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "gate_result": "PHASE6B_SKIPPED",
         "adapter_chain": ["_DeferredAgentModel", "_GovernedBoundModel"],
         "marker": "_project_model_governance",
-        "state_hooks": ["after_model", "aafter_model"],
+        "state_hooks": ["aafter_model"],
         "model_wrap_hooks_overridden": False,
         "status": "accepted_model_governance_boundary",
     }

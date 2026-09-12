@@ -729,15 +729,19 @@ def _governed_tool(settings):
         tool_name_prefix=True,
         handle_tool_errors=True,
     )
-    return build_governed_mcp_tool(
+    coroutine = raw_tool.coroutine
+    tool = build_governed_mcp_tool(
         raw_tool,
         server_alias="weather",
         remote_tool_name="get_weather",
         description="Safe weather",
     )
+    assert tool is raw_tool
+    assert tool.coroutine is coroutine
+    return tool
 
 
-def test_governed_tool_supports_sync_and_native_async_paths(settings_factory):
+def test_governed_tool_preserves_native_async_contract(settings_factory):
     tool = _governed_tool(settings_factory())
     runtime = _runtime("mcp:weather")
 
@@ -749,18 +753,13 @@ def test_governed_tool_supports_sync_and_native_async_paths(settings_factory):
             "id": call_id,
         }
 
-    sync_message = tool.invoke(call("sync"))
     async_message = asyncio.run(tool.ainvoke(call("async")))
-    sync_result = parse_tool_result(
-        sync_message, known=True, name=tool.name, args={"location": "Beijing"}
-    )
     async_result = parse_tool_result(
         async_message, known=True, name=tool.name, args={"location": "Beijing"}
     )
 
-    assert sync_result["ok"] is True
+    assert tool.func is None
     assert async_result["ok"] is True
-    assert sync_result["output"] == async_result["output"]
     assert tool.args_schema == WeatherArgs.model_json_schema()
     assert "runtime" not in tool.tool_call_schema["properties"]
     parsed = parse_tool_result(
@@ -786,30 +785,6 @@ def test_direct_ingestion_profile_rejects_non_read_only_tool(settings_factory):
             context=_runtime("mcp:weather").context,
             serialization_profile=McpSerializationProfile.INGESTION,
         )
-    )
-
-    assert result["ok"] is False
-    assert result["error_code"] == "mcp_execution_error"
-    assert result["runtime"]["attempt_count"] == 0
-
-
-def test_sync_bridge_fails_safely_inside_existing_event_loop(settings_factory):
-    tool = _governed_tool(settings_factory())
-    runtime = _runtime("mcp:weather")
-
-    async def call_sync_from_loop():
-        return tool.invoke(
-            {
-                "type": "tool_call",
-                "name": tool.name,
-                "args": {"location": "Beijing", "runtime": runtime},
-                "id": "sync-in-loop",
-            }
-        )
-
-    message = asyncio.run(call_sync_from_loop())
-    result = parse_tool_result(
-        message, known=True, name=tool.name, args={"location": "Beijing"}
     )
 
     assert result["ok"] is False

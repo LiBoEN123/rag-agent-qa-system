@@ -46,12 +46,9 @@ class FakeAgentModel:
         del tools, kwargs
         return self
 
-    def invoke(self, messages):
+    async def ainvoke(self, messages):
         del messages
         return self.responses.pop(0)
-
-    async def ainvoke(self, messages):
-        return self.invoke(messages)
 
 
 class CollectingSink:
@@ -95,7 +92,6 @@ def invoke_with_framework(
     args: dict[str, Any],
     context: ToolInvocationContext | None = None,
     audit_sink=None,
-    mode: str = "sync",
 ) -> tuple[dict[str, Any], ToolMessage]:
     resolved_context = context or ToolInvocationContext(trace_id="runtime-test")
     model = FakeAgentModel(
@@ -122,18 +118,13 @@ def invoke_with_framework(
     )
     agent = build_framework_agent(settings, tools=[tool])
     inputs = {"messages": [HumanMessage(content="run")]}
-    if mode == "sync":
-        output = agent.invoke(inputs, context=resolved_context)
-    elif mode == "async":
-        output = asyncio.run(agent.ainvoke(inputs, context=resolved_context))
-    else:
-        async def stream():
-            states = [state async for state in agent.astream(
-                inputs, context=resolved_context, stream_mode="values"
-            )]
-            return states[-1]
+    async def stream():
+        states = [state async for state in agent.astream(
+            inputs, context=resolved_context, stream_mode="values"
+        )]
+        return states[-1]
 
-        output = asyncio.run(stream())
+    output = asyncio.run(stream())
     message = next(item for item in output["messages"] if isinstance(item, ToolMessage))
     return json.loads(message.content), message
 
@@ -162,7 +153,7 @@ def test_structured_tool_owns_validation_and_schema(settings_factory):
 
 
 @pytest.mark.parametrize("args_model", [RuntimeArgs, StrictRuntimeArgs, ListDocumentsArgs])
-@pytest.mark.parametrize("mode", ["direct_sync", "direct_async", "sync", "async", "stream"])
+@pytest.mark.parametrize("mode", ["direct_sync", "direct_async", "stream"])
 def test_runtime_context_and_call_id_survive_all_input_shapes(
     monkeypatch, settings_factory, args_model, mode,
 ):
@@ -193,7 +184,7 @@ def test_runtime_context_and_call_id_survive_all_input_shapes(
         assert result["tool_call_id"] == "direct-call"
     else:
         result, message = invoke_with_framework(
-            monkeypatch, settings, spec, args=args, context=context, mode=mode,
+            monkeypatch, settings, spec, args=args, context=context,
         )
         assert result["tool_call_id"] == message.tool_call_id == "framework-tool-call"
         assert message.status == "success"
@@ -213,8 +204,7 @@ def test_strict_input_rejects_extra_business_args_before_handler(settings_factor
     assert calls == []
 
 
-@pytest.mark.parametrize("mode", ["sync", "stream"])
-def test_list_documents_agent_result(monkeypatch, settings_factory, mode):
+def test_list_documents_agent_result(monkeypatch, settings_factory):
     """真实空参数本地工具贯通 ToolMessage 和公共 Agent Result。"""
     from app.rag import pipeline
     from tests.support.agent_runtime import build_agent_harness
@@ -231,14 +221,11 @@ def test_list_documents_agent_result(monkeypatch, settings_factory, mode):
     agent = build_agent_harness(settings_factory())
     inputs = {"original_question": "请列出知识库文档", "effective_question": "请列出知识库文档"}
     context = ToolInvocationContext(permissions=("knowledge_base:read",))
-    if mode == "sync":
-        output = agent.invoke(inputs, context=context)
-    else:
-        async def stream():
-            states = [state async for state in agent.astream(inputs, context=context)]
-            return states[-1]
+    async def stream():
+        states = [state async for state in agent.astream(inputs, context=context)]
+        return states[-1]
 
-        output = asyncio.run(stream())
+    output = asyncio.run(stream())
     message = next(item for item in output["messages"] if isinstance(item, ToolMessage))
     assert message.tool_call_id == "documents-call" and message.status == "success"
     assert json.loads(message.content)["output"] == {"count": 1, "documents": documents}

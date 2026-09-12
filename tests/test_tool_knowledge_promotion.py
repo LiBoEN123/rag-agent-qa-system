@@ -79,14 +79,13 @@ def _firecrawl_result(**overrides):
     return CallToolResult(content=[TextContent(type="text", text=json.dumps(payload))])
 
 
-def _run_agent(
+def _stream_agent(
     monkeypatch,
     settings,
     raw_result,
     *,
     source="github",
     opt_in=True,
-    mode="sync",
     call_id="call-1",
     permissions=None,
     sink=None,
@@ -173,10 +172,13 @@ def _run_agent(
         permissions=permissions if permissions is not None else (f"mcp:{source}",),
     )
     inputs = {"messages": [("user", "读取源文件")], "governance_events": []}
-    if mode == "async":
-        state = asyncio.run(agent.ainvoke(inputs, context=context))
-    else:
-        state = agent.invoke(inputs, context=context)
+    async def stream():
+        states = [state async for state in agent.astream(
+            inputs, context=context, stream_mode="values"
+        )]
+        return states[-1]
+
+    state = asyncio.run(stream())
     message = next(item for item in state["messages"] if isinstance(item, ToolMessage))
     event = next(item for item in state["governance_events"] if item["kind"] == "tool")
     if event["ok"]:
@@ -213,20 +215,25 @@ def test_local_calculator_and_non_opted_mcp_remain_ephemeral(
     )
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     graph = framework_agent.build_framework_agent(settings, tools=[calculator])
-    state = graph.invoke(
-        {"messages": [("user", "1+1")], "governance_events": []},
-        context=ToolInvocationContext(
-            principal_id="test",
-            permissions=("calculator:use",),
-        ),
-    )
+    async def stream():
+        states = [state async for state in graph.astream(
+            {"messages": [("user", "1+1")], "governance_events": []},
+            context=ToolInvocationContext(
+                principal_id="test",
+                permissions=("calculator:use",),
+            ),
+            stream_mode="values",
+        )]
+        return states[-1]
+
+    state = asyncio.run(stream())
     result = json.loads(
         next(
             item.content for item in state["messages"] if isinstance(item, ToolMessage)
         )
     )
     assert result["ok"] is True
-    _, result, event, _ = _run_agent(
+    _, result, event, _ = _stream_agent(
         monkeypatch, settings, _github_result(), opt_in=False
     )
     assert result["ok"] is True
@@ -234,21 +241,19 @@ def test_local_calculator_and_non_opted_mcp_remain_ephemeral(
     assert SQLiteCandidateRepository(settings.sqlite_db_path).list() == []
 
 
-@pytest.mark.parametrize("mode", ["sync", "async"])
 @pytest.mark.parametrize("source", ["github", "firecrawl"])
 def test_opted_source_pending_persisted_and_idempotent(
-    monkeypatch, settings_factory, tmp_path, mode, source
+    monkeypatch, settings_factory, tmp_path, source
 ):
     settings = settings_factory(sqlite_db_path=tmp_path / "explicit-promotion.sqlite3")
     raw = _github_result() if source == "github" else _firecrawl_result()
     ids = []
     for call_id in ("first-trace-session-call", "second-trace-session-call"):
-        _, result, event, calls = _run_agent(
+        _, result, event, calls = _stream_agent(
             monkeypatch,
             settings,
             raw,
             source=source,
-            mode=mode,
             call_id=call_id,
         )
         assert result["ok"] is True
@@ -274,7 +279,7 @@ def test_repeated_result_preserves_explicit_approval_state(
     monkeypatch, settings_factory, decision
 ):
     settings = settings_factory()
-    _, _, first, _ = _run_agent(monkeypatch, settings, _github_result())
+    _, _, first, _ = _stream_agent(monkeypatch, settings, _github_result())
     repository = SQLiteCandidateRepository(settings.sqlite_db_path)
     original = repository.get(first["knowledge_candidate_id"])
     service = IngestionService(repository)
@@ -283,7 +288,7 @@ def test_repeated_result_preserves_explicit_approval_state(
         decided_by=original.requested_by,
         reason="operator decision",
     )
-    _, result, repeated, _ = _run_agent(
+    _, result, repeated, _ = _stream_agent(
         monkeypatch, settings, _github_result(), call_id="again"
     )
     assert result["ok"] is True
@@ -305,7 +310,7 @@ def test_candidate_reuses_redaction_and_never_accepts_payload_trust(
             "approval_status": "approved",
         },
     )
-    _, result, event, _ = _run_agent(monkeypatch, settings, raw)
+    _, result, event, _ = _stream_agent(monkeypatch, settings, raw)
     candidate = SQLiteCandidateRepository(settings.sqlite_db_path).get(
         event["knowledge_candidate_id"]
     )
@@ -374,10 +379,10 @@ def test_incomplete_source_is_not_promoted_and_tool_answer_is_preserved(
             raw = _firecrawl_result(truncated=True)
         else:
             args = {**FIRECRAWL_ARGS, "formats": ["summary"]}
-    _, baseline, _, _ = _run_agent(
+    _, baseline, _, _ = _stream_agent(
         monkeypatch, settings, raw, source=source, opt_in=False, args=args
     )
-    _, result, event, _ = _run_agent(
+    _, result, event, _ = _stream_agent(
         monkeypatch, settings, raw, source=source, args=args
     )
     assert result["ok"] is baseline["ok"] is True
@@ -421,7 +426,7 @@ def test_execution_and_promotion_failure_domains(monkeypatch, settings_factory, 
             raise RuntimeError("private audit error")
 
     raw = _github_result(isError=case == "tool_error")
-    _, result, event, calls = _run_agent(
+    _, result, event, calls = _stream_agent(
         monkeypatch,
         settings,
         raw,
@@ -521,7 +526,7 @@ def test_agent_candidate_admin_approval_index_and_normal_rag_retrieval(
         BODY not in hit["text"] for hit in pipeline.retrieve("紫岚协议", top_k=2)
     )
 
-    _, _, event, _ = _run_agent(monkeypatch, settings, _github_result())
+    _, _, event, _ = _stream_agent(monkeypatch, settings, _github_result())
     candidate_id = event["knowledge_candidate_id"]
     client = TestClient(create_app(settings=settings))
     headers = {INGESTION_ADMIN_HEADER: "promotion-test-key"}

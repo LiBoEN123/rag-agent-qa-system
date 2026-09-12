@@ -1,5 +1,6 @@
 """知识库工具从 Agent Model 到 RAG 子图的严格真实链路测试。"""
 
+import pytest
 from pydantic import RootModel
 
 import json
@@ -25,7 +26,7 @@ class KnowledgeModel:
         self.bound_tools = list(tools)
         return self
 
-    def invoke(self, messages):
+    async def ainvoke(self, messages):
         self.received_messages.append(list(messages))
         return AIMessage(
             content="",
@@ -40,7 +41,7 @@ class KnowledgeModel:
         )
 
 
-def _invoke_knowledge_graph(
+async def _invoke_knowledge_graph(
     monkeypatch,
     *,
     output: dict,
@@ -98,7 +99,7 @@ def _invoke_knowledge_graph(
         source="knowledge_tool_integration_test",
     )
 
-    graph_output = build_agent_harness().invoke(
+    graph_output = [state async for state in build_agent_harness().astream(
         {
             "original_question": "奖学金申请条件是什么？",
             "effective_question": "奖学金申请条件是什么？",
@@ -109,7 +110,7 @@ def _invoke_knowledge_graph(
             "session_id": context.session_id,
         },
         context=context,
-    )
+    )][-1]
     return {
         "output": graph_output,
         "model": model,
@@ -120,7 +121,8 @@ def _invoke_knowledge_graph(
     }
 
 
-def test_search_knowledge_base_uses_real_project_structured_tool_and_rag(
+@pytest.mark.asyncio
+async def test_search_knowledge_base_uses_real_project_structured_tool_and_rag(
     monkeypatch,
 ):
     chunk = {
@@ -128,7 +130,7 @@ def test_search_knowledge_base_uses_real_project_structured_tool_and_rag(
         "text": "申请人需要提交成绩单。",
         "file_name": "scholarship.md",
     }
-    result = _invoke_knowledge_graph(
+    result = await _invoke_knowledge_graph(
         monkeypatch,
         output={"count": 1, "chunks": [chunk]},
         rag_result={
@@ -168,8 +170,9 @@ def test_search_knowledge_base_uses_real_project_structured_tool_and_rag(
     ]
 
 
-def test_successful_zero_result_search_is_not_a_tool_error(monkeypatch):
-    result = _invoke_knowledge_graph(
+@pytest.mark.asyncio
+async def test_successful_zero_result_search_is_not_a_tool_error(monkeypatch):
+    result = await _invoke_knowledge_graph(
         monkeypatch,
         output={"count": 0, "chunks": []},
         rag_result={
@@ -201,7 +204,8 @@ def test_successful_zero_result_search_is_not_a_tool_error(monkeypatch):
     assert result["output"]["result"]["status"] == "NO_RELEVANT_INFO"
 
 
-def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
+@pytest.mark.asyncio
+async def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
     monkeypatch,
 ):
     """知识库不可用由工具链返回标准错误，模型读取后仍可安全结束。"""
@@ -215,7 +219,7 @@ def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
             assert [tool.name for tool in tools] == ["search_knowledge_base"]
             return self
 
-        def invoke(self, messages):
+        async def ainvoke(self, messages):
             self.received_messages.append(list(messages))
             self.calls += 1
             if self.calls == 1:
@@ -266,7 +270,7 @@ def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
         source="knowledge_tool_integration_test",
     )
 
-    output = build_agent_harness().invoke(
+    output = [state async for state in build_agent_harness().astream(
         {
             "original_question": "知识库问题",
             "effective_question": "知识库问题",
@@ -276,7 +280,7 @@ def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
             "trace_id": context.trace_id,
         },
         context=context,
-    )
+    )][-1]
 
     tool_message = model.received_messages[1][-1]
     assert isinstance(tool_message, ToolMessage)

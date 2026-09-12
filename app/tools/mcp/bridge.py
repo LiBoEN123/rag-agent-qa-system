@@ -1,16 +1,14 @@
-"""MCP Tool 的项目治理、薄同步 facade 与直接调用入口。"""
+"""MCP Tool 的项目治理、metadata 与异步直接调用入口。"""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
-from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.interceptors import MCPToolCallRequest
@@ -494,32 +492,12 @@ def build_governed_mcp_tool(
     approval_required: bool = False,
     knowledge_promotion: str | None = None,
 ) -> BaseTool:
-    """在官方 tool 本身只补充同步入口与项目 metadata。"""
+    """在官方 tool 本身补充描述与项目 metadata，保留原生 coroutine。"""
     exposed_name = f"{server_alias}_{remote_tool_name}"
     raw_coroutine = raw_tool.coroutine
     if raw_tool.name != exposed_name or not callable(raw_coroutine):
         raise ValueError("MCP adapter tool 名称或 coroutine 无效")
-    if not hasattr(raw_tool, "func"):
-        raise ValueError("MCP adapter tool 不支持同步 facade")
-
-    # 同步执行 MCP 协程，已有事件循环时返回桥接错误。
-    def invoke_mcp(
-        runtime: ToolRuntime[ToolInvocationContext],
-        **tool_args: Any,
-    ):
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(raw_coroutine(runtime=runtime, **tool_args))
-        failure = _bridge_failure(
-            exposed_name,
-            tool_args,
-            "MCP sync bridge cannot run inside an active event loop",
-        )
-        return json.dumps(failure, ensure_ascii=False, sort_keys=True), None
-
     raw_tool.description = description
-    raw_tool.func = invoke_mcp
     raw_tool.metadata = {
         "tool_origin": "mcp",
         "mcp_server": server_alias,

@@ -44,7 +44,7 @@ class RecordingModel:
         self.bound_tool_names = [tool.name for tool in tools]
         return self
 
-    def invoke(self, messages):
+    async def ainvoke(self, messages):
         self.received_messages.append(list(messages))
         return self.responses.pop(0)
 
@@ -63,7 +63,7 @@ class SearchFetchModel(RecordingModel):
         self.bound_tool_history.append(list(self.bound_tool_names))
         return self
 
-    def invoke(self, messages):
+    async def ainvoke(self, messages):
         self.received_messages.append(list(messages))
         if len(self.received_messages) == 1:
             return AIMessage(content="", tool_calls=[_tool_call("search-call")])
@@ -106,7 +106,7 @@ class SearchPdfModel(RecordingModel):
         self.bound_tool_history.append(list(self.bound_tool_names))
         return self
 
-    def invoke(self, messages):
+    async def ainvoke(self, messages):
         self.received_messages.append(list(messages))
         if len(self.received_messages) == 1:
             return AIMessage(
@@ -152,7 +152,7 @@ class FetchThenPdfModel(RecordingModel):
         self.first_error = {}
         self.pdf_output = {}
 
-    def invoke(self, messages):
+    async def ainvoke(self, messages):
         self.received_messages.append(list(messages))
         url = "https://example.com/document.pdf"
         if len(self.received_messages) == 1:
@@ -283,8 +283,8 @@ def _tool_call(call_id="web-call"):
     }
 
 
-def _invoke(model, context):
-    return build_agent_harness().invoke(
+async def _invoke(model, context):
+    return [state async for state in build_agent_harness().astream(
         {
             "original_question": "查一下 LangGraph 最近有什么变化",
             "effective_question": "查一下 LangGraph 最近有什么变化",
@@ -295,7 +295,7 @@ def _invoke(model, context):
             "session_id": context.session_id,
         },
         context=context,
-    )
+    )][-1]
 
 
 @pytest.fixture(autouse=True)
@@ -305,7 +305,8 @@ def isolate_runtime(settings_env):
     yield
 
 
-def test_consecutive_requests_keep_web_visibility_isolated_and_execute_graph(
+@pytest.mark.asyncio
+async def test_consecutive_requests_keep_web_visibility_isolated_and_execute_graph(
     monkeypatch,
 ):
     """连续请求保持工具可见性隔离，并分别完成图执行。"""
@@ -352,7 +353,7 @@ def test_consecutive_requests_keep_web_visibility_isolated_and_execute_graph(
         lambda: current_model["value"],
     )
 
-    hidden_output = _invoke(
+    hidden_output = await _invoke(
         hidden_model,
         ToolInvocationContext(
             trace_id="trace-without-web",
@@ -361,7 +362,7 @@ def test_consecutive_requests_keep_web_visibility_isolated_and_execute_graph(
         ),
     )
     current_model["value"] = visible_model
-    visible_output = _invoke(
+    visible_output = await _invoke(
         visible_model,
         ToolInvocationContext(
             trace_id="trace-with-web",
@@ -416,7 +417,8 @@ def test_consecutive_requests_keep_web_visibility_isolated_and_execute_graph(
     assert "web_search" not in build_agent_harness().nodes
 
 
-def test_forged_hidden_web_search_is_denied_without_ddgs_or_runtime(
+@pytest.mark.asyncio
+async def test_forged_hidden_web_search_is_denied_without_ddgs_or_runtime(
     monkeypatch,
 ):
     class ForbiddenDDGS:
@@ -432,7 +434,7 @@ def test_forged_hidden_web_search_is_denied_without_ddgs_or_runtime(
     )
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
 
-    output = _invoke(
+    output = await _invoke(
         model,
         ToolInvocationContext(
             trace_id="trace-forged-web",
@@ -449,7 +451,8 @@ def test_forged_hidden_web_search_is_denied_without_ddgs_or_runtime(
     assert output["result"]["status"] == "TOOL_ERROR"
 
 
-def test_agent_searches_then_fetches_through_registry_runtime(monkeypatch):
+@pytest.mark.asyncio
+async def test_agent_searches_then_fetches_through_registry_runtime(monkeypatch):
     """真实 create_agent 循环把 Search URL 交给 Fetch，再形成最终回答。"""
     ddgs_calls = []
 
@@ -479,7 +482,7 @@ def test_agent_searches_then_fetches_through_registry_runtime(monkeypatch):
     )
     model = SearchFetchModel()
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
-    output = _invoke(
+    output = await _invoke(
         model,
         ToolInvocationContext(
             trace_id="trace-search-fetch",
@@ -522,7 +525,8 @@ def test_agent_searches_then_fetches_through_registry_runtime(monkeypatch):
     assert "web_fetch" not in build_agent_harness().nodes
 
 
-def test_agent_searches_then_reads_pdf_through_project_tool(monkeypatch):
+@pytest.mark.asyncio
+async def test_agent_searches_then_reads_pdf_through_project_tool(monkeypatch):
     """真实 create_agent 循环把搜索 PDF URL 交给受治理 PDF 工具。"""
     ddgs_calls = []
 
@@ -552,7 +556,7 @@ def test_agent_searches_then_reads_pdf_through_project_tool(monkeypatch):
     )
     model = SearchPdfModel()
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
-    output = _invoke(
+    output = await _invoke(
         model,
         ToolInvocationContext(
             trace_id="trace-search-pdf",
@@ -599,7 +603,8 @@ def test_agent_searches_then_reads_pdf_through_project_tool(monkeypatch):
     assert "web_pdf_fetch" not in build_agent_harness().nodes
 
 
-def test_agent_recovers_from_web_fetch_pdf_content_type_error(monkeypatch):
+@pytest.mark.asyncio
+async def test_agent_recovers_from_web_fetch_pdf_content_type_error(monkeypatch):
     """模型读取错误 ToolMessage 后在同一框架循环中改用 PDF 工具。"""
     FakePdfManager.sessions = []
     monkeypatch.setattr(web_download_module, "Manager", FakePdfManager)
@@ -612,7 +617,7 @@ def test_agent_recovers_from_web_fetch_pdf_content_type_error(monkeypatch):
     )
     model = FetchThenPdfModel()
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
-    output = _invoke(
+    output = await _invoke(
         model,
         ToolInvocationContext(
             trace_id="trace-fetch-pdf-recovery",
@@ -644,7 +649,8 @@ def test_agent_recovers_from_web_fetch_pdf_content_type_error(monkeypatch):
     assert len(FakePdfManager.sessions) == 2
 
 
-def test_forged_hidden_web_fetch_is_denied_without_http_manager(monkeypatch):
+@pytest.mark.asyncio
+async def test_forged_hidden_web_fetch_is_denied_without_http_manager(monkeypatch):
     class ForbiddenManager:
         def __init__(self, config):
             raise AssertionError(f"hidden web_fetch reached Manager: {config}")
@@ -670,7 +676,7 @@ def test_forged_hidden_web_fetch_is_denied_without_http_manager(monkeypatch):
         ]
     )
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
-    output = _invoke(
+    output = await _invoke(
         model,
         ToolInvocationContext(
             trace_id="trace-forged-fetch",
@@ -687,7 +693,8 @@ def test_forged_hidden_web_fetch_is_denied_without_http_manager(monkeypatch):
     assert output["result"]["status"] == "TOOL_ERROR"
 
 
-def test_forged_hidden_web_pdf_fetch_is_denied_without_dependencies(
+@pytest.mark.asyncio
+async def test_forged_hidden_web_pdf_fetch_is_denied_without_dependencies(
     monkeypatch,
 ):
     class ForbiddenManager:
@@ -726,7 +733,7 @@ def test_forged_hidden_web_pdf_fetch_is_denied_without_dependencies(
     )
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
 
-    output = _invoke(
+    output = await _invoke(
         model,
         ToolInvocationContext(
             trace_id="trace-forged-pdf-fetch",
