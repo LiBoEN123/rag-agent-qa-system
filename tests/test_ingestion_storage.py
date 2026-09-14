@@ -185,6 +185,56 @@ def test_index_runs_persist_success_and_safe_failure_without_content(tmp_path):
     assert "candidate_json" not in columns
 
 
+def test_latest_successfully_indexed_uses_success_history_without_page_limit(tmp_path):
+    db_path = tmp_path / "app.sqlite3"
+    repository = SQLiteCandidateRepository(db_path)
+    domain = IngestionService(repository)
+    runs = SQLiteIndexRunRepository(db_path)
+
+    def approve(url, content):
+        candidate = _propose(repository, url, content)
+        return domain.approve(candidate.candidate_id, decided_by=REQUESTER)
+
+    other = approve("https://example.com/other", "other source")
+    v1 = approve("https://example.com/a", "v1")
+    v2 = approve("https://example.com/a", "v2")
+    failed_v3 = approve("https://example.com/a", "failed v3")
+    approved_only = approve("https://example.com/unindexed", "approved only")
+    failed_only = approve("https://example.com/failed", "failed only")
+    for candidate in (other, v1, v2):
+        runs.succeed(runs.create_running(candidate.candidate_id).id, added=1)
+    for _ in range(51):
+        runs.succeed(runs.create_running(v2.candidate_id).id, skipped=1)
+    for candidate in (failed_v3, failed_only):
+        runs.fail(runs.create_running(candidate.candidate_id).id, error_code="FAILED")
+    runs.create_running(approved_only.candidate_id)
+
+    restarted = SQLiteCandidateRepository(db_path)
+    assert restarted.load_latest_successfully_indexed() == [v2, other]
+    # 最近一次成功重新索引旧 candidate，也应按 run 历史恢复该版本。
+    runs.succeed(runs.create_running(v1.candidate_id).id, added=1)
+    assert restarted.load_latest_successfully_indexed() == [v1, other]
+
+
+@pytest.mark.parametrize("damage", ["missing", "invalid_json", "mismatched_fields"])
+def test_successful_candidate_restore_fails_closed_on_damaged_persistence(tmp_path, damage):
+    db_path = tmp_path / "app.sqlite3"
+    repository = SQLiteCandidateRepository(db_path)
+    candidate = _propose(repository)
+    runs = SQLiteIndexRunRepository(db_path)
+    runs.succeed(runs.create_running(candidate.candidate_id).id, added=1)
+    with sqlite3.connect(db_path) as connection:
+        if damage == "missing":
+            connection.execute("DELETE FROM ingestion_candidates")
+        elif damage == "invalid_json":
+            connection.execute("UPDATE ingestion_candidates SET candidate_json = '{}'")
+        else:
+            connection.execute("UPDATE ingestion_candidates SET source_type = 'github'")
+
+    with pytest.raises(CandidatePersistenceError):
+        repository.load_latest_successfully_indexed()
+
+
 def test_init_db_upgrades_existing_database_without_changing_old_rows(tmp_path):
     db_path = tmp_path / "legacy.sqlite3"
     connection = sqlite3.connect(db_path)

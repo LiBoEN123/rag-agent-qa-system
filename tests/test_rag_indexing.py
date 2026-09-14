@@ -309,7 +309,7 @@ def test_real_langchain_incremental_add_skip_modify_add_delete(tmp_path):
     assert matrix.shape == (2, 2)
 
 
-def test_force_rebuild_preserves_legacy_collection(tmp_path):
+def test_force_rebuild_preserves_legacy_collection(tmp_path, monkeypatch):
     settings = get_settings()
     embeddings = CountingEmbeddings()
     legacy = Chroma(
@@ -319,14 +319,14 @@ def test_force_rebuild_preserves_legacy_collection(tmp_path):
     )
     legacy.add_texts(["legacy"], ids=["legacy-record"])
     (tmp_path / "current.txt").write_text("current", encoding="utf-8")
-    result = indexing.sync_documents(
-        indexing.load_local_langchain_documents(str(tmp_path)),
-        embeddings,
-        settings=settings,
-        force_rebuild=True,
-    )
+    monkeypatch.setattr(pipeline, "_load_embedding_model", lambda: embeddings)
+    monkeypatch.setattr(pipeline, "rerank_model", object())
+    published = []
+    monkeypatch.setattr(pipeline, "_publish_runtime_bundle", published.append)
+    ok, message = pipeline.rebuild_and_persist_index(str(tmp_path), force_rebuild=True)
 
-    assert result["num_added"] == 1
+    assert ok, message
+    assert published[0]["texts"] == ["current"]
     assert len(legacy.get(include=[])["ids"]) == 1
     current = indexing.create_vector_store(
         None,
@@ -334,6 +334,57 @@ def test_force_rebuild_preserves_legacy_collection(tmp_path):
         create_collection_if_not_exists=False,
     )
     assert len(current.get(include=[])["ids"]) == 1
+
+
+@pytest.mark.parametrize("force_rebuild", [False, True])
+def test_rebuild_publishes_empty_only_after_shared_collection_is_empty(
+    tmp_path, monkeypatch, force_rebuild,
+):
+    embeddings = CountingEmbeddings()
+    monkeypatch.setattr(pipeline, "model", embeddings)
+    monkeypatch.setattr(pipeline, "_load_embedding_model", lambda: embeddings)
+    published = []
+    monkeypatch.setattr(pipeline, "_publish_runtime_bundle", published.append)
+    path = tmp_path / "removed.txt"
+    path.write_text("old local content", encoding="utf-8")
+    indexing.sync_documents(
+        indexing.load_local_langchain_documents(str(tmp_path)), embeddings,
+    )
+    for namespace in indexing.EXTERNAL_RECORD_NAMESPACE_BY_SOURCE_TYPE.values():
+        indexing.create_record_manager(namespace=namespace).update(["stale-external-key"])
+    path.unlink()
+
+    ok, message = pipeline.rebuild_and_persist_index(
+        str(tmp_path), force_rebuild=force_rebuild,
+    )
+
+    assert ok, message
+    assert published[0]["chunks"] == []
+    assert published[0]["bm25"] is None
+    assert indexing.create_vector_store(None).get(include=[])["ids"] == []
+    assert indexing.create_record_manager().list_keys() == []
+    for namespace in indexing.EXTERNAL_RECORD_NAMESPACE_BY_SOURCE_TYPE.values():
+        assert indexing.create_record_manager(namespace=namespace).list_keys() == (
+            [] if force_rebuild else ["stale-external-key"]
+        )
+
+
+def test_empty_local_does_not_hide_collection_read_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline, "model", CountingEmbeddings())
+    sentinel_chunks = [{"text": "old external runtime"}]
+    monkeypatch.setattr(pipeline, "chunks", sentinel_chunks)
+    monkeypatch.setattr(pipeline, "RAG_READY", True)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("collection read failed")
+
+    monkeypatch.setattr(pipeline, "create_vector_store", fail)
+    ok, message = pipeline.rebuild_and_persist_index(str(tmp_path))
+
+    assert ok is False
+    assert "collection read failed" in message
+    assert pipeline.chunks is sentinel_chunks
+    assert pipeline.RAG_READY is True
 
 
 @pytest.mark.parametrize("needs_force_rebuild", [False, True])

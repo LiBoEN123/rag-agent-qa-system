@@ -1,4 +1,4 @@
-"""LangChain-native 的 Local Knowledge 增量索引薄适配。"""
+"""LangChain-native 的受控文档转换与单 namespace 索引薄适配。"""
 
 from __future__ import annotations
 
@@ -35,6 +35,12 @@ from app.rag.ingest import (
 
 
 LOCAL_RECORD_NAMESPACE = "rag-agent/local/v1"
+GITHUB_RECORD_NAMESPACE = "rag-agent/github/v1"
+FIRECRAWL_RECORD_NAMESPACE = "rag-agent/firecrawl/v1"
+EXTERNAL_RECORD_NAMESPACE_BY_SOURCE_TYPE = {
+    KnowledgeSourceType.GITHUB: GITHUB_RECORD_NAMESPACE,
+    KnowledgeSourceType.FIRECRAWL: FIRECRAWL_RECORD_NAMESPACE,
+}
 RECORD_MANAGER_FILE_NAME = "record_manager.sqlite3"
 _LOCAL_REQUESTER = IngestionRequester(
     principal_id="local-index-sync-v1",
@@ -208,21 +214,11 @@ def sync_documents(
     settings: AppSettings | None = None,
     namespace: str = LOCAL_RECORD_NAMESPACE,
     cleanup: Literal["full", "incremental"] = "full",
-    force_rebuild: bool = False,
 ) -> dict[str, int]:
     """用 LangChain Indexing API 同步指定 namespace 的受控文档。"""
     resolved = settings or get_settings()
-    if force_rebuild and cleanup != "full":
-        raise ValueError("force_rebuild 只允许用于 full authoritative sync")
     manager = create_record_manager(resolved, namespace=namespace)
     vector_store = create_vector_store(embeddings, resolved)
-
-    if force_rebuild:
-        vector_store.delete_collection()
-        keys = manager.list_keys()
-        if keys:
-            manager.delete_keys(keys)
-        vector_store = create_vector_store(embeddings, resolved)
 
     result: dict[str, Any] = index(
         documents,
@@ -236,6 +232,9 @@ def sync_documents(
 
 
 __all__ = [
+    "EXTERNAL_RECORD_NAMESPACE_BY_SOURCE_TYPE",
+    "FIRECRAWL_RECORD_NAMESPACE",
+    "GITHUB_RECORD_NAMESPACE",
     "LOCAL_RECORD_NAMESPACE",
     "RECORD_MANAGER_FILE_NAME",
     "candidate_to_langchain_documents",

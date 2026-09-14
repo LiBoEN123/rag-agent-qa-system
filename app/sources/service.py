@@ -19,10 +19,15 @@ from app.ingestion import (
     IngestionPrincipalType,
     IngestionRequester,
     IngestionService,
-    KnowledgeSourceType,
 )
 from app.rag import pipeline as rag_pipeline
-from app.rag.indexing import candidate_to_langchain_documents, sync_documents
+from app.rag.indexing import (
+    EXTERNAL_RECORD_NAMESPACE_BY_SOURCE_TYPE,
+    FIRECRAWL_RECORD_NAMESPACE,
+    GITHUB_RECORD_NAMESPACE,
+    candidate_to_langchain_documents,
+    sync_documents,
+)
 from app.sources.firecrawl import FirecrawlPagePayload, FirecrawlPageSourceAdapter
 from app.sources.github import GitHubFilePayload, GitHubFileSourceAdapter
 from app.storage.ingestion import SQLiteCandidateRepository
@@ -33,8 +38,6 @@ from app.tools.mcp.provider import get_mcp_tool_provider
 from app.tools.mcp.serialization import McpSerializationProfile
 
 
-GITHUB_RECORD_NAMESPACE = "rag-agent/github/v1"
-FIRECRAWL_RECORD_NAMESPACE = "rag-agent/firecrawl/v1"
 _GITHUB_TOOL = "github_get_file_contents"
 _FIRECRAWL_TOOL = "firecrawl_firecrawl_scrape"
 _SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40,64}$")
@@ -397,10 +400,9 @@ class ExternalKnowledgeSourceService:
         candidate = self._ingestion.repository.get(candidate_id)
         if candidate is None:
             raise SourceIngestionError("SOURCE_CANDIDATE_NOT_FOUND", "candidate 不存在")
-        namespace = {
-            KnowledgeSourceType.GITHUB: GITHUB_RECORD_NAMESPACE,
-            KnowledgeSourceType.FIRECRAWL: FIRECRAWL_RECORD_NAMESPACE,
-        }.get(candidate.document.source_type)
+        namespace = EXTERNAL_RECORD_NAMESPACE_BY_SOURCE_TYPE.get(
+            candidate.document.source_type
+        )
         if namespace is None:
             raise SourceIngestionError("SOURCE_TYPE_UNSUPPORTED", "不支持该 external source")
         resolved_embeddings = embeddings or self._embeddings or rag_pipeline.model

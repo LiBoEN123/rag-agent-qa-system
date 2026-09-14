@@ -11,7 +11,15 @@ from app.rag.debug import (
     preview_chunks as preview_chunks_impl,
     preview_docs as preview_docs_impl,
 )
-from app.rag.indexing import load_local_langchain_documents, sync_documents
+from app.rag.indexing import (
+    EXTERNAL_RECORD_NAMESPACE_BY_SOURCE_TYPE,
+    LOCAL_RECORD_NAMESPACE,
+    candidate_to_langchain_documents,
+    create_record_manager,
+    create_vector_store,
+    load_local_langchain_documents,
+    sync_documents,
+)
 from app.rag.policy import should_refuse
 from app.rag.retrieval import (
     retrieve as retrieve_impl,
@@ -26,6 +34,8 @@ from app.rag.store import (
     load_index_cache as load_index_cache_impl,
     save_manifest,
 )
+from app.storage.ingestion import SQLiteCandidateRepository
+
 # 进程内索引状态。
 chunks: list[dict] = []
 texts: list[str] = []
@@ -83,7 +93,7 @@ def _sync_and_build_runtime(
     *,
     force_rebuild: bool = False,
 ) -> tuple[dict, dict[str, int]]:
-    """增量同步 Local corpus，并在发布前构建完整 runtime bundle。"""
+    """普通同步只更新 Local；force 从完整 authoritative corpus 重建共享索引。"""
     settings = get_settings()
     chunk_size = settings.chunk_size if chunk_size is None else chunk_size
     chunk_overlap = (
@@ -94,40 +104,66 @@ def _sync_and_build_runtime(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
     )
+    documents_by_namespace = {LOCAL_RECORD_NAMESPACE: documents}
+    if force_rebuild:
+        documents_by_namespace.update(
+            (namespace, [])
+            for namespace in EXTERNAL_RECORD_NAMESPACE_BY_SOURCE_TYPE.values()
+        )
+        candidates = SQLiteCandidateRepository(
+            settings.sqlite_db_path
+        ).load_latest_successfully_indexed()
+        for candidate in candidates:
+            namespace = EXTERNAL_RECORD_NAMESPACE_BY_SOURCE_TYPE.get(
+                candidate.document.source_type
+            )
+            if namespace is None:
+                raise ValueError("成功 index candidate 的 external source type 不支持恢复")
+            documents_by_namespace[namespace].extend(
+                candidate_to_langchain_documents(
+                    candidate,
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
+                )
+            )
+
     embedding_model = (
         _load_embedding_model()
         if force_rebuild or model is None
         else model
     )
-    sync_result = sync_documents(
-        documents,
-        embedding_model,
-        settings=settings,
-        force_rebuild=force_rebuild,
-    )
+    if force_rebuild:
+        # GLOBAL_RESET：全部 candidate 已验证、切分后，才能清空共享 v2 collection。
+        create_vector_store(embedding_model, settings).delete_collection()
+        for namespace in documents_by_namespace:
+            manager = create_record_manager(settings, namespace=namespace)
+            keys = manager.list_keys()
+            if keys:
+                manager.delete_keys(keys)
 
-    if not documents:
-        return (
-            {
-                "ok": True,
-                "source": "none",
-                "chunks": [],
-                "texts": [],
-                "docs_registry": [],
-                "doc_embeddings": None,
-                "bm25": None,
-                "model": embedding_model,
-                "rerank_model": rerank_model,
-            },
-            sync_result,
+    sync_result: dict[str, int] = {}
+    for namespace, namespace_documents in documents_by_namespace.items():
+        result = sync_documents(
+            namespace_documents,
+            embedding_model,
+            settings=settings,
+            namespace=namespace,
         )
+        for key, count in result.items():
+            sync_result[key] = sync_result.get(key, 0) + count
 
     bundle = load_index_cache_impl(
         model=embedding_model,
         rerank_model=rerank_model,
     )
     if not bundle["ok"]:
-        raise RuntimeError(bundle["message"])
+        # Cache loader 将空 collection 视为无缓存；严格读取区分真正空库与读取失败。
+        store = create_vector_store(
+            None, settings, create_collection_if_not_exists=False
+        )
+        if store.get(limit=1, include=[])["ids"]:
+            raise RuntimeError(bundle["message"])
+        bundle.update(ok=True, message=NO_DOCUMENTS_MESSAGE)
     return bundle, sync_result
 
 
@@ -158,7 +194,7 @@ def rebuild_and_persist_index(
     _publish_runtime_bundle(bundle)
     summary = ", ".join(f"{key}={value}" for key, value in sync_result.items())
     if not bundle["chunks"]:
-        return True, f"Local corpus 已同步为空（{summary}）"
+        return True, f"共享知识库已同步为空（{summary}）"
     return True, f"LangChain 增量索引已同步并发布（{summary}）"
 
 

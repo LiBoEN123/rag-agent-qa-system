@@ -136,6 +136,28 @@ class SQLiteCandidateRepository:
             statement = select(func.count()).select_from(_IngestionCandidateRecord)
             return int(session.scalar(statement) or 0)
 
+    def load_latest_successfully_indexed(self) -> list[IngestionCandidate]:
+        """按成功 run ID 倒序，每个 source_id 恢复最近成功索引的版本。"""
+        statement = (
+            select(_IngestionCandidateRecord)
+            .select_from(_IngestionIndexRunRecord)
+            .outerjoin(
+                _IngestionCandidateRecord,
+                _IngestionCandidateRecord.candidate_id
+                == _IngestionIndexRunRecord.candidate_id,
+            )
+            .where(_IngestionIndexRunRecord.status == IndexRunStatus.SUCCESS.value)
+            .order_by(_IngestionIndexRunRecord.id.desc())
+        )
+        latest: dict[str, IngestionCandidate] = {}
+        with self._sessions() as session:
+            for record in session.scalars(statement):
+                if record is None:
+                    raise CandidatePersistenceError("成功 index run 对应的 candidate 缺失")
+                candidate = self._load(record)
+                latest.setdefault(candidate.document.source_id, candidate)
+        return list(latest.values())
+
     # 按状态和来源筛选候选，按申请时间及标识倒序返回校验后的分页记录。
     def list(
         self,
