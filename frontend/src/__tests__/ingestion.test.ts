@@ -13,7 +13,7 @@ const { refreshStatus } = vi.hoisted(() => ({ refreshStatus: vi.fn().mockResolve
 vi.mock('../composables/useBackendStatus', () => ({ useBackendStatus: () => ({ refreshStatus }) }))
 vi.mock('../api/ingestion', () => ({
   listCandidates: vi.fn(), getCandidate: vi.fn(), approveCandidate: vi.fn(), rejectCandidate: vi.fn(),
-  indexCandidate: vi.fn(), listIndexRuns: vi.fn(), proposeGitHub: vi.fn(), proposeFirecrawl: vi.fn(),
+  indexCandidate: vi.fn(), listIndexRuns: vi.fn(), proposeGitHub: vi.fn(), proposeFirecrawl: vi.fn(), proposeUpload: vi.fn(),
 }))
 
 const drawer = defineComponent({ props: ['modelValue'], template: '<section v-if="modelValue"><slot /></section>' })

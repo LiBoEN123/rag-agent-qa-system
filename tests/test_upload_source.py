@@ -1,0 +1,96 @@
+"""上传 source 的读取限额、临时文件清理和真实 loader 失败边界。"""
+
+from io import BytesIO
+from zipfile import ZIP_DEFLATED, ZipFile
+
+import pytest
+from pypdf import PdfWriter
+
+from app.sources import upload
+
+
+@pytest.mark.parametrize("filename", ["../bad.txt", "C:\\Users\\bad.txt", "/tmp/bad.txt", "bad\x00.txt"])
+def test_adapter_rejects_paths_and_control_characters(filename):
+    with pytest.raises(upload.UploadSourceError) as error:
+        upload.load_upload_document(BytesIO(b"text"), filename=filename, max_bytes=4)
+    assert error.value.code == "UPLOAD_INVALID_FILENAME"
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_temporary_path_is_controlled_and_cleaned(monkeypatch, failure):
+    paths = []
+
+    def parse(path, _max_bytes):
+        paths.append(path)
+        assert path.name == "document.txt"
+        assert path.read_bytes() == b"text"
+        if failure:
+            raise RuntimeError(f"private detail: {path}")
+        return "text", None
+
+    monkeypatch.setattr(upload, "_load_content", parse)
+    if failure:
+        with pytest.raises(upload.UploadSourceError, match="无法解析") as error:
+            upload.load_upload_document(BytesIO(b"text"), filename="safe.txt", max_bytes=4)
+        assert "private detail" not in str(error.value)
+    else:
+        document = upload.load_upload_document(
+            BytesIO(b"text"), filename="safe.txt", max_bytes=4,
+        )
+        assert str(paths[0]) not in document.model_dump_json()
+    assert not paths[0].parent.exists()
+
+
+def test_size_check_reads_at_most_limit_plus_one_and_cleans_partial_file(tmp_path, monkeypatch):
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+
+    class BoundedReader(BytesIO):
+        def read(self, size=-1):
+            assert 0 < size <= 64 * 1024
+            return super().read(size)
+
+    stream = BoundedReader(b"x" * 100_000)
+    with pytest.raises(upload.UploadSourceError) as error:
+        upload.load_upload_document(stream, filename="large.txt", max_bytes=70_000)
+    assert error.value.code == "UPLOAD_TOO_LARGE"
+    assert stream.tell() == 70_001
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_pdf_without_text_and_encrypted_pdf_fail_closed():
+    for encrypted, code in ((False, "UPLOAD_NO_TEXT"), (True, "UPLOAD_PARSE_FAILED")):
+        writer = PdfWriter()
+        writer.add_blank_page(width=300, height=300)
+        if encrypted:
+            writer.encrypt("test-password")
+        stream = BytesIO()
+        writer.write(stream)
+        stream.seek(0)
+        with pytest.raises(upload.UploadSourceError) as error:
+            upload.load_upload_document(stream, filename="scan.pdf", max_bytes=10_000)
+        assert error.value.code == code
+
+
+def test_docx_expansion_limit_rejects_compressed_large_payload():
+    stream = BytesIO()
+    with ZipFile(stream, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr("word/document.xml", "x" * 20_000)
+    assert stream.tell() < 1000
+    stream.seek(0)
+    with pytest.raises(upload.UploadSourceError) as error:
+        upload.load_upload_document(stream, filename="large.docx", max_bytes=1000)
+    assert error.value.code == "UPLOAD_TOO_LARGE"
+
+
+def test_text_encoding_and_redaction_are_reused():
+    content = "上传的中文资料。\n第二行正文。\n" * 10
+    document = upload.load_upload_document(
+        BytesIO(content.encode("gb18030")), filename="中文.TXT", max_bytes=4096,
+    )
+    assert document.content == content.rstrip()
+    assert document.metadata["file_type"] == "txt"
+    redacted = upload.load_upload_document(
+        BytesIO(b"Authorization: Bearer body-secret"), filename="secret.txt", max_bytes=4096,
+    )
+    assert redacted.content_redacted
+    assert "body-secret" not in redacted.model_dump_json()

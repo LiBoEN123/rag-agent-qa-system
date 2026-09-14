@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { AxiosAdapter, InternalAxiosRequestConfig } from 'axios'
 import { http, ingestionHttp, setIngestionAdminKey } from '../api/http'
-import { approveCandidate, getCandidate, listCandidates, listIndexRuns, proposeFirecrawl, proposeGitHub } from '../api/ingestion'
+import { approveCandidate, getCandidate, listCandidates, listIndexRuns, proposeFirecrawl, proposeGitHub, proposeUpload } from '../api/ingestion'
 
 const originalHttpAdapter = http.defaults.adapter
 const originalIngestionAdapter = ingestionHttp.defaults.adapter
@@ -12,6 +12,27 @@ afterEach(() => {
 })
 
 describe('入库 API 边界', () => {
+  it('上传通过 ingestionHttp 发送 FormData 并复用管理员 header', async () => {
+    const requests: InternalAxiosRequestConfig[] = []
+    ingestionHttp.defaults.adapter = async (config) => {
+      requests.push(config)
+      return { config, status: 201, statusText: 'Created', headers: {}, data: { candidate_id: 'cand_upload' } }
+    }
+    setIngestionAdminKey('upload-test-key')
+    const file = new File(['UPLOAD_V1_UNIQUE_987654'], 'guide.txt', { type: 'text/plain' })
+    expect(await proposeUpload({ file, reason: '审核' })).toEqual({ candidate_id: 'cand_upload' })
+    const config = requests[0]!
+    expect(config.url).toBe('/admin/ingestion/sources/upload')
+    expect(config.method).toBe('post')
+    expect(config.headers.get('X-Ingestion-Admin-Key')).toBe('upload-test-key')
+    expect(config.data).toBeInstanceOf(FormData)
+    expect(config.data.get('file')).toBe(file)
+    expect(config.data.get('reason')).toBe('审核')
+    expect([...config.data.keys()]).toEqual(['file', 'reason'])
+    await proposeUpload({ file })
+    expect(requests[1]!.data.has('reason')).toBe(false)
+  })
+
   it('管理员密钥仅附加到 ingestion 请求，且不会持久化到浏览器存储', async () => {
     const requests: InternalAxiosRequestConfig[] = []
     const adapter: AxiosAdapter = async (config) => {

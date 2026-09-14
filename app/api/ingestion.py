@@ -6,7 +6,8 @@ import secrets
 from dataclasses import dataclass
 from typing import Annotated, Awaitable, Callable
 
-from fastapi import APIRouter, Depends, Query, Request, Security
+from fastapi import APIRouter, Depends, File, Form, Query, Request, Security, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, SecretStr, StrictStr, field_validator
@@ -25,6 +26,7 @@ from app.ingestion import (
     TrustLevel,
 )
 from app.sources import ExternalKnowledgeSourceService, SourceIngestionError
+from app.sources.upload import UploadSourceError
 from app.storage.ingestion import (
     CandidatePersistenceError,
     IndexRunStatus,
@@ -180,6 +182,11 @@ async def _proposal(
 ) -> IngestionCandidateSummary:
     try:
         return service.summarize(await operation)
+    except UploadSourceError as exc:
+        status = 413 if exc.code == "UPLOAD_TOO_LARGE" else (
+            415 if exc.code == "UPLOAD_UNSUPPORTED_TYPE" else 422
+        )
+        raise _error(status, exc.code, str(exc)) from None
     except SourceIngestionError as exc:
         raise _source_error(exc) from None
     except (TypeError, ValueError):
@@ -273,6 +280,23 @@ def create_ingestion_router(deps: IngestionOperationsDependencies) -> APIRouter:
             deps.ingestion_service,
             "Firecrawl",
         )
+
+    @router.post("/sources/upload", response_model=IngestionCandidateSummary, status_code=201)
+    async def propose_upload(
+        file: Annotated[UploadFile, File()],
+        reason: Annotated[str | None, Form(max_length=1000)] = None,
+    ):
+        try:
+            return await _proposal(
+                run_in_threadpool(
+                    deps.source_service.propose_upload_file,
+                    file=file.file, filename=file.filename, reason=reason,
+                ),
+                deps.ingestion_service,
+                "Upload",
+            )
+        finally:
+            await file.close()
 
     # 按状态和来源类型分页查询候选，并转换为摘要列表。
     @router.get("/candidates", response_model=list[IngestionCandidateSummary])

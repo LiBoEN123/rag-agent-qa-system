@@ -359,7 +359,10 @@ API 使用同源相对路径，经 Vite proxy 访问后端；需要修改目标�
 `INGESTION_ADMIN_API_KEY=<你的管理员密钥>`，然后重启后端。密钥在入库页的密码框中输入，
 仅保留在浏览器内存，刷新页面即清除；不要放入 `VITE_*`、URL 或仓库。
 在「待审批知识」刷新 Agent 已生成的候选，查看安全预览后批准，再单独点击「写入知识库」。
-「索引记录」可检查结果；GitHub / Firecrawl 手动提案位于「来源提案」。
+「索引记录」可检查结果；GitHub / Firecrawl 手动提案及本地文件上传位于「来源提案」。
+选择「本地文件」后可选择或拖拽单个 PDF、DOCX、TXT、MD 文件；上传只生成待审批候选，
+仍需批准后手动写入知识库。默认上限 20 MiB，通过 `INGESTION_UPLOAD_MAX_BYTES` 配置；
+扫描 PDF 暂不支持 OCR，原始文件解析后删除，候选持久化全文。
 
 聊天只使用 `/chat/stream`，`answer_delta` 用于增量展示，`final.data.response` 更新本轮权威结果，
 `done` 表示流结束。中断不会自动重试。session ID 保存在 sessionStorage，
@@ -444,6 +447,7 @@ Tool Runtime 与 Agent Runtime 缓存；生产服务通常直接重启进程。�
 | `MCP_MAX_TEXT_CHARS` / `MCP_MAX_STRUCTURED_CHARS` | MCP 文本与 structured content 的模型上下文上限，默认 `12000` / `20000` |
 | `INGESTION_ADMIN_API_ENABLED` | 是否注册永久知识运营 API，默认 `false`；它不是 Agent Tool |
 | `INGESTION_ADMIN_API_KEY` | `SecretStr` operator/service 管理密钥；启用运营 API 时必填，通过 `X-Ingestion-Admin-Key` 发送 |
+| `INGESTION_UPLOAD_MAX_BYTES` | 单文件上传及 DOCX 展开大小上限，默认 `20971520`（20 MiB），必须为正整数 |
 | `TOOL_DEFAULT_PERMISSIONS` | 默认服务主体通用权限；默认仅 `knowledge_base:read`，Web/SQL 仍需显式权限；MCP 默认主体可见性由每个 Server 的 `enabled_for_default_principal` 配置 |
 | `USE_LLM_JUDGE` | 评测脚本是否启用 LLM Judge，默认 `false` |
 | `JUDGE_API_KEY` | 评测 Judge 模型 API Key；为空时可复用回答模型 Key |

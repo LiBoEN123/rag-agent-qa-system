@@ -1,4 +1,4 @@
-"""通过 cached governed MCP 编排外部知识 proposal 与 approved-only indexing。"""
+"""编排受治理 MCP / 上传来源 proposal 与 approved-only indexing。"""
 
 from __future__ import annotations
 
@@ -7,12 +7,12 @@ import re
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, BinaryIO
 from urllib.parse import urlsplit
 
 from langchain_core.embeddings import Embeddings
 
-from app.config import AppSettings
+from app.config import AppSettings, get_settings
 from app.ingestion import (
     INGESTION_MAX_CONTENT_CHARS,
     IngestionCandidate,
@@ -30,6 +30,7 @@ from app.rag.indexing import (
 )
 from app.sources.firecrawl import FirecrawlPagePayload, FirecrawlPageSourceAdapter
 from app.sources.github import GitHubFilePayload, GitHubFileSourceAdapter
+from app.sources.upload import load_upload_document
 from app.storage.ingestion import SQLiteCandidateRepository
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolRiskLevel
@@ -380,6 +381,16 @@ class ExternalKnowledgeSourceService:
         )
         payload = _firecrawl_payload(output, requested_url=url)
         document = self._firecrawl_adapter.to_document(payload, fetched_at=fetched_at)
+        return self._propose(document, reason)
+
+    def propose_upload_file(
+        self, *, file: BinaryIO, filename: str | None, reason: str | None = None,
+    ) -> IngestionCandidate:
+        """解析上传全文并复用候选治理；文件由 HTTP adapter 管理关闭。"""
+        settings = self._settings or get_settings()
+        document = load_upload_document(
+            file, filename=filename, max_bytes=settings.ingestion_upload_max_bytes,
+        )
         return self._propose(document, reason)
 
     def approve(self, candidate_id: str, *, reason: str | None = None) -> IngestionCandidate:

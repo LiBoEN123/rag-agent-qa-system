@@ -6,10 +6,14 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
 from langchain_core.embeddings import Embeddings
+from pydantic import SecretStr
 from sqlalchemy import delete, update
 
 from app.config import get_settings
+from app.api.application import create_app
+from app.api.ingestion import IngestionOperationsDependencies
 from app.ingestion import (
     IngestionCandidateStatus,
     IngestionPrincipalType,
@@ -449,3 +453,82 @@ def test_global_rebuild_validates_successful_candidates_before_reset(
     assert pipeline.RAG_READY is True
     assert indexing.create_vector_store(None).get(include=[])["ids"] == old_ids
     assert (runtime.settings.index_store_dir / "index_manifest.json").read_bytes() == old_manifest
+
+
+def test_upload_approve_index_retrieve_and_force_rebuild(persisted_runtime, monkeypatch):
+    runtime = persisted_runtime
+    keyword = "UPLOAD_V1_UNIQUE_987654"
+    # 只替代模型推理；保留真实 SQLite、LangChain index、Chroma、reload 和检索。
+    reranker = SimpleNamespace(predict=lambda pairs: [float(keyword in text) for _, text in pairs])
+    monkeypatch.setattr(rag_store, "_load_rerank_model", lambda: reranker)
+    settings = runtime.settings.model_copy(update={
+        "ingestion_admin_api_enabled": True,
+        "ingestion_admin_api_key": SecretStr("upload-test-admin"),
+    })
+    deps = IngestionOperationsDependencies(
+        ingestion_service=runtime.domain, source_service=runtime.source_service,
+        index_runs=runtime.runs, requester=_requester(),
+        admin_api_key=settings.ingestion_admin_api_key,
+    )
+    client = TestClient(create_app(settings=settings, ingestion_dependencies=deps))
+    headers = {"X-Ingestion-Admin-Key": "upload-test-admin"}
+    response = client.post(
+        "/admin/ingestion/sources/upload", headers=headers,
+        files={"file": ("unique.txt", keyword.encode())},
+    )
+    assert response.status_code == 201, response.text
+    candidate_id = response.json()["candidate_id"]
+    path = f"/admin/ingestion/candidates/{candidate_id}"
+    assert response.json()["status"] == "pending"
+    assert client.post(f"{path}/index", headers=headers).status_code == 409
+    assert pipeline.texts == ["local durable content"]
+    assert keyword not in indexing.create_vector_store(None).get()["documents"]
+    assert client.post(f"{path}/approve", headers=headers, json={}).status_code == 200
+    assert runtime.runs.list() == []
+    assert keyword not in indexing.create_vector_store(None).get()["documents"]
+
+    indexed = client.post(f"{path}/index", headers=headers)
+    assert indexed.status_code == 200, indexed.text
+    assert indexed.json()["status"] == "success"
+    assert indexed.json()["added"] == 1
+    runtime.embeddings.reset()
+    assert client.post(f"{path}/index", headers=headers).json()["skipped"] == 1
+    assert runtime.embeddings.document_texts == []
+    duplicate = client.post(
+        "/admin/ingestion/sources/upload", headers=headers,
+        files={"file": ("again.txt", keyword.encode())},
+    )
+    assert duplicate.json()["candidate_id"] == candidate_id
+    assert duplicate.json()["status"] == "approved"
+    assert runtime.domain.repository.count() == 1
+
+    for after_rebuild in (False, True):
+        if after_rebuild:
+            # 从持久 candidate 全文恢复，不依赖临时文件或现有向量记录。
+            history = runtime.runs.list()
+            indexing.create_vector_store(None).delete_collection()
+            ok, message = pipeline.rebuild_and_persist_index(
+                str(runtime.local_dir), force_rebuild=True,
+            )
+            assert ok, message
+            assert runtime.runs.list() == history
+        assert pipeline.bm25.corpus_size == len(pipeline.chunks) == 2
+        upload_position = pipeline.texts.index(keyword)
+        assert all(pipeline.bm25.doc_freqs[upload_position].get(token, 0) for token in tokenize(keyword))
+        # 禁止 Chroma 查询失败被本地向量 fallback 掩盖。
+        def no_fallback(*args, **kwargs):
+            pytest.fail("Chroma retrieval unexpectedly fell back to local vectors")
+        monkeypatch.setattr("app.rag.retrieval._retrieve_with_local_embeddings", no_fallback)
+        hits = pipeline.search_relevant_chunks(keyword, top_k=2)
+        hit = next(item for item in hits if keyword in item["text"])
+        assert hit["vector_score"] > 0.99
+        assert hit["metadata"]["source_type"] == "upload"
+        assert hit["source_path"].startswith("upload://local/")
+        assert pipeline.rerank(hits, keyword)[0]["text"] == keyword
+        keys = indexing.create_record_manager(namespace=indexing.UPLOAD_RECORD_NAMESPACE).list_keys()
+        records = indexing.create_vector_store(None).get(where={"source_type": "upload"})
+        assert set(keys) == set(records["ids"])
+        assert len(keys) == 1
+        assert [item.candidate_id for item in SQLiteCandidateRepository(
+            runtime.settings.sqlite_db_path,
+        ).load_latest_successfully_indexed()] == [candidate_id]

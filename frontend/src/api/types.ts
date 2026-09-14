@@ -108,3 +108,7 @@ export interface FirecrawlProposalRequest {
   url: string
   reason?: string | null
 }
+export interface UploadProposalRequest {
+  file: File
+  reason?: string | null
+}

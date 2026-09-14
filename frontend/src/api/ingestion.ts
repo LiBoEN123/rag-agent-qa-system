@@ -2,6 +2,7 @@ import { ingestionHttp } from './http'
 import type {
   CandidateDetailResponse, FirecrawlProposalRequest, GitHubProposalRequest,
   IngestionCandidateStatus, IngestionCandidateSummary, IngestionIndexRun, KnowledgeSourceType,
+  UploadProposalRequest,
 } from './types'
 
 const base = '/admin/ingestion'
@@ -51,4 +52,11 @@ export async function proposeGitHub(request: GitHubProposalRequest) {
 
 export async function proposeFirecrawl(request: FirecrawlProposalRequest) {
   return (await ingestionHttp.post<IngestionCandidateSummary>(`${base}/sources/firecrawl`, request)).data
+}
+
+export async function proposeUpload(request: UploadProposalRequest) {
+  const form = new FormData()
+  form.append('file', request.file)
+  if (request.reason) form.append('reason', request.reason)
+  return (await ingestionHttp.post<IngestionCandidateSummary>(`${base}/sources/upload`, form)).data
 }

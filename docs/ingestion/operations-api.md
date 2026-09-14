@@ -22,6 +22,7 @@ INGESTION_ADMIN_API_KEY=
 ```text
 POST /admin/ingestion/sources/github
 POST /admin/ingestion/sources/firecrawl
+POST /admin/ingestion/sources/upload
 GET  /admin/ingestion/candidates
 GET  /admin/ingestion/candidates/{candidate_id}
 POST /admin/ingestion/candidates/{candidate_id}/approve
@@ -37,6 +38,57 @@ candidate ID 或 approval 状态。服务端分别只授予 `mcp:github` 或 `mc
 列表支持 `status`、`source_type`、`limit`、`offset`，默认 `limit=50`，上限 100；列表
 只返回 `IngestionService.summarize()` 生成的安全摘要。详情最多返回 2000 字正文预览和
 已经过 ingestion contract 清理的 metadata，没有 full-content endpoint。
+
+## 本地文件上传（LOCAL-KB-UPLOAD-V1）
+
+在现有「知识入库 → 来源提案 → 本地文件」中，Element Plus `el-upload` 负责单文件
+选择/拖拽；关闭自动上传，提交时由 `ingestionHttp` 使用 `FormData` 与原有管理员 header
+发送 `POST /admin/ingestion/sources/upload`。Multipart 字段为必填 `file` 和可选
+`reason`（最多 1000 字符），成功返回 HTTP 201 与现有 `IngestionCandidateSummary`。
+
+后端只接受 `.pdf/.docx/.txt/.md`，扩展名不区分大小写。PDF 使用 `PyPDFLoader`
+（逐页加载、禁用图像提取），DOCX 使用 `Docx2txtLoader`，TXT/MD 复用
+`charset-normalizer` 编码识别。Loader 文本按稳定顺序组合成全文，PDF 保留页边界；
+统一 chunking 仍由 `candidate_to_langchain_documents()` 完成。
+
+`INGESTION_UPLOAD_MAX_BYTES` 默认 20 MiB，必须为正整数。框架接收 multipart 并管理
+spooled 文件，source adapter 在线程池中按最多 64 KiB 分块读取，超限即停止；DOCX 在
+loader 解压前还校验 ZIP 声明的展开总大小不超过同一限额。该配置限制单文件处理大小，
+不是 ASGI 收包之前的整个 HTTP 请求限额。
+
+用户文件名只用于安全的标题/metadata，不能决定服务器路径；标准 multipart parser
+可能先将 Windows 客户端路径简化为 basename，adapter 拒绝其余路径及控制字符。
+解析仅使用 `TemporaryDirectory` 下的固定文件名，成功、解析失败和超限都会清理。
+原始文件不长期保存，loader 的临时 `source` metadata 不进入候选。
+
+原始文件 SHA-256 生成 `upload://local/<sha256>`；`build_knowledge_document()` 负责
+其余 source/document/content identity、规范化和脱敏。Metadata 保留 `file_name`、
+`file_type`、`file_size`、`file_sha256`，PDF 另有 `page_count`；chunk `source_path`
+沿用现有 fallback，取稳定 `source_uri`。改名重传同一文件返回首次保存的候选，
+不会重置既有审批状态。
+
+上传固定为 `UPLOAD / UNTRUSTED_EXTERNAL`，正常全文需审批后再手动索引。既有 policy
+仍执行正文上限（默认 1,000,000 字符），超出时生成 rejected 候选，不截断正文。
+上传和批准都不会写 Chroma，完整候选继续保存在现有 SQLite repository。
+成功索引后通过 `load_index_cache()` 重建共享 runtime/BM25；global force rebuild
+从 `load_latest_successfully_indexed()` 恢复成功索引的上传全文，无需原始文件。
+
+上传错误使用现有 `{ "error": { "code", "message" } }` 格式：
+
+| HTTP | code | 条件 |
+| --- | --- | --- |
+| 413 | `UPLOAD_TOO_LARGE` | 文件或 DOCX 展开大小超限 |
+| 415 | `UPLOAD_UNSUPPORTED_TYPE` | 不支持的扩展名 |
+| 422 | `UPLOAD_INVALID_FILENAME` | 文件名包含路径/控制字符或无效 |
+| 422 | `UPLOAD_EMPTY_FILE` | 零字节文件 |
+| 422 | `UPLOAD_NO_TEXT` | 空白全文或无文本 PDF |
+| 422 | `UPLOAD_PARSE_FAILED` | 文档损坏、伪造、加密或文本编码/内容无效 |
+
+依赖固定为 `langchain-community==0.4.2`、`docx2txt==0.9`，显式声明已有
+`python-multipart==0.0.32`。其余既有版本不升级。需要注意
+[LangChain 已宣布停止积极维护 community 包](https://github.com/langchain-ai/langchain-community/issues/674)，
+当前 loader 导入会产生弃用警告。V1 暂保留官方 loader 以避免扩大自写解析层，后续需跟踪
+独立 integration 包迁移；现有 local authoritative corpus 仍使用旧 PDF/DOCX parser。
 
 ## Agent 工具结果提出候选（默认关闭）
 

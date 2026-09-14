@@ -25,7 +25,7 @@ index(cleanup="full", source_id_key="source_id", key_encoder="sha256")
 现有 splitter、embedding/reranker 配置、BM25 全量内存重建和现有读取/检索接口。
 
 Local loader 每轮返回完整 authoritative corpus，因此使用 `cleanup="full"`。Local
-namespace 不与未来 GitHub/Firecrawl namespace 共享，完整 cleanup 不会误删外部知识。
+namespace 不与 GitHub/Firecrawl/Upload namespace 共享，完整 cleanup 不会误删外部知识。
 BM25 不做增量实现；`index()` 成功后从最终 Chroma corpus 全量重建，未变化文档不会
 重新 embedding。
 
@@ -40,17 +40,20 @@ chunk 参数、namespace/collection 或索引版本变化，以及 RecordManager
 `source_id`、`document_uid`、`source_uri` 和 `position`。
 
 恢复保持简单：普通 sync 失败时报告错误且不发布新内存 runtime；下一次启动重试。
-显式 force rebuild 只清理 v2 collection 和 Local RecordManager namespace，再由框架
-全量 index。没有跨 SQLite/Chroma 事务、rollback journal 或自定义 registry。
+显式 force rebuild 先验证 Local corpus 与 SQLite 中每个来源最近一次成功索引的候选，
+再清理共享 v2 collection 和 Local / external RecordManager namespaces，由框架全量
+index 并恢复完整 runtime。仅获批、未成功索引的候选不进入重建。
+没有跨 SQLite/Chroma 事务、rollback journal 或自定义 registry。
 
 Phase 10 不新增 Agent Tool/Public API。
 
-Phase 11B 在该边界上增加两个独立 external namespace：
+该边界上使用独立 external namespace：
 
 - GitHub file：`rag-agent/github/v1`；
-- Firecrawl page：`rag-agent/firecrawl/v1`。
+- Firecrawl page：`rag-agent/firecrawl/v1`；
+- Upload file（LOCAL-KB-UPLOAD-V1）：`rag-agent/upload/v1`。
 
-二者继续写入统一 `mini_rag_chunks_v2` collection，但只对显式 approved candidate 调用
+三者继续写入统一 `mini_rag_chunks_v2` collection，但只对显式 approved candidate 调用
 `index(cleanup="incremental")`。因此更新一个 source 只清理相同 `source_id` 的旧 chunks，
 不会删除 Local 或其他 external source；Local authoritative sync 仍默认
 `cleanup="full"`，且只操作 Local namespace 已记录的 keys。成功后直接复用现有

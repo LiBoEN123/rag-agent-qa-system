@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from io import BytesIO
 
+import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from app.api.application import create_app
+from app.api.application import create_app, get_default_ingestion_dependencies
 import app.api.application as api_application
 from app.api.ingestion import (
     INGESTION_ADMIN_HEADER,
@@ -434,3 +436,137 @@ def test_index_failure_is_safe_and_candidate_remains_approved(settings_factory):
     assert detail.json()["latest_index_result"]["status"] == "failed"
     assert stored.status is IndexRunStatus.FAILED
     assert stored.error_message == "SOURCE_RUNTIME_RELOAD_FAILED"
+
+
+def _upload_client(settings_factory, **settings_overrides):
+    settings = settings_factory(
+        ingestion_admin_api_enabled=True, ingestion_admin_api_key=ADMIN_KEY,
+        **settings_overrides,
+    )
+    deps = get_default_ingestion_dependencies(settings)
+    return TestClient(create_app(settings=settings, ingestion_dependencies=deps)), deps
+
+
+def _upload_bytes(file_type):
+    keyword = "UPLOAD_V1_UNIQUE_987654"
+    buffer = BytesIO()
+    if file_type == "pdf":
+        from pypdf import PdfWriter
+        from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+        writer = PdfWriter()
+        font = DictionaryObject({
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        })
+        for text in (keyword, "SECOND_PAGE_TEXT"):
+            page = writer.add_blank_page(width=300, height=300)
+            page[NameObject("/Resources")] = DictionaryObject({
+                NameObject("/Font"): DictionaryObject({NameObject("/F1"): font}),
+            })
+            stream = DecodedStreamObject()
+            stream.set_data(f"BT /F1 12 Tf 20 200 Td ({text}) Tj ET".encode())
+            page[NameObject("/Contents")] = writer._add_object(stream)
+        writer.write(buffer)
+    elif file_type == "docx":
+        from docx import Document
+
+        document = Document()
+        document.add_paragraph(keyword)
+        document.add_table(rows=1, cols=1).cell(0, 0).text = "TABLE_CELL_TEXT"
+        document.save(buffer)
+    else:
+        buffer.write(("# Upload\n\n" + keyword).encode())
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize("file_type", ["txt", "md", "pdf", "docx"])
+def test_upload_formats_persist_pending_and_dedupe(settings_factory, file_type):
+    client, deps = _upload_client(settings_factory)
+    content = _upload_bytes(file_type)
+    filename = f"guide.{file_type}"
+    first = client.post(
+        "/admin/ingestion/sources/upload", headers=_headers(),
+        files={"file": (filename, content)}, data={"reason": "review upload"},
+    )
+    assert first.status_code == 201, first.text
+    summary = first.json()
+    assert (summary["source_type"], summary["status"], summary["trust_level"]) == (
+        "upload", "pending", "untrusted_external",
+    )
+    assert summary["policy_decision"] == "require_approval"
+    assert "content" not in summary
+    document = deps.ingestion_service.repository.get(summary["candidate_id"]).document
+    assert "UPLOAD_V1_UNIQUE_987654" in document.content
+    assert document.metadata["file_name"] == filename
+    assert document.metadata["file_type"] == file_type
+    assert document.metadata["file_size"] == len(content)
+    assert document.source_uri == f"upload://local/{document.metadata['file_sha256']}"
+    assert "/tmp/" not in document.model_dump_json()
+    if file_type == "pdf":
+        assert document.metadata["page_count"] == 2
+        assert "[第 2 页]\nSECOND_PAGE_TEXT" in document.content
+    if file_type == "docx":
+        assert "TABLE_CELL_TEXT" in document.content
+    duplicate = client.post(
+        "/admin/ingestion/sources/upload", headers=_headers(),
+        files={"file": (f"renamed.{file_type}", content)},
+    )
+    assert duplicate.json() == summary
+    assert deps.ingestion_service.repository.count() == 1
+    assert deps.index_runs.list() == []
+
+
+@pytest.mark.parametrize("filename,body,status,code", [
+    ("bad.exe", b"data", 415, "UPLOAD_UNSUPPORTED_TYPE"),
+    ("empty.txt", b"", 422, "UPLOAD_EMPTY_FILE"),
+    ("blank.md", b" \n\t", 422, "UPLOAD_NO_TEXT"),
+    ("../bad.txt", b"data", 422, "UPLOAD_INVALID_FILENAME"),
+    ("bad.pdf", b"fake pdf", 422, "UPLOAD_PARSE_FAILED"),
+    ("bad.docx", b"fake docx", 422, "UPLOAD_PARSE_FAILED"),
+    ("binary.txt", b"\x00\x01\x02", 422, "UPLOAD_PARSE_FAILED"),
+    ("large.txt", b"x" * 33, 413, "UPLOAD_TOO_LARGE"),
+])
+def test_invalid_upload_returns_safe_4xx_without_candidate(
+    settings_factory, filename, body, status, code,
+):
+    client, deps = _upload_client(settings_factory, ingestion_upload_max_bytes=32)
+    response = client.post(
+        "/admin/ingestion/sources/upload", headers=_headers(),
+        files={"file": (filename, body)},
+    )
+    assert response.status_code == status, response.text
+    assert response.json()["error"]["code"] == code
+    assert "/tmp/" not in response.text
+    assert deps.ingestion_service.repository.count() == 0
+
+
+def test_multipart_strips_windows_client_path_before_upload_adapter(settings_factory):
+    client, deps = _upload_client(settings_factory)
+    response = client.post(
+        "/admin/ingestion/sources/upload", headers=_headers(),
+        files={"file": ("C:\\Users\\private\\guide.txt", b"safe content")},
+    )
+    assert response.status_code == 201
+    document = deps.ingestion_service.repository.get(response.json()["candidate_id"]).document
+    assert document.metadata["file_name"] == document.title == "guide.txt"
+    assert "Users" not in document.model_dump_json()
+
+
+def test_upload_auth_and_multipart_validation(settings_factory):
+    client, deps = _upload_client(settings_factory)
+    for headers in ({}, _headers("wrong-key")):
+        assert client.post(
+            "/admin/ingestion/sources/upload", headers=headers,
+            files={"file": ("guide.txt", b"body")},
+        ).status_code == 401
+    assert client.post(
+        "/admin/ingestion/sources/upload", headers=_headers(),
+        data={"reason": "missing file"},
+    ).status_code == 422
+    assert client.post(
+        "/admin/ingestion/sources/upload", headers=_headers(),
+        files={"file": ("guide.txt", b"body")}, data={"reason": "x" * 1001},
+    ).status_code == 422
+    assert deps.ingestion_service.repository.count() == 0

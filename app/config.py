@@ -293,6 +293,7 @@ class AppSettings(BaseSettings):
     # 永久知识运营 API（默认不注册）
     ingestion_admin_api_enabled: bool = False
     ingestion_admin_api_key: SecretStr | None = None
+    ingestion_upload_max_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
 
     # 受治理的只读 SQL 工具
     sql_tool_enabled: bool = False

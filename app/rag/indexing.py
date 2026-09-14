@@ -37,7 +37,9 @@ from app.rag.ingest import (
 LOCAL_RECORD_NAMESPACE = "rag-agent/local/v1"
 GITHUB_RECORD_NAMESPACE = "rag-agent/github/v1"
 FIRECRAWL_RECORD_NAMESPACE = "rag-agent/firecrawl/v1"
+UPLOAD_RECORD_NAMESPACE = "rag-agent/upload/v1"
 EXTERNAL_RECORD_NAMESPACE_BY_SOURCE_TYPE = {
+    KnowledgeSourceType.UPLOAD: UPLOAD_RECORD_NAMESPACE,
     KnowledgeSourceType.GITHUB: GITHUB_RECORD_NAMESPACE,
     KnowledgeSourceType.FIRECRAWL: FIRECRAWL_RECORD_NAMESPACE,
 }
@@ -237,6 +239,7 @@ __all__ = [
     "GITHUB_RECORD_NAMESPACE",
     "LOCAL_RECORD_NAMESPACE",
     "RECORD_MANAGER_FILE_NAME",
+    "UPLOAD_RECORD_NAMESPACE",
     "candidate_to_langchain_documents",
     "create_record_manager",
     "create_vector_store",

@@ -135,7 +135,7 @@ defineExpose({ refresh, openDetail })
 </script>
 
 <template>
-  <el-alert title="待审批知识" description="Agent 读取符合条件的 GitHub / Firecrawl 资料后，候选会出现在这里。刷新列表即可审核；批准后需要单独执行索引。" type="info" :closable="false" show-icon />
+  <el-alert title="待审批知识" description="Agent 提出的合规外部资料、管理员来源提案和本地文件上传候选会出现在这里。刷新列表即可审核；批准后需要单独写入知识库。" type="info" :closable="false" show-icon />
   <div class="filters">
     <el-select v-model="status" :disabled="loading" aria-label="候选状态筛选" placeholder="全部状态" clearable @change="refresh(true)">
       <el-option v-for="item in statuses" :key="item" :label="item" :value="item" />
