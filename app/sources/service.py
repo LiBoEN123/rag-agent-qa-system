@@ -1,4 +1,4 @@
-"""编排受治理 MCP / 上传来源 proposal 与 approved-only indexing。"""
+"""编排受治理 MCP / 上传来源 proposal、approved-only indexing 与 source 撤库。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import json
 import re
 from collections.abc import Callable, Mapping
 from datetime import datetime
+from functools import partial
 from pathlib import PurePosixPath
 from typing import Any, BinaryIO
 from urllib.parse import urlsplit
@@ -26,6 +27,8 @@ from app.rag.indexing import (
     FIRECRAWL_RECORD_NAMESPACE,
     GITHUB_RECORD_NAMESPACE,
     candidate_to_langchain_documents,
+    create_record_manager,
+    create_vector_store,
     sync_documents,
 )
 from app.sources.firecrawl import FirecrawlPagePayload, FirecrawlPageSourceAdapter
@@ -273,7 +276,7 @@ def promote_tool_result(
 
 
 class ExternalKnowledgeSourceService:
-    """显式 operator/service source fetch、proposal、approval 与 indexing 用例。"""
+    """显式 operator/service source fetch、proposal、approval 与知识库操作。"""
 
     # 配置申请主体、入库服务、索引依赖和 GitHub、Firecrawl 来源适配器。
     def __init__(
@@ -289,7 +292,9 @@ class ExternalKnowledgeSourceService:
         self._ingestion = ingestion_service or IngestionService()
         self._embeddings = embeddings
         self._settings = settings
-        self._runtime_reload = runtime_reload or rag_pipeline.load_index_cache
+        self._runtime_reload = runtime_reload or partial(
+            rag_pipeline.load_index_cache, allow_empty=True,
+        )
         self._github_adapter = GitHubFileSourceAdapter()
         self._firecrawl_adapter = FirecrawlPageSourceAdapter()
 
@@ -434,6 +439,38 @@ class ExternalKnowledgeSourceService:
                 "external source 已索引，但 RAG runtime reload 失败",
             )
         return result
+
+    def remove_indexed(self, candidate_id: str) -> dict[str, int]:
+        """按 logical source 撤库；保留候选历史，成功需同时清理持久索引并 reload。"""
+        candidate = self._ingestion.repository.get(candidate_id)
+        if candidate is None:
+            raise SourceIngestionError("SOURCE_CANDIDATE_NOT_FOUND", "candidate 不存在")
+        namespace = EXTERNAL_RECORD_NAMESPACE_BY_SOURCE_TYPE.get(
+            candidate.document.source_type
+        )
+        if namespace is None:
+            raise SourceIngestionError("SOURCE_TYPE_UNSUPPORTED", "不支持该 external source")
+        source_id = candidate.document.source_id
+        manager = create_record_manager(self._settings, namespace=namespace)
+        keys = manager.list_keys(group_ids=[source_id])
+        store = create_vector_store(None, self._settings)
+        # metadata 查询也覆盖 RecordManager 缺记录的 chunks；不依赖候选版本切分。
+        where = {"source_id": source_id}
+        ids = store.get(where=where, include=[])["ids"]
+        if ids:
+            store.delete(where=where)
+        if keys:
+            manager.delete_keys(keys)
+        ok, _message = self._runtime_reload()
+        if not ok:
+            raise SourceIngestionError(
+                "SOURCE_RUNTIME_RELOAD_FAILED",
+                "external source 已移除，但 RAG runtime reload 失败",
+            )
+        return {
+            "num_added": 0, "num_updated": 0,
+            "num_deleted": len(ids), "num_skipped": 0,
+        }
 
 
 __all__ = [

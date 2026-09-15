@@ -76,6 +76,7 @@ export interface IngestionApproval {
 export interface IngestionIndexRun {
   id: number
   candidate_id: string
+  operation: 'index' | 'remove'
   status: 'running' | 'success' | 'failed'
   started_at: string
   completed_at: string | null

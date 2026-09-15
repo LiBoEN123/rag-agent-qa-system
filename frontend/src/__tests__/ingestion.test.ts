@@ -13,7 +13,7 @@ const { refreshStatus } = vi.hoisted(() => ({ refreshStatus: vi.fn().mockResolve
 vi.mock('../composables/useBackendStatus', () => ({ useBackendStatus: () => ({ refreshStatus }) }))
 vi.mock('../api/ingestion', () => ({
   listCandidates: vi.fn(), getCandidate: vi.fn(), approveCandidate: vi.fn(), rejectCandidate: vi.fn(),
-  indexCandidate: vi.fn(), listIndexRuns: vi.fn(), proposeGitHub: vi.fn(), proposeFirecrawl: vi.fn(), proposeUpload: vi.fn(),
+  indexCandidate: vi.fn(), removeCandidate: vi.fn(), listIndexRuns: vi.fn(), proposeGitHub: vi.fn(), proposeFirecrawl: vi.fn(), proposeUpload: vi.fn(),
 }))
 
 const drawer = defineComponent({ props: ['modelValue'], template: '<section v-if="modelValue"><slot /></section>' })
@@ -61,6 +61,67 @@ afterEach(() => {
 })
 
 describe('知识候选审核', () => {
+  it('撤库先确认，完成后保留审批并显示 remove 记录和刷新知识库状态', async () => {
+    current = candidateDetail('approved')
+    vi.mocked(api.removeCandidate).mockImplementation(async () => {
+      current.latest_index_result = { ...indexRun(), operation: 'remove', added: 0, updated: 0, deleted: 4, skipped: 0 }
+      return current.latest_index_result
+    })
+    const page = await openCandidate()
+    await page.get('[data-testid="remove-candidate"]').trigger('click')
+    await flushPromises()
+    expect(ElMessageBox.confirm).toHaveBeenCalledOnce()
+    expect(vi.mocked(ElMessageBox.confirm).mock.calls[0]![0]).toContain('当前入库版本的全部内容')
+    expect(api.removeCandidate).toHaveBeenCalledExactlyOnceWith('cand_example')
+    expect(api.getCandidate).toHaveBeenCalledTimes(2)
+    expect(api.listIndexRuns).toHaveBeenCalledTimes(2)
+    expect(refreshStatus).toHaveBeenCalledExactlyOnceWith(true)
+    expect(page.text()).toContain('移出知识库 (remove)')
+    expect(page.get('[data-testid="index-counts"]').text()).toContain('deleted：4')
+    expect(page.get('[data-testid="index-candidate"]').attributes('disabled')).toBeUndefined()
+    expect(api.indexCandidate).not.toHaveBeenCalled()
+  })
+
+  it('取消撤库不发送请求；等待确认或执行时不能重复提交', async () => {
+    let cancel!: (reason: string) => void
+    vi.mocked(ElMessageBox.confirm).mockReturnValueOnce(new Promise((_, reject) => { cancel = reject }))
+    const page = await openCandidate()
+    await page.get('[data-testid="remove-candidate"]').trigger('click')
+    expect(page.get('[data-testid="remove-candidate"]').attributes('disabled')).toBeDefined()
+    expect(api.removeCandidate).not.toHaveBeenCalled()
+    cancel('cancel')
+    await flushPromises()
+    expect(api.removeCandidate).not.toHaveBeenCalled()
+    expect(api.getCandidate).toHaveBeenCalledOnce()
+    expect(api.listIndexRuns).toHaveBeenCalledOnce()
+    expect(page.find('[data-testid="candidate-error"]').exists()).toBe(false)
+  })
+
+  it('撤库失败刷新失败记录并保留手动重试，不自动重试或重新入库', async () => {
+    current = candidateDetail('approved')
+    vi.mocked(api.removeCandidate).mockImplementation(async () => {
+      current.latest_index_result = { ...indexRun(), operation: 'remove', status: 'failed', error_code: 'REMOVE_OPERATION_FAILED' }
+      throw backendError(500, 'REMOVE_OPERATION_FAILED', 'remove operation 失败')
+    })
+    const page = await openCandidate()
+    await page.get('[data-testid="remove-candidate"]').trigger('click')
+    await flushPromises()
+    expect(api.removeCandidate).toHaveBeenCalledOnce()
+    expect(api.indexCandidate).not.toHaveBeenCalled()
+    expect(page.get('[data-testid="candidate-error"]').text()).toContain('REMOVE_OPERATION_FAILED')
+    expect(page.get('[data-testid="remove-candidate"]').attributes('disabled')).toBeUndefined()
+    expect(page.text()).toContain('移出知识库 (remove)')
+    expect(api.listIndexRuns).toHaveBeenCalledTimes(2)
+    expect(refreshStatus).not.toHaveBeenCalled()
+  })
+
+  it.each(['local_file', 'web'] as const)('不支持从 %s 候选撤库', async (source) => {
+    current.summary.source_type = source
+    const page = await openCandidate()
+    expect(page.get('[data-testid="remove-candidate"]').attributes('disabled')).toBeDefined()
+    expect(api.removeCandidate).not.toHaveBeenCalled()
+  })
+
   it('pending 可审批但不能索引，正文始终作为文本展示', async () => {
     const page = await openCandidate()
     expect(page.get('[data-testid="approve-candidate"]').attributes('disabled')).toBeUndefined()

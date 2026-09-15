@@ -19,6 +19,7 @@ from app.sources import FirecrawlPagePayload, FirecrawlPageSourceAdapter
 from app.storage.database import init_db
 from app.storage.ingestion import (
     CandidatePersistenceError,
+    IndexRunOperation,
     IndexRunStatus,
     SQLiteCandidateRepository,
     SQLiteIndexRunRepository,
@@ -214,6 +215,49 @@ def test_latest_successfully_indexed_uses_success_history_without_page_limit(tmp
     # 最近一次成功重新索引旧 candidate，也应按 run 历史恢复该版本。
     runs.succeed(runs.create_running(v1.candidate_id).id, added=1)
     assert restarted.load_latest_successfully_indexed() == [v1, other]
+
+
+@pytest.mark.parametrize("remove_status", ["success", "failed", "running"])
+def test_authoritative_source_uses_latest_successful_operation(tmp_path, remove_status):
+    db_path = tmp_path / "app.sqlite3"
+    repository = SQLiteCandidateRepository(db_path)
+    domain = IngestionService(repository)
+    runs = SQLiteIndexRunRepository(db_path)
+    versions = []
+    for content in ("v1", "v2"):
+        candidate = _propose(repository, content=content)
+        candidate = domain.approve(candidate.candidate_id, decided_by=REQUESTER)
+        runs.succeed(runs.create_running(candidate.candidate_id).id, added=1)
+        versions.append(candidate)
+    # 旧 candidate 发起 REMOVE 也覆盖同 source 的最新版本。
+    removal = runs.create_running(versions[0].candidate_id, operation=IndexRunOperation.REMOVE)
+    if remove_status == "success":
+        runs.succeed(removal.id, deleted=1)
+    elif remove_status == "failed":
+        runs.fail(removal.id, error_code="REMOVE_OPERATION_FAILED")
+    # 更新的失败或运行中 INDEX 都不能覆盖成功 REMOVE。
+    runs.fail(runs.create_running(versions[1].candidate_id).id, error_code="INDEX_OPERATION_FAILED")
+    runs.create_running(versions[1].candidate_id)
+    restarted = SQLiteCandidateRepository(db_path)
+    assert restarted.load_latest_successfully_indexed() == (
+        [] if remove_status == "success" else [versions[1]]
+    )
+    assert [repository.get(item.candidate_id) for item in versions] == versions
+    assert SQLiteIndexRunRepository(db_path).list(operation=IndexRunOperation.REMOVE)[0].id == removal.id
+    runs.succeed(runs.create_running(versions[1].candidate_id).id, added=1)
+    assert restarted.load_latest_successfully_indexed() == [versions[1]]
+
+
+def test_unknown_successful_operation_fails_closed(tmp_path):
+    db_path = tmp_path / "app.sqlite3"
+    repository = SQLiteCandidateRepository(db_path)
+    candidate = _propose(repository)
+    runs = SQLiteIndexRunRepository(db_path)
+    runs.succeed(runs.create_running(candidate.candidate_id).id, added=1)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("UPDATE ingestion_index_runs SET operation = 'unknown'")
+    with pytest.raises(CandidatePersistenceError, match="operation"):
+        repository.load_latest_successfully_indexed()
 
 
 @pytest.mark.parametrize("damage", ["missing", "invalid_json", "mismatched_fields"])

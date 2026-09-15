@@ -10,7 +10,7 @@ import { candidateDetail, indexRun } from './ingestion-fixtures'
 
 vi.mock('../api/ingestion', () => ({
   listCandidates: vi.fn(), getCandidate: vi.fn(), approveCandidate: vi.fn(), rejectCandidate: vi.fn(),
-  indexCandidate: vi.fn(), listIndexRuns: vi.fn(),
+  indexCandidate: vi.fn(), removeCandidate: vi.fn(), listIndexRuns: vi.fn(),
 }))
 
 let wrapper: VueWrapper | undefined
@@ -76,14 +76,21 @@ describe('入库列表筛选与分页', () => {
     expect(next().attributes('disabled')).toBeDefined()
     await candidateInput.trigger('change')
     await flushPromises()
-    expect(api.listIndexRuns).toHaveBeenLastCalledWith({ candidate_id: 'cand_other', status: undefined, limit: 20, offset: 0 })
+    expect(api.listIndexRuns).toHaveBeenLastCalledWith({ candidate_id: 'cand_other', status: undefined, operation: undefined, limit: 20, offset: 0 })
     await next().trigger('click')
     await flushPromises()
     const status = page.findAllComponents(ElSelect)[0]!
     status.vm.$emit('update:modelValue', 'failed')
     status.vm.$emit('change', 'failed')
     await flushPromises()
-    expect(api.listIndexRuns).toHaveBeenLastCalledWith({ candidate_id: 'cand_other', status: 'failed', limit: 20, offset: 0 })
+    expect(api.listIndexRuns).toHaveBeenLastCalledWith({ candidate_id: 'cand_other', status: 'failed', operation: undefined, limit: 20, offset: 0 })
+    await next().trigger('click')
+    await flushPromises()
+    const operation = page.findAllComponents(ElSelect)[2]!
+    operation.vm.$emit('update:modelValue', 'remove')
+    operation.vm.$emit('change', 'remove')
+    await flushPromises()
+    expect(api.listIndexRuns).toHaveBeenLastCalledWith({ candidate_id: 'cand_other', status: 'failed', operation: 'remove', limit: 20, offset: 0 })
     expect(page.get('.paging').text()).toContain('第 1 页')
   })
 })

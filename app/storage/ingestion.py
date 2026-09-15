@@ -30,12 +30,20 @@ class IndexRunStatus(str, Enum):
     FAILED = "failed"
 
 
+class IndexRunOperation(str, Enum):
+    """独立于 candidate 审批状态的知识库成员操作。"""
+
+    INDEX = "index"
+    REMOVE = "remove"
+
+
 class IngestionIndexRun(BaseModel):
-    """不含正文、payload 或 traceback 的持久 index operation。"""
+    """不含正文、payload 或 traceback 的持久知识库操作。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     id: int
     candidate_id: str
+    operation: IndexRunOperation = IndexRunOperation.INDEX
     status: IndexRunStatus
     started_at: AwareDatetime
     completed_at: AwareDatetime | None = None
@@ -137,9 +145,9 @@ class SQLiteCandidateRepository:
             return int(session.scalar(statement) or 0)
 
     def load_latest_successfully_indexed(self) -> list[IngestionCandidate]:
-        """按成功 run ID 倒序，每个 source_id 恢复最近成功索引的版本。"""
+        """按每个 source 最新成功操作恢复 INDEX；REMOVE 阻止回退到旧版本。"""
         statement = (
-            select(_IngestionCandidateRecord)
+            select(_IngestionCandidateRecord, _IngestionIndexRunRecord.operation)
             .select_from(_IngestionIndexRunRecord)
             .outerjoin(
                 _IngestionCandidateRecord,
@@ -149,14 +157,24 @@ class SQLiteCandidateRepository:
             .where(_IngestionIndexRunRecord.status == IndexRunStatus.SUCCESS.value)
             .order_by(_IngestionIndexRunRecord.id.desc())
         )
-        latest: dict[str, IngestionCandidate] = {}
+        seen: set[str] = set()
+        candidates: list[IngestionCandidate] = []
         with self._sessions() as session:
-            for record in session.scalars(statement):
+            for record, operation in session.execute(statement):
                 if record is None:
-                    raise CandidatePersistenceError("成功 index run 对应的 candidate 缺失")
+                    raise CandidatePersistenceError("成功 corpus operation 对应的 candidate 缺失")
                 candidate = self._load(record)
-                latest.setdefault(candidate.document.source_id, candidate)
-        return list(latest.values())
+                try:
+                    operation = IndexRunOperation(operation)
+                except ValueError:
+                    raise CandidatePersistenceError("持久 corpus operation 无效") from None
+                source_id = candidate.document.source_id
+                if source_id in seen:
+                    continue
+                seen.add(source_id)
+                if operation is IndexRunOperation.INDEX:
+                    candidates.append(candidate)
+        return candidates
 
     # 按状态和来源筛选候选，按申请时间及标识倒序返回校验后的分页记录。
     def list(
@@ -188,7 +206,7 @@ class SQLiteCandidateRepository:
 
 
 class SQLiteIndexRunRepository:
-    """保存同步 index operation 状态与安全计数，不复制正文。"""
+    """保存同步 INDEX / REMOVE 状态与安全计数，不复制正文。"""
 
     # 初始化数据库表结构，并取得索引运行仓库使用的共享会话工厂。
     def __init__(self, db_path: Path | None = None) -> None:
@@ -201,9 +219,13 @@ class SQLiteIndexRunRepository:
         return IngestionIndexRun.model_validate(record, from_attributes=True)
 
     # 为候选创建运行中的索引记录，并返回数据库生成的运行标识。
-    def create_running(self, candidate_id: str) -> IngestionIndexRun:
+    def create_running(
+        self, candidate_id: str, *,
+        operation: IndexRunOperation = IndexRunOperation.INDEX,
+    ) -> IngestionIndexRun:
         record = _IngestionIndexRunRecord(
             candidate_id=candidate_id,
+            operation=operation.value,
             status=IndexRunStatus.RUNNING.value,
             started_at=_now(),
         )
@@ -254,6 +276,7 @@ class SQLiteIndexRunRepository:
         *,
         candidate_id: str | None = None,
         status: IndexRunStatus | None = None,
+        operation: IndexRunOperation | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[IngestionIndexRun]:
@@ -263,6 +286,8 @@ class SQLiteIndexRunRepository:
             filters["candidate_id"] = candidate_id
         if status is not None:
             filters["status"] = status.value
+        if operation is not None:
+            filters["operation"] = operation.value
         statement = (
             select(_IngestionIndexRunRecord)
             .filter_by(**filters)
@@ -274,5 +299,5 @@ class SQLiteIndexRunRepository:
             return [self._load(record) for record in session.scalars(statement)]
 
 
-__all__ = ["CandidatePersistenceError", "IndexRunStatus", "IngestionIndexRun",
+__all__ = ["CandidatePersistenceError", "IndexRunOperation", "IndexRunStatus", "IngestionIndexRun",
            "SQLiteCandidateRepository", "SQLiteIndexRunRepository"]

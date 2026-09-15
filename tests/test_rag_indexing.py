@@ -387,6 +387,21 @@ def test_empty_local_does_not_hide_collection_read_failure(tmp_path, monkeypatch
     assert pipeline.RAG_READY is True
 
 
+def test_empty_reload_does_not_publish_on_collection_read_failure(monkeypatch):
+    old_chunks = [{"text": "retained runtime"}]
+    monkeypatch.setattr(pipeline, "chunks", old_chunks)
+    monkeypatch.setattr(pipeline, "RAG_READY", True)
+    monkeypatch.setattr(pipeline, "load_index_cache_impl", lambda **kwargs: {
+        "ok": False, "chunks": [], "message": "read failed",
+    })
+    def fail(*args, **kwargs):
+        raise RuntimeError("read failed")
+    monkeypatch.setattr(pipeline, "create_vector_store", fail)
+    assert pipeline.load_index_cache(allow_empty=True)[0] is False
+    assert pipeline.chunks is old_chunks
+    assert pipeline.RAG_READY is True
+
+
 @pytest.mark.parametrize("needs_force_rebuild", [False, True])
 @pytest.mark.parametrize("auto_rebuild", [False, True])
 def test_startup_always_syncs_and_propagates_force_rebuild(

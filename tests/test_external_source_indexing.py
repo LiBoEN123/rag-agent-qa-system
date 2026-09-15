@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from io import BytesIO
 from types import SimpleNamespace
 
 import pytest
@@ -38,9 +39,12 @@ from app.sources import (
 )
 from app.storage.database import _IngestionCandidateRecord, get_engine
 from app.storage.ingestion import (
+    IndexRunOperation,
+    IndexRunStatus,
     SQLiteCandidateRepository,
     SQLiteIndexRunRepository,
 )
+from app.sources.upload import load_upload_document
 
 
 FIXED_TIME = datetime(2026, 9, 2, 10, 0, tzinfo=timezone.utc)
@@ -292,6 +296,150 @@ def _index_with_run(runtime, candidate):
         run.id, **{name.removeprefix("num_"): count for name, count in result.items()},
     )
     return result
+
+
+def _remove_client(runtime):
+    settings = runtime.settings.model_copy(update={
+        "ingestion_admin_api_enabled": True,
+        "ingestion_admin_api_key": SecretStr("remove-test-admin"),
+    })
+    deps = IngestionOperationsDependencies(
+        ingestion_service=runtime.domain, source_service=runtime.source_service,
+        index_runs=runtime.runs, requester=_requester(),
+        admin_api_key=settings.ingestion_admin_api_key,
+    )
+    return TestClient(
+        create_app(settings=settings, ingestion_dependencies=deps),
+        headers={"X-Ingestion-Admin-Key": "remove-test-admin"},
+    )
+
+
+def _upload_document(content):
+    return load_upload_document(BytesIO(content.encode()), filename="remove.txt", max_bytes=10000)
+
+
+@pytest.mark.parametrize("factory", [_github_document, _firecrawl_document, _upload_document])
+def test_remove_clears_source_runtime_and_history_survives_rebuild_and_reindex(persisted_runtime, factory):
+    runtime = persisted_runtime
+    candidate = _approve(runtime.domain, factory("REMOVE_UNIQUE_KEYWORD_9271"))
+    _index_with_run(runtime, candidate)
+    # 同 namespace 的另一 source 及 Local 均须保留。
+    other = _approve(runtime.domain, build_knowledge_document(
+        source_type=candidate.document.source_type,
+        source_uri=candidate.document.source_uri + "-other",
+        title="other", content="other external retained", fetched_at=FIXED_TIME,
+    ))
+    _index_with_run(runtime, other)
+    manager = indexing.create_record_manager(namespace=indexing.EXTERNAL_RECORD_NAMESPACE_BY_SOURCE_TYPE[candidate.document.source_type])
+    runtime.embeddings.reset()
+    client = _remove_client(runtime)
+    path = f"/admin/ingestion/candidates/{candidate.candidate_id}"
+    removed = client.post(f"{path}/remove")
+    assert removed.status_code == 200, removed.text
+    assert removed.json()["operation"] == "remove"
+    assert removed.json()["status"] == "success"
+    assert removed.json()["deleted"] == 1
+    assert runtime.embeddings.document_texts == []
+    assert manager.list_keys(group_ids=[candidate.document.source_id]) == []
+    assert indexing.create_vector_store(None).get(where={"source_id": candidate.document.source_id})["ids"] == []
+    assert set(pipeline.texts) == {"local durable content", "other external retained"}
+    assert pipeline.bm25.corpus_size == len(pipeline.chunks) == 2
+    assert len(pipeline.doc_embeddings) == len(pipeline.docs_registry) == 2
+    assert all("REMOVE_UNIQUE_KEYWORD_9271" not in hit["text"] for hit in pipeline.search_relevant_chunks("REMOVE_UNIQUE_KEYWORD_9271", top_k=10))
+    assert runtime.domain.repository.get(candidate.candidate_id) == candidate
+    assert client.post(f"{path}/remove").json()["deleted"] == 0
+    for _ in range(2):
+        ok, message = pipeline.rebuild_and_persist_index(str(runtime.local_dir), force_rebuild=True)
+        assert ok, message
+        assert set(pipeline.texts) == {"local durable content", "other external retained"}
+        assert manager.list_keys(group_ids=[candidate.document.source_id]) == []
+    # 已清除 RecordManager keys，同一 approved candidate 再入库必须 added，而非 skipped。
+    indexed = client.post(f"{path}/index")
+    assert indexed.status_code == 200, indexed.text
+    assert indexed.json()["operation"] == "index"
+    assert indexed.json()["added"] == 1
+    assert indexed.json()["skipped"] == 0
+    ok, message = pipeline.rebuild_and_persist_index(str(runtime.local_dir), force_rebuild=True)
+    assert ok, message
+    assert "REMOVE_UNIQUE_KEYWORD_9271" in pipeline.texts
+
+
+@pytest.mark.parametrize("factory", [_github_document, _firecrawl_document])
+def test_remove_from_old_candidate_removes_current_source_version(persisted_runtime, factory):
+    runtime = persisted_runtime
+    v1 = _approve(runtime.domain, factory("old version"))
+    v2 = _approve(runtime.domain, factory("\n".join(f"new version section {i}" for i in range(200))))
+    _index_with_run(runtime, v1)
+    _index_with_run(runtime, v2)
+    result = _remove_client(runtime).post(f"/admin/ingestion/candidates/{v1.candidate_id}/remove")
+    assert result.status_code == 200, result.text
+    assert result.json()["deleted"] > 1
+    assert runtime.domain.repository.load_latest_successfully_indexed() == []
+    ok, message = pipeline.rebuild_and_persist_index(str(runtime.local_dir), force_rebuild=True)
+    assert ok, message
+    assert pipeline.texts == ["local durable content"]
+
+
+@pytest.mark.parametrize("missing", ["chroma", "record_manager"])
+def test_remove_repairs_partial_persistent_state(persisted_runtime, missing):
+    runtime = persisted_runtime
+    candidate = _approve(runtime.domain, _github_document("partial state"))
+    _index_with_run(runtime, candidate)
+    manager = indexing.create_record_manager(namespace=GITHUB_RECORD_NAMESPACE)
+    vector_store = indexing.create_vector_store(None)
+    if missing == "chroma":
+        vector_store.delete(where={"source_id": candidate.document.source_id})
+    else:
+        manager.delete_keys(manager.list_keys())
+    response = _remove_client(runtime).post(f"/admin/ingestion/candidates/{candidate.candidate_id}/remove")
+    assert response.status_code == 200, response.text
+    assert response.json()["deleted"] == (0 if missing == "chroma" else 1)
+    assert manager.list_keys() == []
+    assert vector_store.get(where={"source_id": candidate.document.source_id})["ids"] == []
+    assert pipeline.texts == ["local durable content"]
+
+
+@pytest.mark.parametrize("failure", ["chroma", "record_manager", "reload"])
+def test_failed_remove_retains_authoritative_index_for_rebuild(persisted_runtime, monkeypatch, failure):
+    runtime = persisted_runtime
+    candidate = _approve(runtime.domain, _github_document("restore after failed remove"))
+    _index_with_run(runtime, candidate)
+    def fail(*args, **kwargs):
+        raise RuntimeError("sensitive backend failure")
+    with monkeypatch.context() as patch:
+        if failure == "chroma":
+            patch.setattr("langchain_chroma.Chroma.delete", fail)
+        elif failure == "record_manager":
+            patch.setattr("langchain_classic.indexes.SQLRecordManager.delete_keys", fail)
+        else:
+            patch.setattr(runtime.source_service, "_runtime_reload", lambda: (False, "sensitive reload failure"))
+        response = _remove_client(runtime).post(f"/admin/ingestion/candidates/{candidate.candidate_id}/remove")
+    assert response.status_code == (502 if failure == "reload" else 500)
+    assert "sensitive" not in response.text
+    run = runtime.runs.latest(candidate.candidate_id)
+    assert (run.operation, run.status) == (IndexRunOperation.REMOVE, IndexRunStatus.FAILED)
+    assert "sensitive" not in run.model_dump_json()
+    assert runtime.domain.repository.load_latest_successfully_indexed() == [candidate]
+    ok, message = pipeline.rebuild_and_persist_index(str(runtime.local_dir), force_rebuild=True)
+    assert ok, message
+    assert set(pipeline.texts) == {"local durable content", "restore after failed remove"}
+
+
+def test_remove_last_source_publishes_empty_runtime(persisted_runtime):
+    runtime = persisted_runtime
+    candidate = _approve(runtime.domain, _github_document("last external"))
+    _index_with_run(runtime, candidate)
+    (runtime.local_dir / "local.txt").unlink()
+    assert pipeline.rebuild_and_persist_index(str(runtime.local_dir))[0]
+    response = _remove_client(runtime).post(f"/admin/ingestion/candidates/{candidate.candidate_id}/remove")
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "success"
+    assert pipeline.RAG_READY is False
+    assert pipeline.chunks == pipeline.texts == pipeline.docs_registry == []
+    assert pipeline.doc_embeddings is pipeline.bm25 is None
+    assert pipeline.search_relevant_chunks("last external") == []
+    assert pipeline.rebuild_and_persist_index(str(runtime.local_dir), force_rebuild=True)[0]
+    assert pipeline.chunks == []
 
 
 def test_force_rebuild_preserves_external_records_runtime_and_success_history(persisted_runtime):

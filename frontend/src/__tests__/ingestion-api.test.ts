@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { AxiosAdapter, InternalAxiosRequestConfig } from 'axios'
 import { http, ingestionHttp, setIngestionAdminKey } from '../api/http'
-import { approveCandidate, getCandidate, listCandidates, listIndexRuns, proposeFirecrawl, proposeGitHub, proposeUpload } from '../api/ingestion'
+import { approveCandidate, getCandidate, listCandidates, listIndexRuns, proposeFirecrawl, proposeGitHub, proposeUpload, removeCandidate } from '../api/ingestion'
 
 const originalHttpAdapter = http.defaults.adapter
 const originalIngestionAdapter = ingestionHttp.defaults.adapter
@@ -12,6 +12,23 @@ afterEach(() => {
 })
 
 describe('入库 API 边界', () => {
+  it('撤库复用管理员请求边界，按候选编码路径发送单次 POST', async () => {
+    const requests: InternalAxiosRequestConfig[] = []
+    ingestionHttp.defaults.adapter = async (config) => {
+      requests.push(config)
+      return { config, status: 200, statusText: 'OK', headers: {}, data: { operation: 'remove', status: 'success', deleted: 3 } }
+    }
+    setIngestionAdminKey('remove-test-key')
+    expect(await removeCandidate('candidate/a?b')).toEqual({ operation: 'remove', status: 'success', deleted: 3 })
+    expect(requests).toHaveLength(1)
+    expect(requests[0]!.url).toBe('/admin/ingestion/candidates/candidate%2Fa%3Fb/remove')
+    expect(requests[0]!.method).toBe('post')
+    expect(requests[0]!.headers.get('X-Ingestion-Admin-Key')).toBe('remove-test-key')
+    expect(requests[0]!.data).toBeUndefined()
+    await listIndexRuns({ operation: 'remove', limit: 20, offset: 0 })
+    expect(requests[1]!.params).toEqual({ operation: 'remove', limit: 20, offset: 0 })
+  })
+
   it('上传通过 ingestionHttp 发送 FormData 并复用管理员 header', async () => {
     const requests: InternalAxiosRequestConfig[] = []
     ingestionHttp.defaults.adapter = async (config) => {

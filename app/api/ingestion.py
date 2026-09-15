@@ -29,6 +29,7 @@ from app.sources import ExternalKnowledgeSourceService, SourceIngestionError
 from app.sources.upload import UploadSourceError
 from app.storage.ingestion import (
     CandidatePersistenceError,
+    IndexRunOperation,
     IndexRunStatus,
     IngestionIndexRun,
     SQLiteIndexRunRepository,
@@ -357,26 +358,24 @@ def create_ingestion_router(deps: IngestionOperationsDependencies) -> APIRouter:
             deps.ingestion_service,
         )
 
-    # 仅对已批准候选执行索引，记录运行结果并统一处理失败。
-    @router.post("/candidates/{candidate_id}/index", response_model=IngestionIndexRun)
-    def index_candidate(candidate_id: str):
-        candidate = _candidate(deps.ingestion_service, candidate_id)
-        if candidate.status is not IngestionCandidateStatus.APPROVED:
-            raise _error(
-                409, "CANDIDATE_NOT_APPROVED",
-                "只有 approved candidate 可以 index",
-            )
-        run = deps.index_runs.create_running(candidate_id)
+    def run_operation(candidate_id: str, operation: IndexRunOperation):
+        """INDEX / REMOVE 共用运行状态和安全错误持久化。"""
+        run = deps.index_runs.create_running(candidate_id, operation=operation)
         try:
+            execute = (
+                deps.source_service.index_approved
+                if operation is IndexRunOperation.INDEX
+                else deps.source_service.remove_indexed
+            )
             return deps.index_runs.succeed(
-                run.id,
-                **_counts(deps.source_service.index_approved(candidate_id)),
+                run.id, **_counts(execute(candidate_id)),
             )
         except SourceIngestionError as exc:
             error = _source_error(exc)
         except Exception:
             error = _error(
-                500, "INDEX_OPERATION_FAILED", "index operation 失败"
+                500, f"{operation.value.upper()}_OPERATION_FAILED",
+                f"{operation.value} operation 失败",
             )
         try:
             deps.index_runs.fail(
@@ -387,17 +386,36 @@ def create_ingestion_router(deps: IngestionOperationsDependencies) -> APIRouter:
             pass
         raise error from None
 
+    # 仅对已批准候选执行索引，记录运行结果并统一处理失败。
+    @router.post("/candidates/{candidate_id}/index", response_model=IngestionIndexRun)
+    def index_candidate(candidate_id: str):
+        candidate = _candidate(deps.ingestion_service, candidate_id)
+        if candidate.status is not IngestionCandidateStatus.APPROVED:
+            raise _error(
+                409, "CANDIDATE_NOT_APPROVED",
+                "只有 approved candidate 可以 index",
+            )
+        return run_operation(candidate_id, IndexRunOperation.INDEX)
+
+    @router.post("/candidates/{candidate_id}/remove", response_model=IngestionIndexRun)
+    def remove_candidate(candidate_id: str):
+        """撤除该候选所属 source 的当前版本，不改变 candidate admission state。"""
+        _candidate(deps.ingestion_service, candidate_id)
+        return run_operation(candidate_id, IndexRunOperation.REMOVE)
+
     # 按候选标识和运行状态分页查询索引执行记录。
     @router.get("/index-runs", response_model=list[IngestionIndexRun])
     def list_index_runs(
         candidate_id: Annotated[str | None, Query()] = None,
         status: Annotated[IndexRunStatus | None, Query()] = None,
+        operation: Annotated[IndexRunOperation | None, Query()] = None,
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
         offset: Annotated[int, Query(ge=0)] = 0,
     ):
         return deps.index_runs.list(
             candidate_id=candidate_id,
             status=status,
+            operation=operation,
             limit=limit,
             offset=offset,
         )

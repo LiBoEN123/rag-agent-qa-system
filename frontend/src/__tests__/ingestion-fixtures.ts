@@ -18,7 +18,7 @@ export function candidateDetail(status: IngestionCandidateStatus = 'pending'): C
 
 export function indexRun(): IngestionIndexRun {
   return {
-    id: 7, candidate_id: 'cand_example', status: 'success',
+    id: 7, candidate_id: 'cand_example', operation: 'index', status: 'success',
     started_at: '2026-09-11T10:10:00Z', completed_at: '2026-09-11T10:10:01Z',
     added: 2, updated: 3, deleted: 4, skipped: 5, error_code: null, error_message: null,
   }

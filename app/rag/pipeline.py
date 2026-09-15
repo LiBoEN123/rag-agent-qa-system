@@ -201,11 +201,22 @@ def rebuild_and_persist_index(
 # =========================
 # 持久化索引恢复
 # =========================
-def load_index_cache() -> tuple[bool, str]:
-    """从磁盘缓存加载索引并恢复全局 RAG 状态。"""
+def load_index_cache(*, allow_empty: bool = False) -> tuple[bool, str]:
+    """恢复全局 RAG 状态；来源操作可在严格确认空库后发布空 runtime。"""
     global chunks, texts, docs_registry, bm25, model, rerank_model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE, INDEX_SOURCE
 
     result = load_index_cache_impl(model=model)
+
+    if allow_empty and (not result["ok"] or not result["chunks"]):
+        try:
+            store = create_vector_store(None, create_collection_if_not_exists=False)
+            if store.get(limit=1, include=[])["ids"]:
+                return False, result["message"]
+        except Exception:
+            return False, "无法验证 ChromaDB 空索引"
+        result.update(ok=True, message=NO_DOCUMENTS_MESSAGE)
+        _publish_runtime_bundle(result)
+        return True, result["message"]
 
     if not result["ok"]:
         RAG_READY = False

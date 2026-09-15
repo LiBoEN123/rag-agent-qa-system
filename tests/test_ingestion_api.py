@@ -19,6 +19,7 @@ from app.ingestion import (
     IngestionPrincipalType,
     IngestionRequester,
     IngestionService,
+    build_knowledge_document,
 )
 from app.sources import (
     FirecrawlPagePayload,
@@ -28,6 +29,7 @@ from app.sources import (
     SourceIngestionError,
 )
 from app.storage.ingestion import (
+    IndexRunOperation,
     IndexRunStatus,
     SQLiteCandidateRepository,
     SQLiteIndexRunRepository,
@@ -50,6 +52,14 @@ class FakeSourceService:
         self.index_calls = 0
         self.fail_index = False
         self.proposal_error = None
+        self.remove_calls = 0
+        self.remove_error = None
+
+    def remove_indexed(self, candidate_id):
+        self.remove_calls += 1
+        if self.remove_error:
+            raise self.remove_error
+        return {"num_added": 0, "num_updated": 0, "num_deleted": 1, "num_skipped": 0}
 
     async def propose_github_file(
         self,
@@ -436,6 +446,68 @@ def test_index_failure_is_safe_and_candidate_remains_approved(settings_factory):
     assert detail.json()["latest_index_result"]["status"] == "failed"
     assert stored.status is IndexRunStatus.FAILED
     assert stored.error_message == "SOURCE_RUNTIME_RELOAD_FAILED"
+
+
+def test_remove_requires_admin_and_retains_candidate_history(settings_factory):
+    client, source, runs = _client(settings_factory)
+    candidate = _github(client).json()
+    path = f"/admin/ingestion/candidates/{candidate['candidate_id']}"
+    for headers in ({}, _headers("wrong")):
+        assert client.post(f"{path}/remove", headers=headers).status_code == 401
+    assert client.post("/admin/ingestion/candidates/missing/remove", headers=_headers()).status_code == 404
+    assert source.remove_calls == 0
+    assert runs.list() == []
+    before = source.ingestion.repository.get(candidate["candidate_id"])
+    response = client.post(f"{path}/remove", headers=_headers())
+    assert response.status_code == 200
+    assert response.json()["operation"] == "remove"
+    assert response.json()["status"] == "success"
+    assert response.json()["deleted"] == 1
+    assert source.ingestion.repository.get(candidate["candidate_id"]) == before
+    detail = client.get(path, headers=_headers()).json()
+    assert detail["latest_index_result"] == response.json()
+    assert client.get("/admin/ingestion/index-runs?operation=remove", headers=_headers()).json() == [response.json()]
+    assert client.get("/admin/ingestion/index-runs?operation=index", headers=_headers()).json() == []
+    assert client.get("/admin/ingestion/index-runs?operation=delete", headers=_headers()).status_code == 422
+    disabled, _, _ = _client(settings_factory, enabled=False)
+    assert disabled.post(f"{path}/remove", headers=_headers()).status_code == 404
+
+
+@pytest.mark.parametrize("error,status,code", [
+    (RuntimeError("sensitive detail"), 500, "REMOVE_OPERATION_FAILED"),
+    (SourceIngestionError("SOURCE_RUNTIME_RELOAD_FAILED", "sensitive detail"), 502, "SOURCE_RUNTIME_RELOAD_FAILED"),
+])
+def test_remove_failure_persists_safe_operation(settings_factory, error, status, code):
+    client, source, runs = _client(settings_factory)
+    candidate = _github(client).json()
+    source.remove_error = error
+    response = client.post(f"/admin/ingestion/candidates/{candidate['candidate_id']}/remove", headers=_headers())
+    assert response.status_code == status
+    assert response.json()["error"]["code"] == code
+    assert "sensitive" not in response.text
+    run = runs.latest(candidate["candidate_id"])
+    assert run.operation is IndexRunOperation.REMOVE
+    assert run.status is IndexRunStatus.FAILED
+    assert run.error_code == run.error_message == code
+    assert source.remove_calls == 1
+
+
+@pytest.mark.parametrize("source_type,uri", [("local_file", "/tmp/retained.txt"), ("web", "https://example.com/retained")])
+def test_remove_unsupported_source_fails_closed(settings_factory, monkeypatch, source_type, uri):
+    client, deps = _upload_client(settings_factory)
+    candidate = deps.ingestion_service.propose(
+        document=build_knowledge_document(source_type=source_type, source_uri=uri, title="retained", content="retained"),
+        requester=REQUESTER,
+    )
+    def forbidden(*args, **kwargs):
+        pytest.fail("unsupported source must not reach storage deletion")
+    monkeypatch.setattr("app.sources.service.create_record_manager", forbidden)
+    monkeypatch.setattr("app.sources.service.create_vector_store", forbidden)
+    response = client.post(f"/admin/ingestion/candidates/{candidate.candidate_id}/remove", headers=_headers())
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "SOURCE_TYPE_UNSUPPORTED"
+    assert deps.index_runs.latest(candidate.candidate_id).status is IndexRunStatus.FAILED
+    assert deps.ingestion_service.repository.get(candidate.candidate_id) == candidate
 
 
 def _upload_client(settings_factory, **settings_overrides):

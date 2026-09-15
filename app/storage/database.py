@@ -68,6 +68,7 @@ class _IngestionIndexRunRecord(Base):
     skipped: Mapped[int | None] = mapped_column(Integer)
     error_code: Mapped[str | None] = mapped_column(Text)
     error_message: Mapped[str | None] = mapped_column(Text)
+    operation: Mapped[str] = mapped_column(Text, server_default="index")
     __table_args__ = (
         Index("idx_ingestion_index_runs_candidate_id", candidate_id, id.desc()),
         Index("idx_ingestion_index_runs_status_id", status, id.desc()),
@@ -114,8 +115,22 @@ def get_session_factory(db_path: Path | None = None) -> sessionmaker[Session]:
 
 
 def init_db(db_path: Path | None = None) -> None:
-    """创建当前应用声明的全部表及索引，保留已有数据。"""
-    Base.metadata.create_all(get_engine(db_path))
+    """保留已有数据建表，并为旧 SQLite 运行记录幂等补充 operation。"""
+    engine = get_engine(db_path)
+    with engine.begin() as connection:
+        if engine.dialect.name == "sqlite":
+            # 串行检查与 ADD COLUMN，避免并发初始化重复添加字段。
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+        Base.metadata.create_all(connection)
+        if engine.dialect.name == "sqlite":
+            columns = connection.exec_driver_sql(
+                "PRAGMA table_info(ingestion_index_runs)"
+            )
+            if "operation" not in {row[1] for row in columns}:
+                connection.exec_driver_sql(
+                    "ALTER TABLE ingestion_index_runs "
+                    "ADD COLUMN operation TEXT NOT NULL DEFAULT 'index'"
+                )
 
 
 def clear_storage_engine_cache() -> None:

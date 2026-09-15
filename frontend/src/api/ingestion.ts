@@ -18,6 +18,7 @@ export interface CandidateQuery {
 export interface IndexRunQuery {
   candidate_id?: string
   status?: IngestionIndexRun['status']
+  operation?: IngestionIndexRun['operation']
   limit: number
   offset: number
 }
@@ -40,6 +41,10 @@ export async function rejectCandidate(id: string, reason: string) {
 
 export async function indexCandidate(id: string) {
   return (await ingestionHttp.post<IngestionIndexRun>(`${candidatePath(id)}/index`)).data
+}
+
+export async function removeCandidate(id: string) {
+  return (await ingestionHttp.post<IngestionIndexRun>(`${candidatePath(id)}/remove`)).data
 }
 
 export async function listIndexRuns(params: IndexRunQuery) {

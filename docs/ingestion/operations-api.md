@@ -28,6 +28,7 @@ GET  /admin/ingestion/candidates/{candidate_id}
 POST /admin/ingestion/candidates/{candidate_id}/approve
 POST /admin/ingestion/candidates/{candidate_id}/reject
 POST /admin/ingestion/candidates/{candidate_id}/index
+POST /admin/ingestion/candidates/{candidate_id}/remove
 GET  /admin/ingestion/index-runs
 ```
 
@@ -71,7 +72,8 @@ loader 解压前还校验 ZIP 声明的展开总大小不超过同一限额。�
 仍执行正文上限（默认 1,000,000 字符），超出时生成 rejected 候选，不截断正文。
 上传和批准都不会写 Chroma，完整候选继续保存在现有 SQLite repository。
 成功索引后通过 `load_index_cache()` 重建共享 runtime/BM25；global force rebuild
-从 `load_latest_successfully_indexed()` 恢复成功索引的上传全文，无需原始文件。
+从 `load_latest_successfully_indexed()` 恢复最新成功操作为 INDEX 的上传全文，无需原始文件；
+最新成功操作为 REMOVE 的来源不再恢复。
 
 上传错误使用现有 `{ "error": { "code", "message" } }` 格式：
 
@@ -142,3 +144,32 @@ Candidate 状态仍只有 pending、approved、rejected、superseded。
 和 RAG runtime reload。成功保存 added/updated/deleted/skipped，失败只保存短的稳定错误码；
 不保存正文、MCP payload、traceback 或原始异常。重复 index 由 LangChain RecordManager
 自然返回 skipped，Candidate approval state 不受 index 成败影响。
+
+## 移出知识库（EXTERNAL-KNOWLEDGE-REMOVE-1）
+
+管理员在候选详情点击「移出知识库」并确认，发送无请求体的
+`POST /admin/ingestion/candidates/{candidate_id}/remove`，继续使用同一管理员 header。
+入口是 candidate ID，实际按其 `document.source_id` 撤除当前入库版本的全部 chunks；
+旧候选也能撤除同一来源的新版本，不要求入口候选仍为 approved。
+仅支持既有 namespace mapping 中的 Upload、GitHub、Firecrawl，Local/Web 返回
+`422 SOURCE_TYPE_UNSUPPORTED`。Local 仍由文件系统与 Local namespace sync 控制。
+
+`ExternalKnowledgeSourceService.remove_indexed()` 先查询对应 namespace RecordManager 的
+`group_ids=[source_id]` keys，再通过 Chroma 官方 metadata 过滤删除同 source 的 chunks，
+随后删除这些 keys 并 reload runtime/BM25。`deleted` 是实际查到的 Chroma chunk 数；
+其余计数为 0。重复撤库可成功返回 `deleted=0`，无需 embedding 或远端抓取。
+移除最后一份资料时，严格验证 collection 为空后发布空 runtime，清除旧 chunks、
+BM25、文档列表和向量矩阵，`RAG_READY=false`。
+
+INDEX / REMOVE 共用 `ingestion_index_runs`，增加 `operation=index|remove`，继续使用
+running/success/failed。现有 SQLite 在 `init_db()` 中幂等 ADD COLUMN，历史行默认 index，
+不删表或重建表。响应及详情的 `latest_index_result` 包含 operation；记录列表支持
+`operation` 筛选。详情仍按 candidate 展示最近操作，不将它当作整个 source 的成员状态。
+
+global rebuild 按 run ID 倒序查看每个 source 最新成功操作：INDEX 恢复对应候选全文，
+REMOVE 排除该 source，绝不回退到更老 INDEX。FAILED/RUNNING 不改变成员状态。
+再次成功 INDEX 后，该来源重新参与重建。候选与审批历史均保留。
+
+各持久存储和内存发布之间沿用现有无跨库事务边界：物理删除或 reload 失败会记录
+FAILED REMOVE，可能已部分删除，但不会成为撤库成功事实；修复后可手动重试撤库，
+或 force rebuild 按上一成功 INDEX 恢复。异常只对外暴露安全错误码，不自动重试。

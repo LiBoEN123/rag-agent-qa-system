@@ -40,9 +40,10 @@ chunk 参数、namespace/collection 或索引版本变化，以及 RecordManager
 `source_id`、`document_uid`、`source_uri` 和 `position`。
 
 恢复保持简单：普通 sync 失败时报告错误且不发布新内存 runtime；下一次启动重试。
-显式 force rebuild 先验证 Local corpus 与 SQLite 中每个来源最近一次成功索引的候选，
+显式 force rebuild 先验证 Local corpus 与 SQLite 中每个来源最新成功操作为 INDEX 的候选，
 再清理共享 v2 collection 和 Local / external RecordManager namespaces，由框架全量
-index 并恢复完整 runtime。仅获批、未成功索引的候选不进入重建。
+index 并恢复完整 runtime。仅获批、未成功索引的候选不进入重建；最新成功操作为
+REMOVE 的 source 整体排除，FAILED/RUNNING 操作不改变成员状态。
 没有跨 SQLite/Chroma 事务、rollback journal 或自定义 registry。
 
 Phase 10 不新增 Agent Tool/Public API。
@@ -59,3 +60,8 @@ Phase 10 不新增 Agent Tool/Public API。
 `cleanup="full"`，且只操作 Local namespace 已记录的 keys。成功后直接复用现有
 `load_index_cache()` 从最终 Chroma corpus 重建 BM25/runtime，不新增 registry、手写
 Vector CRUD 或增量 BM25。
+
+管理员 REMOVE 复用同一 external namespace mapping，按 source_id 同时清理 Chroma
+chunks 与 RecordManager keys，再 reload runtime/BM25。候选审批状态不变，操作写入
+现有 ingestion_index_runs；再次 INDEX 可正常新增。`sync_documents()` 仍只同步单一
+namespace，shared collection 的 global reset 始终由 pipeline force rebuild 持有。

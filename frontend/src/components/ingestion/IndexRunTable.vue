@@ -17,6 +17,9 @@ defineProps<{ runs: IngestionIndexRun[] }>()
     </el-table-column>
     <el-table-column prop="id" label="记录 ID" width="85" />
     <el-table-column prop="candidate_id" label="候选 ID" min-width="145" show-overflow-tooltip />
+    <el-table-column label="操作" min-width="175">
+      <template #default="{ row }">{{ row.operation === 'remove' ? '移出知识库 (remove)' : '写入知识库 (index)' }}</template>
+    </el-table-column>
     <el-table-column label="状态" width="115">
       <template #default="{ row }"><el-tag :type="row.status === 'failed' ? 'danger' : row.status === 'success' ? 'success' : 'info'">{{ row.status }}</el-tag></template>
     </el-table-column>

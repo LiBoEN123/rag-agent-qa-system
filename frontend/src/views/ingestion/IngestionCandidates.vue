@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { apiErrorMessage } from '../../api/http'
-import { approveCandidate, getCandidate, indexCandidate, listCandidates, rejectCandidate } from '../../api/ingestion'
+import { approveCandidate, getCandidate, indexCandidate, listCandidates, rejectCandidate, removeCandidate } from '../../api/ingestion'
 import type { CandidateDetailResponse, IngestionCandidateStatus, IngestionCandidateSummary, IngestionIndexRun, KnowledgeSourceType } from '../../api/types'
 import IndexRunTable from '../../components/ingestion/IndexRunTable.vue'
 
@@ -25,6 +25,8 @@ const acting = ref(false)
 const reason = ref('')
 const success = ref('')
 const indexResult = ref<IngestionIndexRun | null>(null)
+// 候选的最近操作不能代表同 source 其他版本的状态；撤库不受审批状态限制。
+const canRemove = computed(() => detail.value && ['upload', 'github', 'firecrawl'].includes(detail.value.summary.source_type))
 let listRequest = 0
 
 watch([status, sourceType, limit], () => {
@@ -131,6 +133,35 @@ async function index() {
   }
 }
 
+async function remove() {
+  if (!detail.value || !canRemove.value || acting.value) return
+  const id = detail.value.summary.candidate_id
+  acting.value = true
+  detailError.value = ''
+  success.value = ''
+  indexResult.value = null
+  let attempted = false
+  try {
+    await ElMessageBox.confirm(
+      '确认移出知识库？这会移除该来源当前入库版本的全部内容，保留候选和审批历史。后续全量重建不会恢复它；再次写入知识库后才会恢复。',
+      '移出知识库',
+      { confirmButtonText: '移出知识库', cancelButtonText: '取消', type: 'warning' },
+    )
+    attempted = true
+    indexResult.value = await removeCandidate(id)
+    success.value = '该来源已移出知识库，知识库状态已请求刷新。'
+    emit('indexed')
+  } catch (cause) {
+    if (cause !== 'cancel' && cause !== 'close') detailError.value = apiErrorMessage(cause)
+  } finally {
+    if (attempted) {
+      emit('indexAttempted')
+      await refreshDetail(id)
+    }
+    acting.value = false
+  }
+}
+
 defineExpose({ refresh, openDetail })
 </script>
 
@@ -207,6 +238,7 @@ defineExpose({ refresh, openDetail })
             <el-button type="success" data-testid="approve-candidate" :disabled="acting || detailLoading || detail.summary.status !== 'pending'" @click="review('approve')">批准</el-button>
             <el-button type="danger" data-testid="reject-candidate" :disabled="acting || detailLoading || detail.summary.status !== 'pending'" @click="review('reject')">拒绝</el-button>
             <el-button type="primary" data-testid="index-candidate" :disabled="acting || detailLoading || detail.summary.status !== 'approved'" @click="index">写入知识库</el-button>
+            <el-button type="danger" plain data-testid="remove-candidate" :disabled="acting || detailLoading || !canRemove" @click="remove">移出知识库</el-button>
           </div>
         </el-form>
         <p v-if="acting" role="status">正在处理，请稍候…</p>
@@ -214,7 +246,8 @@ defineExpose({ refresh, openDetail })
           <span>新增 added：{{ indexResult.added }}</span><span>更新 updated：{{ indexResult.updated }}</span>
           <span>删除 deleted：{{ indexResult.deleted }}</span><span>跳过 skipped：{{ indexResult.skipped }}</span>
         </div>
-        <h3>最近索引结果</h3>
+        <h3>本候选最近知识库操作</h3>
+        <p>操作记录按候选展示；移出知识库会移除同一来源当前入库的全部内容。</p>
         <IndexRunTable :runs="detail.latest_index_result ? [detail.latest_index_result] : []" />
       </template>
     </div>

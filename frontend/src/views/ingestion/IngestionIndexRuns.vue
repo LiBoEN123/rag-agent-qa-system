@@ -8,6 +8,7 @@ import IndexRunTable from '../../components/ingestion/IndexRunTable.vue'
 const runs = ref<IngestionIndexRun[]>([])
 const candidateId = ref('')
 const status = ref<IngestionIndexRun['status'] | ''>('')
+const operation = ref<IngestionIndexRun['operation'] | ''>('')
 const limit = ref(20)
 const offset = ref(0)
 const loading = ref(false)
@@ -15,7 +16,7 @@ const loaded = ref(false)
 const error = ref('')
 let listRequest = 0
 
-watch([candidateId, status, limit], () => {
+watch([candidateId, status, operation, limit], () => {
   offset.value = 0
   loaded.value = false
 }, { flush: 'sync' })
@@ -28,6 +29,7 @@ async function refresh(reset = false) {
   try {
     const result = await listIndexRuns({
       candidate_id: candidateId.value.trim() || undefined,
+      operation: operation.value || undefined,
       status: status.value || undefined, limit: limit.value, offset: offset.value,
     })
     if (request !== listRequest) return
@@ -58,6 +60,10 @@ defineExpose({ refresh })
     </el-select>
     <el-select v-model="limit" :disabled="loading" aria-label="索引每页条数" @change="refresh(true)">
       <el-option v-for="size in [10, 20, 50, 100]" :key="size" :label="`每页 ${size} 条`" :value="size" />
+    </el-select>
+    <el-select v-model="operation" :disabled="loading" aria-label="知识库操作筛选" placeholder="全部操作" clearable @change="refresh(true)">
+      <el-option label="写入知识库 (index)" value="index" />
+      <el-option label="移出知识库 (remove)" value="remove" />
     </el-select>
     <el-button :loading="loading" @click="refresh(true)">刷新索引记录</el-button>
   </div>

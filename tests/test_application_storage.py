@@ -25,6 +25,7 @@ from app.storage.database import (
     now_iso,
 )
 from app.storage.ingestion import (
+    IndexRunOperation,
     IndexRunStatus,
     SQLiteCandidateRepository,
     SQLiteIndexRunRepository,
@@ -129,6 +130,8 @@ def test_fresh_schema_matches_frozen_raw_sql_and_shared_metadata(tmp_path, legac
         name: table for name, table in _schema(legacy_db[0]).items()
         if name not in {"agent_runs", "agent_steps"}
     }
+    columns = retained_schema["ingestion_index_runs"]["columns"]
+    columns.append((len(columns), "operation", "TEXT", 1, "'index'", 0))
     assert _schema(path) == retained_schema
     assert set(_schema(path)) == set(Base.metadata.tables) == {
         "sessions", "messages",
@@ -143,6 +146,9 @@ def test_fresh_schema_matches_frozen_raw_sql_and_shared_metadata(tmp_path, legac
 def test_legacy_reads_and_repeated_init_preserve_all_existing_rows_and_schema(legacy_db):
     path, candidate = legacy_db
     before, schema_before = _rows(path), _schema(path)
+    before["ingestion_index_runs"] = [row + ("index",) for row in before["ingestion_index_runs"]]
+    columns = schema_before["ingestion_index_runs"]["columns"]
+    columns.append((len(columns), "operation", "TEXT", 1, "'index'", 0))
     for _ in range(3):
         init_db(path)
     assert get_history_sqlite("s1", db_path=path) == [
@@ -151,6 +157,7 @@ def test_legacy_reads_and_repeated_init_preserve_all_existing_rows_and_schema(le
     assert SQLiteCandidateRepository(path).get(candidate.candidate_id) == candidate
     run = SQLiteIndexRunRepository(path).latest(candidate.candidate_id)
     assert (run.id, run.status, run.started_at) == (17, IndexRunStatus.RUNNING, UTC_TIME)
+    assert run.operation is IndexRunOperation.INDEX
     assert _rows(path) == before
     assert _schema(path) == schema_before
 
@@ -158,6 +165,8 @@ def test_legacy_reads_and_repeated_init_preserve_all_existing_rows_and_schema(le
 def test_legacy_writes_replace_delete_and_restart_without_migration(legacy_db):
     path, candidate = legacy_db
     rows_before, schema_before = _rows(path), _schema(path)
+    columns = schema_before["ingestion_index_runs"]["columns"]
+    columns.append((len(columns), "operation", "TEXT", 1, "'index'", 0))
     init_db(path)
     append_message_sqlite("s1", "user", "追加", path)
     append_message_sqlite("s2", "user", "保留", path)
@@ -182,6 +191,25 @@ def test_legacy_writes_replace_delete_and_restart_without_migration(legacy_db):
     rows_after = _rows(path)
     for name in ("agent_runs", "agent_steps"):
         assert rows_after[name] == rows_before[name]
+
+
+def test_legacy_success_defaults_to_index_and_remains_authoritative(legacy_db):
+    path, candidate = legacy_db
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute(
+            "UPDATE ingestion_index_runs SET status = 'success', completed_at = ?",
+            (UTC_TIME.isoformat(),),
+        )
+    repository = SQLiteCandidateRepository(path)
+    assert repository.load_latest_successfully_indexed() == [candidate]
+    runs = SQLiteIndexRunRepository(path)
+    assert runs.latest(candidate.candidate_id).operation is IndexRunOperation.INDEX
+    remove = runs.create_running(candidate.candidate_id, operation=IndexRunOperation.REMOVE)
+    runs.succeed(remove.id, deleted=1)
+    for _ in range(3):
+        init_db(path)
+    assert SQLiteCandidateRepository(path).load_latest_successfully_indexed() == []
+    assert runs.latest(candidate.candidate_id).operation is IndexRunOperation.REMOVE
 
 
 @pytest.mark.parametrize("session_id, content", [(None, "x"), (" ", "x"), ("s", ""), ("s", " ")])
