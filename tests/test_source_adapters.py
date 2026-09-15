@@ -151,3 +151,30 @@ def test_oversized_github_document_is_denied_without_truncation():
 
     assert len(document.content) == INGESTION_MAX_CONTENT_CHARS + 1
     assert candidate.status is IngestionCandidateStatus.REJECTED
+
+
+@pytest.mark.parametrize("mime_type", ["text/html", "text/html; charset=utf-8", "application/xhtml+xml", None])
+def test_firecrawl_cleaned_html_mime_types(mime_type):
+    from tests.support.structured_document import REGISTRATION_HTML
+
+    document = FirecrawlPageSourceAdapter().to_document(FirecrawlPagePayload(
+        requested_url="https://example.com/", content="fallback", html=REGISTRATION_HTML, mime_type=mime_type,
+    ))
+    assert document.structured_content is not None
+    assert document.structured_content.blocks[1].kind == "table"
+
+
+@pytest.mark.parametrize("mime_type,html", [
+    ("text/html", None), ("text/html", "  "), ("application/pdf", None),
+    ("application/pdf", "<p>not HTML target</p>"), ("application/octet-stream", "<p>binary target</p>"),
+])
+def test_firecrawl_legacy_and_non_html_do_not_parse(monkeypatch, mime_type, html):
+    def forbidden(*args, **kwargs):
+        pytest.fail("legacy or non-HTML payload must not invoke Docling")
+
+    monkeypatch.setattr("app.sources.firecrawl.parse_html_document", forbidden)
+    document = FirecrawlPageSourceAdapter().to_document(FirecrawlPagePayload(
+        requested_url="https://example.com/", content="legacy markdown", html=html, mime_type=mime_type,
+    ))
+    assert document.structured_content is document.structure_hash is None
+    assert document.content == "legacy markdown"

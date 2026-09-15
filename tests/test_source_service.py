@@ -23,6 +23,7 @@ from app.tools.mcp.serialization import (
     McpSerializationProfile,
     sanitize_mcp_call_result,
 )
+from tests.support.structured_document import REGISTRATION_HTML
 
 
 FIXED_TIME = datetime(2026, 9, 2, 9, 0, tzinfo=timezone.utc)
@@ -134,7 +135,7 @@ def test_github_fetch_uses_exact_tool_resource_body_and_stops_pending(
     assert approved.approval.status is ApprovalStatus.APPROVED
 
 
-def test_firecrawl_scrape_uses_markdown_and_never_search_or_crawl(
+def test_firecrawl_scrape_requests_markdown_html_and_accepts_legacy_payload(
     monkeypatch,
     governed_provider,
 ):
@@ -175,7 +176,7 @@ def test_firecrawl_scrape_uses_markdown_and_never_search_or_crawl(
     assert calls[0][0] == "firecrawl_firecrawl_scrape"
     assert calls[0][1] == {
         "url": "HTTPS://Example.COM:443/article#selected",
-        "formats": ["markdown"],
+        "formats": ["markdown", "html"],
         "onlyMainContent": True,
         "removeBase64Images": True,
     }
@@ -186,6 +187,7 @@ def test_firecrawl_scrape_uses_markdown_and_never_search_or_crawl(
     assert "scrapeId" not in candidate.document.metadata
     assert candidate.status is IngestionCandidateStatus.PENDING
     assert candidate.document.trust_level is TrustLevel.UNTRUSTED_EXTERNAL
+    assert candidate.document.structured_content is None
 
 
 def test_firecrawl_json_secret_is_redacted_without_breaking_payload(
@@ -295,3 +297,128 @@ def test_non_read_only_or_invisible_source_tool_fails_closed(monkeypatch):
             )
         )
     assert unavailable.value.code == "SOURCE_TOOL_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("transport", ["structured", "json"])
+def test_firecrawl_html_payload_reaches_canonical_structured_candidate(
+    monkeypatch, governed_provider, settings_factory, transport,
+):
+    from app.ingestion.document_blocks import canonical_document_text
+    from app.sources.service import _firecrawl_payload, _require_ingestion_output
+
+    payload = {
+        "success": True, "markdown": "compatibility text", "html": REGISTRATION_HTML,
+        "metadata": {"title": "办理事项", "url": "https://example.com/", "statusCode": 200,
+                     "contentType": "text/html; charset=utf-8"},
+    }
+    raw = CallToolResult(
+        content=[] if transport == "structured" else [TextContent(type="text", text=json.dumps(payload))],
+        structuredContent=payload if transport == "structured" else None,
+    )
+    outcome = sanitize_mcp_call_result(
+        raw, settings=settings_factory(), server_alias="firecrawl", remote_tool_name="firecrawl_scrape",
+        profile=McpSerializationProfile.INGESTION,
+    )
+    output = _require_ingestion_output({"ok": outcome.ok, "output": outcome.ingestion_output})
+    parsed = _firecrawl_payload(output, requested_url="https://example.com/")
+    assert (parsed.content, parsed.html, parsed.title, parsed.status_code) == (
+        "compatibility text", REGISTRATION_HTML, "办理事项", 200,
+    )
+
+    async def invoke(*args, **kwargs):
+        return {"ok": outcome.ok, "output": outcome.ingestion_output}
+
+    monkeypatch.setattr("app.sources.service.invoke_mcp_tool", invoke)
+    service = ExternalKnowledgeSourceService(requester=_requester())
+    candidate = asyncio.run(service.propose_firecrawl_page(url="https://example.com/", context=_context()))
+    document = candidate.document
+    assert document.structured_content is not None
+    assert document.structure_hash is not None
+    assert document.content == canonical_document_text(document.structured_content)
+    assert document.source_type.value == "firecrawl"
+    assert document.trust_level is TrustLevel.UNTRUSTED_EXTERNAL
+    assert candidate.status is IngestionCandidateStatus.PENDING
+    assert "<table>" not in candidate.model_dump_json()
+    assert "html" not in document.metadata
+
+
+def test_firecrawl_payload_never_combines_html_or_metadata_from_other_blocks():
+    from app.sources.service import _firecrawl_payload
+
+    output = {
+        "structured_content": {"markdown": "selected", "metadata": {"title": "selected title"}},
+        "content_blocks": [
+            {"type": "text", "text": REGISTRATION_HTML},
+            {"type": "text", "text": json.dumps({"markdown": "other", "html": REGISTRATION_HTML,
+                                                   "metadata": {"title": "other title"}})},
+        ],
+    }
+    payload = _firecrawl_payload(output, requested_url="https://example.com/")
+    assert (payload.content, payload.html, payload.title) == ("selected", None, "selected title")
+    output["structured_content"]["rawHtml"] = REGISTRATION_HTML
+    assert _firecrawl_payload(output, requested_url="https://example.com/").html is None
+
+
+@pytest.mark.parametrize("override", [
+    {"success": False}, {"truncated": True}, {"metadata": {"statusCode": 404}},
+    {"html": {"text": REGISTRATION_HTML}},
+])
+def test_firecrawl_invalid_html_payload_fails_before_parse(monkeypatch, governed_provider, override):
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid payload must not reach parser")
+
+    async def invoke(*args, **kwargs):
+        return _output({"type": "text", "text": json.dumps({
+            "markdown": "body", "html": REGISTRATION_HTML, **override,
+        })})
+
+    monkeypatch.setattr("app.sources.firecrawl.parse_html_document", forbidden)
+    monkeypatch.setattr("app.sources.service.invoke_mcp_tool", invoke)
+    service = ExternalKnowledgeSourceService(requester=_requester())
+    with pytest.raises(SourceIngestionError) as caught:
+        asyncio.run(service.propose_firecrawl_page(url="https://example.com/", context=_context()))
+    assert caught.value.code == "SOURCE_PAYLOAD_INVALID"
+    assert service.ingestion_service.repository.count() == 0
+
+
+def test_firecrawl_html_conversion_failure_is_safe_and_never_falls_back(monkeypatch, governed_provider):
+    def fail(*args, **kwargs):
+        raise RuntimeError("private parser detail: secret HTML body")
+
+    async def invoke(*args, **kwargs):
+        return _output({"type": "text", "text": json.dumps({
+            "markdown": "valid fallback must not be admitted", "html": REGISTRATION_HTML,
+            "metadata": {"contentType": "text/html"},
+        })})
+
+    monkeypatch.setattr("app.sources.firecrawl.parse_html_document", fail)
+    monkeypatch.setattr("app.sources.service.invoke_mcp_tool", invoke)
+    service = ExternalKnowledgeSourceService(requester=_requester())
+    with pytest.raises(SourceIngestionError) as caught:
+        asyncio.run(service.propose_firecrawl_page(url="https://example.com/", context=_context()))
+    assert caught.value.code == "SOURCE_PAYLOAD_INVALID"
+    assert "private" not in str(caught.value)
+    assert "secret" not in str(caught.value)
+    assert caught.value.__suppress_context__
+    assert service.ingestion_service.repository.count() == 0
+
+
+@pytest.mark.parametrize("transport", ["json", "structured"])
+def test_dual_format_serialization_limits_still_fail_closed(settings_factory, transport):
+    from app.sources.service import _require_ingestion_output
+
+    # JSON text aggregate > 1M；structuredContent 单字符串 > 4000，两者均不绕过截断。
+    count = 510_000 if transport == "json" else 4_100
+    payload = {"markdown": "m" * count, "html": "<p>" + "h" * count + "</p>"}
+    outcome = sanitize_mcp_call_result(
+        CallToolResult(
+            content=[TextContent(type="text", text=json.dumps(payload))] if transport == "json" else [],
+            structuredContent=payload if transport == "structured" else None,
+        ),
+        settings=settings_factory(), server_alias="firecrawl", remote_tool_name="firecrawl_scrape",
+        profile=McpSerializationProfile.INGESTION,
+    )
+    assert outcome.truncated
+    with pytest.raises(SourceIngestionError) as caught:
+        _require_ingestion_output({"ok": outcome.ok, "output": outcome.ingestion_output})
+    assert caught.value.code == ("SOURCE_CONTENT_TOO_LARGE" if transport == "json" else "SOURCE_CONTENT_TRUNCATED")

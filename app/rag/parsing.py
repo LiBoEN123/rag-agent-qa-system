@@ -1,4 +1,4 @@
-"""PDF/DOCX 共用的 Docling infrastructure；只映射公开结构，不识别表格。"""
+"""PDF/DOCX/HTML 共用的 Docling infrastructure；只映射公开结构，不识别表格。"""
 
 from __future__ import annotations
 
@@ -14,8 +14,9 @@ from app.ingestion.document_blocks import ParsedDocument, TableBlock, TableCell,
 def _document_converter():
     # 惰性创建使 TXT/MD 不初始化模型；Docling 自己复用已初始化的 pipeline。
     from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.backend_options import HTMLBackendOptions
     from docling.datamodel.pipeline_options import PdfPipelineOptions
-    from docling.document_converter import DocumentConverter, PdfFormatOption
+    from docling.document_converter import DocumentConverter, HTMLFormatOption, PdfFormatOption
 
     options = PdfPipelineOptions(
         do_ocr=False, do_table_structure=True,
@@ -24,8 +25,16 @@ def _document_converter():
         do_code_enrichment=False, do_formula_enrichment=False,
     )
     return DocumentConverter(
-        allowed_formats=[InputFormat.PDF, InputFormat.DOCX],
-        format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=options)},
+        allowed_formats=[InputFormat.PDF, InputFormat.DOCX, InputFormat.HTML],
+        format_options={
+            InputFormat.PDF: PdfFormatOption(pipeline_options=options),
+            InputFormat.HTML: HTMLFormatOption(backend_options=HTMLBackendOptions(
+                enable_remote_fetch=False, enable_local_fetch=False,
+                fetch_images=False, render_page=False,
+                # Firecrawl 已清理正文，不能把首个 heading 前的正文推断为页眉。
+                infer_furniture=False,
+            )),
+        },
     )
 
 
@@ -79,3 +88,13 @@ def parse_document(file_path: str | Path) -> ParsedDocument:
         result.document,
         page_count=len(result.document.pages) if path.suffix.lower() == ".pdf" else None,
     )
+
+
+def parse_html_document(html: str, *, name: str | None = None) -> ParsedDocument:
+    """只消费已抓取的 cleaned HTML 字符串；不传 URL、不落临时文件。"""
+    from docling.datamodel.base_models import ConversionStatus, InputFormat
+
+    result = _document_converter().convert_string(html, format=InputFormat.HTML, name=name)
+    if result.status is not ConversionStatus.SUCCESS:
+        raise ValueError("structured HTML conversion 未完整成功")
+    return adapt_docling_document(result.document, page_count=None)

@@ -369,7 +369,11 @@ Upload、GitHub、Firecrawl 可在候选详情确认「移出知识库」，撤�
 历史纯文本 PDF/DOCX 候选继续按正文切分，重新上传才能获得结构。有 `structured_content`
 时，连续文本复用 LangChain splitter，表格保留标题/表头并按完整连续行分组；
 `pipeline_version` 从 2 升至 3，旧索引在启动时通过现有 force rebuild 迁移。
-Web/Firecrawl structured parsing 尚未实现。详见
+Firecrawl 显式提案请求 Markdown + cleaned HTML，经同一 Docling parser 得到
+`ParsedDocument`，直接复用现有 table-aware chunks；禁用二次抓取、图片读取与渲染。
+HTML 原文不保存，结构随 candidate_json 持久化。历史 Firecrawl 候选保持纯文本，
+force rebuild 不重抓 URL，也不会自动升级结构；需重新抓取、生成候选、审批并索引。
+本次 `pipeline_version` 保持 3。详见
 [结构化解析、持久化与切分](docs/ingestion/structured-documents.md)。
 
 聊天只使用 `/chat/stream`，`answer_delta` 用于增量展示，`final.data.response` 更新本轮权威结果，

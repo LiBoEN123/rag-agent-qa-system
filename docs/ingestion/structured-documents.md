@@ -1,9 +1,10 @@
-# TABLE-AWARE-1A/1B/1C：结构化解析、持久化与切分
+# TABLE-AWARE-1A/1B/1C/1D：结构化解析、持久化与切分
 
 ```text
 Local PDF/DOCX ─┐
                ├→ app.rag.parsing.parse_document()
 Upload PDF/DOCX ┘       → Docling DocumentConverter
+Firecrawl cleaned HTML → 同一 converter.convert_string(..., InputFormat.HTML)
                        → app.ingestion.document_blocks.ParsedDocument
                        → KnowledgeDocument(content + structured_content + structure_hash)
                        → IngestionCandidate → SQLite candidate_json
@@ -63,7 +64,7 @@ Span 和 header 以结构字段为准，文本视图不承担完整表达这些�
 
 ## Local / Upload 与 rebuild
 
-TXT/MD 的原有读取和清洗行为保持；GitHub/Firecrawl 不需要创建结构。
+TXT/MD 的原有读取和清洗行为保持；GitHub 和没有 HTML 的 Firecrawl 继续走正文路径。
 Local 文件仍是其权威来源，Local rebuild 会重新解析磁盘文件，其 admission candidate
 仍是原有内存流程。Upload 原始文件在临时目录解析后删除，结构随 candidate 持久化；
 global force rebuild 读取最新成功 INDEX 对应的 candidate 原样恢复结构，不重新
@@ -123,7 +124,7 @@ Metadata 保留原 provenance，并统一按 reading order 分配从 1 开始的
 范围可能包含不生成文字的空行。Chroma metadata 不保存结构对象或完整表格副本。
 
 没有结构的 TXT/MD 和历史 PDF/DOCX 仍使用原有正文/Markdown 切分；目前的
-GitHub/Firecrawl Markdown/plain content 行为不变。`page_content` 是进入现有
+GitHub 和 legacy Firecrawl Markdown/plain content 行为不变。`page_content` 是进入现有
 embedding、BM25、CrossEncoder 和 evidence context 的同一份文本。
 
 ### 索引迁移与验证边界
@@ -142,6 +143,57 @@ Focused retrieval smoke 使用真实 Chroma/SQLRecordManager/BM25 和确定性 f
 Retrieval、reranker、Evidence Gate、generation 和 `max_context_chars`（默认 2500）
 均不变；极长行的 chunk 可能超过最终 context budget，现有 context builder 会整块排除。
 
+## TABLE-AWARE-1D：Firecrawl 网页结构
+
+显式 `propose_firecrawl_page()` 请求 `formats=["markdown", "html"]`，保留
+`onlyMainContent=True`、`removeBase64Images=True`。Firecrawl 负责网页获取和正文清理；
+`html` 是 transient cleaned HTML，`content` 保持 Markdown/plain fallback。
+不请求 `rawHtml`、JSON extraction 或截图；不从任意 MCP text block 猜 HTML。
+正文、HTML、metadata 均取自同一个经过验证的 response payload。
+
+`FirecrawlPageSourceAdapter` 在非空 HTML 且 MIME 为 `text/html` 或
+`application/xhtml+xml` 时调用同一 `app.rag.parsing.parse_html_document()`，忽略
+MIME 的 charset 参数并规范大小写。MIME 缺失时，受验证的非空 cleaned HTML 也启用
+结构解析；HTML 缺失/空白或 MIME 明确为 PDF/octet-stream 等其他类型时保留旧正文路径。
+明确失败或部分成功的 HTML conversion 会拒绝提案，返回固定的
+`SOURCE_PAYLOAD_INVALID` 安全错误，不静默回退 Markdown。
+
+Docling 2.127.0 使用官方 HTML backend 与 `convert_string(..., format=InputFormat.HTML)`，
+只消费字符串，不传源 URL、不创建临时文件。显式关闭 `enable_remote_fetch`、
+`enable_local_fetch`、`fetch_images`、`render_page`，并关闭 `infer_furniture`，避免
+把 Firecrawl 已清理的首个 heading 前正文丢弃。PDF options 不变。共同 adapter 继续
+映射 reading order、cell offsets、spans 和 headers，HTML 的 `page_count=None`。
+
+实测普通 HTML 表格保留 TextBlock/TableBlock/TextBlock 顺序；多级表头的 rowspan、
+colspan、is_header 保留。**框架限制：测试 fixture 的 `<caption>` 未由该版本 HTML
+backend 关联到 TableItem，故项目得到 `caption=None`，不自研补齐。** 对应 table chunk：
+
+```text
+[表格]
+表头：事项；条件；材料
+事项：企业注册；条件：年满18岁；材料：身份证、申请表。
+[/表格]
+```
+
+Factory 继续从规范化结构生成 `content/content_hash/structure_hash`，SQLite 只保存
+现有 `candidate_json`。原 HTML 不进入 metadata 或新表；Approve 与 Index 仍分开。
+重启与 global force rebuild 从最新成功索引的持久 candidate 恢复，绝不重新调用
+Firecrawl 或 HTML parser。历史 Firecrawl candidate 没有已保存结构，force rebuild
+**不会自动升级**；必须显式重新抓取 URL、生成新候选、审批并索引。
+`pipeline_version` **3 → 3**：本阶段只增加结构来源，未改变 chunk/index algorithm。
+
+Agent promotion 兼容 `formats=["markdown"]`（保持 plain）和
+`["markdown", "html"]`（两种顺序均可，按上述 MIME 规则解析）；其他格式组合不沉淀。
+部署 opt-in、MCP identity、read-only、governance allow、audit success、完整结果检查保持。
+解析失败只使 promotion 失败，不改变成功的只读 ToolResult。
+
+双 format 共享既有大小预算，**没有提高上限**：显式 ingestion 的 JSON text blocks
+合计超过 1,000,000 字符会截断并拒绝；Agent text 默认上限 12,000。
+原生 `structuredContent` 还经过既有 structured sanitizer，默认总预算 20,000，
+首轮单字符串最多 4,000 字符；focused test 中 4,100 字符字段即触发拒绝。
+不会因为另有完整 JSON block 而绕过全局 truncated 标记。较大的网页可能安全失败，
+不会接收截断结构。测试使用本地 HTML、fake MCP 和确定性 embedding，无真实网页依赖。
+
 ## 运行依赖与阶段限制
 
 PDF 启用官方布局和表格模型，**OCR、图片理解、远程模型服务和外部插件均关闭**。
@@ -156,6 +208,6 @@ DOCX 不需要下载布局/表格模型。PDF 首次转换会通过 Docling/Hugg
 `torchvision::nms` 缺失，改用 PyTorch 官方 cu126 wheel 后真实解析测试通过。
 测试 PDF 为 1,933 bytes 的专用 fixture；真实 DOCX 在测试中用 python-docx 动态生成。
 
-本阶段未实现 Web/Firecrawl structured parsing、表格上下文扩展或新检索路由。
-下一阶段建议 **TABLE-AWARE-1D — Web Structured Ingestion**：Firecrawl cleaned HTML
-→ structured parser → ParsedDocument，直接复用本阶段 chunker。
+本阶段未实现表格上下文扩展或新检索路由，也未增加依赖。Web 普通表格已接入现有
+chunking/indexing；下一步建议小型 **TABLE-AWARE-EVAL — Real Table Retrieval Evaluation**，
+用真实检索结果决定是否继续扩展，1D 不自动开始该阶段。

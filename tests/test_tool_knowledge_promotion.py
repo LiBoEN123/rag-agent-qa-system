@@ -560,3 +560,77 @@ def test_agent_candidate_admin_approval_index_and_normal_rag_retrieval(
     again = client.post(endpoint + "/index", headers=headers)
     assert again.json()["skipped"] == 1
     assert again.json()["added"] == 0
+
+
+@pytest.mark.parametrize("formats,structured", [
+    (["markdown"], False), (["markdown", "html"], True), (["html", "markdown"], True),
+])
+def test_firecrawl_promotion_formats_preserve_plain_or_structured_contract(
+    monkeypatch, settings_factory, formats, structured,
+):
+    from tests.support.structured_document import REGISTRATION_HTML
+
+    settings = settings_factory()
+    _, result, event, calls = _stream_agent(
+        monkeypatch, settings, _firecrawl_result(html=REGISTRATION_HTML), source="firecrawl",
+        args={**FIRECRAWL_ARGS, "formats": formats},
+    )
+    assert result["ok"] is True
+    assert len(calls) == 1
+    assert event["knowledge_promotion_status"] == "pending"
+    [candidate] = SQLiteCandidateRepository(settings.sqlite_db_path).list()
+    assert (candidate.document.structured_content is not None) == structured
+    if structured:
+        assert candidate.document.structure_hash is not None
+        assert candidate.document.structured_content.blocks[1].kind == "table"
+    else:
+        assert candidate.document.content == BODY
+
+
+@pytest.mark.parametrize("formats", [
+    ["json"], ["markdown", "rawHtml"], ["markdown", "html", "screenshot"],
+    ["markdown", "images"], ["markdown", "markdown"], ["html"],
+])
+def test_firecrawl_unrelated_formats_never_promote(monkeypatch, settings_factory, formats):
+    from tests.support.structured_document import REGISTRATION_HTML
+
+    settings = settings_factory()
+    _, result, event, _ = _stream_agent(
+        monkeypatch, settings, _firecrawl_result(html=REGISTRATION_HTML), source="firecrawl",
+        args={**FIRECRAWL_ARGS, "formats": formats},
+    )
+    assert result["ok"] is True
+    assert "knowledge_candidate_id" not in event
+    assert SQLiteCandidateRepository(settings.sqlite_db_path).list() == []
+
+
+def test_firecrawl_parser_failure_preserves_successful_tool_answer(monkeypatch, settings_factory):
+    from tests.support.structured_document import REGISTRATION_HTML
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("private parser payload")
+
+    settings = settings_factory()
+    monkeypatch.setattr("app.sources.firecrawl.parse_html_document", fail)
+    raw = _firecrawl_result(html=REGISTRATION_HTML)
+    args = {**FIRECRAWL_ARGS, "formats": ["markdown", "html"]}
+    _, baseline, _, _ = _stream_agent(monkeypatch, settings, raw, source="firecrawl", args=args, opt_in=False)
+    _, result, event, _ = _stream_agent(monkeypatch, settings, raw, source="firecrawl", args=args)
+    assert result["ok"] is baseline["ok"] is True
+    assert result["output"] == baseline["output"]
+    assert "private parser" not in json.dumps(result) + json.dumps(event)
+    assert "knowledge_candidate_id" not in event
+    assert SQLiteCandidateRepository(settings.sqlite_db_path).list() == []
+
+
+def test_firecrawl_dual_format_agent_budget_is_not_relaxed(monkeypatch, settings_factory):
+    settings = settings_factory()
+    count = settings.mcp_max_text_chars // 2 + 1
+    _, result, event, _ = _stream_agent(
+        monkeypatch, settings, _firecrawl_result(markdown="m" * count, html="<p>" + "h" * count + "</p>"),
+        source="firecrawl", args={**FIRECRAWL_ARGS, "formats": ["markdown", "html"]},
+    )
+    assert result["ok"] is True
+    assert result["output"]["truncated"] is True
+    assert "knowledge_candidate_id" not in event
+    assert SQLiteCandidateRepository(settings.sqlite_db_path).list() == []

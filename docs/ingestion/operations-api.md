@@ -119,13 +119,27 @@ metadata、工具正文或模型参数不能开启 promotion，也不能设定 t
 创建候选不依赖管理 API 是否启用；人工管理仍须启用上面的 API 并提供管理 key。
 
 GitHub 必须返回匹配 owner/repository/path、带合法 SHA 的完整文本资源。Firecrawl
-必须请求 `formats=["markdown"]`，返回完整 markdown、有效页面 URL 和 2xx status。
+promotion 接受 `formats=["markdown"]`（旧 plain 路径）及 `["markdown", "html"]`
+（顺序可交换），返回完整 markdown、有效页面 URL 和 2xx status；拒绝 json、rawHtml、
+screenshot、images 等其他组合。非空 cleaned HTML 按 HTML MIME 交给 Docling，MIME
+缺失也允许；PDF 等明确非 HTML 类型保持旧路径。
 工具错误、权限/治理拦截、审计失败、缺失来源、格式错误、空正文或任何截断均不入候选。
 promotion 校验/持久化失败不改变成功的只读 ToolResult，治理事件仅附安全状态和候选 ID。
 
 Agent 仍使用原来的长度上限（默认 12,000 字符）；净化器在本次 `ToolRuntime` 中暂存
 安全 source 内容块，完成后移除，不把这些内容块或候选正文追加到模型消息。没有重抓取，
 也不把摘要或截断文本转为永久知识。较长正文仍应通过已有显式 source API 提案。
+
+显式 Firecrawl source API 现在请求 Markdown + cleaned HTML，并保持
+`onlyMainContent=True`、`removeBase64Images=True`。链路为 Firecrawl → cleaned HTML
+→ Docling `convert_string` → ParsedDocument → 现有 table-aware chunks；关闭二次网络/
+本地资源抓取、图片读取与浏览器渲染。HTML conversion 失败返回安全错误，不静默回退。
+仍保留既有 serialization/正文上限和 truncated 拒绝；双 format 较大的结果可能失败，
+具体预算及 Docling caption 限制见[结构化解析文档](structured-documents.md)。
+
+HTML 原文不持久化，结构和 hash 保存在现有 candidate_json 中。历史 Firecrawl 候选
+继续按纯文本索引；force rebuild 只读持久候选，不重抓 URL 或重跑 HTML parser，
+不会自动升级历史网页结构。获得结构需要重新提案该 URL、批准并索引。
 
 同一 source/content hash 复用既有 candidate ID；重新读取已审批/拒绝的候选不会重置
 审批状态。只有显式 `/approve` 后再调用 `/index` 才会执行增量索引和 RAG runtime reload。

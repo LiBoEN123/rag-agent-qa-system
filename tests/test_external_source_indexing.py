@@ -759,3 +759,75 @@ def test_version_migration_rechunks_sqlite_structure_and_preserves_legacy(persis
     runtime.embeddings.reset()
     assert runtime.source_service.index_approved(candidate.candidate_id)["num_skipped"] == len(upload_chunks)
     assert runtime.embeddings.document_texts == []
+
+
+def test_firecrawl_html_sqlite_index_retrieval_and_rebuild_keep_legacy(persisted_runtime, monkeypatch):
+    import asyncio
+    import json
+    import sqlite3
+
+    from app.ingestion.document_blocks import canonical_document_text
+    from app.tools.context import ToolInvocationContext
+    from tests.support.structured_document import REGISTRATION_HTML
+
+    runtime = persisted_runtime
+
+    async def fetch(name, args, context):
+        assert name == "firecrawl_firecrawl_scrape"
+        assert args["formats"] == ["markdown", "html"]
+        return {"content_blocks": [{"type": "text", "text": json.dumps({
+            "markdown": "fallback", "html": REGISTRATION_HTML, "success": True,
+            "metadata": {"contentType": "text/html", "url": args["url"], "statusCode": 200},
+        })}]}
+
+    monkeypatch.setattr(runtime.source_service, "_fetch", fetch)
+    pending = asyncio.run(runtime.source_service.propose_firecrawl_page(
+        url="https://example.com/registration", context=ToolInvocationContext(source="test"),
+    ))
+    candidate = runtime.source_service.approve(pending.candidate_id)
+    assert runtime.runs.list() == []
+    assert all("企业注册" not in text for text in pipeline.texts)
+    chunks = indexing.candidate_to_langchain_documents(candidate)
+    [table] = [chunk for chunk in chunks if chunk.metadata.get("element_type") == "table"]
+    expected = "事项：企业注册；条件：年满18岁；材料：身份证、申请表。"
+    assert expected in table.page_content
+    assert _index_with_run(runtime, candidate)["num_added"] == 3
+    legacy = _approve(runtime.domain, _firecrawl_document("legacy markdown"))
+    assert legacy.document.structured_content is None
+    _index_with_run(runtime, legacy)
+
+    with sqlite3.connect(runtime.settings.sqlite_db_path) as connection:
+        payloads = [row[0] for row in connection.execute("SELECT candidate_json FROM ingestion_candidates")]
+    assert all("<table>" not in payload for payload in payloads)
+    repository = SQLiteCandidateRepository(runtime.settings.sqlite_db_path)
+    restored = repository.get(candidate.candidate_id)
+    assert restored == candidate
+    assert restored.document.structure_hash == candidate.document.structure_hash
+    assert restored.document.content == canonical_document_text(restored.document.structured_content)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("persisted Firecrawl rebuild must not fetch or parse")
+
+    monkeypatch.setattr(runtime.source_service, "_fetch", forbidden)
+    monkeypatch.setattr("app.sources.service.invoke_mcp_tool", forbidden)
+    monkeypatch.setattr("app.sources.firecrawl.parse_html_document", forbidden)
+    monkeypatch.setattr("app.rag.parsing.parse_html_document", forbidden)
+    monkeypatch.setattr("app.rag.parsing._document_converter", forbidden)
+    monkeypatch.setattr("app.rag.retrieval._retrieve_with_local_embeddings", forbidden)
+    history = runtime.runs.list()
+    ok, message = pipeline.rebuild_and_persist_index(str(runtime.local_dir), force_rebuild=True)
+    assert ok, message
+    assert rag_store.load_manifest()["pipeline_version"] == 3
+    assert runtime.runs.list() == history
+    assert repository.get(candidate.candidate_id) == restored
+    [legacy_chunk] = [chunk for chunk in pipeline.chunks if chunk["metadata"]["source_id"] == legacy.document.source_id]
+    assert legacy_chunk["text"] == "legacy markdown"
+    assert "element_type" not in legacy_chunk["metadata"]
+    table_position = next(i for i, chunk in enumerate(pipeline.chunks)
+                          if chunk["metadata"].get("element_type") == "table")
+    assert all(pipeline.bm25.doc_freqs[table_position].get(token, 0) for token in tokenize("身份证"))
+    hits = pipeline.search_relevant_chunks("企业注册需要哪些材料", top_k=5)
+    assert any(expected in hit["text"] and hit["metadata"].get("element_type") == "table" for hit in hits)
+    records = indexing.create_vector_store(None).get(where={"source_type": "firecrawl"})
+    assert len(records["ids"]) == 4
+    assert set(records["ids"]) == set(indexing.create_record_manager(namespace=FIRECRAWL_RECORD_NAMESPACE).list_keys())

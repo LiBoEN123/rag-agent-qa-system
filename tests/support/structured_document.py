@@ -1,10 +1,19 @@
-"""小型真实 DOCX fixture，避免提交不必要的 Office binary。"""
+"""小型真实 DOCX/HTML fixture，避免提交不必要的二进制或网页快照。"""
 
 from io import BytesIO
 
 from docx import Document
 
 from app.ingestion.document_blocks import ParsedDocument, TableBlock, TableCell
+
+
+REGISTRATION_HTML = """<html><body>
+<p>办理说明</p>
+<table><caption>企业登记办理要求</caption>
+<thead><tr><th>事项</th><th>条件</th><th>材料</th></tr></thead>
+<tbody><tr><td>企业注册</td><td>年满18岁</td><td>身份证、申请表</td></tr></tbody>
+</table><p>其他说明</p>
+</body></html>"""
 
 
 def registration_structure() -> ParsedDocument:

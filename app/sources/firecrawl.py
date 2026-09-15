@@ -13,6 +13,7 @@ from app.ingestion import (
     build_knowledge_document,
 )
 from app.ingestion.identity import canonicalize_source_uri
+from app.rag.parsing import parse_html_document
 
 
 class FirecrawlPagePayload(BaseModel):
@@ -22,6 +23,7 @@ class FirecrawlPagePayload(BaseModel):
 
     requested_url: StrictStr = Field(min_length=1, max_length=2048)
     content: StrictStr = Field(repr=False)
+    html: StrictStr | None = Field(default=None, repr=False)
     title: StrictStr | None = Field(default=None, max_length=512)
     final_url: StrictStr | None = Field(default=None, max_length=2048)
     mime_type: StrictStr | None = Field(default=None, max_length=255)
@@ -65,11 +67,20 @@ class FirecrawlPageSourceAdapter:
             "mime_type": payload.mime_type,
             "language": payload.language,
         }
+        structure = None
+        media_type = (payload.mime_type or "").split(";", 1)[0].strip().lower()
+        # MIME 缺失时，受验证 payload 的非空 cleaned HTML 足以启用结构解析。
+        if payload.html and payload.html.strip() and media_type in {"", "text/html", "application/xhtml+xml"}:
+            try:
+                structure = parse_html_document(payload.html)
+            except Exception:
+                raise ValueError("Firecrawl HTML 结构解析失败") from None
         return build_knowledge_document(
             source_type=KnowledgeSourceType.FIRECRAWL,
             source_uri=payload.requested_url,
             title=title,
             content=payload.content,
+            structured_content=structure,
             fetched_at=fetched_at,
             version=payload.version,
             mime_type=payload.mime_type,

@@ -183,7 +183,7 @@ def _firecrawl_payload(
             "SOURCE_PAYLOAD_INVALID",
             "Firecrawl scrape 未返回可证明完整的正文",
         )
-    if require_markdown and (
+    if (
         selected.get("success", True) is not True
         or selected.get("truncated", False) is not False
     ):
@@ -194,9 +194,15 @@ def _firecrawl_payload(
     status_code = metadata.get("statusCode")
     if isinstance(status_code, bool) or not isinstance(status_code, int):
         status_code = None
+    if status_code is not None and not 200 <= status_code < 300:
+        raise SourceIngestionError("SOURCE_PAYLOAD_INVALID", "Firecrawl page HTTP 状态无效")
+    html = selected.get("html")
+    if html is not None and not isinstance(html, str):
+        raise SourceIngestionError("SOURCE_PAYLOAD_INVALID", "Firecrawl HTML 字段无效")
     return FirecrawlPagePayload(
         requested_url=requested_url,
         content=content,
+        html=html,
         title=_text_field(metadata, "title"),
         final_url=_text_field(metadata, "url"),
         mime_type=_text_field(metadata, "contentType"),
@@ -251,7 +257,8 @@ def promote_tool_result(
             return None
         document = GitHubFileSourceAdapter().to_document(payload)
     else:
-        if args.get("formats") != ["markdown"]:
+        formats = args.get("formats")
+        if formats not in (["markdown"], ["markdown", "html"], ["html", "markdown"]):
             return None
         payload = _firecrawl_payload(
             output, requested_url=args["url"], require_markdown=True
@@ -262,7 +269,12 @@ def promote_tool_result(
             or not 200 <= payload.status_code < 300
         ):
             return None
-        document = FirecrawlPageSourceAdapter().to_document(payload)
+        if formats == ["markdown"]:
+            payload = payload.model_copy(update={"html": None})
+        try:
+            document = FirecrawlPageSourceAdapter().to_document(payload)
+        except ValueError:
+            raise SourceIngestionError("SOURCE_PAYLOAD_INVALID", "Firecrawl page 无法转换为知识文档") from None
     if not document.content.strip():
         return None
     return IngestionService(SQLiteCandidateRepository(settings.sqlite_db_path)).propose(
@@ -365,7 +377,7 @@ class ExternalKnowledgeSourceService:
         document = self._github_adapter.to_document(payload, fetched_at=fetched_at)
         return self._propose(document, reason)
 
-    # 抓取网页主体 Markdown 并适配为知识文档，随后提交入库提案。
+    # 抓取网页主体 Markdown 和 cleaned HTML，复用结构 parser 后提交入库提案。
     async def propose_firecrawl_page(
         self,
         *,
@@ -378,14 +390,17 @@ class ExternalKnowledgeSourceService:
             _FIRECRAWL_TOOL,
             {
                 "url": url,
-                "formats": ["markdown"],
+                "formats": ["markdown", "html"],
                 "onlyMainContent": True,
                 "removeBase64Images": True,
             },
             context,
         )
         payload = _firecrawl_payload(output, requested_url=url)
-        document = self._firecrawl_adapter.to_document(payload, fetched_at=fetched_at)
+        try:
+            document = self._firecrawl_adapter.to_document(payload, fetched_at=fetched_at)
+        except ValueError:
+            raise SourceIngestionError("SOURCE_PAYLOAD_INVALID", "Firecrawl page 无法转换为知识文档") from None
         return self._propose(document, reason)
 
     def propose_upload_file(
