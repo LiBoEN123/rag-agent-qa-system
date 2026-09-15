@@ -1,0 +1,680 @@
+{
+  "version": "rag_eval_v2_chunk_level",
+  "language": "zh-CN",
+  "schema": {
+    "qid": "stable question id",
+    "question": "user-facing evaluation question",
+    "category": "single_doc | cross_doc | partial_answer | not_in_doc | trap",
+    "skill_type": "main capability being tested",
+    "difficulty": "easy | medium | hard",
+    "expected_behavior": "answer | partial_answer | abstain",
+    "gold_answer": "reference answer",
+    "gold_doc_ids": "source document names derived from gold chunks",
+    "gold_chunk_ids": "chunk_id values expected to support the answer",
+    "gold_evidence": "short evidence snippets with chunk_id",
+    "gold_key_points": "weighted concepts; aliases are acceptable surface forms",
+    "forbidden_points": "concepts that should not appear, especially hallucinated details",
+    "distractor_chunk_ids": "nearby or confusable chunks useful for retrieval-error analysis",
+    "notes": "human-readable scoring notes"
+  },
+  "created_at": "2026-09-15",
+  "source_chunks_file": "outputs/evaluation_baseline_v2/table-aware-84f53a1-diagnostics/fixture-chunks.json",
+  "description": "TABLE-AWARE focused diagnostic v1 at 84f53a1. 14 CONTROLLED cases: 9 parser fixtures, 5 existing structure fixtures. Real corpus table chunks=0. No claim about real corpus quality. Evidence/key points are gold; IDs are this isolated snapshot only.",
+  "stats": {
+    "num_questions": 14,
+    "category_counts": {
+      "single_doc": 12,
+      "trap": 1,
+      "not_in_doc": 1
+    },
+    "expected_behavior_counts": {
+      "answer": 13,
+      "abstain": 1
+    },
+    "difficulty_counts": {
+      "easy": 4,
+      "medium": 10
+    },
+    "source_doc_counts": {
+      "structured-table.pdf": 4,
+      "simple-table.docx": 1,
+      "merged-table.docx": 2,
+      "registration-html": 1,
+      "multilevel-html": 1,
+      "registration-structure": 2,
+      "oversized-structure": 2,
+      "large-structure": 1
+    }
+  },
+  "items": [
+    {
+      "qid": "t001",
+      "question": "structured-table.pdf 中，Registration 需要什么材料？",
+      "category": "single_doc",
+      "skill_type": "table_single_row",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "gold_answer": "Identity card。",
+      "gold_doc_ids": [
+        "structured-table.pdf"
+      ],
+      "gold_chunk_ids": [
+        5
+      ],
+      "gold_evidence": [
+        {
+          "text": "Registration Identity card",
+          "chunk_id": 5
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "Registration",
+          "aliases": [
+            "Registration"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "Identity card",
+          "aliases": [
+            "Identity card"
+          ],
+          "weight": 1
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": "CONTROLLED_PARSE: tests/fixtures/structured-table.pdf。"
+    },
+    {
+      "qid": "t002",
+      "question": "structured-table.pdf 中，Renewal 需要什么材料？",
+      "category": "single_doc",
+      "skill_type": "table_single_row",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "gold_answer": "Application。",
+      "gold_doc_ids": [
+        "structured-table.pdf"
+      ],
+      "gold_chunk_ids": [
+        5
+      ],
+      "gold_evidence": [
+        {
+          "text": "Renewal Active status Application",
+          "chunk_id": 5
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "Renewal",
+          "aliases": [
+            "Renewal"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "Application",
+          "aliases": [
+            "Application"
+          ],
+          "weight": 1
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": "CONTROLLED_PARSE: 同一 PDF，区分 Registration 和 Renewal。"
+    },
+    {
+      "qid": "t003",
+      "question": "structured-table.pdf 中，Registration 的条件和材料分别是什么？",
+      "category": "single_doc",
+      "skill_type": "table_relation",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "条件为 Age 18+，材料为 Identity card。",
+      "gold_doc_ids": [
+        "structured-table.pdf"
+      ],
+      "gold_chunk_ids": [
+        5
+      ],
+      "gold_evidence": [
+        {
+          "text": "Registration Age 18+ Identity card",
+          "chunk_id": 5
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "Registration",
+          "aliases": [
+            "Registration"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "Age 18+",
+          "aliases": [
+            "Age 18+"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "Identity card",
+          "aliases": [
+            "Identity card"
+          ],
+          "weight": 1
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": "CONTROLLED_PARSE: PDF 同行多字段关系。"
+    },
+    {
+      "qid": "t004",
+      "question": "simple-table.docx 中，注册的年龄条件是什么？",
+      "category": "single_doc",
+      "skill_type": "table_single_row",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "gold_answer": "年满18岁。",
+      "gold_doc_ids": [
+        "simple-table.docx"
+      ],
+      "gold_chunk_ids": [
+        2
+      ],
+      "gold_evidence": [
+        {
+          "text": "年满18岁",
+          "chunk_id": 2
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "注册",
+          "aliases": [
+            "注册"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "年满18岁",
+          "aliases": [
+            "年满18岁"
+          ],
+          "weight": 1
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": "CONTROLLED_PARSE: tests/support/structured_document.py::build_table_docx(merged=False)。"
+    },
+    {
+      "qid": "t005",
+      "question": "merged-table.docx 中，续期对应的合并材料单元格包含哪些内容？",
+      "category": "single_doc",
+      "skill_type": "table_rowspan",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "身份证和证明。",
+      "gold_doc_ids": [
+        "merged-table.docx"
+      ],
+      "gold_chunk_ids": [
+        12
+      ],
+      "gold_evidence": [
+        {
+          "text": "身份证\n证明",
+          "chunk_id": 12
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "续期",
+          "aliases": [
+            "续期"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "身份证",
+          "aliases": [
+            "身份证"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "证明",
+          "aliases": [
+            "证明"
+          ],
+          "weight": 1
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": "CONTROLLED_PARSE: build_table_docx(merged=True)；原 fixture 合并后的材料是身份证和证明，不以合并前的单元格作 gold。"
+    },
+    {
+      "qid": "t006",
+      "question": "merged-table.docx 中，注册这一行的年龄要求和合并材料分别是什么？",
+      "category": "single_doc",
+      "skill_type": "table_relation",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "年满18岁；身份证和证明。",
+      "gold_doc_ids": [
+        "merged-table.docx"
+      ],
+      "gold_chunk_ids": [
+        12
+      ],
+      "gold_evidence": [
+        {
+          "text": "注册 年满18岁 身份证 证明",
+          "chunk_id": 12
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "注册",
+          "aliases": [
+            "注册"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "年满18岁",
+          "aliases": [
+            "年满18岁"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "身份证",
+          "aliases": [
+            "身份证"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "证明",
+          "aliases": [
+            "证明"
+          ],
+          "weight": 1
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": "CONTROLLED_PARSE: 原 fixture 表头横向合并、材料纵向合并；依据实际 DOCX cells。"
+    },
+    {
+      "qid": "t007",
+      "question": "registration-html 的办理表中，企业注册需要哪些材料？",
+      "category": "single_doc",
+      "skill_type": "table_single_row",
+      "difficulty": "easy",
+      "expected_behavior": "answer",
+      "gold_answer": "身份证和申请表。",
+      "gold_doc_ids": [
+        "registration-html"
+      ],
+      "gold_chunk_ids": [
+        9
+      ],
+      "gold_evidence": [
+        {
+          "text": "企业注册 年满18岁 身份证、申请表",
+          "chunk_id": 9
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "企业注册",
+          "aliases": [
+            "企业注册"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "身份证",
+          "aliases": [
+            "身份证"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "申请表",
+          "aliases": [
+            "申请表"
+          ],
+          "weight": 1
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": "CONTROLLED_PARSE: tests/support/structured_document.py::REGISTRATION_HTML，经 Firecrawl adapter 离线转换。"
+    },
+    {
+      "qid": "t008",
+      "question": "multilevel-html 中，企业注册在“申请要求”下的条件和材料分别是什么？",
+      "category": "single_doc",
+      "skill_type": "table_multilevel_header",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "条件为年满18岁，材料为身份证和申请表。",
+      "gold_doc_ids": [
+        "multilevel-html"
+      ],
+      "gold_chunk_ids": [
+        7
+      ],
+      "gold_evidence": [
+        {
+          "text": "企业注册 年满18岁 身份证、申请表",
+          "chunk_id": 7
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "企业注册",
+          "aliases": [
+            "企业注册"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "申请要求",
+          "aliases": [
+            "申请要求"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "年满18岁",
+          "aliases": [
+            "年满18岁"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "身份证",
+          "aliases": [
+            "身份证"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "申请表",
+          "aliases": [
+            "申请表"
+          ],
+          "weight": 1
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": "CONTROLLED_PARSE: tests/test_structured_parsing.py::test_real_html_spans_and_headers 原 HTML；header rowspan/colspan。"
+    },
+    {
+      "qid": "t009",
+      "question": "registration-structure 企业登记办理表中，企业变更的条件和材料分别是什么？",
+      "category": "single_doc",
+      "skill_type": "table_relation",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "企业已注册；营业执照和变更表。",
+      "gold_doc_ids": [
+        "registration-structure"
+      ],
+      "gold_chunk_ids": [
+        17
+      ],
+      "gold_evidence": [
+        {
+          "text": "企业变更 企业已注册 营业执照、变更表",
+          "chunk_id": 17
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "企业变更",
+          "aliases": [
+            "企业变更"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "企业已注册",
+          "aliases": [
+            "企业已注册"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "营业执照",
+          "aliases": [
+            "营业执照"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "变更表",
+          "aliases": [
+            "变更表"
+          ],
+          "weight": 1
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": "CONTROLLED_STRUCTURE: registration_structure()；直接持久化的既有结构 fixture，不计入解析覆盖。"
+    },
+    {
+      "qid": "t010",
+      "question": "registration-structure 中，企业注册需要的材料是身份证和申请表，还是营业执照和变更表？",
+      "category": "trap",
+      "skill_type": "table_distractor",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "企业注册需要身份证和申请表；营业执照和变更表属于企业变更。",
+      "gold_doc_ids": [
+        "registration-structure"
+      ],
+      "gold_chunk_ids": [
+        17
+      ],
+      "gold_evidence": [
+        {
+          "text": "企业注册 年满18岁 身份证、申请表",
+          "chunk_id": 17
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "企业注册",
+          "aliases": [
+            "企业注册"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "身份证",
+          "aliases": [
+            "身份证"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "申请表",
+          "aliases": [
+            "申请表"
+          ],
+          "weight": 1
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": "CONTROLLED_STRUCTURE: registration_structure()；回答可解释变更一行，不能把它的材料绑定到注册。"
+    },
+    {
+      "qid": "t011",
+      "question": "oversized-structure 中，企业注册的材料字段反复出现哪段文字？",
+      "category": "single_doc",
+      "skill_type": "table_chunk_boundary_front",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "完整超长材料。",
+      "gold_doc_ids": [
+        "oversized-structure"
+      ],
+      "gold_chunk_ids": [
+        15
+      ],
+      "gold_evidence": [
+        {
+          "text": "企业注册 年满18岁 完整超长材料",
+          "chunk_id": 15
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "企业注册",
+          "aliases": [
+            "企业注册"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "完整超长材料",
+          "aliases": [
+            "完整超长材料"
+          ],
+          "weight": 1
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": "CONTROLLED_STRUCTURE: test_oversized_row_is_alone_and_whole_with_other_rows_preserved 的原100次重复字段；chunk_size=600；不计作真实业务事实。"
+    },
+    {
+      "qid": "t012",
+      "question": "oversized-structure 中，企业变更的条件和所需材料是什么？",
+      "category": "single_doc",
+      "skill_type": "table_chunk_boundary_back",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "企业已注册；营业执照和变更表。",
+      "gold_doc_ids": [
+        "oversized-structure"
+      ],
+      "gold_chunk_ids": [
+        16
+      ],
+      "gold_evidence": [
+        {
+          "text": "企业变更 企业已注册 营业执照、变更表",
+          "chunk_id": 16
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "企业变更",
+          "aliases": [
+            "企业变更"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "企业已注册",
+          "aliases": [
+            "企业已注册"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "营业执照",
+          "aliases": [
+            "营业执照"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "变更表",
+          "aliases": [
+            "变更表"
+          ],
+          "weight": 1
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": "CONTROLLED_STRUCTURE: 同一已有 oversized fixture 的后一块，要求 row 2。"
+    },
+    {
+      "qid": "t013",
+      "question": "只根据 structured-table.pdf，Registration 的办理费用是多少？",
+      "category": "not_in_doc",
+      "skill_type": "table_abstain",
+      "difficulty": "medium",
+      "expected_behavior": "abstain",
+      "gold_answer": "无法根据该文档确定办理费用；文档没有提供费用。",
+      "gold_doc_ids": [
+        "structured-table.pdf"
+      ],
+      "gold_chunk_ids": [],
+      "gold_evidence": [],
+      "gold_key_points": [],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": "CONTROLLED_PARSE: 原 PDF 只有事项、条件、材料和联系服务台说明；费用不存在。仅验证此 fixture 内拒答。"
+    },
+    {
+      "qid": "t014",
+      "question": "large-structure 企业登记办理表中，事项20需要什么材料？",
+      "category": "single_doc",
+      "skill_type": "table_last_row",
+      "difficulty": "medium",
+      "expected_behavior": "answer",
+      "gold_answer": "材料20。",
+      "gold_doc_ids": [
+        "large-structure"
+      ],
+      "gold_chunk_ids": [
+        14
+      ],
+      "gold_evidence": [
+        {
+          "text": "事项20 年满18岁 材料20",
+          "chunk_id": 14
+        }
+      ],
+      "gold_key_points": [
+        {
+          "point": "事项20",
+          "aliases": [
+            "事项20"
+          ],
+          "weight": 1
+        },
+        {
+          "point": "材料20",
+          "aliases": [
+            "材料20"
+          ],
+          "weight": 1
+        }
+      ],
+      "forbidden_points": [],
+      "distractor_chunk_ids": [],
+      "notes": "CONTROLLED_STRUCTURE: test_large_table_groups_contiguous_rows_without_loss_or_body_overlap 原20行数据；chunk_size=600 下只有一块，不冒充跨块测试。"
+    }
+  ]
+}
