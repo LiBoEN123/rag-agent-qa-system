@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -21,6 +23,8 @@ from app.ingestion import (
 )
 from app.rag import indexing, pipeline
 from app.rag.chroma import load_index_from_chroma
+from app.sources.upload import load_upload_document
+from tests.support.structured_document import build_table_docx
 
 
 class CountingEmbeddings(Embeddings):
@@ -471,3 +475,29 @@ def test_loaded_v2_embeddings_are_finite_and_aligned(tmp_path):
     assert len(chunks) == len(documents)
     assert embeddings.shape[0] == len(chunks)
     assert np.isfinite(embeddings).all()
+
+
+@pytest.mark.parametrize("file_type", ["pdf", "docx"])
+def test_local_and_upload_keep_same_structure_before_existing_text_chunking(tmp_path, monkeypatch, file_type):
+    payload = build_table_docx(merged=True) if file_type == "docx" else (
+        Path(__file__).parent / "fixtures" / "structured-table.pdf"
+    ).read_bytes()
+    path = tmp_path / f"table.{file_type}"
+    path.write_bytes(payload)
+    uploaded = load_upload_document(BytesIO(payload), filename=path.name, max_bytes=2_000_000)
+    admitted = []
+    propose = IngestionService.propose
+
+    def capture(self, **kwargs):
+        candidate = propose(self, **kwargs)
+        admitted.append(candidate)
+        return candidate
+
+    monkeypatch.setattr(IngestionService, "propose", capture)
+    documents = indexing.load_local_langchain_documents(str(path), chunk_size=1000, chunk_overlap=0)
+    [local] = admitted
+    assert local.document.structured_content == uploaded.structured_content
+    assert local.document.structure_hash == uploaded.structure_hash
+    assert local.document.content == uploaded.content
+    assert documents[0].page_content == uploaded.content
+    assert all("structured_content" not in document.metadata for document in documents)

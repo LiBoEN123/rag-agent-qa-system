@@ -26,12 +26,14 @@ from app.ingestion import (
     KnowledgeSourceType,
     build_knowledge_document,
 )
+from app.ingestion.document_blocks import canonical_document_text
 from app.rag.ingest import (
     clean_markdown_text,
     clean_text,
     collect_supported_files,
     read_file_text,
 )
+from app.rag.parsing import parse_document
 
 
 LOCAL_RECORD_NAMESPACE = "rag-agent/local/v1"
@@ -133,17 +135,21 @@ def load_local_langchain_documents(
     for file_path in collect_supported_files(data_dir):
         source_path = file_path.resolve()
         file_type = file_path.suffix.lower().lstrip(".")
-        content = read_file_text(str(file_path))
-        content = (
-            clean_markdown_text(content)
-            if file_type == "md"
-            else clean_text(content)
-        )
+        structure = None
+        if file_type in {"pdf", "docx"}:
+            structure = parse_document(file_path)
+            content = canonical_document_text(structure)
+            if not content.strip():
+                raise ValueError(f"文档未提取到可索引文本: {file_path}")
+        else:
+            content = read_file_text(str(file_path))
+            content = clean_markdown_text(content) if file_type == "md" else clean_text(content)
         knowledge_document = build_knowledge_document(
             source_type=KnowledgeSourceType.LOCAL_FILE,
             source_uri=str(source_path),
             title=file_path.name,
             content=content,
+            structured_content=structure,
             fetched_at=datetime.fromtimestamp(
                 source_path.stat().st_mtime,
                 tz=timezone.utc,

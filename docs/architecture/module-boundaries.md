@@ -23,6 +23,12 @@ app.api
 `app.ingestion` 定义的 repository contract，但 domain 不反向依赖 storage。
 `app.contracts | app.config | app.common` 是三个彼此独立的基础模块。
 
+PDF/DOCX 的稳定结构值对象位于 `app.ingestion.document_blocks`，由
+`KnowledgeDocument.structured_content` 持有并随 candidate JSON 持久化；
+Docling 仅由 `app.rag.parsing` infrastructure 适配，Local/Upload 共用此入口。
+Ingestion domain 不导入 Docling 或反向导入 rag/sources，详见
+[结构化文档合同](../ingestion/structured-documents.md)。
+
 `app.main` 是只调用 `app.api.application.create_app()` 并导出 ASGI app 的进程
 入口，允许依赖 API；当前并不直接导入 FastAPI。`app.rebuild_kb` 是维护命令入口，
 负责组装 config 与 RAG。`app.prompts` 是无应用层 import 的共享常量模块。这些

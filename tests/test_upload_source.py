@@ -1,12 +1,14 @@
 """上传 source 的读取限额、临时文件清理和真实 loader 失败边界。"""
 
 from io import BytesIO
+from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 from pypdf import PdfWriter
 
 from app.sources import upload
+from tests.support.structured_document import build_table_docx
 
 
 @pytest.mark.parametrize("filename", ["../bad.txt", "C:\\Users\\bad.txt", "/tmp/bad.txt", "bad\x00.txt"])
@@ -94,3 +96,57 @@ def test_text_encoding_and_redaction_are_reused():
     )
     assert redacted.content_redacted
     assert "body-secret" not in redacted.model_dump_json()
+
+
+@pytest.mark.parametrize("suffix", ["docx", "pdf"])
+def test_structured_upload_uses_shared_parser_and_cleans_temp_path(tmp_path, monkeypatch, suffix):
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+    payload = build_table_docx(merged=True) if suffix == "docx" else (
+        Path(__file__).parent / "fixtures" / "structured-table.pdf"
+    ).read_bytes()
+    paths = []
+    real_parser = upload.parse_document
+
+    def parse(path):
+        paths.append(path)
+        return real_parser(path)
+
+    monkeypatch.setattr(upload, "parse_document", parse)
+    document = upload.load_upload_document(
+        BytesIO(payload), filename=f"Table.{suffix.upper()}", max_bytes=2_000_000,
+    )
+    assert document.structured_content is not None
+    assert any(block.kind == "table" for block in document.structured_content.blocks)
+    assert document.structure_hash
+    assert len(paths) == 1
+    assert not paths[0].exists()
+    assert list(tmp_path.iterdir()) == []
+    assert str(paths[0]) not in document.model_dump_json()
+    if suffix == "pdf":
+        assert document.metadata["page_count"] == 1
+
+
+@pytest.mark.parametrize("payload,filename,code", [
+    (b"not a pdf", "bad.pdf", "UPLOAD_PARSE_FAILED"),
+    (b"%PDF-1.4 broken", "bad.pdf", "UPLOAD_PARSE_FAILED"),
+    (b"bad zip", "bad.docx", "UPLOAD_PARSE_FAILED"),
+    (b"", "empty.docx", "UPLOAD_EMPTY_FILE"),
+    (b"file", "image.png", "UPLOAD_UNSUPPORTED_TYPE"),
+])
+def test_malformed_uploads_still_fail_closed_and_clean(tmp_path, monkeypatch, payload, filename, code):
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+    with pytest.raises(upload.UploadSourceError) as error:
+        upload.load_upload_document(BytesIO(payload), filename=filename, max_bytes=1000)
+    assert error.value.code == code
+    assert str(tmp_path) not in str(error.value)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_structured_limit_failure_uses_safe_message_and_cleans(tmp_path, monkeypatch):
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+    monkeypatch.setattr("app.ingestion.document_blocks.STRUCTURE_MAX_SERIALIZED_BYTES", 100)
+    with pytest.raises(upload.UploadSourceError) as error:
+        upload.load_upload_document(BytesIO(build_table_docx()), filename="table.docx", max_bytes=2_000_000)
+    assert error.value.code == "UPLOAD_PARSE_FAILED"
+    assert "段落" not in str(error.value)
+    assert list(tmp_path.iterdir()) == []

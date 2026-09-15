@@ -1,6 +1,6 @@
-from types import SimpleNamespace
-
 from app.rag import ingest as rag_ingest
+from app.ingestion.document_blocks import ParsedDocument, TextBlock
+from tests.support.structured_document import build_table_docx
 
 
 def test_collect_supported_files_includes_pdf_and_docx(tmp_path):
@@ -34,36 +34,20 @@ def test_cleaners_preserve_local_whitespace_and_markdown_comment_semantics():
 
 
 def test_read_pdf_text_preserves_page_markers(monkeypatch):
-    pages = [
-        SimpleNamespace(extract_text=lambda: " first\t page "),
-        SimpleNamespace(extract_text=lambda: ""),
-        SimpleNamespace(extract_text=lambda: " third page "),
-    ]
-    monkeypatch.setattr("pypdf.PdfReader", lambda _path: SimpleNamespace(pages=pages))
+    parsed = ParsedDocument(blocks=(
+        TextBlock(block_id="b0", order=0, text="first page", page_number=1),
+        TextBlock(block_id="b1", order=1, text="third page", page_number=3),
+    ), page_count=3)
+    monkeypatch.setattr(rag_ingest, "parse_document", lambda _path: parsed)
 
     assert rag_ingest.read_pdf_text("manual.pdf") == (
-        "[第 1 页]\nfirst page\n\n[第 3 页]\nthird page"
+        "[第 1 页]\n\nfirst page\n\n[第 3 页]\n\nthird page"
     )
 
 
-def test_read_docx_text_preserves_paragraph_and_table_extraction(monkeypatch):
-    document = SimpleNamespace(
-        paragraphs=[SimpleNamespace(text=" first\t paragraph ")],
-        tables=[
-            SimpleNamespace(
-                rows=[
-                    SimpleNamespace(
-                        cells=[
-                            SimpleNamespace(text=" cell A "),
-                            SimpleNamespace(text="cell\tB"),
-                        ]
-                    )
-                ]
-            )
-        ],
-    )
-    monkeypatch.setattr("docx.Document", lambda _path: document)
-
-    assert rag_ingest.read_docx_text("policy.docx") == (
-        "first paragraph\n\ncell A | cell B"
+def test_read_docx_text_preserves_paragraph_and_table_extraction(tmp_path):
+    path = tmp_path / "policy.docx"
+    path.write_bytes(build_table_docx())
+    assert rag_ingest.read_docx_text(str(path)) == (
+        "段落 A\n\n[表格]\n事项 | 条件 | 材料\n注册 | 年满18岁 | 身份证\n[/表格]\n\n段落 B"
     )

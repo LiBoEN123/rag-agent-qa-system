@@ -29,7 +29,7 @@ SQLAlchemy
 sqlglot
 pypdf
 python-docx
-docx2txt
+docling==2.127.0
 huggingface-hub
 pytest
 deepeval==3.9.6

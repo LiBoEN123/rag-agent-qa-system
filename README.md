@@ -60,7 +60,7 @@ Phase 6B 的 Model private marker 是已接受设计，不是待迁移 TODO。�
 
 | 模块 | 已实现能力 |
 | --- | --- |
-| 文档读取 | 支持 `.txt`、`.md`、`.pdf`、`.docx`；文本类文件自动识别编码，PDF/DOCX 提取可检索文本 |
+| 文档读取 | 支持 `.txt`、`.md`、`.pdf`、`.docx`；文本类文件自动识别编码，Local/Upload PDF/DOCX 共用 Docling，保留正文及表格结构 |
 | 文档切分 | 普通文本按段落和标点递归切分；Markdown 按标题层级切分并保留标题路径 |
 | 混合检索 | jieba + BM25 关键词召回，SentenceTransformer Embedding 语义召回 |
 | 重排 | CrossEncoder reranker 对候选 chunk 重新排序 |
@@ -365,7 +365,9 @@ Upload、GitHub、Firecrawl 可在候选详情确认「移出知识库」，撤�
 「索引记录」区分 index/remove，并可按操作筛选。
 选择「本地文件」后可选择或拖拽单个 PDF、DOCX、TXT、MD 文件；上传只生成待审批候选，
 仍需批准后手动写入知识库。默认上限 20 MiB，通过 `INGESTION_UPLOAD_MAX_BYTES` 配置；
-扫描 PDF 暂不支持 OCR，原始文件解析后删除，候选持久化全文。
+扫描 PDF 暂不支持 OCR，原始文件解析后删除，候选持久化全文与表格结构；
+历史纯文本 PDF/DOCX 候选需重新上传才能获得结构。当前仍按正文 chunking，详见
+[结构化解析与持久化](docs/ingestion/structured-documents.md)。
 
 聊天只使用 `/chat/stream`，`answer_delta` 用于增量展示，`final.data.response` 更新本轮权威结果，
 `done` 表示流结束。中断不会自动重试。session ID 保存在 sessionStorage，

@@ -45,6 +45,7 @@ from app.storage.ingestion import (
     SQLiteIndexRunRepository,
 )
 from app.sources.upload import load_upload_document
+from tests.support.structured_document import build_table_docx
 
 
 FIXED_TIME = datetime(2026, 9, 2, 10, 0, tzinfo=timezone.utc)
@@ -680,3 +681,35 @@ def test_upload_approve_index_retrieve_and_force_rebuild(persisted_runtime, monk
         assert [item.candidate_id for item in SQLiteCandidateRepository(
             runtime.settings.sqlite_db_path,
         ).load_latest_successfully_indexed()] == [candidate_id]
+
+
+def test_force_rebuild_passes_persisted_structure_to_existing_chunker(persisted_runtime, monkeypatch):
+    runtime = persisted_runtime
+    document = load_upload_document(
+        BytesIO(build_table_docx(merged=True)), filename="table.docx", max_bytes=2_000_000,
+    )
+    candidate = _approve(runtime.domain, document)
+    _index_with_run(runtime, candidate)
+    restored_inputs = []
+    convert = pipeline.candidate_to_langchain_documents
+
+    def capture(candidate, **kwargs):
+        restored_inputs.append(candidate)
+        return convert(candidate, **kwargs)
+
+    monkeypatch.setattr(pipeline, "candidate_to_langchain_documents", capture)
+    # 没有原文件、原 parser 或 source fetch，force rebuild 只能消费 candidate_json。
+    def no_parse(*args, **kwargs):
+        pytest.fail("force rebuild attempted to parse an uploaded document again")
+
+    monkeypatch.setattr("app.sources.upload.parse_document", no_parse)
+    history = runtime.runs.list()
+    ok, message = pipeline.rebuild_and_persist_index(str(runtime.local_dir), force_rebuild=True)
+    assert ok, message
+    [restored] = restored_inputs
+    assert restored == candidate
+    assert restored.document.structured_content == document.structured_content
+    assert any(cell.row_span == 2 for cell in restored.document.structured_content.blocks[1].cells)
+    assert runtime.runs.list() == history
+    persisted, _ = load_index_from_chroma()
+    assert any("年满18岁" in chunk["text"] for chunk in persisted)

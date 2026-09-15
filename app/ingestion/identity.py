@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from pathlib import Path
 from urllib.parse import parse_qsl, unquote, urlsplit, urlunsplit
 
 from app.common.redaction import DEFAULT_SENSITIVE_KEYS, normalize_sensitive_key
+from app.ingestion.document_blocks import ParsedDocument
 
 
 IDENTITY_VERSION = 1
@@ -172,8 +174,21 @@ def build_content_hash(normalized_content: str) -> str:
     return hashlib.sha256(normalized_content.encode("utf-8")).hexdigest()
 
 
-def build_candidate_id(source_id: str, content_hash: str) -> str:
-    """用来源与内容共同生成幂等候选 ID。"""
+def build_structure_hash(document: ParsedDocument) -> str:
+    """对已规范化结构（含 structure_version）做 canonical JSON + SHA-256。"""
+    payload = json.dumps(
+        document.model_dump(mode="json"), ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"), allow_nan=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def build_candidate_id(source_id: str, content_hash: str, *, structure_hash: str | None = None) -> str:
+    """纯正文保留 v1 identity；结构候选使用显式独立 namespace。"""
+    if structure_hash is not None:
+        return "cand_" + _sha256(
+            "ingestion-candidate:structured-v1", source_id, content_hash, structure_hash,
+        )
     digest = _sha256(
         f"ingestion-candidate:v{IDENTITY_VERSION}",
         source_id,
@@ -198,6 +213,7 @@ __all__ = [
     "build_content_hash",
     "build_document_uid",
     "build_source_id",
+    "build_structure_hash",
     "canonicalize_source_uri",
     "is_stable_id",
 ]

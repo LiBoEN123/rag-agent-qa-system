@@ -1,4 +1,4 @@
-"""受限临时文件与成熟 loader 对接；只生成完整知识文档，不执行索引。"""
+"""受限临时文件与共享结构 parser 对接；只生成完整知识文档，不执行索引。"""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ from tempfile import TemporaryDirectory
 from typing import BinaryIO
 from zipfile import ZipFile
 
-from langchain_community.document_loaders import Docx2txtLoader, PyPDFLoader
-
 from app.ingestion import KnowledgeDocument, KnowledgeSourceType, build_knowledge_document
+from app.ingestion.document_blocks import ParsedDocument, canonical_document_text
 from app.rag.ingest import read_txt_auto
+from app.rag.parsing import parse_document
 
 
 _MIME_TYPES = {
@@ -32,24 +32,19 @@ class UploadSourceError(ValueError):
         super().__init__(message)
 
 
-def _load_content(path: Path, max_bytes: int) -> tuple[str, int | None]:
+def _load_content(path: Path, max_bytes: int) -> tuple[str, ParsedDocument | None]:
     if path.suffix == ".pdf":
         with path.open("rb") as stream:
             if not stream.read(5).startswith(b"%PDF-"):
                 raise ValueError("invalid PDF header")
-        pages = PyPDFLoader(str(path), mode="page", extract_images=False).load()
-        return "\n\n".join(
-            f"[第 {number} 页]\n{page.page_content.strip()}"
-            for number, page in enumerate(pages, start=1)
-            if page.page_content.strip()
-        ), len(pages)
     if path.suffix == ".docx":
         # DOCX 是压缩包；在 loader 解压正文前限制展开大小，不提取包内路径。
         with ZipFile(path) as archive:
             if sum(item.file_size for item in archive.infolist()) > max_bytes:
                 raise UploadSourceError("UPLOAD_TOO_LARGE", "DOCX 展开大小超过上传限制")
-        documents = Docx2txtLoader(str(path)).load()
-        return "\n\n".join(doc.page_content for doc in documents), None
+    if path.suffix in {".pdf", ".docx"}:
+        structure = parse_document(path)
+        return canonical_document_text(structure), structure
     content = read_txt_auto(str(path))
     if re.search(r"[\x00-\x08\x0e-\x1f\x7f]", content):
         raise ValueError("invalid text content")
@@ -85,7 +80,7 @@ def load_upload_document(
         if size == 0:
             raise UploadSourceError("UPLOAD_EMPTY_FILE", "不能上传空文件")
         try:
-            content, page_count = _load_content(path, max_bytes)
+            content, structure = _load_content(path, max_bytes)
         except UploadSourceError:
             raise
         except Exception:
@@ -104,14 +99,20 @@ def load_upload_document(
         "file_size": size,
         "file_sha256": file_sha256,
     }
-    if page_count is not None:
-        metadata["page_count"] = page_count
-    return build_knowledge_document(
-        source_type=KnowledgeSourceType.UPLOAD,
-        source_uri=f"upload://local/{file_sha256}",
-        title=filename,
-        content=content,
-        mime_type=_MIME_TYPES[suffix],
-        metadata=metadata,
-        content_is_untrusted=True,
-    )
+    if structure is not None and structure.page_count is not None:
+        metadata["page_count"] = structure.page_count
+    try:
+        return build_knowledge_document(
+            source_type=KnowledgeSourceType.UPLOAD,
+            source_uri=f"upload://local/{file_sha256}",
+            title=filename,
+            content=content,
+            structured_content=structure,
+            mime_type=_MIME_TYPES[suffix],
+            metadata=metadata,
+            content_is_untrusted=True,
+        )
+    except Exception:
+        raise UploadSourceError(
+            "UPLOAD_PARSE_FAILED", "无法解析文件，请检查文件格式或是否损坏、加密",
+        ) from None

@@ -10,13 +10,15 @@ from app.ingestion.contracts import (
     KnowledgeSourceType,
     TrustLevel,
 )
+from app.ingestion.document_blocks import ParsedDocument, canonical_document_text
 from app.ingestion.identity import (
     build_content_hash,
     build_document_uid,
     build_source_id,
+    build_structure_hash,
     canonicalize_source_uri,
 )
-from app.ingestion.normalization import prepare_content, prepare_metadata
+from app.ingestion.normalization import prepare_content, prepare_metadata, prepare_structured_content
 
 
 def default_trust_level(source_type: KnowledgeSourceType) -> TrustLevel:
@@ -32,6 +34,7 @@ def build_knowledge_document(
     source_uri: str,
     title: str,
     content: str,
+    structured_content: ParsedDocument | None = None,
     fetched_at: datetime | None = None,
     version: str | None = None,
     mime_type: str | None = None,
@@ -40,10 +43,13 @@ def build_knowledge_document(
     trust_level: TrustLevel | str | None = None,
     content_is_untrusted: bool = False,
 ) -> KnowledgeDocument:
-    """从受控 provenance 与不可信正文构造唯一、脱敏、可验证文档。"""
+    """构造脱敏、可验证文档；有结构时以其 canonical 视图生成 content。"""
     resolved_source_type = KnowledgeSourceType(source_type)
     canonical_uri = canonicalize_source_uri(resolved_source_type, source_uri)
-    normalized_content, content_redacted = prepare_content(content)
+    structure, structure_redacted = prepare_structured_content(structured_content)
+    normalized_content, content_redacted = prepare_content(
+        canonical_document_text(structure) if structure is not None else content
+    )
     safe_metadata, metadata_redacted = prepare_metadata(
         metadata if metadata is not None else {}
     )
@@ -67,7 +73,9 @@ def build_knowledge_document(
         title=title,
         content=normalized_content,
         content_hash=build_content_hash(normalized_content),
-        content_redacted=content_redacted,
+        structured_content=structure,
+        structure_hash=build_structure_hash(structure) if structure is not None else None,
+        content_redacted=content_redacted or structure_redacted,
         version=version,
         fetched_at=fetched_at or datetime.now(timezone.utc),
         mime_type=mime_type,

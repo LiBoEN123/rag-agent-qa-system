@@ -8,6 +8,7 @@ import unicodedata
 from typing import Any
 
 from app.common.redaction import redact_sensitive_data, redact_sensitive_text
+from app.ingestion.document_blocks import ParsedDocument
 
 
 CONTENT_NORMALIZATION = "nfc-newlines-trailing-whitespace-v1"
@@ -28,6 +29,28 @@ def prepare_content(content: str) -> tuple[str, bool]:
     normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
     normalized = "\n".join(line.rstrip(" \t") for line in normalized.split("\n"))
     return normalized.rstrip(" \t\n"), redacted != content
+
+
+def prepare_structured_content(content: Any) -> tuple[ParsedDocument | None, bool]:
+    """验证有限 JSON 结构，并对所有正文槽位复用 prepare_content；不截断结构。"""
+    if content is None:
+        return None, False
+    parsed = ParsedDocument.model_validate(content)
+    payload = parsed.model_dump()
+    redacted = False
+    for block in payload["blocks"]:
+        fields = [(block, "text")] if block["kind"] == "text" else [
+            (block, "caption"), *((cell, "text") for cell in block["cells"]),
+        ]
+        for owner, key in fields:
+            if owner[key] is not None:
+                owner[key], changed = prepare_content(owner[key])
+                redacted = redacted or changed
+        if block["kind"] == "table":
+            block["cells"] = tuple(sorted(
+                block["cells"], key=lambda cell: (cell["row_index"], cell["column_index"]),
+            ))
+    return ParsedDocument.model_validate(payload), redacted
 
 
 # 递归校验元数据的 JSON 类型、有限数值、键名和各项大小限制。
@@ -128,4 +151,5 @@ __all__ = [
     "METADATA_MAX_STRING_CHARS",
     "prepare_content",
     "prepare_metadata",
+    "prepare_structured_content",
 ]

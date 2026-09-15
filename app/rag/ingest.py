@@ -1,9 +1,12 @@
-"""Local Knowledge 文件读取与文本清洗。"""
+"""Local Knowledge 文件读取；PDF/DOCX 共用结构 parser。"""
 
 import re
 from pathlib import Path
 
 from charset_normalizer import from_bytes
+
+from app.ingestion.document_blocks import canonical_document_text
+from app.rag.parsing import parse_document
 
 
 SUPPORTED_SUFFIXES = {".txt", ".md", ".pdf", ".docx"}
@@ -19,54 +22,16 @@ def read_txt_auto(file_path: str) -> str:
 
 
 def read_pdf_text(file_path: str) -> str:
-    """从 PDF 中提取文本内容。"""
-    try:
-        from pypdf import PdfReader
-    except ImportError as exc:
-        raise ImportError(
-            "读取 PDF 需要安装 pypdf，请先运行 `pip install -r requirements.txt`。"
-        ) from exc
-
-    reader = PdfReader(file_path)
-    pages = []
-
-    for page_idx, page in enumerate(reader.pages, start=1):
-        text = page.extract_text() or ""
-        text = clean_text(text)
-        if text:
-            pages.append(f"[第 {page_idx} 页]\n{text}")
-
-    content = "\n\n".join(pages).strip()
+    """从共享结构解析结果取得兼容的正文视图。"""
+    content = canonical_document_text(parse_document(file_path))
     if not content:
         raise ValueError(f"PDF 未提取到可索引文本，可能是扫描件或图片型 PDF: {file_path}")
     return content
 
 
 def read_docx_text(file_path: str) -> str:
-    """从 DOCX 段落和表格中提取文本内容。"""
-    try:
-        from docx import Document
-    except ImportError as exc:
-        raise ImportError(
-            "读取 DOCX 需要安装 python-docx，请先运行 `pip install -r requirements.txt`。"
-        ) from exc
-
-    document = Document(file_path)
-    parts = []
-
-    for paragraph in document.paragraphs:
-        text = clean_text(paragraph.text)
-        if text:
-            parts.append(text)
-
-    for table in document.tables:
-        for row in table.rows:
-            cells = [clean_text(cell.text) for cell in row.cells]
-            cells = [cell for cell in cells if cell]
-            if cells:
-                parts.append(" | ".join(cells))
-
-    content = "\n\n".join(parts).strip()
+    """按原始 reading order 返回 DOCX 的兼容正文视图。"""
+    content = canonical_document_text(parse_document(file_path))
     if not content:
         raise ValueError(f"DOCX 未提取到可索引文本: {file_path}")
     return content

@@ -20,11 +20,13 @@ from pydantic import (
 )
 
 from app.common.redaction import redact_sensitive_text
+from app.ingestion.document_blocks import ParsedDocument, canonical_document_text
 from app.ingestion.identity import (
     build_candidate_id,
     build_content_hash,
     build_document_uid,
     build_source_id,
+    build_structure_hash,
     canonicalize_source_uri,
     is_stable_id,
 )
@@ -32,6 +34,7 @@ from app.ingestion.normalization import (
     CONTENT_NORMALIZATION,
     prepare_content,
     prepare_metadata,
+    prepare_structured_content,
 )
 
 
@@ -125,6 +128,8 @@ class KnowledgeDocument(_FrozenContract):
     title: StrictStr = Field(min_length=1, max_length=512)
     content: StrictStr = Field(repr=False)
     content_hash: StrictStr
+    structured_content: ParsedDocument | None = Field(default=None, repr=False)
+    structure_hash: StrictStr | None = None
     content_normalization: StrictStr = Field(
         default=CONTENT_NORMALIZATION,
         frozen=True,
@@ -145,6 +150,9 @@ class KnowledgeDocument(_FrozenContract):
         if not isinstance(data, Mapping):
             return data
         prepared = dict(data)
+        structure, structure_redacted = prepare_structured_content(prepared.get("structured_content"))
+        prepared["structured_content"] = structure
+        prepared["content_redacted"] = bool(prepared.get("content_redacted", False)) or structure_redacted
         if "content" in prepared:
             content, redacted = prepare_content(prepared["content"])
             prepared["content"] = content
@@ -208,6 +216,14 @@ class KnowledgeDocument(_FrozenContract):
             raise ValueError("document_uid 与 source_id 不一致")
         if self.content_hash != build_content_hash(self.content):
             raise ValueError("content_hash 与规范化 content 不一致")
+        if self.structured_content is None:
+            if self.structure_hash is not None:
+                raise ValueError("structure_hash 必须与 structured_content 同时存在")
+        else:
+            if self.structure_hash != build_structure_hash(self.structured_content):
+                raise ValueError("structure_hash 与规范化 structured_content 不一致")
+            if self.content != prepare_content(canonical_document_text(self.structured_content))[0]:
+                raise ValueError("content 必须是 structured_content 的 canonical 正文视图")
         if self.content_normalization != CONTENT_NORMALIZATION:
             raise ValueError("不支持的 content normalization 版本")
         return self
@@ -324,9 +340,10 @@ class IngestionCandidate(_FrozenContract):
         expected_id = build_candidate_id(
             self.document.source_id,
             self.document.content_hash,
+            structure_hash=self.document.structure_hash,
         )
         if self.candidate_id != expected_id:
-            raise ValueError("candidate_id 与 source_id/content_hash 不一致")
+            raise ValueError("candidate_id 与 source_id/content_hash/structure_hash 不一致")
 
         approval_status = self.approval.status
         if self.status is IngestionCandidateStatus.PENDING:

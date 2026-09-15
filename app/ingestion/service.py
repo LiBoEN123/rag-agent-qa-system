@@ -85,10 +85,11 @@ class IngestionService:
         reason: str | None = None,
         requested_at: datetime | None = None,
     ) -> IngestionCandidate:
-        """幂等创建候选；相同来源与内容返回首次保存的候选。"""
+        """幂等创建候选；相同来源、正文和可选结构返回首次保存的候选。"""
         candidate_id = build_candidate_id(
             document.source_id,
             document.content_hash,
+            structure_hash=document.structure_hash,
         )
         existing = self._repository.get(candidate_id)
         if existing is not None:

@@ -47,10 +47,10 @@ candidate ID 或 approval 状态。服务端分别只授予 `mcp:github` 或 `mc
 发送 `POST /admin/ingestion/sources/upload`。Multipart 字段为必填 `file` 和可选
 `reason`（最多 1000 字符），成功返回 HTTP 201 与现有 `IngestionCandidateSummary`。
 
-后端只接受 `.pdf/.docx/.txt/.md`，扩展名不区分大小写。PDF 使用 `PyPDFLoader`
-（逐页加载、禁用图像提取），DOCX 使用 `Docx2txtLoader`，TXT/MD 复用
-`charset-normalizer` 编码识别。Loader 文本按稳定顺序组合成全文，PDF 保留页边界；
-统一 chunking 仍由 `candidate_to_langchain_documents()` 完成。
+后端只接受 `.pdf/.docx/.txt/.md`，扩展名不区分大小写。Local 与 Upload 的 PDF/DOCX
+共用 `app.rag.parsing.parse_document()`，由 Docling 提供布局、reading order 和表格
+cell/span 解析；TXT/MD 继续使用 `charset-normalizer` 编码识别。PDF 保留页边界，
+统一 chunking 仍由 `candidate_to_langchain_documents()` 对 `document.content` 完成。
 
 `INGESTION_UPLOAD_MAX_BYTES` 默认 20 MiB，必须为正整数。框架接收 multipart 并管理
 spooled 文件，source adapter 在线程池中按最多 64 KiB 分块读取，超限即停止；DOCX 在
@@ -86,11 +86,10 @@ loader 解压前还校验 ZIP 声明的展开总大小不超过同一限额。�
 | 422 | `UPLOAD_NO_TEXT` | 空白全文或无文本 PDF |
 | 422 | `UPLOAD_PARSE_FAILED` | 文档损坏、伪造、加密或文本编码/内容无效 |
 
-依赖固定为 `langchain-community==0.4.2`、`docx2txt==0.9`，显式声明已有
-`python-multipart==0.0.32`。其余既有版本不升级。需要注意
-[LangChain 已宣布停止积极维护 community 包](https://github.com/langchain-ai/langchain-community/issues/674)，
-当前 loader 导入会产生弃用警告。V1 暂保留官方 loader 以避免扩大自写解析层，后续需跟踪
-独立 integration 包迁移；现有 local authoritative corpus 仍使用旧 PDF/DOCX parser。
+PDF/DOCX 依赖固定为 `docling==2.127.0`，移除不再使用的 `docx2txt` 顶层依赖；
+`python-multipart==0.0.32` 保持原版本。Docling 的底层依赖由其自身管理，项目不实现
+表格识别或引入第二套表格 parser。结构合同、模型缓存和限制见
+[结构化文档解析与持久化](structured-documents.md)。
 
 ## Agent 工具结果提出候选（默认关闭）
 
