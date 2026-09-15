@@ -21,10 +21,10 @@ from app.ingestion import (
     KnowledgeSourceType,
     build_knowledge_document,
 )
-from app.rag import indexing, pipeline
+from app.rag import indexing, pipeline, store
 from app.rag.chroma import load_index_from_chroma
 from app.sources.upload import load_upload_document
-from tests.support.structured_document import build_table_docx
+from tests.support.structured_document import build_table_docx, registration_structure
 
 
 class CountingEmbeddings(Embeddings):
@@ -212,7 +212,7 @@ def test_local_plain_text_cleaning_and_metadata_surface(tmp_path):
 
 
 @pytest.mark.parametrize("file_type", ["pdf", "docx"])
-def test_candidate_adapter_treats_pdf_and_docx_as_plain_text(tmp_path, file_type):
+def test_legacy_pdf_and_docx_without_structure_keep_plain_text_path(tmp_path, file_type):
     source_path = (tmp_path / f"manual.{file_type}").resolve()
     document = build_knowledge_document(
         source_type=KnowledgeSourceType.LOCAL_FILE,
@@ -240,6 +240,8 @@ def test_candidate_adapter_treats_pdf_and_docx_as_plain_text(tmp_path, file_type
         "第一段内容。\n\n第二段内容。"
     ]
     assert {item.metadata["file_type"] for item in converted} == {file_type}
+    assert candidate.document.structured_content is None
+    assert all("element_type" not in item.metadata for item in converted)
 
 
 def test_real_langchain_incremental_add_skip_modify_add_delete(tmp_path):
@@ -478,7 +480,7 @@ def test_loaded_v2_embeddings_are_finite_and_aligned(tmp_path):
 
 
 @pytest.mark.parametrize("file_type", ["pdf", "docx"])
-def test_local_and_upload_keep_same_structure_before_existing_text_chunking(tmp_path, monkeypatch, file_type):
+def test_local_and_upload_keep_same_structure_and_table_aware_chunks(tmp_path, monkeypatch, file_type):
     payload = build_table_docx(merged=True) if file_type == "docx" else (
         Path(__file__).parent / "fixtures" / "structured-table.pdf"
     ).read_bytes()
@@ -499,5 +501,71 @@ def test_local_and_upload_keep_same_structure_before_existing_text_chunking(tmp_
     assert local.document.structured_content == uploaded.structured_content
     assert local.document.structure_hash == uploaded.structure_hash
     assert local.document.content == uploaded.content
-    assert documents[0].page_content == uploaded.content
+    upload_service = IngestionService()
+    uploaded_candidate = propose(upload_service, document=uploaded, requester=_requester())
+    uploaded_candidate = upload_service.approve(uploaded_candidate.candidate_id, decided_by=_requester())
+    upload_chunks = indexing.candidate_to_langchain_documents(uploaded_candidate, chunk_size=1000, chunk_overlap=0)
+    assert [chunk.page_content for chunk in documents] == [chunk.page_content for chunk in upload_chunks]
+    assert [chunk.metadata["element_type"] for chunk in documents] == ["text", "table", "text"]
+    assert documents[0].page_content == (
+        "段落 A" if file_type == "docx" else "Paragraph A: registration requirements."
+    )
+    assert documents[1].metadata["table_id"] == "b1"
+    assert ("：年满18岁" if file_type == "docx" else "：Age 18+") in documents[1].page_content
     assert all("structured_content" not in document.metadata for document in documents)
+
+
+def test_pipeline_version_change_requires_force_rebuild_without_renaming_index(tmp_path, monkeypatch):
+    current = store.build_current_manifest(str(tmp_path))
+    assert current["pipeline_version"] == 3
+    assert current["chroma_collection"] == get_settings().chroma_index_collection_name
+    assert current["record_manager_namespace"] == indexing.LOCAL_RECORD_NAMESPACE
+    monkeypatch.setattr(store, "load_manifest", lambda: {**current, "pipeline_version": 2})
+    assert store.needs_rebuild(str(tmp_path)) == (True, "pipeline_version 变化，需要 force rebuild")
+    indexing.create_record_manager()
+    monkeypatch.setattr(store, "chroma_collection_has_chunks", lambda: True)
+    monkeypatch.setattr(store, "load_manifest", lambda: current)
+    assert store.needs_rebuild(str(tmp_path))[0] is False
+
+
+@pytest.mark.parametrize("cleanup", ["full", "incremental"])
+def test_structured_chunks_real_index_add_skip_update_delete(tmp_path, cleanup):
+    def documents(material):
+        structure = registration_structure()
+        table = structure.blocks[0]
+        cells = tuple(cell.model_copy(update={"text": material}) if (
+            cell.row_index == 1 and cell.column_index == 2
+        ) else cell for cell in table.cells)
+        document = build_knowledge_document(
+            source_type="local_file", source_uri=str(tmp_path / "table.pdf"), title="table.pdf",
+            content="", metadata={"file_type": "pdf"},
+            structured_content=structure.model_copy(update={"blocks": (table.model_copy(update={"cells": cells}),)}),
+        )
+        candidate = IngestionService().propose(document=document, requester=_requester())
+        return indexing.candidate_to_langchain_documents(candidate, chunk_size=85, chunk_overlap=0)
+
+    embeddings = CountingEmbeddings()
+    first = documents("身份证、申请表")
+    assert len(first) == 2
+    assert indexing.sync_documents(first, embeddings, cleanup=cleanup) == {
+        "num_added": 2, "num_updated": 0, "num_skipped": 0, "num_deleted": 0,
+    }
+    embeddings.reset()
+    assert indexing.sync_documents(documents("身份证、申请表"), embeddings, cleanup=cleanup) == {
+        "num_added": 0, "num_updated": 0, "num_skipped": 2, "num_deleted": 0,
+    }
+    assert embeddings.document_texts == []
+    changed = documents("身份证、申请表、补充证明")
+    # LangChain 内容寻址的 update 是新增新 chunk + 清理旧 chunk。
+    assert indexing.sync_documents(changed, embeddings, cleanup=cleanup) == {
+        "num_added": 1, "num_updated": 0, "num_skipped": 1, "num_deleted": 1,
+    }
+    assert embeddings.document_texts == [changed[0].page_content]
+    records = indexing.create_vector_store(None).get()
+    assert set(records["documents"]) == {chunk.page_content for chunk in changed}
+    assert set(records["ids"]) == set(indexing.create_record_manager().list_keys())
+    embeddings.reset()
+    assert indexing.sync_documents([], embeddings, cleanup="full")["num_deleted"] == 2
+    assert indexing.create_vector_store(None).get()["ids"] == []
+    assert indexing.create_record_manager().list_keys() == []
+    assert embeddings.document_texts == []

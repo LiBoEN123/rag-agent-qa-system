@@ -366,8 +366,11 @@ Upload、GitHub、Firecrawl 可在候选详情确认「移出知识库」，撤�
 选择「本地文件」后可选择或拖拽单个 PDF、DOCX、TXT、MD 文件；上传只生成待审批候选，
 仍需批准后手动写入知识库。默认上限 20 MiB，通过 `INGESTION_UPLOAD_MAX_BYTES` 配置；
 扫描 PDF 暂不支持 OCR，原始文件解析后删除，候选持久化全文与表格结构；
-历史纯文本 PDF/DOCX 候选需重新上传才能获得结构。当前仍按正文 chunking，详见
-[结构化解析与持久化](docs/ingestion/structured-documents.md)。
+历史纯文本 PDF/DOCX 候选继续按正文切分，重新上传才能获得结构。有 `structured_content`
+时，连续文本复用 LangChain splitter，表格保留标题/表头并按完整连续行分组；
+`pipeline_version` 从 2 升至 3，旧索引在启动时通过现有 force rebuild 迁移。
+Web/Firecrawl structured parsing 尚未实现。详见
+[结构化解析、持久化与切分](docs/ingestion/structured-documents.md)。
 
 聊天只使用 `/chat/stream`，`answer_delta` 用于增量展示，`final.data.response` 更新本轮权威结果，
 `done` 表示流结束。中断不会自动重试。session ID 保存在 sessionStorage，

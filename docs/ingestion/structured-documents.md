@@ -1,4 +1,4 @@
-# TABLE-AWARE-1A/1B：结构化解析与持久化
+# TABLE-AWARE-1A/1B/1C：结构化解析、持久化与切分
 
 ```text
 Local PDF/DOCX ─┐
@@ -7,7 +7,8 @@ Upload PDF/DOCX ┘       → Docling DocumentConverter
                        → app.ingestion.document_blocks.ParsedDocument
                        → KnowledgeDocument(content + structured_content + structure_hash)
                        → IngestionCandidate → SQLite candidate_json
-                       → reload / load_latest_successfully_indexed() → 原有正文 chunking
+                       → reload / load_latest_successfully_indexed()
+                       → ordered TextBlock / TableBlock chunking → LangChain Documents
 ```
 
 Docling `2.127.0` 的公开 `DocumentConverter`、`PdfPipelineOptions`、
@@ -75,6 +76,72 @@ Upload 保留 filename 校验、分块字节上限、PDF header 校验、DOCX ZI
 历史上传若仅保存了纯文本，已经丢失的 table structure 无法自动恢复，必须重新上传。
 这也适用于 force rebuild：它能恢复已保存的结构，不能从旧纯文本重建原始单元格关系。
 
+## TABLE-AWARE-1C：进入现有索引的 chunks
+
+`candidate_to_langchain_documents()` 优先判断 `structured_content is not None`，
+与文件扩展名和来源类型无关。有结构时交给 `app.rag.structured_chunking`：
+
+- 连续同页的 TextBlock 用双换行组成文本 segment，再交给现有 LangChain
+  `RecursiveCharacterTextSplitter`，保留 `chunk_size`、`chunk_overlap` 和
+  `_TEXT_SEPARATORS`。遇到表格、页码变化（包括已知/未知切换）或文档结束时 flush。
+- TableBlock 只根据持久化 cells/span/header 建立临时 grid，不经过字符 splitter，
+  不读源文件、不调用 Docling/LLM、不重复 domain 的结构校验。
+- 前导非空且全部标记为 header 的行构成列标题带；空行不提供标题。多级表头按
+  `父标题 > 子标题` 连接，colspan 贡献给覆盖的列，rowspan 不重复同一标题。
+  混合数据行内的 header cell 作为行值保留。合同只有合并后的 `is_header`，
+  不恢复已经丢失的行头/列头类别；缺失列标题用“列N”，不猜第一行是表头。
+- Body rowspan 的值出现在其覆盖的每个逻辑行；body colspan 用组合列标题描述
+  一个值。原 cells、structure_hash、candidate identity 不变。
+
+例如表头 `事项 | 条件 | 材料` 和一行 `企业注册 | 年满18岁 | 身份证、申请表`，
+带 caption 的最终 `Document.page_content` 为：
+
+```text
+[表格]
+标题：企业登记办理要求
+表头：事项；条件；材料
+事项：企业注册；条件：年满18岁；材料：身份证、申请表。
+[/表格]
+```
+
+小表格完整保留在一块；大表格按连续 body rows 分组，预算包含标题、表头和标记，
+复用 `chunk_size`（默认 600 字符）。每组重复 caption/headers，body rows 无 overlap。
+一个完整行连同固定标题开销超过预算时独立成块，允许超过 soft target，不硬切、
+截断或丢弃。全空行不生成证据；仅有 caption/header 的表仍保留，省略 body 行范围。
+
+Metadata 保留原 provenance，并统一按 reading order 分配从 1 开始的连续 `position`。
+只增加以下 scalar 字段，页码未知时省略：
+
+| Chunk | 新增 metadata |
+| --- | --- |
+| Text | `element_type=text`、`block_start`、`block_end`、可选 `page_number` |
+| Table | `element_type=table`、`table_id`、`block_order`、`table_chunk_index`、`table_chunk_count`、`row_start`、`row_end`、可选 `page_number` |
+
+`block_start/end` 是文本 segment 的原始 block order 范围，拆出的 chunks 共用它。
+`table_id` 是该 source 内的 `block_id`；`table_chunk_index` 从 1 开始。
+`row_start/end` 是原 TableCell 行索引，**0-based、inclusive**，排除前导列标题带，
+范围可能包含不生成文字的空行。Chroma metadata 不保存结构对象或完整表格副本。
+
+没有结构的 TXT/MD 和历史 PDF/DOCX 仍使用原有正文/Markdown 切分；目前的
+GitHub/Firecrawl Markdown/plain content 行为不变。`page_content` 是进入现有
+embedding、BM25、CrossEncoder 和 evidence context 的同一份文本。
+
+### 索引迁移与验证边界
+
+`pipeline_version` 从 **2 → 3**。启动时现有 `needs_rebuild()` 发现旧 manifest，
+触发 global force rebuild：Local 重新解析切分；SQLite 中最新成功 INDEX 对应的
+external candidates 恢复后，有结构走新 chunker，无结构走旧路径。
+迁移会重新 embedding 受管 corpus；只 approved、未成功 index 的 candidate 不会入库。
+沿用同一个 `mini_rag_chunks_v2` collection 和全部原 RecordManager namespaces，
+继续使用 LangChain Indexing API 的 `source_id_key="source_id"`、`key_encoder="sha256"`
+及 full/incremental cleanup，不创建第二个表格索引或 migration script。
+
+Focused retrieval smoke 使用真实 Chroma/SQLRecordManager/BM25 和确定性 fake embedding，
+查询“企业注册需要哪些材料”，验证命中含“事项：企业注册；条件：年满18岁；材料：身份证、申请表。”
+的 table chunk。它证明语义文本进入现有检索，不提供真实模型效果提升指标。
+Retrieval、reranker、Evidence Gate、generation 和 `max_context_chars`（默认 2500）
+均不变；极长行的 chunk 可能超过最终 context budget，现有 context builder 会整块排除。
+
 ## 运行依赖与阶段限制
 
 PDF 启用官方布局和表格模型，**OCR、图片理解、远程模型服务和外部插件均关闭**。
@@ -89,6 +156,6 @@ DOCX 不需要下载布局/表格模型。PDF 首次转换会通过 Docling/Hugg
 `torchvision::nms` 缺失，改用 PyTorch 官方 cu126 wheel 后真实解析测试通过。
 测试 PDF 为 1,933 bytes 的专用 fixture；真实 DOCX 在测试中用 python-docx 动态生成。
 
-本阶段只保存结构。下一阶段为 **TABLE-AWARE-1C — Table-aware Chunking**；当前
-`candidate_to_langchain_documents()` 仍按正文切分，尚未实现 table-aware chunking、
-表格检索扩展、rerank 改造或 Agent 路由。
+本阶段未实现 Web/Firecrawl structured parsing、表格上下文扩展或新检索路由。
+下一阶段建议 **TABLE-AWARE-1D — Web Structured Ingestion**：Firecrawl cleaned HTML
+→ structured parser → ParsedDocument，直接复用本阶段 chunker。

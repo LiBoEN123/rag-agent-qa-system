@@ -50,7 +50,9 @@ candidate ID 或 approval 状态。服务端分别只授予 `mcp:github` 或 `mc
 后端只接受 `.pdf/.docx/.txt/.md`，扩展名不区分大小写。Local 与 Upload 的 PDF/DOCX
 共用 `app.rag.parsing.parse_document()`，由 Docling 提供布局、reading order 和表格
 cell/span 解析；TXT/MD 继续使用 `charset-normalizer` 编码识别。PDF 保留页边界，
-统一 chunking 仍由 `candidate_to_langchain_documents()` 对 `document.content` 完成。
+统一 chunking 由 `candidate_to_langchain_documents()` 完成：有结构时文本按 segment
+切分、表格按完整连续行分组；无结构的 legacy candidate 保持原正文切分，详见
+[结构化文档切分](structured-documents.md#table-aware-1c进入现有索引的-chunks)。
 
 `INGESTION_UPLOAD_MAX_BYTES` 默认 20 MiB，必须为正整数。框架接收 multipart 并管理
 spooled 文件，source adapter 在线程池中按最多 64 KiB 分块读取，超限即停止；DOCX 在

@@ -4,6 +4,26 @@ from io import BytesIO
 
 from docx import Document
 
+from app.ingestion.document_blocks import ParsedDocument, TableBlock, TableCell
+
+
+def registration_structure() -> ParsedDocument:
+    """已持久化合同形态的中文表格，供 chunking 与真实索引/检索测试共用。"""
+    values = [
+        ("事项", "条件", "材料"),
+        ("企业注册", "年满18岁", "身份证、申请表"),
+        ("企业变更", "企业已注册", "营业执照、变更表"),
+    ]
+    return ParsedDocument(page_count=2, blocks=(TableBlock(
+        block_id="b0", order=0, page_number=2, caption="企业登记办理要求",
+        row_count=3, column_count=3,
+        cells=tuple(
+            TableCell(text=text, row_index=row, column_index=column, is_header=row == 0)
+            for row, values_in_row in enumerate(values)
+            for column, text in enumerate(values_in_row)
+        ),
+    ),))
+
 
 def build_table_docx(*, merged: bool = False) -> bytes:
     document = Document()

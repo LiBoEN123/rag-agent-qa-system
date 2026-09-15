@@ -111,7 +111,10 @@ def test_sqlite_reload_and_successful_rebuild_input_keep_complete_structure(tmp_
     assert repository.get(candidate.candidate_id) == candidate
     [restored] = repository.load_latest_successfully_indexed()
     assert restored.document.structured_content == candidate.document.structured_content
-    assert candidate_to_langchain_documents(restored, chunk_size=1000, chunk_overlap=0)[0].page_content == candidate.document.content
+    [chunk] = candidate_to_langchain_documents(restored, chunk_size=1000, chunk_overlap=0)
+    assert chunk.page_content == "[表格]\n表头：列1；列2\n列1 / 列2：value。\n[/表格]"
+    assert chunk.metadata["element_type"] == "table"
+    assert chunk.metadata["row_start"] == chunk.metadata["row_end"] == 0
     with sqlite3.connect(path) as connection:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert not {"document_structure", "table_cells", "parsed_documents"} & tables

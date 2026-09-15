@@ -34,6 +34,7 @@ from app.rag.ingest import (
     read_file_text,
 )
 from app.rag.parsing import parse_document
+from app.rag.structured_chunking import chunk_structured_document
 
 
 LOCAL_RECORD_NAMESPACE = "rag-agent/local/v1"
@@ -78,15 +79,20 @@ def candidate_to_langchain_documents(
     file_name = str(source_metadata.get("file_name") or document.title)
     source_path = str(source_metadata.get("source_path") or document.source_uri)
     settings = get_settings()
+    chunk_size = settings.chunk_size if chunk_size is None else chunk_size
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=settings.chunk_size if chunk_size is None else chunk_size,
+        chunk_size=chunk_size,
         chunk_overlap=(
             settings.chunk_overlap if chunk_overlap is None else chunk_overlap
         ),
         separators=_TEXT_SEPARATORS,
     )
 
-    if file_type == "md":
+    if document.structured_content is not None:
+        chunks = chunk_structured_document(
+            document.structured_content, splitter=splitter, chunk_size=chunk_size,
+        )
+    elif file_type == "md":
         sections = MarkdownHeaderTextSplitter(
             headers_to_split_on=_MARKDOWN_HEADERS,
         ).split_text(document.content)
@@ -109,7 +115,9 @@ def candidate_to_langchain_documents(
     for position, chunk in enumerate(chunks, start=1):
         page_content = chunk.page_content
         metadata = {**provenance, "position": position}
-        if file_type == "md":
+        if document.structured_content is not None:
+            metadata.update(chunk.metadata)
+        elif file_type == "md":
             title_path = " > ".join(
                 chunk.metadata[key]
                 for key in ("h1", "h2", "h3")

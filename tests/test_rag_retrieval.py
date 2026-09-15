@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.embeddings import DeterministicFakeEmbedding
 from pydantic import ValidationError
 
 from app.llm.schemas import QueryDecomposeOutput
@@ -8,6 +9,43 @@ from app.rag import decomposition
 from app.rag.decomposition import normalize_decompose_result, should_decompose_query
 from app.rag import retrieval
 from app.rag.policy import should_refuse
+from app.ingestion import IngestionRequester, IngestionService, build_knowledge_document
+from app.rag import indexing, store
+from tests.support.structured_document import registration_structure
+
+
+def test_table_semantics_reach_real_chroma_bm25_retrieval(tmp_path, monkeypatch):
+    document = build_knowledge_document(
+        source_type="local_file", source_uri=str(tmp_path / "table.pdf"), title="企业登记办理要求",
+        content="", structured_content=registration_structure(), metadata={"file_type": "pdf"},
+    )
+    candidate = IngestionService().propose(document=document, requester=IngestionRequester(
+        principal_id="table-smoke", principal_type="system", source="pytest",
+    ))
+    [table_chunk] = indexing.candidate_to_langchain_documents(candidate, chunk_size=600, chunk_overlap=0)
+    for number in range(12):
+        (tmp_path / f"distractor-{number}.txt").write_text(f"校园图书馆开放时间：周一至周五。分馆编号{number}。")
+    documents = [table_chunk, *indexing.load_local_langchain_documents(str(tmp_path))]
+    embeddings = DeterministicFakeEmbedding(size=32)
+    indexing.sync_documents(documents, embeddings)
+    bundle = store.load_index_cache(model=embeddings, rerank_model=object())
+    assert bundle["ok"], bundle["message"]
+
+    def no_fallback(*args, **kwargs):
+        pytest.fail("table smoke must query real Chroma, not fall back to local vectors")
+
+    monkeypatch.setattr(retrieval, "_retrieve_with_local_embeddings", no_fallback)
+    query = "企业注册需要哪些材料"
+    hits = retrieval.retrieve(
+        query, bundle["chunks"], bundle["bm25"], bundle["doc_embeddings"], embeddings, top_k=3,
+    )
+    hit = next(item for item in hits if item["metadata"].get("element_type") == "table")
+    assert hit["text"] == table_chunk.page_content
+    assert "事项：企业注册；条件：年满18岁；材料：身份证、申请表。" in hit["text"]
+    assert hit["bm25_score"] > 0
+    assert hit["bm25_score"] == max(item["bm25_score"] for item in hits)
+    assert hit["metadata"]["source_id"] == document.source_id
+    assert hit["position"] == 1
 
 
 @pytest.mark.parametrize(

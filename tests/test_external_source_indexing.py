@@ -8,11 +8,13 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from pydantic import SecretStr
 from sqlalchemy import delete, update
 
 from app.config import get_settings
+from app.api.lifecycle import StartupDependencies, initialize_rag
 from app.api.application import create_app
 from app.api.ingestion import IngestionOperationsDependencies
 from app.ingestion import (
@@ -683,13 +685,33 @@ def test_upload_approve_index_retrieve_and_force_rebuild(persisted_runtime, monk
         ).load_latest_successfully_indexed()] == [candidate_id]
 
 
-def test_force_rebuild_passes_persisted_structure_to_existing_chunker(persisted_runtime, monkeypatch):
+def test_version_migration_rechunks_sqlite_structure_and_preserves_legacy(persisted_runtime, monkeypatch):
     runtime = persisted_runtime
     document = load_upload_document(
         BytesIO(build_table_docx(merged=True)), filename="table.docx", max_bytes=2_000_000,
     )
     candidate = _approve(runtime.domain, document)
-    _index_with_run(runtime, candidate)
+    # 模拟 v2 已成功索引的正文 chunk 与 manifest，SQLite 仍保存完整 structure。
+    old_chunk = Document(page_content=document.content, metadata={
+        "source_id": document.source_id, "document_uid": document.document_uid,
+        "source_type": "upload", "source_uri": document.source_uri,
+        "source_path": document.source_uri, "file_name": "table.docx", "file_type": "docx", "position": 1,
+    })
+    result = indexing.sync_documents(
+        [old_chunk], runtime.embeddings, namespace=indexing.UPLOAD_RECORD_NAMESPACE, cleanup="incremental",
+    )
+    runtime.runs.succeed(runtime.runs.create_running(candidate.candidate_id).id, added=result["num_added"])
+    legacy = _approve(runtime.domain, build_knowledge_document(
+        source_type="upload", source_uri="upload://local/legacy-docx", title="legacy.docx",
+        content="legacy plain evidence", metadata={"file_type": "docx"},
+    ))
+    _index_with_run(runtime, legacy)
+    local_table = runtime.local_dir / "local.docx"
+    local_table.write_bytes(build_table_docx())
+    old_manifest = {**rag_store.build_current_manifest(str(runtime.local_dir)), "pipeline_version": 2}
+    rag_store.save_manifest(old_manifest)
+    assert rag_store.needs_rebuild(str(runtime.local_dir)) == (True, "pipeline_version 变化，需要 force rebuild")
+    old_upload_ids = indexing.create_vector_store(None).get(where={"source_id": document.source_id})["ids"]
     restored_inputs = []
     convert = pipeline.candidate_to_langchain_documents
 
@@ -704,12 +726,36 @@ def test_force_rebuild_passes_persisted_structure_to_existing_chunker(persisted_
 
     monkeypatch.setattr("app.sources.upload.parse_document", no_parse)
     history = runtime.runs.list()
-    ok, message = pipeline.rebuild_and_persist_index(str(runtime.local_dir), force_rebuild=True)
-    assert ok, message
-    [restored] = restored_inputs
+    # 使用真实启动判断和现有 global force rebuild，无 migration script 或新索引。
+    initialize_rag(StartupDependencies(
+        settings=runtime.settings.model_copy(update={"rag_file_path": runtime.local_dir, "auto_rebuild_on_startup": False}),
+        needs_rebuild=rag_store.needs_rebuild,
+        rebuild_and_persist_index=pipeline.rebuild_and_persist_index,
+    ))
+    assert rag_store.load_manifest()["pipeline_version"] == 3
+    assert rag_store.needs_rebuild(str(runtime.local_dir))[0] is False
+    restored = next(item for item in restored_inputs if item.candidate_id == candidate.candidate_id)
     assert restored == candidate
     assert restored.document.structured_content == document.structured_content
     assert any(cell.row_span == 2 for cell in restored.document.structured_content.blocks[1].cells)
     assert runtime.runs.list() == history
     persisted, _ = load_index_from_chroma()
-    assert any("年满18岁" in chunk["text"] for chunk in persisted)
+    upload_chunks = [chunk for chunk in persisted if chunk["metadata"]["source_id"] == document.source_id]
+    assert [chunk["metadata"]["element_type"] for chunk in upload_chunks] == ["text", "table", "text"]
+    table_chunk = upload_chunks[1]
+    assert "：年满18岁" in table_chunk["text"]
+    assert "材料：身份证\n证明。" in table_chunk["text"]
+    assert (table_chunk["metadata"]["row_start"], table_chunk["metadata"]["row_end"]) == (1, 2)
+    assert [chunk["metadata"]["position"] for chunk in upload_chunks] == [1, 2, 3]
+    assert any(chunk["metadata"]["source_type"] == "local_file" and
+               chunk["metadata"].get("element_type") == "table" for chunk in persisted)
+    [legacy_chunk] = [chunk for chunk in persisted if chunk["metadata"]["source_id"] == legacy.document.source_id]
+    assert legacy_chunk["text"] == "legacy plain evidence"
+    assert "element_type" not in legacy_chunk["metadata"]
+    records = indexing.create_vector_store(None).get(where={"source_type": "upload"})
+    assert set(old_upload_ids).isdisjoint(records["ids"])
+    assert set(records["ids"]) == set(indexing.create_record_manager(namespace=indexing.UPLOAD_RECORD_NAMESPACE).list_keys())
+    assert pipeline.bm25.corpus_size == len(persisted)
+    runtime.embeddings.reset()
+    assert runtime.source_service.index_approved(candidate.candidate_id)["num_skipped"] == len(upload_chunks)
+    assert runtime.embeddings.document_texts == []
