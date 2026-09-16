@@ -1,7 +1,6 @@
 """无 Parent Graph 后的 Agent 状态与输入合同测试。"""
 
-import importlib.util
-from typing import is_typeddict
+from pathlib import Path
 
 import pytest
 from langchain_core.messages import HumanMessage
@@ -11,30 +10,15 @@ from app.agent.runtime import (
     prepare_agent_runtime_invocation,
     validate_runtime_counts,
 )
-from app.agent.state import AgentObservation
-from app.agent.tool_events import build_tool_observation
+from app.agent.tool_events import build_tool_trace
 
 
-def test_agent_observation_is_plain_typed_dict():
-    observation: AgentObservation = {
-        "step_id": 1,
-        "tool_name": "search_knowledge_base",
-        "success": True,
-        "summary": "检索到 5 个 chunk",
-        "output": {"count": 5},
-        "error": "",
-        "cost_ms": 123,
-    }
-
-    assert is_typeddict(AgentObservation)
-    assert observation["success"] is True
-    assert observation["output"]["count"] == 5
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_parent_agent_graph_state_module_is_removed():
     """生产状态只剩 create_agent 内部 Schema 与最终 Result。"""
-    with pytest.raises(ModuleNotFoundError):
-        importlib.util.find_spec("app.graph.state")
+    assert not (PROJECT_ROOT / "app" / "graph" / "state.py").is_file()
     fields = FrameworkAgentState.__annotations__
     assert "knowledge_base_result" in fields
     assert "framework_events_applied" not in fields
@@ -77,19 +61,31 @@ def test_runtime_count_constraints_reject_invalid_inputs(
         )
 
 
-def test_tool_observation_builder_preserves_numeric_constraints():
+def test_tool_trace_builder_preserves_numeric_constraints():
     with pytest.raises(ValueError, match="step_id"):
-        build_tool_observation(
+        build_tool_trace(
             step_id=0,
             tool_name="simple_calculator",
+            tool_args={},
             result={"ok": True},
             cost_ms=0,
         )
 
     with pytest.raises(ValueError, match="cost_ms"):
-        build_tool_observation(
+        build_tool_trace(
             step_id=1,
             tool_name="simple_calculator",
+            tool_args={},
             result={"ok": True},
             cost_ms=-1,
         )
+
+    trace = build_tool_trace(
+        step_id=1,
+        tool_name="simple_calculator",
+        tool_args={},
+        result={"ok": True},
+        cost_ms=0,
+    )
+    assert trace["step_id"] == 1
+    assert trace["cost_ms"] == 0

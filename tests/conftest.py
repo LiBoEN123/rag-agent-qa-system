@@ -6,13 +6,15 @@ import sqlite3
 import pytest
 from pydantic import AliasChoices
 
+from app.agent.framework_tools import get_local_tools
 from app.config import AppSettings, clear_settings_cache, get_settings
 from app.agent.runtime import reset_agent_runtime
 from app.llm.factory import clear_model_factory_cache
-from app.tools.registry import clear_tool_registry_cache, get_tool_registry
-from app.tools.runtime import reset_tool_runtime
+from app.tools.catalog import get_local_tool_specs
+from app.tools.runtime import close_tool_executor
 from app.tools.mcp.client import reset_mcp_runtime
 from app.tools.sql_readonly.engine import clear_sql_engine_cache
+from app.storage.database import clear_storage_engine_cache
 
 
 @pytest.fixture
@@ -92,11 +94,13 @@ def settings_factory(tmp_path) -> Callable[..., AppSettings]:
 
 def _clear_configuration_dependent_caches() -> None:
     """按依赖方向清理所有持有配置快照的进程内缓存。"""
-    reset_tool_runtime()
+    close_tool_executor()
     reset_agent_runtime()
     clear_model_factory_cache()
-    clear_tool_registry_cache()
+    get_local_tool_specs.cache_clear()
+    get_local_tools.cache_clear()
     clear_sql_engine_cache()
+    clear_storage_engine_cache()
     reset_mcp_runtime()
     clear_settings_cache()
 
@@ -131,7 +135,7 @@ def settings_env(monkeypatch):
 @pytest.fixture
 def tool_registry():
     """返回当前测试配置对应的惰性默认 Registry。"""
-    return get_tool_registry()
+    return get_local_tool_specs(get_settings())
 
 
 @pytest.fixture(autouse=True)

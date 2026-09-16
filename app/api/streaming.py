@@ -97,6 +97,7 @@ def _project_public_data(
 class ChatStreamSSEEncoder:
     """为单个请求分配 sequence，并构造 FastAPI SSE 事件。"""
 
+    # 保存追踪标识和时间提供函数，并初始化事件序号。
     def __init__(
         self,
         *,

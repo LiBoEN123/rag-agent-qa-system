@@ -3,8 +3,8 @@
 import pytest
 
 from app.tools.context import ToolInvocationContext
-from app.tools.providers import LocalToolProvider
-from app.tools.registry import ToolRegistry, register_default_tools
+from tests.support.local_tools import local_tools, visible_tools
+from app.tools.catalog import get_local_tool_specs
 
 
 SQL_TOOL_NAMES = {
@@ -39,19 +39,18 @@ def test_sql_tool_visibility_requires_configuration_and_permission(
             }
         )
     settings = settings_factory(**overrides)
-    registry = ToolRegistry()
-    register_default_tools(registry, settings=settings)
+    registry = get_local_tool_specs(settings)
     visible = {
         spec.name
-        for spec in LocalToolProvider(registry).list_specs(
+        for spec in visible_tools(local_tools(registry),
             context=ToolInvocationContext(permissions=permissions)
         )
     }
 
-    assert (SQL_TOOL_NAMES <= set(registry.names())) is enabled
+    assert (SQL_TOOL_NAMES <= set([item.name for item in registry])) is enabled
     assert (SQL_TOOL_NAMES <= visible) is expected_visible
     if not enabled:
-        assert len(registry.names()) == 8
+        assert len([item.name for item in registry]) == 8
 
 
 def test_enabling_sql_does_not_grant_database_permission(

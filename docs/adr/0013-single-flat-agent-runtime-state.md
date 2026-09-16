@@ -8,6 +8,9 @@
 > `AgentGraphState`、Parent Graph Checkpointer 和事件重放游标已删除。当前仅保留最小
 > `FrameworkAgentState` 与由 `results.py` 一次性归一化的普通 Python Result 快照。
 
+> 2026-09-09：进一步删除临时 `AgentObservation` 与 `app/agent/state.py`；治理事件直接
+> 生成公开 tool trace，Result summary 复用该 trace，numeric validation 保留在 trace builder。
+
 ## 背景
 
 PR11 后，LangGraph 父图保存请求输入、Router、框架消息与治理字段、RAG handoff 和最终 result，同时还嵌套一个可变 Pydantic 业务状态。问题语义、检索参数、trace/session 和业务结果因此分布在两层；节点既返回 LangGraph update，又原地修改嵌套对象。该模式让节点输入输出、checkpoint payload、重放语义和测试构造都不清晰。

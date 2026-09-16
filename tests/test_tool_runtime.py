@@ -1,133 +1,528 @@
-"""Tool Runtime V2 单元测试。"""
+"""LangChain 原生本地工具执行与项目薄治理回归。"""
 
+import asyncio
+import json
 import threading
 import time
 from collections.abc import Callable
 from typing import Any
 
 import pytest
-from pydantic import BaseModel
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from pydantic import BaseModel, ConfigDict, RootModel, ValidationError
 
+from tests.support.local_tools import tool_runtime
+from app.agent import framework_agent
+from app.agent.framework_agent import build_framework_agent
+from app.agent.framework_tools import ProjectStructuredTool, build_local_tool
+from app.config import AppSettings
+from app.tools.audit import ToolAuditEvent, ToolAuditEventType
 from app.tools.context import ToolInvocationContext
-from app.tools.contracts import ToolSpec
+from app.tools.contracts import ToolRiskLevel, ToolSpec
 from app.tools.errors import ToolErrorCode, ToolExecutionError
-from app.tools.registry import ToolRegistry
 from app.tools.result import tool_error, tool_success
-from app.tools.runtime import (
-    ToolRuntime,
-    execute_registered_tool,
-    get_tool_runtime,
-    reset_tool_runtime,
-)
+from app.tools.schemas import ListDocumentsArgs
 
 
 class RuntimeArgs(BaseModel):
-    """测试工具输入。"""
-
     value: int
 
 
 class RuntimeOutput(BaseModel):
-    """测试工具输出。"""
-
     value: int
+
+
+class StrictRuntimeArgs(RuntimeArgs):
+    model_config = ConfigDict(extra="forbid")
+
+
+class FakeAgentModel:
+    profile: dict = {}
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+
+    def bind_tools(self, tools, **kwargs):
+        del tools, kwargs
+        return self
+
+    async def ainvoke(self, messages):
+        del messages
+        return self.responses.pop(0)
+
+
+class CollectingSink:
+    def __init__(self):
+        self.events: list[ToolAuditEvent] = []
+
+    def write(self, event: ToolAuditEvent) -> None:
+        self.events.append(event)
+
+
+class FailingSink:
+    def write(self, event: ToolAuditEvent) -> None:
+        del event
+        raise OSError("unavailable")
 
 
 def make_spec(
     handler: Callable[[dict, ToolInvocationContext], dict],
     **overrides: Any,
 ) -> ToolSpec:
-    """构造独立的 Runtime 测试契约。"""
     values: dict[str, Any] = {
         "name": "runtime_echo",
         "version": "2.1.0",
         "description": "Runtime 测试工具",
-        "output_schema": {"value": "integer"},
+        "output_model": RuntimeOutput,
         "handler": handler,
         "args_model": RuntimeArgs,
         "timeout": 1.0,
         "max_retries": 0,
         "idempotent": True,
     }
-    if (
-        overrides.get("output_model") is not None
-        and "output_schema" not in overrides
-    ):
-        values.pop("output_schema")
     values.update(overrides)
     return ToolSpec(**values)
 
 
-@pytest.fixture(autouse=True)
-def isolate_shared_runtime():
-    """避免全局 Runtime 在线程和配置测试之间串用。"""
-    reset_tool_runtime()
-    yield
-    reset_tool_runtime()
+def invoke_with_framework(
+    monkeypatch,
+    settings: AppSettings,
+    spec: ToolSpec,
+    *,
+    args: dict[str, Any],
+    context: ToolInvocationContext | None = None,
+    audit_sink=None,
+) -> tuple[dict[str, Any], ToolMessage]:
+    resolved_context = context or ToolInvocationContext(trace_id="runtime-test")
+    model = FakeAgentModel(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": spec.name,
+                        "args": args,
+                        "id": "framework-tool-call",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="done"),
+        ]
+    )
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    tool = build_local_tool(
+        spec,
+        settings=settings,
+        audit_sink=audit_sink,
+    )
+    agent = build_framework_agent(settings, tools=[tool])
+    inputs = {"messages": [HumanMessage(content="run")]}
+    async def stream():
+        states = [state async for state in agent.astream(
+            inputs, context=resolved_context, stream_mode="values"
+        )]
+        return states[-1]
+
+    output = asyncio.run(stream())
+    message = next(item for item in output["messages"] if isinstance(item, ToolMessage))
+    return json.loads(message.content), message
 
 
-@pytest.fixture
-def runtime_factory():
-    """创建测试 Runtime，并在用例结束时幂等关闭。"""
-    runtimes: list[ToolRuntime] = []
-
-    def build(
-        registry: ToolRegistry,
-        *,
-        sleep_func: Callable[[float], None] = time.sleep,
-        random_func: Callable[[float, float], float] = (
-            lambda _low, _high: 1.0
-        ),
-        retry_base_delay_ms: int = 0,
-    ) -> ToolRuntime:
-        runtime = ToolRuntime(
-            registry,
-            max_workers=2,
-            retry_base_delay_ms=retry_base_delay_ms,
-            retry_max_delay_ms=max(retry_base_delay_ms, 1000),
-            retry_jitter_ratio=0.2,
-            sleep_func=sleep_func,
-            random_func=random_func,
-        )
-        runtimes.append(runtime)
-        return runtime
-
-    yield build
-
-    for runtime in runtimes:
-        runtime.close()
-
-
-def test_runtime_executes_validated_args_once(runtime_factory):
-    """正常执行只调用一次 handler，并覆盖不可信的工具身份字段。"""
-    seen: list[tuple[dict, ToolInvocationContext]] = []
+def test_structured_tool_owns_validation_and_schema(settings_factory):
+    calls = 0
 
     def handler(args, context):
-        seen.append((args, context))
-        return tool_success("wrong_name", {"value": 999}, {"value": args["value"]})
+        nonlocal calls
+        calls += 1
+        return tool_success("runtime_echo", args, {"value": args["value"]})
 
-    registry = ToolRegistry()
-    registry.register(make_spec(handler))
-    runtime = runtime_factory(registry)
-    context = ToolInvocationContext(trace_id="runtime-trace")
-
-    result = runtime.execute(
-        "runtime_echo",
-        {"value": "7"},
-        context=context,
+    spec = make_spec(handler)
+    tool = build_local_tool(
+        spec,
+        settings=settings_factory(),
     )
-
-    assert seen == [({"value": 7}, context)]
-    assert result["ok"] is True
-    assert result["tool_name"] == "runtime_echo"
+    assert isinstance(tool, ProjectStructuredTool)
+    assert tool.project_spec is spec
+    assert tool.tool_call_schema.model_json_schema()["properties"] == (
+        spec.args_model.model_json_schema()["properties"]
+    )
+    result = tool.invoke({"value": "7", "runtime": tool_runtime(ToolInvocationContext(trace_id="direct"))})
     assert result["tool_input"] == {"value": 7}
-    assert result["error"] == ""
-    assert result["error_code"] == ""
-    assert result["retryable"] is False
+    assert calls == 1
+
+
+@pytest.mark.parametrize("args_model", [RuntimeArgs, StrictRuntimeArgs, ListDocumentsArgs])
+@pytest.mark.parametrize("mode", ["direct_sync", "direct_async", "stream"])
+def test_runtime_context_and_call_id_survive_all_input_shapes(
+    monkeypatch, settings_factory, args_model, mode,
+):
+    """严格和空参数模型也必须经框架注入上下文，且不改变 LLM 参数。"""
+    seen = []
+    context = ToolInvocationContext(trace_id="injected-context", principal_id="caller")
+    args = {} if args_model is ListDocumentsArgs else {"value": "7"}
+    expected = {} if args_model is ListDocumentsArgs else {"value": 7}
+
+    def handler(tool_args, tool_context):
+        seen.append(tool_context)
+        return tool_success("runtime_echo", tool_args, tool_args)
+
+    spec = make_spec(handler, args_model=args_model, output_model=RootModel[dict])
+    settings = settings_factory()
+    tool = build_local_tool(spec, settings=settings)
+    assert tool.tool_call_schema.model_json_schema()["properties"] == (
+        args_model.model_json_schema()["properties"]
+    )
+    if mode.startswith("direct"):
+        runtime = tool_runtime(context)
+        runtime.tool_call_id = "direct-call"
+        inputs = {**args, "runtime": runtime}
+        result = (
+            tool.invoke(inputs) if mode == "direct_sync"
+            else asyncio.run(tool.ainvoke(inputs))
+        )
+        assert result["tool_call_id"] == "direct-call"
+    else:
+        result, message = invoke_with_framework(
+            monkeypatch, settings, spec, args=args, context=context,
+        )
+        assert result["tool_call_id"] == message.tool_call_id == "framework-tool-call"
+        assert message.status == "success"
+    assert result["ok"] is True
+    assert result["tool_input"] == result["output"] == expected
+    assert len(seen) == 1 and seen[0] is context
+
+
+def test_strict_input_rejects_extra_business_args_before_handler(settings_factory):
+    calls = []
+    tool = build_local_tool(
+        make_spec(lambda args, context: calls.append(args), args_model=StrictRuntimeArgs),
+        settings=settings_factory(),
+    )
+    with pytest.raises(ValidationError, match="unexpected"):
+        tool.invoke({"value": 1, "unexpected": True, "runtime": tool_runtime(ToolInvocationContext())})
+    assert calls == []
+
+
+def test_list_documents_agent_result(monkeypatch, settings_factory):
+    """真实空参数本地工具贯通 ToolMessage 和公共 Agent Result。"""
+    from app.rag import pipeline
+    from tests.support.agent_runtime import build_agent_harness
+
+    documents = [{"file_name": "a.md", "source_path": "data/a.md", "chunk_count": 2}]
+    monkeypatch.setattr(pipeline, "preview_docs", lambda: documents)
+    model = FakeAgentModel([
+        AIMessage(content="", tool_calls=[{
+            "name": "list_documents", "args": {}, "id": "documents-call", "type": "tool_call",
+        }]),
+        AIMessage(content="共有一份文档。"),
+    ])
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    agent = build_agent_harness(settings_factory())
+    inputs = {"original_question": "请列出知识库文档", "effective_question": "请列出知识库文档"}
+    context = ToolInvocationContext(permissions=("knowledge_base:read",))
+    async def stream():
+        states = [state async for state in agent.astream(inputs, context=context)]
+        return states[-1]
+
+    output = asyncio.run(stream())
+    message = next(item for item in output["messages"] if isinstance(item, ToolMessage))
+    assert message.tool_call_id == "documents-call" and message.status == "success"
+    assert json.loads(message.content)["output"] == {"count": 1, "documents": documents}
+    assert output["result"]["status"] == "OK"
+    assert output["result"]["answer"] == "共有一份文档。"
+    trace = next(step for step in output["result"]["tool_trace"] if step.get("tool_name") == "list_documents")
+    assert trace["success"] is True and trace["tool_call_id"] == "documents-call"
+
+
+def test_framework_invalid_args_never_call_handler(
+    monkeypatch,
+    settings_factory,
+):
+    calls = 0
+
+    def handler(args, context):
+        nonlocal calls
+        calls += 1
+        return tool_success("runtime_echo", args, args)
+
+    sink = CollectingSink()
+    result, message = invoke_with_framework(
+        monkeypatch,
+        settings_factory(),
+        make_spec(handler, max_retries=1),
+        args={"value": "invalid"},
+        audit_sink=sink,
+    )
+    assert calls == 0
+    assert result["error_code"] == "invalid_arguments"
+    assert result["runtime"]["attempt_count"] == 0
+    assert message.status == "error"
+    assert [event.event_type for event in sink.events] == [
+        ToolAuditEventType.REQUESTED, ToolAuditEventType.DENIED,
+    ]
+    assert all(event.tool_call_id == message.tool_call_id for event in sink.events)
+
+
+def test_tool_retry_middleware_retries_only_declared_failure(
+    monkeypatch,
+    settings_factory,
+):
+    calls = 0
+
+    def handler(args, context):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ToolExecutionError(
+                "secret upstream detail",
+                code=ToolErrorCode.DEPENDENCY_UNAVAILABLE,
+                retryable=True,
+            )
+        return tool_success("runtime_echo", args, {"value": args["value"]})
+
+    result, _ = invoke_with_framework(
+        monkeypatch,
+        settings_factory(
+            tool_retry_base_delay_ms=0,
+            tool_retry_max_delay_ms=0,
+            tool_retry_jitter_ratio=0,
+        ),
+        make_spec(handler, max_retries=1),
+        args={"value": 3},
+    )
+    assert calls == 2
+    assert result["ok"] is True
+    assert result["runtime"]["attempt_count"] == 2
+    assert result["runtime"]["max_attempts"] == 2
+
+
+def test_non_retryable_and_non_idempotent_fail_once(
+    monkeypatch,
+    settings_factory,
+):
+    settings = settings_factory(
+        tool_retry_base_delay_ms=0,
+        tool_retry_max_delay_ms=0,
+    )
+    for idempotent, retryable in ((True, False), (False, True)):
+        calls = 0
+
+        def handler(args, context):
+            nonlocal calls
+            calls += 1
+            raise ToolExecutionError(
+                "private failure",
+                code=ToolErrorCode.RATE_LIMITED,
+                retryable=retryable,
+            )
+
+        spec = make_spec(handler, max_retries=0 if not idempotent else 1)
+        if not idempotent:
+            object.__setattr__(spec, "idempotent", False)
+            object.__setattr__(spec, "max_retries", 1)
+        result, _ = invoke_with_framework(
+            monkeypatch,
+            settings,
+            spec,
+            args={"value": 1},
+        )
+        assert calls == 1
+        assert result["error_code"] == "rate_limited"
+        assert "private failure" not in result["error"]
+
+
+def test_timeout_returns_early_and_never_retries(
+    monkeypatch,
+    settings_factory,
+):
+    calls = 0
+    completed = threading.Event()
+
+    def handler(args, context):
+        nonlocal calls
+        calls += 1
+        time.sleep(0.12)
+        completed.set()
+        return tool_success("runtime_echo", args, args)
+
+    started = time.perf_counter()
+    result, _ = invoke_with_framework(
+        monkeypatch,
+        settings_factory(tool_retry_base_delay_ms=0),
+        make_spec(handler, timeout=0.02, max_retries=1),
+        args={"value": 1},
+    )
+    assert time.perf_counter() - started < 0.1
+    assert result["error_code"] == "timeout"
+    assert result["runtime"]["timed_out"] is True
     assert result["runtime"]["attempt_count"] == 1
-    assert result["runtime"]["max_attempts"] == 1
-    assert result["runtime"]["timed_out"] is False
-    assert result["runtime"]["elapsed_ms"] >= 0
+    assert calls == 1
+    assert completed.wait(timeout=1)
+
+
+def test_permission_and_approval_block_before_handler(
+    monkeypatch,
+    settings_factory,
+):
+    calls = 0
+
+    def handler(args, context):
+        nonlocal calls
+        calls += 1
+        return tool_success("runtime_echo", args, args)
+
+    denied, _ = invoke_with_framework(
+        monkeypatch,
+        settings_factory(),
+        make_spec(handler, required_permissions=("document:write",)),
+        args={"value": 1},
+    )
+    assert denied["error_code"] == "permission_denied"
+
+    approval_spec = make_spec(
+        handler,
+        risk_level=ToolRiskLevel.EXTERNAL_WRITE,
+        required_permissions=("external:write",),
+        requires_approval=True,
+    )
+    approval, _ = invoke_with_framework(
+        monkeypatch,
+        settings_factory(),
+        approval_spec,
+        args={"value": 1},
+        context=ToolInvocationContext(
+            trace_id="approval",
+            principal_id="svc",
+            source="test",
+            permissions=("external:write",),
+            idempotency_key="idem-1",
+        ),
+    )
+    assert approval["error_code"] == "approval_required"
+    assert approval["governance"]["approval_required"] is True
+    assert calls == 0
+
+
+def test_write_audit_failure_closes_and_read_failure_opens(
+    monkeypatch,
+    settings_factory,
+):
+    calls = 0
+
+    def handler(args, context):
+        nonlocal calls
+        calls += 1
+        return tool_success("runtime_echo", args, {"value": args["value"]})
+
+    write_spec = make_spec(
+        handler,
+        risk_level=ToolRiskLevel.INTERNAL_WRITE,
+        required_permissions=("document:write",),
+    )
+    context = ToolInvocationContext(
+        trace_id="audit-write",
+        principal_id="svc",
+        source="test",
+        permissions=("document:write",),
+        idempotency_key="idem-1",
+    )
+    blocked, _ = invoke_with_framework(
+        monkeypatch,
+        settings_factory(),
+        write_spec,
+        args={"value": 1},
+        context=context,
+        audit_sink=FailingSink(),
+    )
+    assert blocked["error_code"] == "audit_write_failed"
+    assert calls == 0
+
+    read, _ = invoke_with_framework(
+        monkeypatch,
+        settings_factory(),
+        make_spec(handler),
+        args={"value": 1},
+        audit_sink=FailingSink(),
+    )
+    assert read["ok"] is True
+    assert read["audit"]["write_failed"] is True
+    assert calls == 1
+
+
+def test_retry_audit_and_output_validation(
+    monkeypatch,
+    settings_factory,
+):
+    calls = 0
+    sink = CollectingSink()
+
+    def retry_handler(args, context):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ToolExecutionError(
+                "temporary",
+                code=ToolErrorCode.DEPENDENCY_UNAVAILABLE,
+                retryable=True,
+            )
+        return tool_success("runtime_echo", args, {"value": args["value"]})
+
+    result, _ = invoke_with_framework(
+        monkeypatch,
+        settings_factory(
+            tool_retry_base_delay_ms=0,
+            tool_retry_max_delay_ms=0,
+        ),
+        make_spec(retry_handler, max_retries=1),
+        args={"value": 1},
+        audit_sink=sink,
+    )
+    assert result["ok"] is True
+    assert [event.event_type for event in sink.events] == [
+        ToolAuditEventType.REQUESTED,
+        ToolAuditEventType.STARTED,
+        ToolAuditEventType.RETRYING,
+        ToolAuditEventType.STARTED,
+        ToolAuditEventType.SUCCEEDED,
+    ]
+
+    calls = 0
+
+    def invalid_output(args, context):
+        nonlocal calls
+        calls += 1
+        return tool_success("runtime_echo", args, {"value": "invalid"})
+
+    result, _ = invoke_with_framework(
+        monkeypatch,
+        settings_factory(),
+        make_spec(invalid_output, output_model=RuntimeOutput, max_retries=1),
+        args={"value": 1},
+    )
+    assert result["error_code"] == "output_validation_error"
+    assert calls == 1
+
+
+def test_handler_error_dict_keeps_contract_without_retry(
+    monkeypatch,
+    settings_factory,
+):
+    calls = 0
+
+    def handler(args, context):
+        nonlocal calls
+        calls += 1
+        return tool_error("runtime_echo", args, "business failure")
+
+    result, _ = invoke_with_framework(
+        monkeypatch,
+        settings_factory(),
+        make_spec(handler, max_retries=1),
+        args={"value": 1},
+    )
+    assert calls == 1
+    assert result["error_code"] == "execution_error"
     assert {
         "status",
         "ok",
@@ -139,407 +534,4 @@ def test_runtime_executes_validated_args_once(runtime_factory):
         "retryable",
         "runtime",
         "governance",
-        "tool_call_id",
-        "audit",
     } <= result.keys()
-    assert result["tool_call_id"]
-    assert isinstance(result["governance"], dict)
-    assert isinstance(result["audit"], dict)
-
-
-def test_runtime_rejects_unknown_tool_without_attempt(runtime_factory):
-    """未知工具不进入线程池。"""
-    runtime = runtime_factory(ToolRegistry())
-
-    result = runtime.execute("missing_tool", {"value": 1})
-
-    assert result["error_code"] == "unknown_tool"
-    assert result["retryable"] is False
-    assert result["runtime"]["attempt_count"] == 0
-    assert result["runtime"]["max_attempts"] == 0
-    assert result["runtime"]["attempts"] == []
-    assert result["tool_call_id"]
-    assert isinstance(result["governance"], dict)
-    assert isinstance(result["audit"], dict)
-
-
-def test_runtime_rejects_invalid_args_before_handler(runtime_factory):
-    """参数校验失败不执行 handler，也不重试。"""
-    calls = 0
-
-    def handler(args, context):
-        nonlocal calls
-        calls += 1
-        return tool_success("runtime_echo", args, {"value": 1})
-
-    registry = ToolRegistry()
-    registry.register(make_spec(handler, max_retries=2))
-    runtime = runtime_factory(registry)
-
-    result = runtime.execute("runtime_echo", {"value": "not-an-int"})
-
-    assert calls == 0
-    assert result["error_code"] == "invalid_arguments"
-    assert result["retryable"] is False
-    assert result["runtime"]["attempt_count"] == 0
-
-
-def test_timeout_returns_early_and_never_retries(runtime_factory):
-    """超时只停止等待，后台 handler 自行结束且 Runtime 不立即重试。"""
-    calls = 0
-    completed = threading.Event()
-
-    def handler(args, context):
-        nonlocal calls
-        calls += 1
-        time.sleep(0.12)
-        completed.set()
-        return tool_success("runtime_echo", args, {"value": args["value"]})
-
-    registry = ToolRegistry()
-    registry.register(make_spec(handler, timeout=0.02, max_retries=2))
-    runtime = runtime_factory(registry)
-
-    started_at = time.perf_counter()
-    result = runtime.execute("runtime_echo", {"value": 1})
-    elapsed = time.perf_counter() - started_at
-
-    assert elapsed < 0.1
-    assert result["error_code"] == "timeout"
-    assert result["retryable"] is True
-    assert result["runtime"]["timed_out"] is True
-    assert result["runtime"]["attempt_count"] == 1
-    assert result["runtime"]["max_attempts"] == 3
-    assert completed.wait(timeout=1.0)
-    assert calls == 1
-
-
-def test_retryable_error_succeeds_with_exponential_backoff(runtime_factory):
-    """幂等工具对显式可重试错误退避后再次执行。"""
-    calls = 0
-    sleeps: list[float] = []
-
-    def handler(args, context):
-        nonlocal calls
-        calls += 1
-        if calls < 3:
-            raise ToolExecutionError(
-                "dependency unavailable",
-                code=ToolErrorCode.DEPENDENCY_UNAVAILABLE,
-                retryable=True,
-            )
-        return tool_success("runtime_echo", args, {"value": args["value"]})
-
-    registry = ToolRegistry()
-    registry.register(make_spec(handler, max_retries=2))
-    runtime = runtime_factory(
-        registry,
-        sleep_func=sleeps.append,
-        retry_base_delay_ms=100,
-    )
-
-    result = runtime.execute("runtime_echo", {"value": 3})
-
-    assert result["ok"] is True
-    assert calls == 3
-    assert sleeps == pytest.approx([0.1, 0.2])
-    assert result["runtime"]["attempt_count"] == 3
-    assert [item["error_code"] for item in result["runtime"]["attempts"]] == [
-        "dependency_unavailable",
-        "dependency_unavailable",
-        "",
-    ]
-
-
-def test_retryable_error_exhaustion_keeps_retryable_flag(runtime_factory):
-    """重试耗尽后保留错误本身的可重试性质。"""
-    calls = 0
-    sleeps: list[float] = []
-
-    def handler(args, context):
-        nonlocal calls
-        calls += 1
-        raise ToolExecutionError(
-            "temporarily unavailable",
-            code=ToolErrorCode.DEPENDENCY_UNAVAILABLE,
-            retryable=True,
-        )
-
-    registry = ToolRegistry()
-    registry.register(make_spec(handler, max_retries=2))
-    runtime = runtime_factory(
-        registry,
-        sleep_func=sleeps.append,
-        retry_base_delay_ms=10,
-    )
-
-    result = runtime.execute("runtime_echo", {"value": 3})
-
-    assert calls == 3
-    assert len(sleeps) == 2
-    assert result["ok"] is False
-    assert result["error_code"] == "dependency_unavailable"
-    assert result["retryable"] is True
-    assert result["runtime"]["attempt_count"] == 3
-
-
-def test_unknown_exception_is_not_retried(runtime_factory):
-    """普通异常默认不可重试。"""
-    calls = 0
-
-    def handler(args, context):
-        nonlocal calls
-        calls += 1
-        raise ValueError("handler bug")
-
-    registry = ToolRegistry()
-    registry.register(make_spec(handler, max_retries=2))
-    result = runtime_factory(registry).execute("runtime_echo", {"value": 3})
-
-    assert calls == 1
-    assert result["error_code"] == "execution_error"
-    assert result["retryable"] is False
-    assert result["runtime"]["attempt_count"] == 1
-
-
-def test_handler_timeout_error_is_an_unknown_exception(runtime_factory):
-    """handler 主动抛普通 TimeoutError 不等同于 Runtime 等待超时。"""
-    calls = 0
-
-    def handler(args, context):
-        nonlocal calls
-        calls += 1
-        raise TimeoutError("handler timeout exception")
-
-    registry = ToolRegistry()
-    registry.register(make_spec(handler, max_retries=2))
-    result = runtime_factory(registry).execute("runtime_echo", {"value": 3})
-
-    assert calls == 1
-    assert result["error_code"] == "execution_error"
-    assert result["retryable"] is False
-    assert result["runtime"]["timed_out"] is False
-    assert result["runtime"]["attempt_count"] == 1
-
-
-def test_non_idempotent_tool_is_defensively_limited_to_one_attempt(
-    runtime_factory,
-):
-    """即使绕过契约校验，非幂等工具仍不会执行第二次。"""
-    calls = 0
-
-    def handler(args, context):
-        nonlocal calls
-        calls += 1
-        raise ToolExecutionError(
-            "rate limited",
-            code=ToolErrorCode.RATE_LIMITED,
-            retryable=True,
-        )
-
-    spec = make_spec(handler)
-    object.__setattr__(spec, "idempotent", False)
-    object.__setattr__(spec, "max_retries", 3)
-    registry = ToolRegistry()
-    registry.register(spec)
-
-    result = runtime_factory(registry).execute("runtime_echo", {"value": 1})
-
-    assert calls == 1
-    assert result["error_code"] == "rate_limited"
-    assert result["runtime"]["attempt_count"] == 1
-    assert result["runtime"]["max_attempts"] == 1
-
-
-@pytest.mark.parametrize(
-    "returned_value",
-    [
-        None,
-        "success",
-        [],
-        123,
-        {"status": "error", "ok": True},
-        {"status": "success", "ok": False},
-    ],
-)
-def test_runtime_rejects_invalid_handler_results(
-    runtime_factory,
-    returned_value,
-):
-    """非字典或状态矛盾的 handler 返回值统一归类为非法结果。"""
-    registry = ToolRegistry()
-    registry.register(make_spec(lambda args, context: returned_value))
-
-    result = runtime_factory(registry).execute("runtime_echo", {"value": 1})
-
-    assert result["error_code"] == "invalid_result"
-    assert result["retryable"] is False
-    assert result["runtime"]["attempt_count"] == 1
-
-
-def test_handler_error_dict_is_conservative_and_not_retried(runtime_factory):
-    """普通失败字典不会被推断为可重试错误。"""
-    calls = 0
-
-    def handler(args, context):
-        nonlocal calls
-        calls += 1
-        return tool_error("runtime_echo", args, "business failure")
-
-    registry = ToolRegistry()
-    registry.register(make_spec(handler, max_retries=2))
-    result = runtime_factory(registry).execute("runtime_echo", {"value": 1})
-
-    assert calls == 1
-    assert result["error_code"] == "execution_error"
-    assert result["retryable"] is False
-
-
-def test_output_model_validates_and_normalizes_success(runtime_factory):
-    """成功输出通过 output_model 后使用模型规范化值。"""
-    def handler(args, context):
-        return tool_success("runtime_echo", args, {"value": "9"})
-
-    registry = ToolRegistry()
-    registry.register(make_spec(handler, output_model=RuntimeOutput))
-
-    result = runtime_factory(registry).execute("runtime_echo", {"value": 1})
-
-    assert result["ok"] is True
-    assert result["output"] == {"value": 9}
-
-
-def test_output_model_failure_is_not_retried(runtime_factory):
-    """输出模型校验失败立即返回，不重复调用 handler。"""
-    calls = 0
-
-    def handler(args, context):
-        nonlocal calls
-        calls += 1
-        return tool_success("runtime_echo", args, {"value": "invalid"})
-
-    registry = ToolRegistry()
-    registry.register(
-        make_spec(handler, output_model=RuntimeOutput, max_retries=2)
-    )
-
-    result = runtime_factory(registry).execute("runtime_echo", {"value": 1})
-
-    assert calls == 1
-    assert result["error_code"] == "output_validation_error"
-    assert result["retryable"] is False
-    assert result["runtime"]["attempt_count"] == 1
-
-
-def test_runtime_metadata_contains_stable_fields(runtime_factory):
-    """每个已注册工具结果包含稳定元数据。"""
-    registry = ToolRegistry()
-    registry.register(
-        make_spec(
-            lambda args, context: tool_success(
-                "runtime_echo",
-                args,
-                {"value": args["value"]},
-            )
-        )
-    )
-
-    result = runtime_factory(registry).execute("runtime_echo", {"value": 1})
-
-    assert {
-        "tool_version",
-        "attempt_count",
-        "max_attempts",
-        "elapsed_ms",
-        "timeout",
-        "timed_out",
-    } <= result["runtime"].keys()
-    assert result["runtime"]["tool_version"] == "2.1.0"
-    assert result["runtime"]["timeout"] == 1.0
-
-
-def test_runtime_close_is_idempotent_and_disables_execute(runtime_factory):
-    """关闭操作可重复，关闭后的实例返回 runtime_unavailable。"""
-    calls = 0
-
-    def handler(args, context):
-        nonlocal calls
-        calls += 1
-        return tool_success("runtime_echo", args, {"value": 1})
-
-    registry = ToolRegistry()
-    registry.register(make_spec(handler))
-    runtime = runtime_factory(registry)
-
-    runtime.close()
-    runtime.close()
-    result = runtime.execute("runtime_echo", {"value": 1})
-
-    assert calls == 0
-    assert result["error_code"] == "runtime_unavailable"
-    assert result["runtime"]["attempt_count"] == 0
-
-
-def test_legacy_result_helpers_keep_positional_calls():
-    """结果辅助函数的三个旧位置参数继续有效。"""
-    success = tool_success("echo", {"value": 1}, {"value": 1})
-    error = tool_error("echo", {"value": 1}, "failed")
-
-    assert success["ok"] is True
-    assert success["error_code"] == ""
-    assert success["runtime"] == {}
-    assert error["ok"] is False
-    assert error["error_code"] == "execution_error"
-    assert error["retryable"] is False
-    assert error["runtime"] == {}
-
-
-def test_execution_entry_uses_runtime_protocol():
-    """唯一执行入口不会绕过 Runtime。"""
-    registry = ToolRegistry()
-    registry.register(
-        make_spec(
-            lambda args, context: tool_success(
-                "runtime_echo",
-                args,
-                {"value": args["value"]},
-            )
-        )
-    )
-
-    result = execute_registered_tool(
-        registry=registry,
-        tool_name="runtime_echo",
-        tool_args={"value": "4"},
-    )
-
-    assert result["tool_input"] == {"value": 4}
-    assert result["runtime"]["attempt_count"] == 1
-
-
-def test_execution_entry_returns_runtime_extensions(tool_registry):
-    """直接测试唯一执行入口返回 Runtime 扩展字段。"""
-    result = execute_registered_tool(
-        registry=tool_registry,
-        tool_name="simple_calculator",
-        tool_args={"expression": "1 + 2"},
-        context=ToolInvocationContext(trace_id="runtime-trace"),
-    )
-
-    assert result["ok"] is True
-    assert result["output"]["result"] == 3
-    assert result["runtime"]["attempt_count"] == 1
-    assert result["runtime"]["tool_version"] == "1.0.0"
-
-
-def test_shared_runtime_replaces_instance_when_config_changes(
-    settings_env,
-):
-    """配置变化时不会静默复用参数已经过期的 Runtime。"""
-    first = get_tool_runtime()
-    settings_env(tool_runtime_max_workers=9)
-
-    second = get_tool_runtime()
-
-    assert second is not first
-    assert first.closed is True

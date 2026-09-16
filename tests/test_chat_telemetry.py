@@ -2,7 +2,10 @@
 
 from copy import deepcopy
 
+import pytest
+
 from app.contracts.chat import get_chat_status_policy
+from app.observability.metrics import collect_trace_metrics
 from app.services.chat_models import ChatRequestContext, ChatServiceRequest
 from app.services.chat_telemetry import (
     apply_result_metrics,
@@ -93,18 +96,50 @@ def test_format_tool_call_chain_handles_none_and_preserves_order():
     ) == "web_search(success,12ms) -> web_fetch(error,0ms)"
 
 
-def test_apply_result_metrics_merges_timings_without_mutating_result():
+@pytest.mark.parametrize("include_timings", [True, False])
+def test_apply_result_metrics_reads_result_without_trace_fallback(include_timings):
     context = make_context()
     context.metrics = build_initial_chat_metrics(
         context,
         request_enter_time=context.request.request_enter_time,
         queue_wait_ms=500,
     )
+    metric_keys = set(context.metrics)
+    timings = {
+        "retrieve_cost_ms": 11,
+        "decompose_cost_ms": 12,
+        "rerank_cost_ms": 13,
+        "retrieve_with_sub_queries_cost_ms": 14,
+        "context_build_cost_ms": 15,
+        "llm_cost_ms": 16,
+        "parse_cost_ms": 17,
+        "rag_answer_cost_ms": 18,
+    }
     result = {
         "status": "OK",
         "references": [{"reference_id": "Reference 1"}],
         "action": "agent",
         "reason": "证据充分",
+        "router_llm_used": False,
+        "decompose_llm_used": True,
+        "answer_llm_used": True,
+        "llm_call_count": 2,
+        "timings": timings if include_timings else {},
+        "tool_trace": [
+            {"step": "query_rewrite", "rewrite_llm_used": True},
+            {
+                "step": "llm_usage",
+                "router_llm_used": True,
+                "decompose_llm_used": False,
+                "answer_llm_used": False,
+                "llm_call_count": 99,
+            },
+            {
+                "step": "compose_final_answer",
+                "mode": "rag",
+                "timings": dict.fromkeys(timings, 99),
+            },
+        ],
     }
     original = deepcopy(result)
     trace_metrics = {
@@ -112,17 +147,7 @@ def test_apply_result_metrics_merges_timings_without_mutating_result():
         "tool_called": True,
         "tool_success": True,
         "tool_name": "web_fetch",
-        "router_llm_used": False,
-        "decompose_llm_used": True,
-        "answer_llm_used": True,
-        "llm_call_count": 2,
         "route_cost_ms": 7,
-        "timings": {
-            "retrieve_cost_ms": 11,
-            "decompose_cost_ms": 12,
-            "rerank_cost_ms": 13,
-            "rag_answer_cost_ms": 14,
-        },
     }
 
     apply_result_metrics(
@@ -133,14 +158,68 @@ def test_apply_result_metrics_merges_timings_without_mutating_result():
     )
 
     assert result == original
+    assert set(context.metrics) == metric_keys
     assert context.metrics["status"] == "success"
     assert context.metrics["reference_count"] == 1
-    assert context.metrics["route_cost_ms"] == 7
-    assert context.metrics["retrieve_cost_ms"] == 11
-    assert context.metrics["decompose_cost_ms"] == 12
-    assert context.metrics["rerank_cost_ms"] == 13
-    assert context.metrics["rag_answer_cost_ms"] == 14
+    for key, value in trace_metrics.items():
+        assert context.metrics[key] == value
+    for key, value in timings.items():
+        assert context.metrics[key] == (value if include_timings else 0)
+    assert context.metrics["router_llm_used"] is False
+    assert context.metrics["decompose_llm_used"] is True
+    assert context.metrics["answer_llm_used"] is True
     assert context.metrics["llm_call_count"] == 2
+    assert context.metrics["action"] == "agent"
+    assert context.metrics["reason"] == "证据充分"
+
+
+def test_collect_trace_metrics_keeps_existing_activity_semantics_only():
+    result = {
+        "llm_call_count": 3,
+        "timings": {},
+        "tool_trace": [
+            {"step": "decide", "route_cost_ms": 7},
+            {"step": "query_rewrite", "rewrite_llm_used": True},
+            {"step": "llm_usage", "llm_call_count": 2},
+            {
+                "step": "compose_final_answer",
+                "mode": "rag",
+                "timings": {"llm_cost_ms": 99},
+            },
+            {
+                "tool_name": "search_knowledge_base",
+                "final_chunk_count": 4,
+                "tool_status": "success",
+            },
+            {"tool_name": "query_sql_readonly", "tool_status": "success"},
+            {"tool_name": "mcp__example__lookup", "tool_status": "success"},
+        ],
+    }
+    original = deepcopy(result)
+
+    assert collect_trace_metrics(result) == {
+        "retrieved_count": 4,
+        "tool_called": False,
+        "tool_success": False,
+        "tool_name": "",
+        "route_cost_ms": 7,
+    }
+    assert result == original
+
+    result["tool_trace"].extend([
+        {"tool_name": "web_search", "tool_status": "success"},
+        {"tool_name": "web_fetch", "tool_status": "error"},
+        {"tool_name": "search_knowledge_base", "final_chunk_count": 2},
+        {"step": "decide", "route_cost_ms": -1},
+    ])
+
+    assert collect_trace_metrics(result) == {
+        "retrieved_count": 2,
+        "tool_called": True,
+        "tool_success": True,
+        "tool_name": "web_fetch",
+        "route_cost_ms": 0,
+    }
 
 
 def test_stream_events_update_accounting_and_completion_state():

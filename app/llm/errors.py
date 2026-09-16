@@ -30,6 +30,7 @@ def _redact_secrets(value: object) -> str:
 class ModelCallError(Exception):
     """保存面向用户的提示和经过脱敏的模型调用调试信息。"""
 
+    # 脱敏模型调用错误，并保存提供方、模型名称和是否可重试的信息。
     def __init__(
         self,
         user_message: str,
@@ -51,6 +52,7 @@ class ModelCallError(Exception):
 class StructuredOutputError(Exception):
     """表示模型已返回响应，但响应无法通过结构化输出校验。"""
 
+    # 脱敏结构化输出错误，并记录关联的输出模式名称。
     def __init__(
         self,
         user_message: str,

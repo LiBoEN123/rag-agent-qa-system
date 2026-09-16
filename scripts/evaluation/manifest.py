@@ -37,10 +37,11 @@ PROMPT_INPUT_FILES = (
     "app/rag/decomposition.py",
     "app/rag/generation.py",
     "app/tools/compare_documents.py",
-    "app/tools/registry.py",
+    "app/tools/catalog.py",
 )
 CONTEXT_SELECTION_SOURCE = "app/rag/generation.py"
 PREDICTION_SCHEMA_VERSION = 2
+CORE_EVALUATION_MCP_MODE = "core_disabled"
 
 
 def sha256_file(path: str | Path | None) -> str:
@@ -94,18 +95,16 @@ def get_git_state() -> dict[str, Any]:
 def build_tool_contract(
     settings: AppSettings,
 ) -> tuple[list[str], list[dict[str, Any]], str]:
-    """构造当前 ToolRegistry 合同，不创建 ToolRuntime。"""
-    from app.tools.registry import ToolRegistry, register_default_tools
+    """从 LangChain 工具 schema 与治理声明构造当前合同。"""
+    from app.agent.framework_tools import get_local_tool_contracts
 
-    registry = ToolRegistry()
-    register_default_tools(registry, settings=settings)
-    specs = registry.contract_specs()
-    return registry.names(), specs, sha256_json(specs)
+    specs = get_local_tool_contracts(settings)
+    return [spec["name"] for spec in specs], specs, sha256_json(specs)
 
 
 def read_registered_tool_names() -> list[str]:
-    """从当前 ToolRegistry 源码静态读取 ToolSpec 名称，无导入副作用。"""
-    registry_path = PROJECT_ROOT / "app" / "tools" / "registry.py"
+    """从当前 本地工具 catalog 源码静态读取 ToolSpec 名称，无导入副作用。"""
+    registry_path = PROJECT_ROOT / "app" / "tools" / "catalog.py"
     tree = ast.parse(
         registry_path.read_text(encoding="utf-8"),
         filename=str(registry_path),
@@ -131,7 +130,7 @@ def read_registered_tool_names() -> list[str]:
             names.append(keyword.value.value)
     if not names or len(names) != len(set(names)):
         raise ValueError(
-            "无法从当前 ToolRegistry 静态解析唯一工具名合同"
+            "无法从当前 本地工具 catalog 静态解析唯一工具名合同"
         )
     return names
 
@@ -212,6 +211,7 @@ def build_manifest(
     *,
     run_id: str,
     settings: AppSettings,
+    production_mcp_tools_enabled: bool,
     agent_cases_path: Path | None,
     rag_eval_path: Path | None,
     coverage_report: dict[str, Any],
@@ -220,6 +220,9 @@ def build_manifest(
     include_online: bool,
     use_llm_judge: bool,
     judge_model: str,
+    selected_suites: list[str] | tuple[str, ...] | None = None,
+    mcp_catalog: list[dict[str, str | bool]] | None = None,
+    selected_mcp_servers: list[str] | tuple[str, ...] = (),
     rag_status: dict[str, Any] | None = None,
     generated_at: str | None = None,
     effective_rag_parameters: Mapping[str, Any] | None = None,
@@ -243,10 +246,47 @@ def build_manifest(
             PREDICTION_SCHEMA_VERSION,
         )
     )
+    explicit_suites = selected_suites is not None
+    suites = sorted(
+        set(
+            selected_suites
+            or (["core", "online"] if include_online else ["core"])
+        )
+    )
+    mcp_extended = bool({"mcp", "mixed"} & set(suites))
+    web_enabled = bool({"online", "mixed"} & set(suites))
+    external_network_enabled = bool(web_enabled or mcp_extended)
+    if mcp_extended:
+        evaluation_type = "extended_tool_evaluation"
+    elif web_enabled:
+        evaluation_type = "online_web_evaluation"
+    else:
+        evaluation_type = "core_baseline"
+    safe_mcp_catalog = list(mcp_catalog or [])
+    mcp_metadata: dict[str, Any] = {
+        "production_enabled": bool(production_mcp_tools_enabled),
+        "evaluation_enabled": bool(settings.mcp_tools_enabled),
+        "mode": "extended_live" if mcp_extended else CORE_EVALUATION_MCP_MODE,
+    }
+    if explicit_suites:
+        mcp_metadata.update(
+            {
+                "discovered_server_count": len(
+                    {str(row.get("server") or "") for row in safe_mcp_catalog}
+                ),
+                "discovered_tool_count": len(safe_mcp_catalog),
+                "selected_servers": sorted(set(selected_mcp_servers)),
+                "tools": safe_mcp_catalog,
+            }
+        )
     manifest = {
         "schema_version": 2,
         "run_id": run_id,
         "generated_at": generated_at or datetime.now(UTC).isoformat(),
+        "evaluation_type": evaluation_type,
+        "selected_suites": suites,
+        "external_network_enabled": external_network_enabled,
+        "web": {"enabled": web_enabled},
         "code": {
             **git_state,
             "python_version": platform.python_version(),
@@ -313,6 +353,7 @@ def build_manifest(
             "tool_contract_sha256": contract_hash,
             "include_online": include_online,
         },
+        "mcp": mcp_metadata,
         "prompts": {
             "files": _prompt_hashes(),
             "combined_sha256": sha256_json(_prompt_hashes()),

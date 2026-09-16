@@ -472,6 +472,42 @@ def test_disabled_mcp_is_invisible_even_with_server_permission(
     )
 
 
+def test_enabled_mcp_without_initialized_runtime_still_fails_closed(
+    monkeypatch,
+    settings_factory,
+):
+    settings = settings_factory(mcp_tools_enabled=True)
+    monkeypatch.setattr(mcp_provider, "get_settings", lambda: settings)
+    mcp_provider.clear_mcp_tool_provider()
+
+    with pytest.raises(RuntimeError, match="MCP runtime is not initialized"):
+        mcp_provider.list_mcp_tools_for_context(ToolInvocationContext())
+
+
+@pytest.mark.parametrize("explicit_enabled", [False, True])
+def test_provider_absent_explicit_settings_override_global(
+    monkeypatch, settings_factory, explicit_enabled,
+):
+    explicit_settings = settings_factory(mcp_tools_enabled=explicit_enabled)
+    global_settings = settings_factory(mcp_tools_enabled=not explicit_enabled)
+    global_reads = []
+
+    def get_global_settings():
+        global_reads.append(True)
+        return global_settings
+
+    monkeypatch.setattr(mcp_provider, "get_settings", get_global_settings)
+    mcp_provider.clear_mcp_tool_provider()
+    context = ToolInvocationContext()
+
+    if explicit_enabled:
+        with pytest.raises(RuntimeError, match="^MCP runtime is not initialized$"):
+            mcp_provider.list_mcp_tools_for_context(context, settings=explicit_settings)
+    else:
+        assert mcp_provider.list_mcp_tools_for_context(context, settings=explicit_settings) == []
+    assert global_reads == []
+
+
 def test_initialize_uses_official_client_options_and_caches_discovery(
     monkeypatch,
     settings_factory,
@@ -519,11 +555,21 @@ def test_initialize_uses_official_client_options_and_caches_discovery(
         mcp_tools_enabled=True,
         mcp_servers_config_path=path,
     )
+    local_settings = []
+    get_local_tool_names = mcp_client.get_local_tool_names
+
+    def record_local_tool_names(settings):
+        local_settings.append(settings)
+        return get_local_tool_names(settings)
+
+    monkeypatch.setattr(mcp_client, "get_local_tool_names", record_local_tool_names)
 
     first = asyncio.run(mcp_client.initialize_mcp_runtime(settings))
     second = asyncio.run(mcp_client.initialize_mcp_runtime(settings))
 
     assert first is second
+    assert len(local_settings) == 1
+    assert local_settings[0] is settings
     assert len(instances) == 1
     assert instances[0].calls == 1
     assert instances[0].connections["weather"]["transport"] == "http"
@@ -533,9 +579,15 @@ def test_initialize_uses_official_client_options_and_caches_discovery(
         "X-MCP-Readonly": "true",
     }
     assert instances[0].kwargs["tool_name_prefix"] is True
-    assert instances[0].kwargs["handle_tool_errors"] is False
+    assert instances[0].kwargs["handle_tool_errors"] is True
     assert len(instances[0].kwargs["tool_interceptors"]) == 1
     assert "local-test-value" not in caplog.text
+    assert [
+        tool.name for tool in mcp_provider.list_mcp_tools_for_context(
+            ToolInvocationContext(permissions=("mcp:weather",)),
+            settings=settings.model_copy(update={"mcp_tools_enabled": False}),
+        )
+    ] == ["weather_get_weather"]
 
 
 def test_initialize_merges_direct_and_env_headers_for_adapter(

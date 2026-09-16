@@ -8,12 +8,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import statistics
 import time
 from collections import Counter, defaultdict
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 
 from app.config import AppSettings
 from scripts.evaluation.contracts import (
@@ -21,6 +22,7 @@ from scripts.evaluation.contracts import (
     AgentEvaluationDataset,
     ExpectedOutcome,
 )
+from scripts.evaluation.deepeval_adapter import tool_correctness
 
 
 def safe_lower(text: Any) -> str:
@@ -31,34 +33,28 @@ def safe_lower(text: Any) -> str:
 def init_rag_for_eval(force_rebuild: bool = False) -> None:
     """保留 Agent-only baseline 原有的 RAG 初始化语义。"""
     from app.config import get_settings, validate_startup_environment
-    from app.rag import (
+    from app.rag.pipeline import (
         get_rag_status,
-        index_cache_exists,
-        load_index_cache,
-        needs_rebuild,
         rebuild_and_persist_index,
     )
+    from app.rag.store import needs_rebuild
 
     settings = get_settings()
     validate_startup_environment(settings)
     data_dir = str(settings.rag_file_path)
     if force_rebuild:
-        ok, message = rebuild_and_persist_index(data_dir)
+        ok, message = rebuild_and_persist_index(data_dir, force_rebuild=True)
         print(f"[init] force_rebuild=True, ok={ok}, msg={message}")
     else:
         need, reason = needs_rebuild(data_dir)
-        if not need and index_cache_exists():
-            ok, message = load_index_cache()
-            print(f"[init] load_index_cache, ok={ok}, msg={message}")
-            if not ok:
-                ok, message = rebuild_and_persist_index(data_dir)
-                print(f"[init] cache failed, rebuild, ok={ok}, msg={message}")
-        else:
-            ok, message = rebuild_and_persist_index(data_dir)
-            print(
-                f"[init] rebuild, need={need}, reason={reason}, "
-                f"ok={ok}, msg={message}"
-            )
+        ok, message = rebuild_and_persist_index(
+            data_dir,
+            force_rebuild=need,
+        )
+        print(
+            f"[init] sync, force_rebuild={need}, reason={reason}, "
+            f"ok={ok}, msg={message}"
+        )
     status = get_rag_status()
     print(
         "[init] RAG status:",
@@ -112,12 +108,12 @@ def _build_search_text(result: dict[str, Any]) -> str:
 
 
 def check_keywords(
-    case: dict[str, Any],
+    expected: ExpectedOutcome,
     result: dict[str, Any],
 ) -> dict[str, Any]:
     """检查结果文本是否命中评测用例要求的关键词。"""
-    expected = case.get("expected_keywords", []) or []
-    if not expected:
+    keywords = expected.keywords
+    if not keywords:
         return {
             "keyword_pass": True,
             "keyword_hits": [],
@@ -126,10 +122,9 @@ def check_keywords(
             "keyword_required": 0,
         }
     search_text = safe_lower(_build_search_text(result))
-    hits = [item for item in expected if safe_lower(item) in search_text]
-    missing = [item for item in expected if item not in hits]
-    default_required = max(1, math.ceil(len(expected) * 0.6))
-    required = int(case.get("min_keyword_hits", default_required))
+    hits = [item for item in keywords if safe_lower(item) in search_text]
+    missing = [item for item in keywords if item not in hits]
+    required = expected.min_keyword_hits
     return {
         "keyword_pass": len(hits) >= required,
         "keyword_hits": hits,
@@ -178,12 +173,12 @@ def _extract_tool_output(result: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def check_tool_output_keys(
-    case: dict[str, Any],
+    expected: ExpectedOutcome,
     result: dict[str, Any],
 ) -> dict[str, Any]:
     """按 case 要求检查工具输出中是否包含指定字段。"""
-    expected = case.get("expected_tool_output_keys", []) or []
-    if not expected:
+    keys = expected.tool_output_keys
+    if not keys:
         return {
             "tool_output_keys_pass": True,
             "tool_output_keys_expected": [],
@@ -191,13 +186,13 @@ def check_tool_output_keys(
         }
     output = _extract_tool_output(result)
     missing = (
-        [key for key in expected if key not in output]
+        [key for key in keys if key not in output]
         if isinstance(output, dict)
-        else list(expected)
+        else list(keys)
     )
     return {
         "tool_output_keys_pass": not missing,
-        "tool_output_keys_expected": expected,
+        "tool_output_keys_expected": keys,
         "tool_output_keys_missing": missing,
     }
 
@@ -236,30 +231,27 @@ class InMemorySessionAdapter:
 @contextmanager
 def capture_tool_output_keys() -> Iterator[list[dict[str, Any]]]:
     """仅为评测捕获真实工具输出的字段名，不保留字段值。"""
-    from app.tools import runtime as tool_runtime
-    from app.tools.registry import ToolRegistry
+    from app.agent import framework_tools
 
     records: list[dict[str, Any]] = []
-    original_execute = tool_runtime.execute_registered_tool
+    original_execute = framework_tools.execute_project_tool
 
     def execute_with_schema_capture(
         *,
-        registry: ToolRegistry,
-        tool_name: str,
-        tool_args: dict | None = None,
-        context: Any = None,
+        spec,
+        tool_args: dict,
+        **kwargs,
     ) -> dict:
-        """调用唯一执行入口，并只记录输出结构而不保存字段值。"""
+        """调用 ProjectStructuredTool adapter，只记录输出结构。"""
         result = original_execute(
-            registry=registry,
-            tool_name=tool_name,
+            spec=spec,
             tool_args=tool_args,
-            context=context,
+            **kwargs,
         )
         output = result.get("output") if isinstance(result, dict) else None
         records.append(
             {
-                "tool_name": tool_name,
+                "tool_name": spec.name,
                 "status": result.get("status", "")
                 if isinstance(result, dict)
                 else "",
@@ -273,25 +265,16 @@ def capture_tool_output_keys() -> Iterator[list[dict[str, Any]]]:
         )
         return result
 
-    tool_runtime.execute_registered_tool = execute_with_schema_capture
+    framework_tools.execute_project_tool = execute_with_schema_capture
     try:
         yield records
     finally:
-        tool_runtime.execute_registered_tool = original_execute
+        framework_tools.execute_project_tool = original_execute
 
 
 def _rate(numerator: int, denominator: int) -> float:
     """安全计算四位小数比率。"""
     return round(numerator / denominator, 4) if denominator else 0.0
-
-
-def _expected_as_legacy(expected: ExpectedOutcome) -> dict[str, Any]:
-    """把 v2 字段映射为旧 evaluator 的纯函数输入。"""
-    return {
-        "expected_keywords": expected.keywords,
-        "min_keyword_hits": expected.min_keyword_hits,
-        "expected_tool_output_keys": expected.tool_output_keys,
-    }
 
 
 def _check_sources(
@@ -422,7 +405,7 @@ def _check_tool_output_schema(
     tool_output_records: list[dict[str, Any]] | None,
 ) -> dict[str, Any]:
     """优先检查评测边界捕获的真实字段名，兼容旧完整输出。"""
-    legacy = check_tool_output_keys(_expected_as_legacy(expected), result)
+    legacy = check_tool_output_keys(expected, result)
     if not expected.tool_output_keys or tool_output_records is None:
         return legacy
 
@@ -448,6 +431,93 @@ def _check_tool_output_schema(
     }
 
 
+def _catalog_entry(
+    tool_name: str,
+    tool_catalog: Mapping[str, Mapping[str, Any]] | None,
+) -> Mapping[str, Any]:
+    """读取已由 Registry/Provider 建立的工具来源；不按名称猜测。"""
+    if tool_catalog is None:
+        return {}
+    entry = tool_catalog.get(tool_name)
+    return entry if isinstance(entry, Mapping) else {}
+
+
+def _capture_external_output_records(
+    calls: list[dict[str, Any]],
+    tool_catalog: Mapping[str, Mapping[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """从公开 trace 捕获外部工具结构和信任标记，不保留正文值。"""
+    records: list[dict[str, Any]] = []
+    for call in calls:
+        tool_name = str(call.get("tool_name") or "")
+        entry = _catalog_entry(tool_name, tool_catalog)
+        if entry.get("origin") not in {"web", "mcp"}:
+            continue
+        output = call.get("output_summary")
+        output = output if isinstance(output, dict) else {}
+        content = output.get("content")
+        structured = output.get("structured_content")
+        records.append(
+            {
+                "tool_name": tool_name,
+                "status": str(call.get("tool_status") or ""),
+                "ok": call.get("tool_status") == "success",
+                "origin": str(entry.get("origin") or ""),
+                "server": str(entry.get("server") or ""),
+                "remote_tool": str(entry.get("remote_tool") or ""),
+                "output_keys": sorted(str(key) for key in output),
+                "content_is_untrusted": bool(
+                    output.get("content_is_untrusted", False)
+                ),
+                "output_nonempty": bool(
+                    (isinstance(content, str) and content.strip())
+                    or structured
+                ),
+                "approval_required": bool(
+                    call.get("approval_required", False)
+                ),
+                "handler_executed": bool(
+                    call.get("handler_executed", False)
+                ),
+                "error_code": str(call.get("error_code") or ""),
+            }
+        )
+    return records
+
+
+def _artifact_safe_tool_trace(
+    trace: list[Any],
+    tool_catalog: Mapping[str, Mapping[str, Any]] | None,
+) -> list[Any]:
+    """把 MCP 正文替换为 schema/metadata 摘要后再写评测产物。"""
+    safe: list[Any] = []
+    for raw_step in trace:
+        if not isinstance(raw_step, dict):
+            safe.append(raw_step)
+            continue
+        step = dict(raw_step)
+        tool_name = str(step.get("tool_name") or "")
+        entry = _catalog_entry(tool_name, tool_catalog)
+        output = step.get("output_summary")
+        if entry.get("origin") == "mcp" and isinstance(output, dict):
+            content = output.get("content")
+            step["output_summary"] = {
+                "mode": "evaluation_schema_capture",
+                "output_keys": sorted(str(key) for key in output),
+                "content_is_untrusted": bool(
+                    output.get("content_is_untrusted", False)
+                ),
+                "content_nonempty": bool(
+                    isinstance(content, str) and content.strip()
+                ),
+                "truncated": bool(output.get("truncated", False)),
+                "server": str(output.get("server") or ""),
+                "tool": str(output.get("tool") or ""),
+            }
+        safe.append(step)
+    return safe
+
+
 def score_agent_turn(
     *,
     case_id: str,
@@ -462,23 +532,66 @@ def score_agent_turn(
     latency_ms: float = 0.0,
     runtime_error: str = "",
     tool_output_records: list[dict[str, Any]] | None = None,
+    tool_catalog: Mapping[str, Mapping[str, Any]] | None = None,
+    allowed_mcp_servers: tuple[str, ...] = (),
 ) -> dict[str, Any]:
-    """复用旧纯函数并补齐 v2 的多原因判分。"""
+    """结合 DeepEval 工具判分与项目确定性合同，保留 v2 多原因诊断。"""
     metrics = dict(metrics or {})
     actual = extract_actual_fields(result)
     calls = _tool_calls(result)
     actual_tools = actual["actual_tools"]
+    actual_tool_origins = [
+        str(_catalog_entry(name, tool_catalog).get("origin") or "")
+        for name in actual_tools
+    ]
+    actual_mcp_servers = [
+        str(_catalog_entry(name, tool_catalog).get("server") or "")
+        if origin == "mcp"
+        else ""
+        for name, origin in zip(
+            actual_tools,
+            actual_tool_origins,
+            strict=True,
+        )
+    ]
+    first_entry = _catalog_entry(actual["actual_tool"], tool_catalog)
+    actual_origin = str(first_entry.get("origin") or "")
+    actual_mcp_server = (
+        str(first_entry.get("server") or "")
+        if actual_origin == "mcp"
+        else ""
+    )
     actual_tool_statuses = [
         str(step.get("tool_status") or "") for step in calls
     ]
-    legacy_case = _expected_as_legacy(expected)
-    keyword = check_keywords(legacy_case, result)
+    external_records = _capture_external_output_records(
+        calls,
+        tool_catalog,
+    )
+    combined_output_records = [
+        *(tool_output_records or []),
+        *external_records,
+    ]
+    matching_external = [
+        record
+        for record in external_records
+        if record["tool_name"] == actual["actual_tool"]
+    ]
+    first_external = next(
+        (
+            record
+            for record in matching_external
+            if record.get("ok") is True
+        ),
+        matching_external[0] if matching_external else {},
+    )
+    keyword = check_keywords(expected, result)
     source = _check_sources(expected, result)
     forbidden = _check_forbidden(expected, result)
     tool_output = _check_tool_output_schema(
         expected,
         result,
-        tool_output_records,
+        combined_output_records or None,
     )
     rewrite = _check_rewrite(expected, result)
 
@@ -496,15 +609,18 @@ def score_agent_turn(
             or actual["actual_status"] == expected.status.value
         ),
         "first_tool": (
-            not expected.first_tool
+            (
+                not expected.first_tool
+                and not expected.first_tool_any_of
+            )
             or actual["actual_tool"] == expected.first_tool
+            or actual["actual_tool"] in expected.first_tool_any_of
         ),
-        "tools_contains": all(
-            tool in actual_tools for tool in expected.tools_contains
+        "tools_contains": tool_correctness(
+            expected.tools_contains, actual_tools,
         ),
-        "tool_sequence": (
-            not expected.tool_sequence
-            or actual_tools == expected.tool_sequence
+        "tool_sequence": tool_correctness(
+            expected.tool_sequence, actual_tools, exact=True,
         ),
         "tool_status_sequence": (
             not expected.tool_status_sequence
@@ -515,7 +631,62 @@ def score_agent_turn(
         "forbidden": forbidden["forbidden_pass"],
         "tool_output_schema": tool_output["tool_output_keys_pass"],
         "query_rewrite": rewrite["rewrite_pass"],
+        "tool_origin": (
+            expected.tool_origin is None
+            or actual_origin == expected.tool_origin
+        ),
+        "mcp_server": (
+            not expected.mcp_server
+            or actual_mcp_server == expected.mcp_server
+        ),
+        "approval_gate": (
+            expected.approval_required is None
+            or (
+                bool(first_external.get("approval_required"))
+                is expected.approval_required
+                and (
+                    not expected.approval_required
+                    or (
+                        first_external.get("error_code")
+                        == "approval_required"
+                        and first_external.get("handler_executed") is False
+                    )
+                )
+            )
+        ),
+        "content_is_untrusted": (
+            expected.content_is_untrusted is None
+            or first_external.get("content_is_untrusted")
+            is expected.content_is_untrusted
+        ),
+        "external_output_nonempty": (
+            expected.external_output_nonempty is None
+            or first_external.get("output_nonempty")
+            is expected.external_output_nonempty
+        ),
     }
+    permission_boundary_pass = all(
+        record.get("origin") != "mcp"
+        or record.get("server") in allowed_mcp_servers
+        for record in external_records
+    )
+    unexpected_tool_calls = [
+        tool_name
+        for tool_name, origin, server in zip(
+            actual_tools,
+            actual_tool_origins,
+            actual_mcp_servers,
+            strict=True,
+        )
+        if expected.tool_origin is not None
+        and (
+            origin != expected.tool_origin
+            or (
+                expected.tool_origin == "mcp"
+                and server != expected.mcp_server
+            )
+        )
+    ]
     failure_reasons: list[str] = []
     if runtime_error:
         failure_reasons.append(
@@ -541,6 +712,12 @@ def score_agent_turn(
             failure_reasons.append("unexpected_no_evidence")
     if not checks["first_tool"]:
         failure_reasons.append("first_tool_mismatch")
+    if not checks["tool_origin"]:
+        failure_reasons.append("tool_origin_mismatch")
+    if not checks["mcp_server"]:
+        failure_reasons.append("mcp_server_mismatch")
+    if unexpected_tool_calls:
+        failure_reasons.append("wrong_tool_origin_call")
     if not checks["tools_contains"] or not checks["tool_sequence"]:
         failure_reasons.append("tool_sequence_mismatch")
     if not checks["tool_status_sequence"]:
@@ -560,7 +737,91 @@ def score_agent_turn(
         failure_reasons.append("tool_output_schema_missing")
     if not checks["query_rewrite"]:
         failure_reasons.append("query_rewrite_mismatch")
+    if not permission_boundary_pass:
+        failure_reasons.append("external_permission_mismatch")
+    if not checks["approval_gate"]:
+        failure_reasons.append("approval_gate_mismatch")
+    if (
+        not checks["content_is_untrusted"]
+        and first_external.get("ok") is True
+    ):
+        failure_reasons.append("untrusted_content_marker_mismatch")
+    if not checks["external_output_nonempty"]:
+        failure_reasons.append("external_output_mismatch")
+    if any(
+        record.get("error_code")
+        in {"mcp_transport_error", "mcp_tool_timeout"}
+        for record in external_records
+    ):
+        failure_reasons.append("external_dependency_error")
+    if any(
+        record.get("server") == "github"
+        and record.get("error_code") == "mcp_execution_error"
+        and record.get("handler_executed") is True
+        for record in external_records
+    ):
+        failure_reasons.append("external_github_mcp_tool_error")
+    if any(
+        record.get("error_code") == "mcp_unsupported_content"
+        or (
+            record.get("error_code") == "mcp_execution_error"
+            and not (
+                record.get("server") == "github"
+                and record.get("handler_executed") is True
+            )
+        )
+        for record in external_records
+    ):
+        failure_reasons.append("external_application_error")
     failure_reasons = list(dict.fromkeys(failure_reasons))
+
+    origin_selection_pass = bool(
+        checks["tool_origin"] and checks["mcp_server"]
+    )
+    selection_pass = bool(
+        checks["first_tool"]
+        and origin_selection_pass
+        and not unexpected_tool_calls
+    )
+    execution_failure_reasons = {
+        "status_mismatch",
+        "tool_call_failed",
+        "tool_output_schema_missing",
+        "external_permission_mismatch",
+        "approval_gate_mismatch",
+        "untrusted_content_marker_mismatch",
+        "external_output_mismatch",
+        "external_dependency_error",
+        "external_github_mcp_tool_error",
+        "external_application_error",
+    }
+    execution_pass = bool(
+        checks["approval_gate"]
+        and checks["content_is_untrusted"]
+        and checks["external_output_nonempty"]
+        and not (execution_failure_reasons & set(failure_reasons))
+    )
+    governance_reasons = {
+        "external_permission_mismatch",
+        "approval_gate_mismatch",
+        "untrusted_content_marker_mismatch",
+    }
+    if runtime_error:
+        classification = "HARNESS_FAILURE"
+    elif governance_reasons & set(failure_reasons):
+        classification = "TOOL_GOVERNANCE_FAILURE"
+    elif not selection_pass:
+        classification = "TOOL_SELECTION_FAILURE"
+    elif "external_dependency_error" in failure_reasons:
+        classification = "EXTERNAL_DEPENDENCY_FAILURE"
+    elif "external_github_mcp_tool_error" in failure_reasons:
+        classification = "EXTERNAL_GITHUB_MCP_TOOL_FAILURE"
+    elif "external_application_error" in failure_reasons:
+        classification = "APPLICATION_REGRESSION"
+    elif not failure_reasons:
+        classification = "PASS"
+    else:
+        classification = "MODEL_VARIANCE"
 
     expected_payload = expected.model_dump(mode="json")
     return {
@@ -578,6 +839,29 @@ def score_agent_turn(
         "actual_status": actual["actual_status"],
         "actual_first_tool": actual["actual_tool"],
         "actual_tools": actual_tools,
+        "actual_tool_origins": actual_tool_origins,
+        "actual_mcp_servers": actual_mcp_servers,
+        "expected_tool_origin": expected.tool_origin or "",
+        "actual_tool_origin": actual_origin,
+        "expected_mcp_server": expected.mcp_server,
+        "actual_mcp_server": actual_mcp_server,
+        "allowed_mcp_servers": list(allowed_mcp_servers),
+        "selection_result": "PASS" if selection_pass else "FAIL",
+        "origin_selection_result": (
+            "PASS" if origin_selection_pass else "FAIL"
+        ),
+        "execution_result": "PASS" if execution_pass else "FAIL",
+        "classification": classification,
+        "permission_boundary_pass": permission_boundary_pass,
+        "unexpected_tool_calls": unexpected_tool_calls,
+        "unnecessary_tool_call_count": len(unexpected_tool_calls),
+        "approval_gate_pass": checks["approval_gate"],
+        "untrusted_content_marker_pass": checks[
+            "content_is_untrusted"
+        ],
+        "external_output_nonempty_pass": checks[
+            "external_output_nonempty"
+        ],
         "actual_tool_statuses": actual_tool_statuses,
         "tool_call_count": len(calls),
         "successful_tool_call_count": sum(
@@ -604,7 +888,10 @@ def score_agent_turn(
         **rewrite,
         "answer": str(result.get("answer") or ""),
         "references": list(result.get("references") or []),
-        "tool_trace": list(result.get("tool_trace") or []),
+        "tool_trace": _artifact_safe_tool_trace(
+            list(result.get("tool_trace") or []),
+            tool_catalog,
+        ),
         "runtime_error": runtime_error,
     }
 
@@ -690,6 +977,24 @@ def calculate_agent_metrics(
 
     def accuracy(key: str) -> float:
         """计算包含指定期望字段的 case 准确率。"""
+        if key == "first_tool":
+            applicable = [
+                row
+                for row in rows
+                if row["expected"].get("first_tool")
+                or row["expected"].get("first_tool_any_of")
+            ]
+            return _rate(
+                sum(
+                    row["actual_first_tool"]
+                    in {
+                        row["expected"].get("first_tool") or "",
+                        *(row["expected"].get("first_tool_any_of") or []),
+                    }
+                    for row in applicable
+                ),
+                len(applicable),
+            )
         applicable = [
             row
             for row in rows
@@ -704,7 +1009,9 @@ def calculate_agent_metrics(
         }[key]
         return _rate(
             sum(
-                row[actual_key] == row["expected"][key]
+                tool_correctness(row["expected"][key], row[actual_key], exact=True)
+                if key == "tool_sequence"
+                else row[actual_key] == row["expected"][key]
                 for row in applicable
             ),
             len(applicable),
@@ -714,6 +1021,15 @@ def calculate_agent_metrics(
     successful_tool_calls = sum(
         int(row["successful_tool_call_count"]) for row in rows
     )
+    origin_calls: dict[str, list[bool]] = defaultdict(list)
+    for row in rows:
+        for _tool_name, status, origin in zip(
+            row.get("actual_tools") or [],
+            row.get("actual_tool_statuses") or [],
+            row.get("actual_tool_origins") or [],
+            strict=False,
+        ):
+            origin_calls[origin].append(status == "success")
     latencies = [float(row["latency_ms"]) for row in rows]
     by_dimension: dict[str, dict[str, Any]] = {}
     for dimension, getter in {
@@ -744,7 +1060,50 @@ def calculate_agent_metrics(
         applicable = [row for row in rows if predicate(row)]
         return _rate(sum(row["passed"] for row in applicable), len(applicable))
 
-    return {
+    origin_applicable = [
+        row for row in rows if row.get("expected_tool_origin")
+    ]
+    server_applicable = [
+        row for row in rows if row.get("expected_mcp_server")
+    ]
+    external_calls = [
+        success
+        for origin in ("web", "mcp")
+        for success in origin_calls.get(origin, [])
+    ]
+    mixed_rows = [row for row in rows if row.get("suite") == "mixed"]
+    approval_rows = [
+        row
+        for row in rows
+        if row.get("expected", {}).get("approval_required") is not None
+    ]
+    recovery_rows = [
+        row
+        for row in rows
+        if "tool_recovery" in (row.get("tags") or [])
+        or (
+            "error" in (row.get("expected", {}).get("tool_status_sequence") or [])
+            and "success"
+            in (row.get("expected", {}).get("tool_status_sequence") or [])
+        )
+    ]
+    confusion = Counter(
+        (
+            (
+                f"mcp:{row['expected_mcp_server']}"
+                if row.get("expected_tool_origin") == "mcp"
+                else row.get("expected_tool_origin") or "<none>"
+            ),
+            (
+                f"mcp:{row['actual_mcp_server']}"
+                if row.get("actual_tool_origin") == "mcp"
+                else row.get("actual_tool_origin") or "<none>"
+            ),
+        )
+        for row in rows
+        if row.get("expected_tool_origin")
+    )
+    metrics = {
         "total_cases": total,
         "executed_cases": executed,
         "skipped_cases": skipped_cases,
@@ -787,6 +1146,90 @@ def calculate_agent_metrics(
             successful_tool_calls,
             tool_calls,
         ),
+        "tool_origin_accuracy": _rate(
+            sum(
+                row.get("actual_tool_origin")
+                == row.get("expected_tool_origin")
+                for row in origin_applicable
+            ),
+            len(origin_applicable),
+        ),
+        "mcp_server_accuracy": _rate(
+            sum(
+                row.get("actual_mcp_server")
+                == row.get("expected_mcp_server")
+                for row in server_applicable
+            ),
+            len(server_applicable),
+        ),
+        "external_tool_success_rate": _rate(
+            sum(external_calls),
+            len(external_calls),
+        ),
+        "mcp_tool_success_rate": _rate(
+            sum(origin_calls.get("mcp", [])),
+            len(origin_calls.get("mcp", [])),
+        ),
+        "web_tool_success_rate": _rate(
+            sum(origin_calls.get("web", [])),
+            len(origin_calls.get("web", [])),
+        ),
+        "permission_boundary_pass_rate": _rate(
+            sum(row.get("permission_boundary_pass") is True for row in rows),
+            len(rows),
+        ),
+        "approval_gate_pass_rate": _rate(
+            sum(row.get("approval_gate_pass") is True for row in approval_rows),
+            len(approval_rows),
+        ),
+        "recovery_pass_rate": _rate(
+            sum(row.get("passed") is True for row in recovery_rows),
+            len(recovery_rows),
+        ),
+        "cross_tool_selection_accuracy": _rate(
+            sum(
+                row.get("origin_selection_result") == "PASS"
+                for row in mixed_rows
+            ),
+            len(mixed_rows),
+        ),
+        "unnecessary_tool_call_count": sum(
+            int(row.get("unnecessary_tool_call_count", 0) or 0)
+            for row in rows
+        ),
+        "per_origin": {
+            origin: _group_metrics(
+                [
+                    row
+                    for row in rows
+                    if row.get("expected_tool_origin") == origin
+                ]
+            )
+            for origin in ("local", "web", "mcp")
+        },
+        "per_server": {
+            server: _group_metrics(
+                [
+                    row
+                    for row in rows
+                    if row.get("expected_mcp_server") == server
+                ]
+            )
+            for server in sorted(
+                {
+                    str(row.get("expected_mcp_server"))
+                    for row in rows
+                    if row.get("expected_mcp_server")
+                }
+            )
+        },
+        "cross_tool_confusion": {
+            f"{expected} -> {actual}": count
+            for (expected, actual), count in sorted(confusion.items())
+        },
+        "external_failure_classification_counts": dict(
+            sorted(Counter(row.get("classification") for row in rows).items())
+        ),
         "average_tool_call_count": round(
             statistics.mean(
                 [int(row["tool_call_count"]) for row in rows]
@@ -820,13 +1263,20 @@ def calculate_agent_metrics(
         ),
         "groups": by_dimension,
     }
+    return metrics
 
 
-def _permissions_for_suite(suite: str) -> tuple[str, ...]:
-    """Core 禁用在线权限，Online 才显式开放。"""
-    if suite == "online":
-        return ("knowledge_base:read", "web:search", "web:fetch")
-    return ("knowledge_base:read",)
+def _permissions_for_suite(
+    suite: str,
+    mcp_servers: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    """按 suite 与 case 声明显式构造最小权限，不使用默认主体授权。"""
+    permissions = ["knowledge_base:read"]
+    if suite in {"online", "mixed"}:
+        permissions.extend(["web:search", "web:fetch"])
+    if suite in {"mcp", "mixed"}:
+        permissions.extend(f"mcp:{server}" for server in mcp_servers)
+    return tuple(permissions)
 
 
 def execute_agent_case(
@@ -835,11 +1285,12 @@ def execute_agent_case(
     settings: AppSettings,
     top_k: int,
     decompose_top_k: int,
+    tool_catalog: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """通过真实 ChatService 执行一个完全隔离的 Agent case。"""
     from dataclasses import replace
 
-    from app.agent.runtime import run_agent
+    from app.agent.streaming import stream_agent
     from app.services.chat_models import ChatServiceRequest
     from app.services.chat_service import (
         ChatService,
@@ -850,9 +1301,12 @@ def execute_agent_case(
     session = InMemorySessionAdapter()
     captured_metrics: list[dict[str, Any]] = []
     base = get_default_chat_service_dependencies()
-    permissions = _permissions_for_suite(case.suite)
+    permissions = _permissions_for_suite(
+        case.suite,
+        tuple(case.mcp_servers),
+    )
 
-    def run_runtime(**kwargs: Any) -> dict[str, Any]:
+    async def run_runtime(**kwargs: Any):
         """为真实 Agent 运行时注入评测专用身份与权限上下文。"""
         kwargs["tool_context"] = ToolInvocationContext(
             trace_id=str(kwargs.get("trace_id") or ""),
@@ -862,13 +1316,14 @@ def execute_agent_case(
             permissions=permissions,
             source="evaluation_baseline_v2",
         )
-        return run_agent(**kwargs)
+        async for event in stream_agent(**kwargs):
+            yield event
 
     dependencies = replace(
         base,
         settings_provider=lambda: settings,
         get_history=session.get_history,
-        run_agent=run_runtime,
+        stream_agent=run_runtime,
         log_and_write_metrics=lambda item: captured_metrics.append(dict(item)),
         write_bad_cases=lambda item: None,
         append_message=session.append_message,
@@ -883,15 +1338,24 @@ def execute_agent_case(
         trace_id = f"evaluation-{case.id}-turn-{turn_index}"
         started = time.perf_counter()
         with capture_tool_output_keys() as tool_output_records:
-            outcome = service.handle(
-                ChatServiceRequest(
-                    question=question,
-                    top_k=top_k,
-                    decompose_top_k=decompose_top_k,
-                    session_id=session_id,
-                    trace_id=trace_id,
-                )
-            )
+            async def collect_turn():
+                outcome = None
+                async for event in service.stream(
+                    ChatServiceRequest(
+                        question=question,
+                        top_k=top_k,
+                        decompose_top_k=decompose_top_k,
+                        session_id=session_id,
+                        trace_id=trace_id,
+                    )
+                ):
+                    if event.event == "final":
+                        outcome = event.data["outcome"]
+                if outcome is None:
+                    raise RuntimeError("chat stream ended without final")
+                return outcome
+
+            outcome = asyncio.run(collect_turn())
         elapsed_ms = (time.perf_counter() - started) * 1000
         result = dict(outcome.result)
         latest_metrics = captured_metrics[-1] if captured_metrics else {}
@@ -914,6 +1378,8 @@ def execute_agent_case(
                 latency_ms=elapsed_ms,
                 runtime_error=runtime_error,
                 tool_output_records=tool_output_records,
+                tool_catalog=tool_catalog,
+                allowed_mcp_servers=tuple(case.mcp_servers),
             )
         )
     session.clear()
@@ -929,19 +1395,27 @@ def run_agent_baseline(
     decompose_top_k: int,
     rag_already_initialized: bool,
     force_rebuild: bool,
+    include_mcp: bool = False,
+    include_mixed: bool = False,
+    tool_catalog: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """运行 Core 以及显式启用的 Online Agent cases。"""
+    """运行 Core 以及由独立 CLI 开关显式启用的外部 suite。"""
+    selected_suites = {"core"}
+    if include_online:
+        selected_suites.add("online")
+    if include_mcp:
+        selected_suites.add("mcp")
+    if include_mixed:
+        selected_suites.add("mixed")
     selected = [
         case
         for case in dataset.cases
-        if not case.disabled and (case.suite == "core" or include_online)
+        if not case.disabled and case.suite in selected_suites
     ]
-    skipped_online = sum(
-        not case.disabled and case.suite == "online"
+    skipped_cases = sum(
+        not case.disabled and case.suite not in selected_suites
         for case in dataset.cases
     )
-    if include_online:
-        skipped_online = 0
     if not rag_already_initialized:
         init_rag_for_eval(force_rebuild=force_rebuild)
     rows = [
@@ -950,13 +1424,14 @@ def run_agent_baseline(
             settings=settings,
             top_k=top_k,
             decompose_top_k=decompose_top_k,
+            tool_catalog=tool_catalog,
         )
         for case in selected
     ]
     metrics = calculate_agent_metrics(
         rows,
-        total_cases=len(selected) + skipped_online,
-        skipped_cases=skipped_online,
+        total_cases=len(selected) + skipped_cases,
+        skipped_cases=skipped_cases,
     )
     return rows, metrics
 

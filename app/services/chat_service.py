@@ -24,7 +24,6 @@ from app.contracts.chat import (
     ChatStatusPolicy,
     get_chat_status_policy,
 )
-from app.agent.runtime import run_agent
 from app.agent.streaming import (
     AgentRuntimeStreamEvent,
     stream_agent,
@@ -37,7 +36,7 @@ from app.observability.metrics import (
     now_iso,
     write_bad_cases,
 )
-from app.storage.session import append_message, get_history
+from app.storage.memory import append_message_sqlite, get_history_sqlite
 from app.services.chat_models import (
     ChatRequestContext,
     ChatServiceOutcome,
@@ -94,7 +93,6 @@ class ChatServiceDependencies:
     settings_provider: Callable[[], AppSettings]
     get_history: Callable[[str | None], list[dict]]
     rewrite_query_with_history: Callable[..., dict]
-    run_agent: Callable[..., dict[str, Any]]
     log_and_write_metrics: Callable[[dict], None]
     write_bad_cases: Callable[[dict], None]
     append_message: Callable[[str | None, str, str], None]
@@ -109,12 +107,11 @@ def get_default_chat_service_dependencies() -> ChatServiceDependencies:
     """构造只引用现有函数、且不执行外部调用的默认依赖。"""
     return ChatServiceDependencies(
         settings_provider=get_settings,
-        get_history=get_history,
+        get_history=get_history_sqlite,
         rewrite_query_with_history=rewrite_query_with_history,
-        run_agent=run_agent,
         log_and_write_metrics=log_and_write_metrics,
         write_bad_cases=write_bad_cases,
-        append_message=append_message,
+        append_message=append_message_sqlite,
         now_iso=now_iso,
         perf_counter=time.perf_counter,
     )
@@ -126,36 +123,11 @@ def create_default_chat_service() -> ChatService:
 
 
 class ChatService:
-    """以同步或流式方式执行同一套完整聊天业务流程。"""
+    """以流式方式执行完整聊天业务流程。"""
 
     def __init__(self, dependencies: ChatServiceDependencies):
         """保存可替换依赖；构造阶段不执行检索、模型或数据库调用。"""
         self._deps = dependencies
-
-    def handle(self, request: ChatServiceRequest) -> ChatServiceOutcome:
-        """处理聊天请求，并保证 session 与 metrics 在统一出口收尾。"""
-        context = self._initialize_context(request)
-        try:
-            if not context.original_question:
-                return self._empty_question_outcome(context)
-
-            settings = self._deps.settings_provider()
-            self._prepare_request(context, settings=settings)
-            agent_start = self._deps.perf_counter()
-            self._log_agent_start(context)
-            try:
-                result = self._invoke_agent(context)
-            except Exception as exc:
-                return self._agent_invocation_exception_outcome(context, exc)
-            return self._finish_agent_result(
-                context,
-                result,
-                agent_start=agent_start,
-            )
-        except Exception as exc:
-            return self._service_exception_outcome(context, exc)
-        finally:
-            self._finalize(context)
 
     async def stream(
         self,
@@ -383,6 +355,7 @@ class ChatService:
             perf_counter=self._deps.perf_counter,
         )
 
+    # 整理问题和会话信息，计算排队耗时并初始化请求上下文及观测记录。
     def _initialize_context(
         self,
         request: ChatServiceRequest,
@@ -422,6 +395,7 @@ class ChatService:
         log_chat_process_start(context, queue_wait_ms=queue_wait_ms)
         return context
 
+    # 为空问题构造 HTTP 400 澄清响应，并记录对应状态和原因。
     def _empty_question_outcome(
         self,
         context: ChatRequestContext,
@@ -457,7 +431,17 @@ class ChatService:
             if request.decompose_top_k is not None
             else settings.decompose_top_k
         )
-        history = self._deps.get_history(context.session_id)
+        try:
+            history = self._deps.get_history(context.session_id)
+        except Exception as exc:
+            logger.warning(
+                "[trace_id=%s] [session_store] history_read_failed "
+                "session_id=%s error=%s",
+                context.request.trace_id,
+                context.session_id,
+                str(exc)[:200],
+            )
+            history = []
         rewrite_result = self._deps.rewrite_query_with_history(
             question=context.original_question,
             history=history,
@@ -512,19 +496,6 @@ class ChatService:
             context.request.trace_id,
         )
 
-    def _invoke_agent(self, context: ChatRequestContext) -> dict[str, Any]:
-        """调用同步 Agent Runtime；Result 解释统一留给收尾入口。"""
-        return self._deps.run_agent(
-            write_bad_cases=self._deps.write_bad_cases,
-            original_question=context.original_question,
-            effective_question=context.effective_question,
-            top_k=context.final_top_k,
-            decompose_top_k=context.decompose_top_k,
-            trace_id=context.request.trace_id,
-            session_id=context.session_id or None,
-            bad_case=context.bad_case,
-        )
-
     def _finish_agent_result(
         self,
         context: ChatRequestContext,
@@ -537,6 +508,8 @@ class ChatService:
             result,
             context.rewrite_trace,
         )
+        # 只在 ChatService 副本中合并请求级调用数，保留 Runtime trace 原值。
+        result["llm_call_count"] += int(context.metrics["query_rewrite_llm_used"])
         log_tool_call_chain(
             context.request.trace_id,
             result.get("tool_trace") or [],
@@ -611,13 +584,16 @@ class ChatService:
             code="MODEL_ERROR",
             message="处理失败，请稍后重试",
             question=context.original_question,
-            result=build_internal_error_result(
-                exc,
-                runtime_label="ChatService Agent invocation",
-                answer="",
-                reason="工具调用或模型调用异常",
-                tool_trace=[context.rewrite_trace],
-            ),
+            result={
+                **build_internal_error_result(
+                    exc,
+                    runtime_label="ChatService Agent invocation",
+                    answer="",
+                    reason="工具调用或模型调用异常",
+                    tool_trace=[context.rewrite_trace],
+                ),
+                "llm_call_count": context.metrics["llm_call_count"],
+            },
             response_status="error",
         )
 
@@ -652,6 +628,7 @@ class ChatService:
             response_status="error",
         )
 
+    # 保存当前轮次的用户消息和助手回复，持久化失败时记录警告。
     def _save_session_turn(self, context: ChatRequestContext) -> None:
         if not context.session_id:
             return
@@ -675,6 +652,7 @@ class ChatService:
                 str(exc)[:200],
             )
 
+    # 确保请求只收尾一次，按需保存会话并完成指标及日志记录。
     def _finalize(self, context: ChatRequestContext) -> None:
         if context.finalized:
             return

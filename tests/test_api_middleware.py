@@ -29,7 +29,7 @@ def _request(path: str, *, trace_id: str = "") -> Request:
 
 
 def test_chat_middleware_injects_trace_state_and_timing_headers(monkeypatch):
-    request = _request("/chat")
+    request = _request("/chat/stream")
     response = Response()
     perf_values = iter((10.0, 10.125))
 
@@ -54,11 +54,11 @@ def test_chat_middleware_injects_trace_state_and_timing_headers(monkeypatch):
     assert request.state.request_enter_perf == 10.0
     assert request.state.request_enter_time == "2026-07-29T10:00:00.000"
     assert response.headers["X-Trace-Id"] == "req-generated"
-    assert response.headers["X-Total-Cost-Ms"] == "125"
+    assert "X-Total-Cost-Ms" not in response.headers
 
 
 def test_chat_middleware_preserves_incoming_trace_id(monkeypatch):
-    request = _request("/chat", trace_id="caller-trace")
+    request = _request("/chat/stream", trace_id="caller-trace")
     perf_values = iter((20.0, 20.001))
 
     monkeypatch.setattr(
@@ -76,7 +76,7 @@ def test_chat_middleware_preserves_incoming_trace_id(monkeypatch):
 
     assert request.state.trace_id == "caller-trace"
     assert response.headers["X-Trace-Id"] == "caller-trace"
-    assert response.headers["X-Total-Cost-Ms"] == "1"
+    assert "X-Total-Cost-Ms" not in response.headers
 
 
 def test_non_chat_path_is_passed_through_unchanged():
@@ -98,7 +98,7 @@ def test_non_chat_path_is_passed_through_unchanged():
 
 
 def test_chat_middleware_propagates_downstream_exception(monkeypatch):
-    request = _request("/chat")
+    request = _request("/chat/stream")
     perf_values = iter((30.0, 30.010))
     expected = RuntimeError("downstream failed")
 

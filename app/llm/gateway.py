@@ -170,16 +170,6 @@ def _to_langchain_messages(messages: list[dict[str, str]]) -> list[Any]:
     return converted
 
 
-def _validate_schema(schema: type[SchemaT], value: Any) -> SchemaT:
-    """兼容 Pydantic v1/v2 地校验结构化模型输出。"""
-    if isinstance(value, schema):
-        return value
-    validator = getattr(schema, "model_validate", None)
-    if callable(validator):
-        return validator(value)
-    return schema.parse_obj(value)
-
-
 def _build_structured_output_error(
     exc: BaseException,
     schema: type[BaseModel],
@@ -220,6 +210,7 @@ def _parse_json_object(text: str) -> dict[str, Any]:
 class ModelGateway:
     """在统一消息协议上执行 LangChain 调用并规整结果与异常。"""
 
+    # 保存模型用途角色和底层 LangChain 模型实例。
     def __init__(
         self,
         *,
@@ -343,12 +334,12 @@ class ModelGateway:
                         ) from exc
                 else:
                     try:
-                        return _validate_schema(schema, value)
+                        return schema.model_validate(value)
                     except Exception as exc:
                         raise _build_structured_output_error(exc, schema) from exc
 
         raw_text = self.invoke_text(messages, trace_id=trace_id)
         try:
-            return _validate_schema(schema, _parse_json_object(raw_text))
+            return schema.model_validate(_parse_json_object(raw_text))
         except Exception as exc:
             raise _build_structured_output_error(exc, schema) from exc

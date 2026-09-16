@@ -26,6 +26,7 @@ class ChatStreamEvent:
     event: str
     data: dict[str, Any]
 
+    # 在事件创建后校验事件名称和字典形式的数据载荷。
     def __post_init__(self) -> None:
         if self.event not in CHAT_STREAM_EVENT_NAMES:
             raise ValueError(f"unsupported chat stream event: {self.event}")

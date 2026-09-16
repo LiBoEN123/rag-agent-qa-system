@@ -1,19 +1,23 @@
 """Registry-driven Agent 的动态工具与请求隔离回归测试。"""
 
+from pydantic import RootModel
+
 import json
 
+import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel, Field
 
+from app.config import get_settings
 from app.agent import framework_agent, framework_tools
-from app.agent.framework_tools import build_framework_tools
+from tests.support.local_tools import invoke_local_tool, tool_runtime
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
-from app.tools.providers import LocalToolProvider
-from app.tools.registry import ToolRegistry, get_tool_registry
+from tests.support.local_tools import local_tools
+from app.tools.catalog import get_local_tool_specs
 from app.tools.result import tool_success
-from app.tools.runtime import execute_registered_tool
 from tests.support.agent_runtime import build_agent_harness
+from app.agent.runtime import reset_agent_runtime
 
 
 class EchoTextArgs(BaseModel):
@@ -43,13 +47,23 @@ class FakeAgentModel:
         self.bound_tool_names = [tool.name for tool in tools]
         return self
 
-    def invoke(self, messages):
+    async def ainvoke(self, messages):
         self.received_messages.append(list(messages))
         return self.responses.pop(0)
 
 
+def _invoke_local(
+    registry: list[ToolSpec],
+    tool_name: str,
+    tool_args: dict,
+    context: ToolInvocationContext,
+):
+    """通过直接 BaseTool.invoke 覆盖非 Agent 诊断调用。"""
+    return invoke_local_tool(registry, tool_name, tool_args, context=context)
+
+
 def _register_dynamic_tools(
-    registry: ToolRegistry,
+    registry: list[ToolSpec],
     seen_contexts: list[ToolInvocationContext],
 ) -> None:
     """只向测试 Registry 注册两种不同参数结构的工具。"""
@@ -70,43 +84,44 @@ def _register_dynamic_tools(
             {"text": args["separator"].join(args["parts"])},
         )
 
-    registry.register(
+    registry.append(
         ToolSpec(
             name="echo_text",
             version="1.0.0",
             description="回显传入的 text，用于需要原样返回测试文本的场景",
-            output_schema={"text": "string"},
+            output_model=RootModel[dict],
             handler=echo_handler,
             args_model=EchoTextArgs,
         )
     )
-    registry.register(
+    registry.append(
         ToolSpec(
             name="join_texts",
             version="1.0.0",
             description="按 separator 拼接 parts 列表并返回拼接文本",
-            output_schema={"text": "string"},
+            output_model=RootModel[dict],
             handler=join_handler,
             args_model=JoinTextsArgs,
         )
     )
 
 
-def _invoke_dynamic_graph(
+async def _invoke_dynamic_graph(
     monkeypatch,
     *,
-    registry: ToolRegistry,
+    registry: list[ToolSpec],
     model: FakeAgentModel,
     context: ToolInvocationContext,
     question: str = "调用动态测试工具",
 ):
     """把独立 Provider 注入现有 Graph，不修改任何编排分支。"""
-    provider = LocalToolProvider(registry)
+    provider = local_tools(registry)
+    reset_agent_runtime()
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_default_tool_provider",
-        lambda: provider,
+        "get_local_tools",
+        lambda settings: provider,
     )
     graph_input = {
         "original_question": question,
@@ -116,15 +131,15 @@ def _invoke_dynamic_graph(
         "trace_id": context.trace_id,
         "session_id": context.session_id,
     }
-    return build_agent_harness().invoke(
+    return [state async for state in build_agent_harness().astream(
         graph_input,
         context=context,
-    )
+    )][-1]
 
 
 def test_tool_spec_builds_framework_structured_tool_from_provider():
     """自定义工具的模型同时驱动 Registry、StructuredTool 与 Runtime。"""
-    registry = ToolRegistry()
+    registry = []
     contexts: list[ToolInvocationContext] = []
     _register_dynamic_tools(registry, contexts)
     context = ToolInvocationContext(
@@ -134,52 +149,44 @@ def test_tool_spec_builds_framework_structured_tool_from_provider():
         permissions=("knowledge_base:read",),
         source="registry_adapter_test",
     )
-    provider = LocalToolProvider(registry)
+    provider = local_tools(registry)
 
     tool = next(
         item
-        for item in build_framework_tools(provider, context=context)
+        for item in provider
         if item.name == "join_texts"
     )
 
     assert tool.name == "join_texts"
-    assert tool.description == registry.get("join_texts").description
+    assert tool.description == next((item for item in registry if item.name == "join_texts"), None).description
     assert issubclass(tool.args_schema, JoinTextsArgs)
     assert "runtime" not in tool.tool_call_schema.model_fields
-    exported = next(
-        spec
-        for spec in registry.contract_specs()
-        if spec["name"] == "join_texts"
-    )
+    exported = framework_tools.local_tool_contract(tool)
     framework_schema = tool.tool_call_schema.model_json_schema()
     assert exported["args_schema"]["properties"] == framework_schema["properties"]
     assert exported["args_schema"]["required"] == framework_schema["required"]
     assert exported["args_schema"]["properties"]["separator"]["default"] == " "
-    assert registry.contract_specs() == registry.contract_specs()
-    json.dumps(registry.contract_specs())
+    assert framework_tools.local_tool_contract(tool) == exported
+    json.dumps(exported)
 
-    invalid = execute_registered_tool(
-        registry=registry,
-        tool_name="join_texts",
-        tool_args={"parts": "不是列表"},
-        context=context,
+    join_spec = next((item for item in registry if item.name == "join_texts"), None)
+    assert join_spec is not None
+    tool = framework_tools.build_local_tool(
+        join_spec,
     )
-    assert invalid["error_code"] == "invalid_arguments"
+    with pytest.raises(ValueError):
+        tool.invoke({"parts": "不是列表", "runtime": tool_runtime(context)})
     assert contexts == []
 
-    valid = execute_registered_tool(
-        registry=registry,
-        tool_name="join_texts",
-        tool_args={"parts": ["a", "b"]},
-        context=context,
-    )
+    valid = tool.invoke({"parts": ["a", "b"], "runtime": tool_runtime(context)})
     assert valid["output"] == {"text": "a b"}
     assert contexts == [context]
 
 
-def test_agent_discovers_and_calls_echo_without_core_tool_mapping(monkeypatch):
+@pytest.mark.asyncio
+async def test_agent_discovers_and_calls_echo_without_core_tool_mapping(monkeypatch):
     """注册 echo_text 后，现有 Agent Graph 可直接发现、调用并继续回答。"""
-    registry = ToolRegistry()
+    registry = []
     contexts: list[ToolInvocationContext] = []
     _register_dynamic_tools(registry, contexts)
     model = FakeAgentModel(
@@ -206,7 +213,7 @@ def test_agent_discovers_and_calls_echo_without_core_tool_mapping(monkeypatch):
         source="registry_driven_test",
     )
 
-    output = _invoke_dynamic_graph(
+    output = await _invoke_dynamic_graph(
         monkeypatch,
         registry=registry,
         model=model,
@@ -226,12 +233,13 @@ def test_agent_discovers_and_calls_echo_without_core_tool_mapping(monkeypatch):
     assert contexts[0].effective_question == "调用动态测试工具"
     assert contexts[0].top_k == 5
     assert contexts[0].decompose_top_k == 10
-    assert get_tool_registry().get("echo_text") is None
+    assert next((item for item in get_local_tool_specs(get_settings()) if item.name == "echo_text"), None) is None
 
 
-def test_new_tool_request_reaches_agent_without_router_changes(monkeypatch):
+@pytest.mark.asyncio
+async def test_new_tool_request_reaches_agent_without_router_changes(monkeypatch):
     """新工具和新口吻经固定 route 入口后仍由 Agent 动态发现。"""
-    registry = ToolRegistry()
+    registry = []
     contexts: list[ToolInvocationContext] = []
     _register_dynamic_tools(registry, contexts)
     model = FakeAgentModel(
@@ -255,7 +263,7 @@ def test_new_tool_request_reaches_agent_without_router_changes(monkeypatch):
         source="registry_driven_route_test",
     )
 
-    output = _invoke_dynamic_graph(
+    output = await _invoke_dynamic_graph(
         monkeypatch,
         registry=registry,
         model=model,
@@ -271,9 +279,10 @@ def test_new_tool_request_reaches_agent_without_router_changes(monkeypatch):
     assert contexts[0].effective_question == "请用刚增加的处理能力原样接住这句话"
 
 
-def test_agent_binds_different_dynamic_args_schema(monkeypatch):
+@pytest.mark.asyncio
+async def test_agent_binds_different_dynamic_args_schema(monkeypatch):
     """动态发现不是单字符串特判，列表和默认参数 Schema 同样可执行。"""
-    registry = ToolRegistry()
+    registry = []
     contexts: list[ToolInvocationContext] = []
     _register_dynamic_tools(registry, contexts)
     model = FakeAgentModel(
@@ -298,7 +307,7 @@ def test_agent_binds_different_dynamic_args_schema(monkeypatch):
         source="registry_driven_test",
     )
 
-    _invoke_dynamic_graph(
+    await _invoke_dynamic_graph(
         monkeypatch,
         registry=registry,
         model=model,
@@ -312,9 +321,10 @@ def test_agent_binds_different_dynamic_args_schema(monkeypatch):
     assert payload["output"] == {"text": "registry driven"}
 
 
-def test_unknown_model_tool_call_is_structured_and_recoverable(monkeypatch):
+@pytest.mark.asyncio
+async def test_unknown_model_tool_call_is_structured_and_recoverable(monkeypatch):
     """模型伪造未注册名称时不执行 callable，并可读取错误后继续决策。"""
-    registry = ToolRegistry()
+    registry = []
     contexts: list[ToolInvocationContext] = []
     _register_dynamic_tools(registry, contexts)
     model = FakeAgentModel(
@@ -334,7 +344,7 @@ def test_unknown_model_tool_call_is_structured_and_recoverable(monkeypatch):
         ]
     )
 
-    output = _invoke_dynamic_graph(
+    output = await _invoke_dynamic_graph(
         monkeypatch,
         registry=registry,
         model=model,
@@ -351,26 +361,27 @@ def test_unknown_model_tool_call_is_structured_and_recoverable(monkeypatch):
     assert output["result"]["answer"] == "unknown tool handled"
 
 
-def test_provider_request_isolation(monkeypatch):
+@pytest.mark.asyncio
+async def test_provider_request_isolation(monkeypatch):
     """两个请求的独立 Registry、工具列表和 Context 不会相互泄漏。"""
     seen: list[tuple[str, str]] = []
 
     class RequestArgs(BaseModel):
         value: str
 
-    def run_request(tool_name: str, trace_id: str):
-        registry = ToolRegistry()
+    async def run_request(tool_name: str, trace_id: str):
+        registry = []
 
         def handler(args, context):
             seen.append((tool_name, context.trace_id))
             return tool_success(tool_name, args, {"value": args["value"]})
 
-        registry.register(
+        registry.append(
             ToolSpec(
                 name=tool_name,
                 version="1.0.0",
                 description=f"仅供 {trace_id} 使用的请求隔离工具",
-                output_schema={"value": "string"},
+                output_model=RootModel[dict],
                 handler=handler,
                 args_model=RequestArgs,
             )
@@ -391,7 +402,7 @@ def test_provider_request_isolation(monkeypatch):
                 AIMessage(content=trace_id),
             ]
         )
-        _invoke_dynamic_graph(
+        await _invoke_dynamic_graph(
             monkeypatch,
             registry=registry,
             model=model,
@@ -403,8 +414,8 @@ def test_provider_request_isolation(monkeypatch):
         )
         return model.bound_tool_names
 
-    assert run_request("request_a_tool", "trace-a") == ["request_a_tool"]
-    assert run_request("request_b_tool", "trace-b") == ["request_b_tool"]
+    assert await run_request("request_a_tool", "trace-a") == ["request_a_tool"]
+    assert await run_request("request_b_tool", "trace-b") == ["request_b_tool"]
     assert seen == [
         ("request_a_tool", "trace-a"),
         ("request_b_tool", "trace-b"),
@@ -412,20 +423,20 @@ def test_provider_request_isolation(monkeypatch):
 
 
 def test_direct_execution_entry_still_enforces_runtime_permissions():
-    """绕过模型可见性直接执行时，最终权限仍由 ToolRuntime 拒绝。"""
-    registry = ToolRegistry()
+    """绕过模型可见性直接执行时，最终权限仍由项目策略拒绝。"""
+    registry = []
     called: list[str] = []
 
     def handler(args, context):
         called.append(args["text"])
         return tool_success("protected_echo", args, {"text": args["text"]})
 
-    registry.register(
+    registry.append(
         ToolSpec(
             name="protected_echo",
             version="1.0.0",
             description="需要 dynamic:use 权限的测试回显工具",
-            output_schema={"text": "string"},
+            output_model=RootModel[dict],
             handler=handler,
             args_model=EchoTextArgs,
             required_permissions=("dynamic:use",),
@@ -435,11 +446,11 @@ def test_direct_execution_entry_still_enforces_runtime_permissions():
         trace_id="trace-denied",
         source="permission_test",
     )
-    result = execute_registered_tool(
-        registry=registry,
-        tool_name="protected_echo",
-        tool_args={"text": "blocked"},
-        context=context,
+    result = _invoke_local(
+        registry,
+        "protected_echo",
+        {"text": "blocked"},
+        context,
     )
 
     assert result["ok"] is False

@@ -143,7 +143,7 @@ def _request_kwargs(
 
 
 def _check_status(response: requests.Response) -> int:
-    """把 HTTP 状态映射为稳定 ToolRuntime 错误契约。"""
+    """把 HTTP 状态映射为稳定工具错误契约。"""
     status_code = response.status_code
     if not isinstance(status_code, int):
         raise ToolExecutionError(

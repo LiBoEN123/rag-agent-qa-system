@@ -6,25 +6,29 @@ from typing import Any, Literal, Protocol
 from langchain_core.messages import AIMessage
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.agent.answer import (
-    build_compose_answer_updates,
-    build_rag_answer_updates,
-    map_rag_status_to_agent_status,
-)
 from app.agent.guardrails import AgentStopReason
 from app.agent.router import RouteDecision
-from app.agent.state import AgentStatus
-from app.agent.tool_events import framework_metrics, normalize_governance_events
-from app.common.logging import get_logger
-from app.config import get_settings
+from app.agent.tool_events import normalize_governance_events
 from app.contracts.chat import AgentResultStatus
-from app.storage.traces import save_agent_trace
 
 
 INTERNAL_ERROR_MESSAGE = "Agent 内部执行异常，请稍后重试"
 INTERNAL_ERROR_MARKER = "internal_error"
+DIRECT_ANSWER_TEXT = (
+    "我是一个 RAG 知识库问答助手。"
+    "我可以基于已导入的文档回答问题并提供引用，"
+    "也可以列出知识库文档、查看指定 chunk、对比文档内容，以及进行简单四则运算。"
+)
 
-logger = get_logger("chat_service")
+# 仅供公开 trace 序列化，保留既有值；不参与 Result 状态决策。
+_TRACE_STATUSES = {
+    AgentResultStatus.OK: "ok",
+    AgentResultStatus.NEED_CLARIFICATION: "clarify",
+    AgentResultStatus.NO_RELEVANT_INFO: "no_evidence",
+    AgentResultStatus.TOOL_ERROR: "tool_error",
+    AgentResultStatus.MODEL_ERROR: "model_error",
+    AgentResultStatus.INTERNAL_ERROR: "error",
+}
 
 
 class AgentRunResult(BaseModel):
@@ -55,115 +59,30 @@ class AgentResultInvocation(Protocol):
 
     decision: RouteDecision
     route_cost_ms: int
-    original_question: str
-    effective_question: str
-    trace_id: str
-    session_id: str | None
 
 
-def map_agent_status_to_result_status(
-    status: AgentStatus | str,
-) -> AgentResultStatus:
-    """将平铺 Graph 内部状态映射为唯一 Result status。"""
-    mapping = {
-        "ok": AgentResultStatus.OK,
-        "direct_answer": AgentResultStatus.OK,
-        "clarify": AgentResultStatus.NEED_CLARIFICATION,
-        "tool_error": AgentResultStatus.TOOL_ERROR,
-        "model_error": AgentResultStatus.MODEL_ERROR,
-        "no_evidence": AgentResultStatus.NO_RELEVANT_INFO,
-        "error": AgentResultStatus.INTERNAL_ERROR,
-        "running": AgentResultStatus.INTERNAL_ERROR,
-    }
-    return mapping.get(
-        str(status or ""),
-        AgentResultStatus.INTERNAL_ERROR,
-    )
-
-
-def summarize_observations_for_result(
+def summarize_tool_trace_for_result(
     *,
-    status: str,
+    status: AgentResultStatus,
     reason: str,
-    observations: list[dict[str, Any]],
+    tool_trace: list[dict[str, Any]],
 ) -> str:
-    """从 observations 中提取 API 响应使用的工具结果摘要。"""
-    if status == "clarify":
+    """从唯一公开 trace 中提取计入工具调用的结果摘要。"""
+    if status is AgentResultStatus.NEED_CLARIFICATION:
         return "未调用工具，问题需要澄清"
-    if status == "direct_answer":
-        return "未调用工具，直接回答"
-    if not observations:
-        return reason
-
     summaries = []
-    for observation in observations:
-        if observation.get("tool_name") == "search_knowledge_base":
-            output = observation.get("output")
-            output = output if isinstance(output, dict) else {}
-            chunks = output.get("chunks", [])
-            count = output.get(
-                "count",
-                len(chunks) if isinstance(chunks, list) else 0,
-            )
+    for trace in tool_trace:
+        # step_id 仅属于 counted call；handler_executed 会排除已计数的失败。
+        if trace.get("step") != "tool_call" or "step_id" not in trace:
+            continue
+        if trace.get("tool_name") == "search_knowledge_base":
+            count = trace.get("final_chunk_count", 0)
             summaries.append(f"知识库检索完成，召回 {count} 个 chunk")
             continue
-        summary = str(observation.get("summary") or "")
+        summary = str(trace.get("summary") or "")
         if summary:
             summaries.append(summary)
     return "；".join(summaries[-3:]) if summaries else reason
-
-
-def build_agent_result(state: Mapping[str, Any]) -> AgentRunResult:
-    """从普通 Agent Runtime 状态构造并校验唯一结果。"""
-    status = str(state.get("status") or "")
-    reason = str(state.get("reason") or "")
-    final_answer = str(state.get("final_answer") or "")
-    references = state.get("references")
-    references = references if isinstance(references, list) else []
-    observations = [
-        item
-        for item in state.get("observations", [])
-        if isinstance(item, dict)
-    ]
-    tool_trace = state.get("tool_trace")
-    tool_trace = tool_trace if isinstance(tool_trace, list) else []
-    decision = state.get("decision")
-    decision = decision if isinstance(decision, dict) else {}
-    need_clarification = status == "clarify"
-    rag_trace = next(
-        (
-            step
-            for step in reversed(tool_trace)
-            if isinstance(step, dict)
-            and step.get("step") == "compose_final_answer"
-            and step.get("mode") == "rag"
-        ),
-        {},
-    )
-    timings = rag_trace.get("timings")
-
-    return AgentRunResult(
-        status=map_agent_status_to_result_status(status),
-        answer=final_answer,
-        references=references,
-        retrieval_confidence=rag_trace.get("retrieval_confidence", 0.0),
-        answer_confidence=rag_trace.get("answer_confidence", 0.0),
-        need_clarification=need_clarification,
-        clarification_question=final_answer if need_clarification else "",
-        reason=reason,
-        action=str(decision.get("action") or ""),
-        tool_result_summary=summarize_observations_for_result(
-            status=status,
-            reason=reason,
-            observations=observations,
-        ),
-        tool_trace=tool_trace,
-        router_llm_used=False,
-        decompose_llm_used=bool(state.get("decompose_llm_used")),
-        answer_llm_used=bool(state.get("answer_llm_used")),
-        llm_call_count=max(0, int(state.get("llm_call_count", 0) or 0)),
-        timings=dict(timings) if isinstance(timings, dict) else {},
-    )
 
 
 def get_route_decision_for_trace(decision: Mapping[str, Any]) -> str:
@@ -263,7 +182,7 @@ def _last_final_ai(messages: object) -> AIMessage | None:
     return None
 
 
-def _build_stop_updates(reason: str) -> dict[str, str]:
+def _stop_result(reason: str) -> tuple[AgentResultStatus, str]:
     """把框架停止原因映射为 API 兼容状态。"""
     tool_errors = {
         AgentStopReason.FATAL_TOOL_ERROR.value,
@@ -272,170 +191,94 @@ def _build_stop_updates(reason: str) -> dict[str, str]:
         AgentStopReason.RUNTIME_UNAVAILABLE.value,
     }
     if reason in tool_errors:
-        status = "tool_error"
+        status = AgentResultStatus.TOOL_ERROR
         final_answer = "工具调用被治理策略或运行时终止，无法继续本次请求。"
     else:
-        status = "model_error"
+        status = AgentResultStatus.MODEL_ERROR
         final_answer = "本次请求达到 Agent 执行上限，已安全停止。请缩小问题范围后重试。"
     if reason == "agent_model_call_failed":
         final_answer = "Agent 模型暂时不可用，无法安全选择或继续调用工具。"
-    return {
-        "status": status,
-        "final_answer": final_answer,
-        "reason": reason,
-    }
-
-
-def maybe_save_agent_trace(
-    *,
-    trace_id: str,
-    session_id: str | None,
-    question: str,
-    rewritten_question: str = "",
-    final_answer: str = "",
-    status: str = "",
-    reason: str = "",
-    tool_trace: list[dict[str, Any]] | None = None,
-    total_cost_ms: int = 0,
-) -> None:
-    """按配置保存已构造的 Agent Result trace，失败不影响主流程。"""
-    if not get_settings().enable_agent_trace_store:
-        return
-
-    try:
-        save_agent_trace(
-            trace_id=trace_id,
-            session_id=session_id,
-            question=question,
-            rewritten_question=rewritten_question,
-            final_answer=final_answer,
-            status=status,
-            reason=reason,
-            tool_trace=tool_trace or [],
-            total_cost_ms=total_cost_ms,
-        )
-    except Exception as exc:
-        logger.warning("保存 Agent trace 失败，忽略持久化错误: %s", exc)
-
-
-def _base_result_state(invocation: AgentResultInvocation) -> dict[str, Any]:
-    """构造只服务于最终 Result 归一化的普通 Python 状态。"""
-    return {
-        "original_question": invocation.original_question,
-        "effective_question": invocation.effective_question,
-        "decision": dict(invocation.decision),
-        "route_cost_ms": invocation.route_cost_ms,
-        "observations": [],
-        "final_answer": "",
-        "references": [],
-        "status": "running",
-        "reason": "",
-        "decompose_llm_used": False,
-        "answer_llm_used": False,
-        "llm_call_count": 0,
-        "tool_trace": [
-            build_decide_trace(
-                invocation.decision,
-                route_cost_ms=invocation.route_cost_ms,
-            )
-        ],
-        "stop_reason": "",
-        **framework_metrics([]),
-    }
+    return status, final_answer
 
 
 def _finalize_agent_result(
-    invocation: AgentResultInvocation,
-    state: Mapping[str, Any],
+    result: AgentRunResult,
 ) -> dict[str, Any]:
-    """构造、校验并序列化一次 Agent Result，随后保存同一快照。"""
-    llm_call_count = resolve_llm_call_count(
-        decompose_llm_used=bool(state.get("decompose_llm_used")),
-        answer_llm_used=bool(state.get("answer_llm_used")),
-        current_count=int(state.get("llm_call_count", 0) or 0),
-    )
-    tool_trace = upsert_llm_usage_trace(
-        list(state.get("tool_trace", [])),
-        decompose_llm_used=bool(state.get("decompose_llm_used")),
-        answer_llm_used=bool(state.get("answer_llm_used")),
-        llm_call_count=llm_call_count,
-    )
-    snapshot = {
-        **state,
-        "llm_call_count": llm_call_count,
-        "tool_trace": tool_trace,
-    }
-    result = build_agent_result(snapshot).model_dump(mode="json")
-    maybe_save_agent_trace(
-        trace_id=invocation.trace_id,
-        session_id=invocation.session_id,
-        question=invocation.original_question,
-        rewritten_question=(
-            invocation.effective_question
-            if invocation.effective_question != invocation.original_question
-            else ""
-        ),
-        final_answer=result.get("answer", ""),
-        status=result.get("status", ""),
-        reason=result.get("reason", ""),
-        tool_trace=result.get("tool_trace", []),
-    )
-    return result
+    """序列化并返回已校验的最终 Result。"""
+    return result.model_dump(mode="json")
 
 
 def build_short_circuit_result(
     invocation: AgentResultInvocation,
 ) -> dict[str, Any]:
     """完成 clarify/direct_answer 或未知 Router action 的确定性结果。"""
-    state = _base_result_state(invocation)
+    tool_trace = [
+        build_decide_trace(invocation.decision, route_cost_ms=invocation.route_cost_ms)
+    ]
     action = str(invocation.decision.get("action") or "").strip()
     if action == "clarify":
-        clarification = (
+        answer = reason = (
             str(invocation.decision.get("clarification_question") or "").strip()
             or str(invocation.decision.get("reason") or "").strip()
             or "问题需要进一步澄清"
         )
-        state.update(
-            {
-                "status": "clarify",
-                "reason": clarification,
-                "final_answer": clarification,
-            }
-        )
-        state["tool_trace"].append(
-            {
-                "step": "clarify",
-                "step_id": 1,
-                "status": "success",
-                "reason": clarification,
-            }
-        )
+        status = AgentResultStatus.NEED_CLARIFICATION
+        mode = "clarify"
+        summary = "未调用工具，问题需要澄清"
     elif action == "direct_answer":
-        state.update(
+        status = AgentResultStatus.OK
+        answer = DIRECT_ANSWER_TEXT
+        reason = str(invocation.decision.get("reason") or "该问题可以直接回答")
+        mode = "direct"
+        summary = "未调用工具，直接回答"
+    else:
+        status = AgentResultStatus.INTERNAL_ERROR
+        answer = INTERNAL_ERROR_MESSAGE
+        reason = f"Unsupported route action: {action[:100] or '<missing>'}"
+        mode = "error"
+        summary = reason
+    if action in {"clarify", "direct_answer"}:
+        tool_trace.append(
             {
-                "status": "direct_answer",
-                "reason": str(
-                    invocation.decision.get("reason") or "该问题可以直接回答"
-                ),
-            }
-        )
-        state["tool_trace"].append(
-            {
-                "step": "direct_answer",
+                "step": action,
                 "step_id": 1,
                 "status": "success",
-                "reason": state["reason"],
+                "reason": reason,
             }
         )
-    else:
-        state.update(
-            {
-                "status": "error",
-                "reason": f"Unsupported route action: {action[:100] or '<missing>'}",
-            }
-        )
-    state.update(build_compose_answer_updates(state))
-    return _finalize_agent_result(invocation, state)
+    tool_trace.append(
+        {
+            "step": "compose_final_answer",
+            "mode": mode,
+            "status": "direct_answer" if mode == "direct" else _TRACE_STATUSES[status],
+            "answer_len": len(answer),
+            "reason": reason,
+        }
+    )
+    result = AgentRunResult(
+        status=status,
+        answer=answer,
+        references=[],
+        retrieval_confidence=0.0,
+        answer_confidence=0.0,
+        need_clarification=status is AgentResultStatus.NEED_CLARIFICATION,
+        clarification_question=answer if action == "clarify" else "",
+        reason=reason,
+        action=str(invocation.decision.get("action") or ""),
+        tool_result_summary=summary,
+        tool_trace=upsert_llm_usage_trace(
+            tool_trace,
+            decompose_llm_used=False,
+            answer_llm_used=False,
+            llm_call_count=0,
+        ),
+        router_llm_used=False,
+        decompose_llm_used=False,
+        answer_llm_used=False,
+        llm_call_count=0,
+        timings={},
+    )
+    return _finalize_agent_result(result)
 
 
 def build_framework_agent_result(
@@ -443,27 +286,26 @@ def build_framework_agent_result(
     framework_output: Mapping[str, Any],
 ) -> dict[str, Any]:
     """把 ``create_agent`` 最终状态一次性归一化为 AgentRunResult。"""
-    state = _base_result_state(invocation)
     raw_events = framework_output.get("governance_events")
     events = (
         [dict(item) for item in raw_events if isinstance(item, Mapping)]
         if isinstance(raw_events, list)
         else []
     )
-    observations, event_trace = normalize_governance_events(events)
+    event_trace = normalize_governance_events(events)
     successful_models = sum(
         item.get("kind") == "model" and item.get("ok") for item in events
     )
-    state.update(
-        {
-            **framework_metrics(events),
-            "observations": observations,
-            "tool_trace": [*state["tool_trace"], *event_trace],
-            "answer_llm_used": successful_models > 0,
-            "llm_call_count": successful_models,
-            "stop_reason": str(framework_output.get("stop_reason") or ""),
-        }
-    )
+    tool_trace = [
+        build_decide_trace(invocation.decision, route_cost_ms=invocation.route_cost_ms),
+        *event_trace,
+    ]
+    decompose_llm_used = False
+    answer_llm_used = successful_models > 0
+    rag_llm_call_count = 0
+    references = []
+    retrieval_confidence = answer_confidence = 0.0
+    timings = {}
 
     raw_knowledge_result = framework_output.get("knowledge_base_result")
     knowledge_result = (
@@ -476,30 +318,95 @@ def build_framework_agent_result(
         else None
     )
     if isinstance(rag_result, Mapping):
-        state.update(build_rag_answer_updates(state, rag_result))
-        return _finalize_agent_result(invocation, state)
-
-    stop_reason = str(state.get("stop_reason") or "")
-    if stop_reason and stop_reason != AgentStopReason.COMPLETED.value:
-        state.update(_build_stop_updates(stop_reason))
-    else:
-        message = _last_final_ai(framework_output.get("messages"))
-        answer = _normalize_ai_content(message.content if message else "")
-        state.update(
-            {
-                "final_answer": answer or "模型未生成可用的最终回答。",
-                "references": [],
-                "status": "ok" if answer else "model_error",
-                "reason": (
-                    "Agent model produced final answer"
-                    if answer
-                    else "Agent model returned empty final answer"
-                ),
-                "stop_reason": AgentStopReason.COMPLETED.value,
-            }
+        status = {
+            "OK": AgentResultStatus.OK,
+            "NEED_CLARIFICATION": AgentResultStatus.NEED_CLARIFICATION,
+            "NO_RELEVANT_INFO": AgentResultStatus.NO_RELEVANT_INFO,
+            "MODEL_ERROR": AgentResultStatus.MODEL_ERROR,
+            "MODEL_BAD_OUTPUT": AgentResultStatus.MODEL_ERROR,
+        }.get(str(rag_result.get("status") or "").strip(), AgentResultStatus.INTERNAL_ERROR)
+        answer = str(rag_result.get("answer") or "")
+        reason = str(rag_result.get("reason") or "")
+        raw_references = rag_result.get("references")
+        references = (
+            [dict(item) for item in raw_references if isinstance(item, dict)]
+            if isinstance(raw_references, list)
+            else []
         )
-    state.update(build_compose_answer_updates(state))
-    return _finalize_agent_result(invocation, state)
+        retrieval_confidence = rag_result.get("retrieval_confidence", 0.0)
+        answer_confidence = rag_result.get("answer_confidence", 0.0)
+        raw_timings = rag_result.get("timings")
+        timings = dict(raw_timings) if isinstance(raw_timings, dict) else {}
+        decompose_llm_used = bool(rag_result.get("decompose_llm_used"))
+        answer_llm_used = bool(rag_result.get("answer_llm_used"))
+        rag_llm_call_count = max(0, int(rag_result.get("llm_call_count", 0) or 0))
+        mode = "rag"
+    else:
+        stop_reason = str(framework_output.get("stop_reason") or "")
+        if stop_reason and stop_reason != AgentStopReason.COMPLETED.value:
+            status, answer = _stop_result(stop_reason)
+            reason = stop_reason
+            mode = "error"
+        else:
+            message = _last_final_ai(framework_output.get("messages"))
+            answer = _normalize_ai_content(message.content if message else "")
+            status = AgentResultStatus.OK if answer else AgentResultStatus.MODEL_ERROR
+            reason = (
+                "Agent model produced final answer"
+                if answer
+                else "Agent model returned empty final answer"
+            )
+            mode = "agent_loop" if answer else "error"
+            answer = answer or "模型未生成可用的最终回答。"
+    compose_trace = {
+        "step": "compose_final_answer",
+        "mode": mode,
+        "status": _TRACE_STATUSES[status],
+        "answer_len": len(answer),
+        "reason": reason,
+    }
+    if mode == "rag":
+        compose_trace.update(
+            reference_count=len(references),
+            retrieval_confidence=retrieval_confidence,
+            answer_confidence=answer_confidence,
+            timings=timings,
+            rag_llm_call_count=rag_llm_call_count,
+        )
+    tool_trace.append(compose_trace)
+    llm_call_count = resolve_llm_call_count(
+        decompose_llm_used=decompose_llm_used,
+        answer_llm_used=answer_llm_used,
+        current_count=successful_models + rag_llm_call_count,
+    )
+    result = AgentRunResult(
+        status=status,
+        answer=answer,
+        references=references,
+        retrieval_confidence=retrieval_confidence,
+        answer_confidence=answer_confidence,
+        need_clarification=status is AgentResultStatus.NEED_CLARIFICATION,
+        clarification_question=(
+            answer if status is AgentResultStatus.NEED_CLARIFICATION else ""
+        ),
+        reason=reason,
+        action=str(invocation.decision.get("action") or ""),
+        tool_result_summary=summarize_tool_trace_for_result(
+            status=status, reason=reason, tool_trace=tool_trace,
+        ),
+        tool_trace=upsert_llm_usage_trace(
+            tool_trace,
+            decompose_llm_used=decompose_llm_used,
+            answer_llm_used=answer_llm_used,
+            llm_call_count=llm_call_count,
+        ),
+        router_llm_used=False,
+        decompose_llm_used=decompose_llm_used,
+        answer_llm_used=answer_llm_used,
+        llm_call_count=llm_call_count,
+        timings=timings,
+    )
+    return _finalize_agent_result(result)
 
 
 def create_agent_result(
@@ -621,7 +528,7 @@ def build_agent_runtime_error_result(
     effective_question: str,
     exc: Exception,
 ) -> dict[str, Any]:
-    """把同步与流式 Runtime 异常转换成同一脱敏内部错误结果。"""
+    """把流式 Runtime 异常转换成脱敏内部错误结果。"""
     _write_internal_bad_case(
         write_bad_cases=write_bad_cases,
         bad_case=bad_case,
@@ -631,24 +538,11 @@ def build_agent_runtime_error_result(
         runtime_route="agent_runtime",
         runtime_label="Agent Runtime",
     )
-    result = build_internal_error_result(
+    return build_internal_error_result(
         exc,
         runtime_label="Agent Runtime",
         trace_step="agent_runtime_error",
     )
-    maybe_save_agent_trace(
-        trace_id=trace_id,
-        session_id=session_id,
-        question=original_question,
-        rewritten_question=(
-            effective_question if effective_question != original_question else ""
-        ),
-        final_answer=result.get("answer", ""),
-        status=result.get("status", ""),
-        reason=result.get("reason", ""),
-        tool_trace=result.get("tool_trace", []),
-    )
-    return result
 
 
 def build_empty_question_result() -> dict[str, Any]:
@@ -668,7 +562,6 @@ __all__ = [
     "AgentResultInvocation",
     "AgentRunResult",
     "build_agent_runtime_error_result",
-    "build_agent_result",
     "build_decide_trace",
     "build_empty_question_result",
     "build_framework_agent_result",
@@ -676,9 +569,6 @@ __all__ = [
     "build_short_circuit_result",
     "create_agent_result",
     "get_route_decision_for_trace",
-    "map_agent_status_to_result_status",
-    "map_rag_status_to_agent_status",
-    "maybe_save_agent_trace",
     "resolve_llm_call_count",
     "upsert_llm_usage_trace",
 ]

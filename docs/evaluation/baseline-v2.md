@@ -9,12 +9,14 @@ Evaluation Baseline v2 是产品质量测量入口，不改变 Agent、RAG、工
 `scripts/evaluation/`。Agent 执行与判分、RAG predictions、语义 evaluator、
 Judge、manifest 和报告不再同时承担独立 CLI 职责，也没有旧入口 wrapper。
 
-## 三个评测层
+## 评测层
 
 | 层 | 默认 | 外部依赖 | 统计口径 |
 | --- | --- | --- | --- |
 | Core Agent + 本地 RAG | 启用 | 已配置模型和本地索引 | 稳定基线 |
 | Online tools | 关闭；`--include-online` 开启 | 搜索、网页、PDF 和网络 | 与 Core 分开 |
+| MCP tools | 关闭；`--include-mcp` 开启 | GitHub/Firecrawl MCP | 与 Core 分开，不进入稳定 CI |
+| Mixed routing | 关闭；`--include-mixed` 开启 | 本地 RAG、Web 和 case 声明的 MCP Server | Cross-Tool 独立统计 |
 | LLM Judge | 关闭；`--use-llm-judge` 开启 | Judge 模型 | 仅辅助答案语义质量 |
 
 Judge 不替代 Router、status、工具序列、来源、gold chunk 或确定性关键词检查。
@@ -23,13 +25,15 @@ Online 搜索结果和网页内容会变化，因此不应成为稳定 CI 门禁
 ## 数据集
 
 - Agent v2：`data/eval/agent_eval_cases_v2.json`
+- Extended Agent v2：`data/eval/agent_eval_cases_extended_v2.json`
 - RAG：`data/eval/rag_eval_questions_v2_semantic_fixed.json`
 - 示例阈值：`data/eval/evaluation_thresholds_v2.example.json`
 
 v1 文件保留。Agent v2 的每条 case 必须包含 `version: 2`，并且只能选择
-`question` 单轮结构或至少两轮的 `turns` 结构。`suite` 只能是 `core` 或
-`online`。合法 status 来自 `AgentResultStatus`，工具名来自当前
-`ToolRegistry`。
+`question` 单轮结构或至少两轮的 `turns` 结构。`suite` 只能是 `core`、
+`online`、`mcp` 或 `mixed`。合法 status 来自 `AgentResultStatus`。本地/Web 工具名
+来自当前本地 ToolSpec catalog；MCP 工具名在 validate-only 阶段只做安全语法校验，正式
+live run discovery 后再与安全 catalog 核对。
 
 只校验数据合同：
 
@@ -39,6 +43,14 @@ python scripts/run_evaluation_baseline.py --validate-only
 
 此命令不创建输出目录，不初始化模型或 RAG，不创建 ToolRuntime，不访问网络，也
 不写数据库。
+
+Extended 数据集的离线校验同样不连接 MCP：
+
+```bash
+python scripts/run_evaluation_baseline.py \
+  --agent-cases data/eval/agent_eval_cases_extended_v2.json \
+  --validate-only
+```
 
 ## 运行
 
@@ -73,13 +85,27 @@ python scripts/run_evaluation_baseline.py \
   --output-dir outputs/evaluation_baseline_v2/online-with-judge
 ```
 
+MCP 和 Mixed 使用彼此独立的显式入口；`--include-online` 不会隐式开启 MCP：
+
+```bash
+python scripts/run_evaluation_baseline.py --agent-only \
+  --agent-cases data/eval/agent_eval_cases_extended_v2.json \
+  --include-mcp \
+  --output-dir outputs/evaluation_baseline_v2/extended-mcp
+
+python scripts/run_evaluation_baseline.py --agent-only \
+  --agent-cases data/eval/agent_eval_cases_extended_v2.json \
+  --include-mixed \
+  --output-dir outputs/evaluation_baseline_v2/extended-mixed
+```
+
 工作区不干净时，Runner 默认拒绝生成正式基线。`--allow-dirty` 只用于实验运行，
 且 `manifest.json` 会记录 `git_dirty: true`，报告顶部也会标记。
 `--force-rebuild` 会重建本地 RAG 索引，除非明确需要，否则不要使用。
 
 ## 隔离边界
 
-多轮 Agent case 使用真实 `ChatService` 流程，但注入内存 session adapter 和
+多轮 Agent case 消费真实 `ChatService.stream()` 的 final/done，但注入内存 session adapter 和
 no-op metrics/bad-case writer。每个 case 使用独立 session，结束后清空。
 评测 Settings 快照关闭 Agent trace store 和 tool audit 写入，并把所有备用路径限定在
 本次 output 目录下。因此评测不会写生产 SQLite、
@@ -96,6 +122,12 @@ Runner 仅在当前评测调用的内存中捕获真实工具输出的字段名�
 Core case 的工具权限只有本地知识库读取；只有 Online case 才开放 `web:search`
 和 `web:fetch`。这使 Core 运行不会意外访问真实 Web Search、Web Fetch 或 Web
 PDF Fetch。
+
+MCP case 只增加 case `mcp_servers` 映射出的 `mcp:<server>` 权限；Mixed case 同时
+开放 Web 权限和这些精确 Server 权限。只有实际选择 MCP/Mixed case 时 Runner 才在
+评测 Settings scope 内初始化 MCP runtime，并在成功、异常或中断路径关闭和清空
+Provider cache。MCP 正文不会写入逐 case trace，只保存输出字段、来源、信任标记和
+有限治理元数据。
 
 ## 输出
 
@@ -290,7 +322,7 @@ CI 只运行数据校验，不运行真实模型、索引或网络。真实 base
 
 - `run_evaluation_baseline.py`：离线产品质量评测；
 - `compare_evaluation_runs.py`：两次正式结果对比；
-- `benchmark_chat_api.py`：正在运行的 `/chat` HTTP 性能测试；
+- `benchmark_chat_api.py`：正在运行的 `/chat/stream` SSE 性能测试，以收到 done 为完成边界；
 - `smoke_test_online_tools.py`：真实搜索、网页和 PDF 连通性；
 - `smoke_test_agent_tool_calling.py`：模型供应商 Tool Calling 协议；
 - `inspect_agent_runtime.py`：CI 架构合同；

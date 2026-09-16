@@ -1,7 +1,6 @@
 """把聊天应用服务结果适配为稳定的 HTTP 响应 Schema。"""
 
 from app.api.schemas import ChatData, ChatResponse
-from app.observability.metrics import extract_llm_usage
 from app.rag.scoring import safe_float
 from app.services.chat_models import ChatServiceOutcome
 
@@ -22,13 +21,6 @@ def build_chat_response_from_outcome(
         min(1.0, safe_float(result.get("answer_confidence", 0.0))),
     )
     tool_trace = list(result.get("tool_trace") or [])
-    llm_usage = extract_llm_usage(
-        tool_trace,
-        router_llm_used=result.get("router_llm_used"),
-        decompose_llm_used=result.get("decompose_llm_used"),
-        answer_llm_used=result.get("answer_llm_used"),
-        llm_call_count=result.get("llm_call_count"),
-    )
     return ChatResponse(
         code=outcome.code,
         message=outcome.message,
@@ -52,7 +44,10 @@ def build_chat_response_from_outcome(
             action=result.get("action", ""),
             tool_result_summary=result.get("tool_result_summary", ""),
             tool_trace=tool_trace,
-            **llm_usage,
+            router_llm_used=result.get("router_llm_used", False),
+            decompose_llm_used=result.get("decompose_llm_used", False),
+            answer_llm_used=result.get("answer_llm_used", False),
+            llm_call_count=result.get("llm_call_count", 0),
         ),
     )
 

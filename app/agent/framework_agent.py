@@ -8,6 +8,8 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import (
     ModelCallLimitMiddleware,
     ToolCallLimitMiddleware,
+    ToolErrorMiddleware,
+    ToolRetryMiddleware,
 )
 from langchain.agents.middleware.types import AgentState as LangChainAgentState
 from langchain_core.messages import AIMessage
@@ -16,12 +18,15 @@ from typing_extensions import NotRequired
 
 from app.agent.framework_middleware import (
     _MODEL_GOVERNANCE_KEY,
+    ProjectToolExecutionMiddleware,
     ProjectToolGovernanceMiddleware,
 )
-from app.agent.framework_tools import resolve_agent_tools
+from app.agent.framework_tools import ProjectStructuredTool, resolve_agent_tools
+from app.agent.tool_visibility import ProjectToolVisibilityMiddleware
 from app.config import AppSettings, get_settings
 from app.llm.factory import get_answer_model
 from app.tools.context import ToolInvocationContext, build_default_tool_context
+from app.tools.execution import project_failure_content, retry_project_failure
 
 
 def _prefer_stop_reason(left: str, right: str) -> str:
@@ -84,13 +89,15 @@ class _DeferredAgentModel:
 
 
 class _GovernedBoundModel:
-    """在模型边界记录成功/失败，交给 ``after_model`` 写入状态。"""
+    """在模型边界记录成功/失败，交给 ``aafter_model`` 写入状态。"""
 
+    # 保存底层模型、可用工具名称及模型能力信息，供调用和治理记录使用。
     def __init__(self, model: Any, *, available_tool_names: list[str]) -> None:
         self._model = model
         self._available_tool_names = list(available_tool_names)
         self.profile = getattr(model, "profile", {})
 
+    # 为模型消息附加成功状态、调用耗时和工具请求统计。
     def _success(self, output: Any, started: int) -> Any:
         if not isinstance(output, AIMessage):
             return output
@@ -111,6 +118,7 @@ class _GovernedBoundModel:
             }
         )
 
+    # 将模型异常转换为携带失败治理记录的统一模型消息。
     @staticmethod
     def _failure(started: int, exc: Exception) -> AIMessage:
         event = {
@@ -123,14 +131,6 @@ class _GovernedBoundModel:
             content="Agent model unavailable",
             additional_kwargs={_MODEL_GOVERNANCE_KEY: event},
         )
-
-    def invoke(self, messages):
-        """同步调用实际绑定模型并转换异常。"""
-        started = _now_ms()
-        try:
-            return self._success(self._model.invoke(messages), started)
-        except Exception as exc:
-            return self._failure(started, exc)
 
     async def ainvoke(self, messages):
         """异步调用实际绑定模型并保持相同事件语义。"""
@@ -156,13 +156,44 @@ def build_framework_agent(
         build_default_tool_context(
             source="agent_runtime",
             settings=resolved,
-        )
+        ),
+        resolved,
     )
+    local_tools = [
+        tool for tool in resolved_tools if isinstance(tool, ProjectStructuredTool)
+    ]
+    retry_groups: dict[int, list[str]] = {}
+    for tool in local_tools:
+        spec = tool.project_spec
+        if spec.idempotent and spec.max_retries > 0:
+            retry_groups.setdefault(spec.max_retries, []).append(tool.name)
+    execution_middleware = [
+        ProjectToolExecutionMiddleware(),
+        ToolErrorMiddleware(
+            project_failure_content,
+            tools=local_tools,
+        ),
+        *(
+            ToolRetryMiddleware(
+                max_retries=max_retries,
+                tools=tool_names,
+                retry_on=retry_project_failure,
+                on_failure="error",
+                backoff_factor=2.0,
+                initial_delay=resolved.tool_retry_base_delay_ms / 1000.0,
+                max_delay=resolved.tool_retry_max_delay_ms / 1000.0,
+                jitter=resolved.tool_retry_jitter_ratio > 0,
+            )
+            for max_retries, tool_names in sorted(retry_groups.items())
+        ),
+    ] if local_tools else []
     agent = create_agent(
         _DeferredAgentModel(),
         tools=resolved_tools,
         middleware=[
+            ProjectToolVisibilityMiddleware(),
             resolved_governance,
+            *execution_middleware,
             ModelCallLimitMiddleware(
                 run_limit=resolved.agent_max_iterations,
                 exit_behavior="end",

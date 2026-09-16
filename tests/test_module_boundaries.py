@@ -27,5 +27,6 @@ def test_import_linter_configuration_has_all_boundaries_and_no_ignores():
     assert "contract:application-layers" in config
     assert "contract:top-level-acyclic" in config
     assert "contract:foundation-does-not-depend-on-application" in config
+    assert "contract:ingestion-domain-is-independent" in config
     assert "contract:http-framework-only-in-api" in config
     assert "contract:pydantic-settings-only-in-config" in config

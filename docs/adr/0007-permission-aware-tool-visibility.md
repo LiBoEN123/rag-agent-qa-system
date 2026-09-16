@@ -4,6 +4,11 @@
 - 日期：2026-07-22
 - 决策者：Project Maintainer
 
+> 2026-09-08 修订：双层安全语义保持不变；模型可见性现由
+> `ProjectToolVisibilityMiddleware` 在 `wrap_model_call/awrap_model_call` 中过滤本地
+> `ProjectStructuredTool`，执行授权仍由 `ToolRuntime` 决定。下文 Provider/Registry
+> 描述仅作历史记录，现状见[当前架构](../architecture/current-system.md)。
+
 ## 背景
 
 `LocalToolProvider` 原先忽略 `ToolInvocationContext`，把 Registry 中所有 ToolSpec 的名称、description 和参数 Schema 绑定给模型。无权主体虽然最终会被 `ToolRuntime` 拒绝，但仍能看到隐藏能力，并可能反复选择注定失败的工具。

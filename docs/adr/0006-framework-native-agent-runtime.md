@@ -7,6 +7,10 @@
 > 后续：本文关于保留 Planner/Executor 兼容路径的决定已由
 > [ADR 0011](0011-single-framework-agent-execution-path.md) 取代；框架原生循环、
 > Middleware 治理和 RAG handoff 决定继续有效。
+>
+> 2026-09-08 修订：本地工具集合已改为上下文无关的缓存 `StructuredTool` tuple；
+> `ProjectToolVisibilityMiddleware` 通过 LangChain `ModelRequest.override(tools=...)`
+> 实现同步/异步请求级权限可见性。下文 Registry/Provider 描述仅作历史记录。
 
 ## Phase 6A 修订（2026-08-20）
 

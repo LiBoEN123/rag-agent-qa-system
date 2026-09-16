@@ -1,12 +1,9 @@
-"""安全 Web Fetch 参数、下载、提取、SSRF 与 ToolRuntime 集成测试。"""
+"""安全 Web Fetch 参数、下载、提取、SSRF 与本地工具集成测试。"""
 
 from __future__ import annotations
 
 import json
 import socket
-import threading
-import time
-from dataclasses import replace
 from importlib import import_module
 from io import BytesIO
 from pathlib import Path
@@ -19,17 +16,15 @@ from requests_hardened import Config, Manager
 from requests_hardened.ip_filter import InvalidIPAddress
 from requests_hardened.ip_filter_adapter import IPFilterAdapter
 
+from app.config import get_settings
 from app.config import (
     AppSettings,
 )
-import app.tools.runtime as tool_runtime
-from app.tools.audit import NullToolAuditSink
 from app.tools.context import ToolInvocationContext
 from app.tools.errors import ToolErrorCode, ToolExecutionError
-from app.tools.registry import ToolRegistry, get_tool_registry
-from app.tools.result import tool_success
-from app.tools.runtime import ToolRuntime, execute_registered_tool
+from app.tools.catalog import get_local_tool_specs
 from app.tools.schemas import WebFetchArgs, WebFetchOutput
+from tests.support.local_tools import invoke_local_tool
 
 
 web_fetch_module = import_module("app.tools.web_fetch")
@@ -109,8 +104,7 @@ class CollectingAuditSink:
 
 @pytest.fixture(autouse=True)
 def isolate_web_fetch(settings_env):
-    """固定安全配置并隔离共享 Runtime 与生产审计。"""
-    tool_runtime.reset_tool_runtime()
+    """固定安全配置并隔离生产审计。"""
     settings_env(
         web_fetch_connect_timeout=3.0,
         web_fetch_read_timeout=10.0,
@@ -122,12 +116,11 @@ def isolate_web_fetch(settings_env):
         tool_audit_enabled=False,
     )
     yield
-    tool_runtime.reset_tool_runtime()
 
 
 def _web_fetch_spec():
     """返回默认注册表中的 Web 抓取工具契约。"""
-    spec = get_tool_registry().get("web_fetch")
+    spec = next((item for item in get_local_tool_specs(get_settings()) if item.name == "web_fetch"), None)
     assert spec is not None
     return spec
 
@@ -136,18 +129,6 @@ def _args(**overrides):
     values = {"url": "https://example.com/article", "max_chars": 12000}
     values.update(overrides)
     return values
-
-
-def _runtime(registry: ToolRegistry, *, audit_sink=None) -> ToolRuntime:
-    return ToolRuntime(
-        registry,
-        max_workers=2,
-        retry_base_delay_ms=0,
-        retry_max_delay_ms=0,
-        retry_jitter_ratio=0,
-        sleep_func=lambda _delay: None,
-        audit_sink=audit_sink or NullToolAuditSink(),
-    )
 
 
 def _install_fake_manager(monkeypatch, outcomes):
@@ -675,10 +656,10 @@ def test_ssrf_denial_never_falls_back_to_raw_requests(monkeypatch):
 
 def test_registry_runtime_executes_production_web_fetch_spec(monkeypatch):
     managers = _install_fake_manager(monkeypatch, [FakeResponse()])
-    registry = ToolRegistry()
-    registry.register(_web_fetch_spec())
+    registry = []
+    registry.append(_web_fetch_spec())
 
-    result = execute_registered_tool(
+    result = invoke_local_tool(
         registry=registry,
         tool_name="web_fetch",
         tool_args=_args(),
@@ -698,10 +679,10 @@ def test_permission_denial_prevents_manager_construction(monkeypatch):
             raise AssertionError(f"manager must not be constructed: {config}")
 
     monkeypatch.setattr(web_download_module, "Manager", ForbiddenManager)
-    registry = ToolRegistry()
-    registry.register(_web_fetch_spec())
+    registry = []
+    registry.append(_web_fetch_spec())
 
-    result = execute_registered_tool(
+    result = invoke_local_tool(
         registry=registry,
         tool_name="web_fetch",
         tool_args=_args(),
@@ -710,153 +691,6 @@ def test_permission_denial_prevents_manager_construction(monkeypatch):
 
     assert result["error_code"] == "permission_denied"
     assert result["runtime"]["attempt_count"] == 0
-
-
-def test_runtime_retries_temporary_dependency_once_then_succeeds(monkeypatch):
-    managers = _install_fake_manager(
-        monkeypatch,
-        [requests.exceptions.ConnectionError("temporary"), FakeResponse()],
-    )
-    registry = ToolRegistry()
-    registry.register(_web_fetch_spec())
-    runtime = _runtime(registry)
-    try:
-        result = runtime.execute(
-            "web_fetch",
-            _args(),
-            context=ToolInvocationContext(permissions=("web:fetch",)),
-        )
-    finally:
-        runtime.close()
-
-    assert result["ok"] is True
-    assert len(managers) == 2
-    assert [len(manager.session.calls) for manager in managers] == [1, 1]
-    assert result["runtime"]["attempt_count"] == 2
-    assert result["runtime"]["max_attempts"] == 2
-    assert [item["error_code"] for item in result["runtime"]["attempts"]] == [
-        "dependency_unavailable",
-        "",
-    ]
-
-
-@pytest.mark.parametrize(
-    "first_outcome",
-    [
-        InvalidIPAddress("blocked"),
-        FakeResponse(status_code=404),
-    ],
-)
-def test_runtime_does_not_retry_non_retryable_fetch_failures(
-    monkeypatch, first_outcome
-):
-    managers = _install_fake_manager(monkeypatch, [first_outcome, FakeResponse()])
-    registry = ToolRegistry()
-    registry.register(_web_fetch_spec())
-    runtime = _runtime(registry)
-    try:
-        result = runtime.execute(
-            "web_fetch",
-            _args(),
-            context=ToolInvocationContext(permissions=("web:fetch",)),
-        )
-    finally:
-        runtime.close()
-
-    assert result["ok"] is False
-    assert result["runtime"]["attempt_count"] == 1
-    assert len(managers) == 1
-
-
-@pytest.mark.parametrize("status", [429, 500])
-def test_runtime_retries_rate_limit_and_server_error(monkeypatch, status):
-    managers = _install_fake_manager(
-        monkeypatch, [FakeResponse(status_code=status), FakeResponse()]
-    )
-    registry = ToolRegistry()
-    registry.register(_web_fetch_spec())
-    runtime = _runtime(registry)
-    try:
-        result = runtime.execute(
-            "web_fetch",
-            _args(),
-            context=ToolInvocationContext(permissions=("web:fetch",)),
-        )
-    finally:
-        runtime.close()
-
-    assert result["ok"] is True
-    assert result["runtime"]["attempt_count"] == 2
-    assert len(managers) == 2
-
-
-def test_runtime_output_model_rejects_invalid_fetch_output():
-    invalid_spec = replace(
-        _web_fetch_spec(),
-        handler=lambda args, context: tool_success(
-            "web_fetch",
-            args,
-            {
-                "requested_url": args["url"],
-                "final_url": args["url"],
-                "status_code": 200,
-                "content_type": "text/plain",
-                "content": "正文",
-                "content_length": 999,
-                "truncated": False,
-            },
-        ),
-    )
-    registry = ToolRegistry()
-    registry.register(invalid_spec)
-    runtime = _runtime(registry)
-    try:
-        result = runtime.execute(
-            "web_fetch",
-            _args(),
-            context=ToolInvocationContext(permissions=("web:fetch",)),
-        )
-    finally:
-        runtime.close()
-
-    assert result["error_code"] == "output_validation_error"
-    assert result["runtime"]["attempt_count"] == 1
-
-
-def test_runtime_total_timeout_still_bounds_fetch(monkeypatch):
-    completed = threading.Event()
-
-    class SlowSession(FakeSession):
-        def request(self, method, url, **kwargs):
-            self.calls.append((method, url, kwargs))
-            time.sleep(0.08)
-            completed.set()
-            return self.outcome
-
-    class SlowManager:
-        def __init__(self, config):
-            self.session = SlowSession(FakeResponse())
-
-        def get_session(self):
-            return self.session
-
-    monkeypatch.setattr(web_download_module, "Manager", SlowManager)
-    registry = ToolRegistry()
-    registry.register(replace(_web_fetch_spec(), timeout=0.01))
-    runtime = _runtime(registry)
-    try:
-        result = runtime.execute(
-            "web_fetch",
-            _args(),
-            context=ToolInvocationContext(permissions=("web:fetch",)),
-        )
-        assert completed.wait(timeout=1)
-    finally:
-        runtime.close()
-
-    assert result["error_code"] == "timeout"
-    assert result["runtime"]["attempt_count"] == 1
-    assert result["runtime"]["timed_out"] is True
 
 
 def test_fetch_audit_never_records_full_url_proxy_or_content(
@@ -878,17 +712,15 @@ def test_fetch_audit_never_records_full_url_proxy_or_content(
         ],
     )
     sink = CollectingAuditSink()
-    registry = ToolRegistry()
-    registry.register(_web_fetch_spec())
-    runtime = _runtime(registry, audit_sink=sink)
-    try:
-        result = runtime.execute(
-            "web_fetch",
-            _args(url=url),
-            context=ToolInvocationContext(permissions=("web:fetch",)),
-        )
-    finally:
-        runtime.close()
+    registry = []
+    registry.append(_web_fetch_spec())
+    result = invoke_local_tool(
+        registry,
+        "web_fetch",
+        _args(url=url),
+        context=ToolInvocationContext(permissions=("web:fetch",)),
+        audit_sink=sink,
+    )
 
     serialized = json.dumps([event.to_dict() for event in sink.events])
     assert result["ok"] is True

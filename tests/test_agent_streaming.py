@@ -6,6 +6,7 @@ import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
 from app.agent import framework_agent
+from app.agent import runtime as agent_runtime
 from app.agent import streaming as agent_streaming
 from app.agent.runtime import reset_agent_runtime
 from app.agent.streaming import project_agent_stream_part, stream_agent
@@ -131,7 +132,11 @@ def test_update_projector_emits_safe_tool_completion():
     assert "private" not in repr(events)
 
 
-def test_direct_route_streams_without_building_agent(monkeypatch):
+@pytest.mark.parametrize(
+    ("question", "status", "action"),
+    [("你是谁？", "OK", "direct_answer"), ("这个怎么弄", "NEED_CLARIFICATION", "clarify")],
+)
+def test_direct_route_streams_without_building_agent(monkeypatch, question, status, action):
     monkeypatch.setattr(
         "app.agent.runtime.get_compiled_agent_runtime",
         lambda settings=None, **kwargs: (_ for _ in ()).throw(
@@ -144,8 +149,8 @@ def test_direct_route_streams_without_building_agent(monkeypatch):
             event
             async for event in stream_agent(
                 write_bad_cases=lambda record: None,
-                original_question="你是谁？",
-                effective_question="你是谁？",
+                original_question=question,
+                effective_question=question,
                 top_k=5,
                 decompose_top_k=10,
                 trace_id="trace-direct-stream",
@@ -157,21 +162,26 @@ def test_direct_route_streams_without_building_agent(monkeypatch):
     events = asyncio.run(collect())
 
     assert [event.event for event in events] == ["progress", "result"]
-    assert events[-1].data["result"]["status"] == "OK"
-    assert events[-1].data["result"]["action"] == "direct_answer"
+    result = events[-1].data["result"]
+    assert result["status"] == status
+    assert result["action"] == action
+    assert result["router_llm_used"] is False
+    assert result["llm_call_count"] == 0
 
 
 class AsyncAnswerModel:
+    def __init__(self, failure=False):
+        self.failure = failure
+        self.received_messages = []
+
     def bind_tools(self, tools, **kwargs):
         del tools, kwargs
         return self
 
-    def invoke(self, messages):
-        del messages
-        raise AssertionError("streaming must use ainvoke")
-
     async def ainvoke(self, messages):
-        del messages
+        self.received_messages.append(list(messages))
+        if self.failure:
+            raise RuntimeError("provider secret")
         return AIMessage(content="异步完整回答")
 
 
@@ -185,10 +195,6 @@ class AsyncToolAnswerModel:
         del kwargs
         assert "simple_calculator" in {tool.name for tool in tools}
         return self
-
-    def invoke(self, messages):
-        del messages
-        raise AssertionError("streaming must use ainvoke")
 
     async def ainvoke(self, messages):
         self.calls += 1
@@ -208,13 +214,23 @@ class AsyncToolAnswerModel:
         return AIMessage(content="计算结果是 3。")
 
 
+@pytest.mark.parametrize("failure", [False, True])
 def test_stream_executes_create_agent_and_returns_authoritative_result(
-    monkeypatch,
+    monkeypatch, failure,
 ):
+    model = AsyncAnswerModel(failure)
+    questions = []
+    route = agent_runtime.route_agent_action
+
+    def recording_route(question):
+        questions.append(question)
+        return route(question)
+
+    monkeypatch.setattr(agent_runtime, "route_agent_action", recording_route)
     monkeypatch.setattr(
         framework_agent,
         "get_answer_model",
-        lambda: AsyncAnswerModel(),
+        lambda: model,
     )
 
     async def collect():
@@ -222,7 +238,7 @@ def test_stream_executes_create_agent_and_returns_authoritative_result(
             event
             async for event in stream_agent(
                 write_bad_cases=lambda record: None,
-                original_question="请回答测试问题",
+                original_question="它是什么？",
                 effective_question="请回答测试问题",
                 top_k=5,
                 decompose_top_k=10,
@@ -236,8 +252,16 @@ def test_stream_executes_create_agent_and_returns_authoritative_result(
 
     assert events[0].data == {"stage": "routing", "status": "completed"}
     result = next(event.data["result"] for event in events if event.event == "result")
-    assert result["status"] == "OK"
-    assert result["answer"] == "异步完整回答"
+    assert questions == ["请回答测试问题"]
+    assert model.received_messages[0][0].content == "请回答测试问题"
+    decide = next(step for step in result["tool_trace"] if step["step"] == "decide")
+    assert decide["route_cost_ms"] >= 0
+    assert result["status"] == ("MODEL_ERROR" if failure else "OK")
+    if failure:
+        assert result["reason"] == "agent_model_call_failed"
+        assert "provider secret" not in repr(events)
+    else:
+        assert result["answer"] == "异步完整回答"
 
 
 def test_stream_projects_native_command_tool_completion(monkeypatch):
@@ -283,6 +307,7 @@ def test_stream_projects_native_command_tool_completion(monkeypatch):
 
 
 def test_stream_runtime_converts_exception_to_internal_result(monkeypatch):
+    bad_cases = []
     monkeypatch.setattr(
         agent_streaming,
         "prepare_agent_runtime_invocation",
@@ -293,7 +318,7 @@ def test_stream_runtime_converts_exception_to_internal_result(monkeypatch):
         return [
             event
             async for event in stream_agent(
-                write_bad_cases=lambda record: None,
+                write_bad_cases=lambda record: bad_cases.append(dict(record)),
                 original_question="测试",
                 effective_question="测试",
                 top_k=5,
@@ -309,3 +334,26 @@ def test_stream_runtime_converts_exception_to_internal_result(monkeypatch):
     assert [event.event for event in events] == ["result"]
     assert events[0].data["result"]["status"] == "INTERNAL_ERROR"
     assert "private detail" not in repr(events[0].data["result"])
+    assert bad_cases[0]["note"] == "private detail"
+
+
+@pytest.mark.parametrize(
+    ("top_k", "decompose_top_k"),
+    [(0, 10), (11, 10), (5, 0), (5, 21), (True, 10), (5.5, 10)],
+)
+@pytest.mark.asyncio
+async def test_stream_rejects_invalid_counts_before_routing(monkeypatch, top_k, decompose_top_k):
+    def forbidden_route(question):
+        raise AssertionError("invalid counts must not reach routing")
+
+    monkeypatch.setattr(agent_runtime, "route_agent_action", forbidden_route)
+    bad_cases = []
+    events = [event async for event in stream_agent(
+        write_bad_cases=lambda record: bad_cases.append(dict(record)),
+        original_question="测试", effective_question="测试",
+        top_k=top_k, decompose_top_k=decompose_top_k,
+        trace_id="invalid-counts", session_id=None, bad_case=None,
+    )]
+    assert [event.event for event in events] == ["result"]
+    assert events[0].data["result"]["status"] == "INTERNAL_ERROR"
+    assert "must be" in bad_cases[0]["note"]

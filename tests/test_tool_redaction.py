@@ -2,7 +2,7 @@
 
 import json
 
-from app.tools.redaction import REDACTED, redact_sensitive_data
+from app.common.redaction import REDACTED, redact_sensitive_data
 
 
 def test_redaction_handles_nested_sensitive_keys_case_insensitively():

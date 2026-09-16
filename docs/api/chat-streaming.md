@@ -1,8 +1,8 @@
 # `/chat/stream` SSE 接口
 
-`POST /chat/stream` 是现有 `POST /chat` 的流式补充，不替代同步接口。两者复用同一个
-`ChatService`、Query Rewrite、直接 `create_agent`、Agent/Tool/RAG Runtime、
-`AgentRunResult`、`ChatStatusPolicy`、Session 和 telemetry；区别只在传输方式。
+`POST /chat/stream` 是唯一聊天 HTTP 入口。Vue 通过 `ChatService.stream()` 调用
+`stream_agent()`，继续使用 Query Rewrite、直接 `create_agent`、Agent/Tool/RAG Runtime、
+`AgentRunResult`、`ChatStatusPolicy`、Session 和 telemetry。
 
 ## HTTP 语义
 
@@ -22,15 +22,15 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
 ```
 
 - Schema 校验失败：FastAPI 在建流前返回 `HTTP 422 application/json`。
-- 问题去除空白后为空：在建流前返回 `HTTP 400 application/json` 和标准
-  `ChatResponse`。
-- 合法非空请求：返回 `HTTP 200 text/event-stream`。
+- 通过 Schema 校验的请求（包括空问题）：返回 `HTTP 200 text/event-stream`。
+- 问题去除空白后为空：发送 `start → final → done(completed)`；
+  `final.data.http_status=400`，`final.data.response.code=EMPTY_QUESTION`。
 - 流建立后的澄清、无证据、工具错误、模型错误和内部错误都是业务结果，通过
   `final.data.http_status`、`final.data.response.code` 和
   `final.data.response.data.status` 表达，不转换成 `error` 事件。
 
-响应头始终提供 `X-Trace-Id`。同步 `/chat` 仍提供 `X-Total-Cost-Ms`；流式响应头
-建立时业务尚未完成，因此不提供不准确的总耗时，真实值位于
+响应头始终提供 `X-Trace-Id`。响应头建立时业务尚未完成，不提供
+`X-Total-Cost-Ms`，真实总耗时位于
 `final.data.total_cost_ms`。
 
 ## 事件信封与顺序
@@ -109,10 +109,19 @@ python scripts/smoke_test_chat_stream.py \
 完整答案、工具原始结果、网页/PDF/chunk 正文或凭据。它是人工真实服务检查，不在
 Pytest/CI 中运行。
 
-## Streamlit Demo
+## Vue Demo
 
-`demo/streamlit_app.py` 的聊天面板默认使用本接口。页面把 `progress` 和 `tool` 显示为
-请求状态，把安全 `answer_delta` 写入临时占位框；只有收到并校验 `final` 后，才把完整
-`ChatResponse` 保存到前端消息历史。没有 delta 的 RAG 请求会保持进度提示并等待
-`final`。侧边栏保留显式同步模式，但流已经建立或收到事件后不会自动调用 `/chat`
-重试，避免重复工具调用、Session 写入和 metrics。
+`frontend/src/views/ChatView.vue` 只使用本接口，POST SSE 由
+`@microsoft/fetch-event-source` 处理。页面展示 `progress` 和 `tool`，即时显示
+`answer_delta`，收到 `final.data.response` 后用完整 `ChatResponse` 覆盖本轮结果。
+没有 delta 的 RAG 请求继续显示进度并等待 `final`。中断、切换页面或取消生成不会
+自动重发 POST；用户可显式重新发送。
+流收到 final 后若未正常 done，保留 final 并显示中断错误。新建对话会中止旧请求并清空消息。
+
+## 性能测量
+
+`scripts/benchmark_chat_api.py` 使用当前环境的 `httpx-sse` 消费本接口。
+`latency_ms` 从发起 POST 计时到收到合法 `done`，业务码、状态、答案长度和引用数
+取自 `final.data.response`。`http_status` 记录实际 HTTP 传输状态；空问题为 200，
+业务失败仍按 `EMPTY_QUESTION` 统计。缺失 final/done、非法终止顺序或流错误均记为失败，
+不会自动重试请求。

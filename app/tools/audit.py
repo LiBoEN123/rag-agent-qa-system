@@ -12,7 +12,7 @@ from typing import Any, Protocol
 
 from app.config import AppSettings, get_settings
 from app.tools.contracts import ToolAuditOutputMode, ToolSpec
-from app.tools.redaction import (
+from app.common.redaction import (
     DEFAULT_SENSITIVE_KEYS,
     redact_sensitive_data,
 )
@@ -101,6 +101,7 @@ class DisabledToolAuditSink:
 class JsonlToolAuditSink:
     """按需打开 UTF-8 文件、每行写入一个 JSON 审计事件。"""
 
+    # 保存审计文件路径，拒绝目录路径并初始化线程写入锁。
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         if self.path.exists() and self.path.is_dir():

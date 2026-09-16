@@ -19,7 +19,16 @@ from app.agent.guardrails import (
     sum_governance_event_costs,
 )
 from app.config import AppSettings, get_settings
+from app.sources.service import promote_tool_result
+from app.tools.context import ToolInvocationContext
 from app.tools.errors import ToolErrorCode
+from app.tools.execution import (
+    enter_framework_execution,
+    exit_framework_execution,
+    framework_execution_started,
+    invalid_arguments_result,
+)
+from app.tools.mcp.serialization import normalize_mcp_tool_message
 from app.tools.policy import build_tool_args_fingerprint
 from app.tools.result import tool_error
 
@@ -61,6 +70,9 @@ def parse_tool_result(
     args: dict,
 ) -> dict[str, Any]:
     """读取标准 ToolMessage；框架校验错误映射为项目稳定错误码。"""
+    mcp_result = normalize_mcp_tool_message(message, tool_name=name, args=args)
+    if mcp_result is not None:
+        return mcp_result
     try:
         value = (
             json.loads(message.content) if isinstance(message.content, str) else None
@@ -206,6 +218,67 @@ def _tool_state_command(
     return Command(graph=graph, update=updates, resume=resume, goto=goto)
 
 
+class ProjectToolExecutionMiddleware(AgentMiddleware):
+    """仅为本地 ProjectStructuredTool 建立 retry scope 和校验错误契约。"""
+
+    # 从工具调用请求中取出项目工具，其他类型返回空值。
+    @staticmethod
+    def _project_tool(request: ToolCallRequest):
+        from app.agent.framework_tools import ProjectStructuredTool
+
+        return (
+            request.tool
+            if isinstance(request.tool, ProjectStructuredTool)
+            else None
+        )
+
+    # 将尚未进入项目执行流程的工具消息转为统一的参数校验失败结果。
+    @staticmethod
+    def _validated_output(request, tool, output):
+        if framework_execution_started() or not isinstance(output, ToolMessage):
+            return output
+        context = request.runtime.context
+        if not isinstance(context, ToolInvocationContext):
+            raise RuntimeError("ToolRuntime did not inject ToolInvocationContext")
+        raw_args = request.tool_call.get("args") or {}
+        result = invalid_arguments_result(
+            spec=tool.project_spec,
+            tool_args=raw_args if isinstance(raw_args, dict) else {},
+            context=context,
+            tool_call_id=str(request.tool_call.get("id") or ""),
+            settings=tool.project_settings,
+            audit_sink=tool.project_audit_sink,
+        )
+        return output.model_copy(
+            update={
+                "content": json.dumps(
+                    result,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                "status": "error",
+            }
+        )
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[
+            [ToolCallRequest], Awaitable[ToolMessage | Command[Any]]
+        ],
+    ) -> ToolMessage | Command[Any]:
+        """异步 Agent 复用相同本地执行边界，MCP BaseTool 直接跳过。"""
+        tool = self._project_tool(request)
+        if tool is None:
+            return await handler(request)
+        token = enter_framework_execution()
+        try:
+            output = await handler(request)
+            return self._validated_output(request, tool, output)
+        finally:
+            exit_framework_execution(token)
+
+
 class ProjectToolGovernanceMiddleware(AgentMiddleware):
     """保留错误分类、循环检测、耗时预算和批次 fail-closed。"""
 
@@ -215,7 +288,7 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
         self._lock = threading.Lock()
         self._batch_events: dict[tuple[str, tuple[str, ...]], list[dict]] = {}
 
-    def after_model(self, state, runtime):
+    async def aafter_model(self, state, runtime):
         """消费一次模型私有标记并写入 append-only 治理事件。"""
         del runtime
         ai_message = _find_last_ai_message(state.get("messages", []))
@@ -240,12 +313,8 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
             updates["stop_reason"] = AgentStopReason.COMPLETED.value
         return updates
 
-    async def aafter_model(self, state, runtime):
-        """异步图复用同一模型治理事件消费逻辑。"""
-        return self.after_model(state, runtime)
-
     @hook_config(can_jump_to=["end"])
-    def before_model(self, state, runtime):
+    async def abefore_model(self, state, runtime):
         """依据 State 中的停止原因和 RAG 结果决定下一步。"""
         del runtime
         events = list(state.get("governance_events", []))
@@ -260,10 +329,6 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
         elif state.get("knowledge_base_result"):
             updates["jump_to"] = "end"
         return updates
-
-    async def abefore_model(self, state, runtime):
-        """异步图复用同一停止、预算与 RAG 交接判断。"""
-        return self.before_model(state, runtime)
 
     def _batch_key(self, request: ToolCallRequest) -> tuple[str, tuple[str, ...]]:
         """使用 trace 和模型调用 ID 标识同一批工具调用。"""
@@ -281,7 +346,7 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
                 self._batch_events.pop(key, None)
 
     def _prepare_tool_call(self, request: ToolCallRequest):
-        """计算同步与异步工具调用共用的治理上下文和前置拦截。"""
+        """计算工具调用的治理上下文和前置拦截。"""
         args = request.tool_call.get("args") or {}
         key = self._batch_key(request)
         with self._lock:
@@ -352,38 +417,35 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
             known_tool=request.tool is not None,
             settings=self._settings,
         )
+        # ToolRuntime 私有通道只保留本次已净化 source payload，不进入模型消息或 State。
+        source_output = getattr(request.runtime, "mcp_ingestion_output", None)
+        if hasattr(request.runtime, "mcp_ingestion_output"):
+            delattr(request.runtime, "mcp_ingestion_output")
+        metadata = request.tool.metadata if request.tool is not None else None
+        if (
+            metadata
+            and metadata.get("knowledge_promotion")
+            and event.get("ok") is True
+            and event.get("handler_executed") is True
+        ):
+            try:
+                candidate = promote_tool_result(
+                    result=result,
+                    metadata=metadata,
+                    args=args,
+                    source_output=source_output,
+                    context=request.runtime.context,
+                    settings=self._settings,
+                )
+                if candidate is not None:
+                    event["knowledge_candidate_id"] = candidate.candidate_id
+                    event["knowledge_promotion_status"] = candidate.status.value
+                else:
+                    event["knowledge_promotion_status"] = "skipped"
+            except Exception:
+                # 来源校验或持久化失败不改变已成功的只读工具调用，也不泄漏正文/异常。
+                event["knowledge_promotion_status"] = "failed"
         return self._finish_tool_call(request, output, message, result, event, key)
-
-    def wrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
-    ) -> ToolMessage | Command[Any]:
-        """通过 LangChain 原生同步 Hook 应用项目 Agent 治理。"""
-        args, key, prior, fingerprint, blocked = self._prepare_tool_call(request)
-        if blocked is not None:
-            message, event = blocked
-            return self._finish_tool_call(
-                request,
-                message,
-                message,
-                event["result"],
-                event,
-                key,
-                remember=False,
-            )
-
-        started = _now_ms()
-        output = handler(request)
-        return self._complete_tool_call(
-            request,
-            output,
-            args=args,
-            key=key,
-            prior=prior,
-            fingerprint=fingerprint,
-            started=started,
-        )
 
     async def awrap_tool_call(
         self,
@@ -469,7 +531,7 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
             knowledge_base_result=knowledge_result,
         )
 
-    def after_agent(self, state, runtime):
+    async def aafter_agent(self, state, runtime):
         """归一化框架结束原因并保存最终累计耗时。"""
         del runtime
         events = list(state.get("governance_events", []))
@@ -485,7 +547,3 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
             "agent_elapsed_ms": sum_governance_event_costs(events),
             "stop_reason": reason,
         }
-
-    async def aafter_agent(self, state, runtime):
-        """异步图复用同一最终停止原因与累计耗时归一化。"""
-        return self.after_agent(state, runtime)

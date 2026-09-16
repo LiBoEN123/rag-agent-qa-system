@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from dataclasses import replace
 
 import pytest
 from fastapi import FastAPI
@@ -12,7 +13,8 @@ from app.api.chat import create_chat_router
 from app.api.middleware import trace_and_timing_middleware
 from app.api.streaming import ChatStreamSSEEncoder
 from app.contracts.chat import AgentResultStatus
-from app.services.chat_models import ChatServiceOutcome
+from app.services.chat_models import ChatServiceOutcome, ChatServiceRequest
+from app.services.chat_service import ChatService, get_default_chat_service_dependencies
 from app.services.chat_stream_models import ChatStreamEvent
 
 
@@ -141,24 +143,8 @@ def test_final_encoder_uses_complete_existing_chat_response():
 
 class FakeStreamingService:
     def __init__(self):
-        self.handle_requests = []
         self.stream_requests = []
         self.closed = False
-
-    def handle(self, request):
-        self.handle_requests.append(request)
-        return ChatServiceOutcome(
-            http_status=400,
-            code="EMPTY_QUESTION",
-            message="问题不能为空，请输入你想查询的内容",
-            question="",
-            result=create_agent_result(
-                status=AgentResultStatus.NEED_CLARIFICATION,
-                need_clarification=True,
-                clarification_question="请输入问题",
-            ),
-            response_status="clarify",
-        )
 
     async def stream(self, request):
         self.stream_requests.append(request)
@@ -229,33 +215,57 @@ def test_stream_route_returns_sse_headers_and_ordered_final():
         "完整回答"
     )
     assert len(service.stream_requests) == 1
-    assert service.handle_requests == []
+    request = service.stream_requests[0]
+    assert request.question == "测试问题"
+    assert (request.top_k, request.decompose_top_k, request.session_id) == (4, 8, "session-1")
+    assert request.trace_id == "caller-trace"
+    assert request.request_enter_time
+    assert request.request_enter_perf > 0
     assert service.closed is True
 
 
-def test_empty_question_is_json_400_before_sse_and_schema_error_is_json_422():
-    service = FakeStreamingService()
+def test_empty_question_is_sse_and_schema_error_is_json_422():
+    def forbidden(*args, **kwargs):
+        pytest.fail("empty question must not run business dependencies")
 
+    service = ChatService(
+        replace(
+            get_default_chat_service_dependencies(),
+            settings_provider=forbidden,
+            stream_agent=forbidden,
+            log_and_write_metrics=lambda record: None,
+        )
+    )
     application = _app(service)
-    empty = _post(
-        application,
-        "/chat/stream",
-        json={"question": "   "},
-    )
-    invalid = _post(
-        application,
-        "/chat/stream",
-        json={"top_k": 5},
-    )
+    empty = _post(application, "/chat/stream", json={"question": "   "})
+    invalid = _post(application, "/chat/stream", json={"top_k": 5})
 
-    assert empty.status_code == 400
-    assert empty.headers["content-type"].startswith("application/json")
-    assert empty.json()["code"] == "EMPTY_QUESTION"
-    assert "event: start" not in empty.text
+    assert empty.status_code == 200
+    assert empty.headers["content-type"].startswith("text/event-stream")
+    events = _parse_sse(empty.text)
+    assert [event["event"] for event in events] == ["start", "final", "done"]
+    assert [event["data"]["sequence"] for event in events] == [1, 2, 3]
+    assert all(
+        event["data"]["trace_id"] == empty.headers["X-Trace-Id"] for event in events
+    )
+    final = events[1]["data"]["data"]
+    assert final["http_status"] == 400
+    assert final["response"]["code"] == "EMPTY_QUESTION"
+    assert final["response"]["data"]["status"] == "clarify"
+    assert events[-1]["data"]["data"] == {"reason": "completed"}
     assert invalid.status_code == 422
     assert invalid.headers["content-type"].startswith("application/json")
-    assert len(service.handle_requests) == 1
-    assert service.stream_requests == []
+
+
+def test_chat_surface_only_exposes_stream():
+    from app.api.application import create_app
+
+    application = create_app(chat_service=FakeStreamingService())
+    paths = application.openapi()["paths"]
+    assert "/chat" not in paths
+    assert "post" in paths["/chat/stream"]
+    assert "400" not in paths["/chat/stream"]["post"]["responses"]
+    assert _post(application, "/chat", json={"question": "测试问题"}).status_code == 404
 
 
 def test_stream_protocol_failure_emits_generic_error_and_contiguous_done():
@@ -344,6 +354,17 @@ def test_api_disconnect_stops_and_closes_service_generator_without_final_or_done
 
     body = asyncio.run(call_and_consume())
 
+    assert service.stream_requests == [
+        ChatServiceRequest(
+            question="测试问题",
+            top_k=4,
+            decompose_top_k=8,
+            session_id="session-1",
+            trace_id="trace-disconnect",
+            request_enter_time="2026-08-02T12:00:00.000",
+            request_enter_perf=10.0,
+        )
+    ]
     assert "event: start" in body
     assert "event: final" not in body
     assert "event: done" not in body

@@ -106,12 +106,15 @@ def get_mcp_tool_provider() -> McpToolProvider | None:
 
 def list_mcp_tools_for_context(
     context: ToolInvocationContext,
+    *,
+    settings: AppSettings | None = None,
 ) -> list[BaseTool]:
     """默认关闭时保持空集合；显式启用却未初始化时 fail closed。"""
     provider = get_mcp_tool_provider()
     if provider is not None:
         return provider.list_tools(context=context)
-    if get_settings().mcp_tools_enabled:
+    resolved = settings or get_settings()
+    if resolved.mcp_tools_enabled:
         raise RuntimeError("MCP runtime is not initialized")
     return []
 

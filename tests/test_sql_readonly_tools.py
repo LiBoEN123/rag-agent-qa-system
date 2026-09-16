@@ -9,9 +9,9 @@ from pydantic import ValidationError
 from app.agent import framework_agent, framework_tools
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolAuditOutputMode, ToolRiskLevel
-from app.tools.providers import LocalToolProvider
-from app.tools.registry import ToolRegistry, register_default_tools
-from app.tools.runtime import execute_registered_tool
+from tests.support.local_tools import local_tools
+from app.tools.catalog import get_local_tool_specs
+from tests.support.local_tools import invoke_local_tool
 from tests.support.agent_runtime import build_agent_harness
 
 
@@ -34,14 +34,13 @@ def sql_settings(settings_factory, sql_business_db):
 
 @pytest.fixture
 def sql_registry(sql_settings):
-    registry = ToolRegistry()
-    register_default_tools(registry, settings=sql_settings)
+    registry = get_local_tool_specs(sql_settings)
     return registry
 
 
 def test_sql_tool_specs_use_existing_readonly_governance(sql_registry, sql_settings):
     for name in SQL_TOOL_NAMES:
-        spec = sql_registry.get(name)
+        spec = next((item for item in sql_registry if item.name == name), None)
         assert spec is not None
         assert spec.risk_level is ToolRiskLevel.READ_ONLY
         assert spec.required_permissions == ("database:read",)
@@ -55,7 +54,7 @@ def test_sql_tool_specs_use_existing_readonly_governance(sql_registry, sql_setti
 
 
 def test_query_args_and_outputs_are_pydantic_validated(sql_registry):
-    query_spec = sql_registry.get("query_sql_readonly")
+    query_spec = next((item for item in sql_registry if item.name == "query_sql_readonly"), None)
 
     with pytest.raises(ValidationError):
         query_spec.args_model.model_validate(
@@ -76,7 +75,7 @@ def test_query_args_and_outputs_are_pydantic_validated(sql_registry):
 
 
 def test_runtime_permission_gate_runs_before_sql_handler(sql_registry):
-    denied = execute_registered_tool(
+    denied = invoke_local_tool(
         registry=sql_registry,
         tool_name="list_sql_tables",
         tool_args={},
@@ -103,7 +102,7 @@ def test_runtime_executes_three_sql_tools_with_structured_outputs(sql_registry):
     ]
 
     results = [
-        execute_registered_tool(
+        invoke_local_tool(
             registry=sql_registry,
             tool_name=name,
             tool_args=args,
@@ -120,7 +119,7 @@ def test_runtime_executes_three_sql_tools_with_structured_outputs(sql_registry):
 
 
 def test_runtime_returns_safe_specific_sql_error(sql_registry):
-    result = execute_registered_tool(
+    result = invoke_local_tool(
         registry=sql_registry,
         tool_name="query_sql_readonly",
         tool_args={"sql": "DELETE FROM students"},
@@ -175,12 +174,13 @@ class SqlToolCallingModel:
         self.bound_tool_names = [tool.name for tool in tools]
         return self
 
-    def invoke(self, messages):
+    async def ainvoke(self, messages):
         self.received_messages.append(list(messages))
         return self.responses.pop(0)
 
 
-def test_framework_agent_calls_all_sql_tools_through_registry_runtime(
+@pytest.mark.asyncio
+async def test_framework_agent_calls_all_sql_tools_through_registry_runtime(
     monkeypatch,
     sql_registry,
     sql_settings,
@@ -189,8 +189,8 @@ def test_framework_agent_calls_all_sql_tools_through_registry_runtime(
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_default_tool_provider",
-        lambda: LocalToolProvider(sql_registry),
+        "get_local_tools",
+        lambda settings: local_tools(sql_registry),
     )
     context = ToolInvocationContext(
         trace_id="trace-sql-agent",
@@ -198,7 +198,7 @@ def test_framework_agent_calls_all_sql_tools_through_registry_runtime(
         source="sql_agent_test",
     )
 
-    output = build_agent_harness(sql_settings).invoke(
+    output = [state async for state in build_agent_harness(sql_settings).astream(
         {
             "original_question": "查看学生表",
             "effective_question": "查看学生表",
@@ -209,7 +209,7 @@ def test_framework_agent_calls_all_sql_tools_through_registry_runtime(
             "session_id": context.session_id,
         },
         context=context,
-    )
+    )][-1]
 
     assert SQL_TOOL_NAMES <= set(model.bound_tool_names)
     tool_messages = [

@@ -17,8 +17,8 @@ def test_project_uses_single_create_agent_runtime():
     assert not selector_path.exists()
     assert not hasattr(services, selector_export)
     fields = chat_service.ChatServiceDependencies.__dataclass_fields__
-    runtime_fields = {name for name in fields if name == "run_agent"}
-    assert runtime_fields == {"run_agent"}
+    runtime_fields = {name for name in fields if name.endswith("_agent")}
+    assert runtime_fields == {"stream_agent"}
     assert {
         "build_query_rewrite_trace",
         "attach_query_rewrite_trace",

@@ -7,8 +7,8 @@ from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
+from app.tools.catalog import get_local_tool_specs
 from app.config import AppSettings
-from app.tools.registry import ToolRegistry, register_default_tools
 from app.tools.sql_readonly.engine import (
     clear_sql_engine_cache,
     get_sql_engine,
@@ -35,8 +35,7 @@ def test_settings_and_registry_do_not_create_engine(monkeypatch, sql_settings):
         return original(*args, **kwargs)
 
     monkeypatch.setattr(engine_module, "create_engine", recording_create_engine)
-    registry = ToolRegistry()
-    register_default_tools(registry, settings=sql_settings)
+    get_local_tool_specs(sql_settings)
 
     assert calls == []
     get_sql_engine(sql_settings)

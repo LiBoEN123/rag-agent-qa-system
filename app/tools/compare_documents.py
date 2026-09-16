@@ -220,9 +220,9 @@ def compare_documents_tool(args: dict, trace_id: str = "") -> dict:
         ):
             return tool_error(tool_name, tool_input, "doc_a 和 doc_b 不能相同")
 
-        from app import rag
+        from app.rag import pipeline
 
-        current_chunks = getattr(rag, "chunks", []) or []
+        current_chunks = pipeline.chunks
         if not isinstance(current_chunks, list):
             return tool_error(tool_name, tool_input, "当前知识库 chunks 不可用")
 

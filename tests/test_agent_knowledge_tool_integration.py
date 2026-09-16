@@ -1,16 +1,17 @@
 """知识库工具从 Agent Model 到 RAG 子图的严格真实链路测试。"""
 
+import pytest
+from pydantic import RootModel
+
 import json
 
 from langchain_core.messages import AIMessage, ToolMessage
 
 from app.agent import framework_agent, framework_tools
-import app.tools.runtime as tool_runtime
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from app.tools.errors import ToolErrorCode, ToolExecutionError
-from app.tools.providers import LocalToolProvider
-from app.tools.registry import ToolRegistry
+from tests.support.local_tools import local_tools
 from app.tools.result import tool_success
 from app.tools.schemas import SearchKnowledgeBaseArgs
 from tests.support.agent_runtime import build_agent_harness
@@ -25,7 +26,7 @@ class KnowledgeModel:
         self.bound_tools = list(tools)
         return self
 
-    def invoke(self, messages):
+    async def ainvoke(self, messages):
         self.received_messages.append(list(messages))
         return AIMessage(
             content="",
@@ -40,16 +41,15 @@ class KnowledgeModel:
         )
 
 
-def _invoke_knowledge_graph(
+async def _invoke_knowledge_graph(
     monkeypatch,
     *,
     output: dict,
     rag_result: dict,
 ):
-    registry = ToolRegistry()
+    registry = []
     seen_contexts: list[ToolInvocationContext] = []
     seen_args: list[dict] = []
-    runtime_calls: list[str] = []
     rag_calls: list[dict] = []
 
     def handler(args, context):
@@ -68,35 +68,28 @@ def _invoke_knowledge_graph(
             {**output, "rag_result": resolved_rag},
         )
 
-    registry.register(
+    registry.append(
         ToolSpec(
             name="search_knowledge_base",
             version="1.0.0",
             description="检索本地测试知识库并返回受控证据 chunk",
-            output_schema={"count": "integer", "chunks": "list"},
+            output_model=RootModel[dict],
             handler=handler,
             args_model=SearchKnowledgeBaseArgs,
             required_permissions=("knowledge_base:read",),
         )
     )
-    provider = LocalToolProvider(registry)
+    provider = local_tools(registry)
     model = KnowledgeModel()
-    original_execute = tool_runtime.ToolRuntime.execute
-
-    def recording_execute(self, tool_name, tool_args=None, *, context=None):
-        runtime_calls.append(tool_name)
-        return original_execute(self, tool_name, tool_args, context=context)
-
     def fake_rag_subgraph(**kwargs):
         rag_calls.append(kwargs)
         return dict(rag_result)
 
-    monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", recording_execute)
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_default_tool_provider",
-        lambda: provider,
+        "get_local_tools",
+        lambda settings: provider,
     )
     context = ToolInvocationContext(
         trace_id="trace-knowledge-strict",
@@ -106,7 +99,7 @@ def _invoke_knowledge_graph(
         source="knowledge_tool_integration_test",
     )
 
-    graph_output = build_agent_harness().invoke(
+    graph_output = [state async for state in build_agent_harness().astream(
         {
             "original_question": "奖学金申请条件是什么？",
             "effective_question": "奖学金申请条件是什么？",
@@ -117,19 +110,19 @@ def _invoke_knowledge_graph(
             "session_id": context.session_id,
         },
         context=context,
-    )
+    )][-1]
     return {
         "output": graph_output,
         "model": model,
         "context": context,
         "seen_contexts": seen_contexts,
         "seen_args": seen_args,
-        "runtime_calls": runtime_calls,
         "rag_calls": rag_calls,
     }
 
 
-def test_search_knowledge_base_uses_real_structured_tool_registry_and_runtime(
+@pytest.mark.asyncio
+async def test_search_knowledge_base_uses_real_project_structured_tool_and_rag(
     monkeypatch,
 ):
     chunk = {
@@ -137,7 +130,7 @@ def test_search_knowledge_base_uses_real_structured_tool_registry_and_runtime(
         "text": "申请人需要提交成绩单。",
         "file_name": "scholarship.md",
     }
-    result = _invoke_knowledge_graph(
+    result = await _invoke_knowledge_graph(
         monkeypatch,
         output={"count": 1, "chunks": [chunk]},
         rag_result={
@@ -160,7 +153,6 @@ def test_search_knowledge_base_uses_real_structured_tool_registry_and_runtime(
     ]
     assert issubclass(bound_tool.args_schema, SearchKnowledgeBaseArgs)
     assert "runtime" not in bound_tool.tool_call_schema.model_fields
-    assert result["runtime_calls"] == ["search_knowledge_base"]
     assert result["seen_args"] == [
         {"query": "奖学金申请条件", "top_k": 5}
     ]
@@ -178,8 +170,9 @@ def test_search_knowledge_base_uses_real_structured_tool_registry_and_runtime(
     ]
 
 
-def test_successful_zero_result_search_is_not_a_tool_error(monkeypatch):
-    result = _invoke_knowledge_graph(
+@pytest.mark.asyncio
+async def test_successful_zero_result_search_is_not_a_tool_error(monkeypatch):
+    result = await _invoke_knowledge_graph(
         monkeypatch,
         output={"count": 0, "chunks": []},
         rag_result={
@@ -196,14 +189,23 @@ def test_successful_zero_result_search_is_not_a_tool_error(monkeypatch):
         },
     )
 
-    assert result["runtime_calls"] == ["search_knowledge_base"]
-    assert result["output"]["tool_error_count"] == 0
-    assert result["output"]["observations"][0]["success"] is True
+    assert result["seen_args"] == [{"query": "奖学金申请条件", "top_k": 5}]
+    trace = [
+        step for step in result["output"]["result"]["tool_trace"]
+        if step["step"] == "tool_call"
+    ]
+    assert len(trace) == 1
+    assert trace[0]["success"] is True
+    assert trace[0]["final_chunk_count"] == 0
+    assert result["output"]["result"]["tool_result_summary"] == (
+        "知识库检索完成，召回 0 个 chunk"
+    )
     assert result["rag_calls"][0]["retrieved_chunks"] == []
     assert result["output"]["result"]["status"] == "NO_RELEVANT_INFO"
 
 
-def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
+@pytest.mark.asyncio
+async def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
     monkeypatch,
 ):
     """知识库不可用由工具链返回标准错误，模型读取后仍可安全结束。"""
@@ -217,7 +219,7 @@ def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
             assert [tool.name for tool in tools] == ["search_knowledge_base"]
             return self
 
-        def invoke(self, messages):
+        async def ainvoke(self, messages):
             self.received_messages.append(list(messages))
             self.calls += 1
             if self.calls == 1:
@@ -234,7 +236,7 @@ def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
                 )
             return AIMessage(content="知识库暂时不可用，请稍后重试。")
 
-    registry = ToolRegistry()
+    registry = []
 
     def unavailable_handler(args, context):
         del args, context
@@ -244,12 +246,12 @@ def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
             retryable=False,
         )
 
-    registry.register(
+    registry.append(
         ToolSpec(
             name="search_knowledge_base",
             version="1.0.0",
             description="检索本地测试知识库",
-            output_schema={"count": "integer", "chunks": "list"},
+            output_model=RootModel[dict],
             handler=unavailable_handler,
             args_model=SearchKnowledgeBaseArgs,
             required_permissions=("knowledge_base:read",),
@@ -259,8 +261,8 @@ def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_default_tool_provider",
-        lambda: LocalToolProvider(registry),
+        "get_local_tools",
+        lambda settings: local_tools(registry),
     )
     context = ToolInvocationContext(
         trace_id="trace-knowledge-unavailable",
@@ -268,7 +270,7 @@ def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
         source="knowledge_tool_integration_test",
     )
 
-    output = build_agent_harness().invoke(
+    output = [state async for state in build_agent_harness().astream(
         {
             "original_question": "知识库问题",
             "effective_question": "知识库问题",
@@ -278,7 +280,7 @@ def test_unavailable_knowledge_base_returns_tool_message_and_agent_recovers(
             "trace_id": context.trace_id,
         },
         context=context,
-    )
+    )][-1]
 
     tool_message = model.received_messages[1][-1]
     assert isinstance(tool_message, ToolMessage)

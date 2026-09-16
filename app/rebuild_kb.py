@@ -4,7 +4,7 @@
 """
 
 from app.config import get_settings, validate_rag_environment
-from app.rag import rebuild_and_persist_index
+from app.rag.pipeline import rebuild_and_persist_index
 
 
 def main():
@@ -15,6 +15,7 @@ def main():
         data_dir=str(settings.rag_file_path),
         chunk_size=settings.chunk_size,
         chunk_overlap=settings.chunk_overlap,
+        force_rebuild=True,
     )
     print(msg)
     if not ok:

@@ -1,23 +1,18 @@
-"""DDGS Web Search 参数、规范化、错误和 ToolRuntime 集成测试。"""
+"""DDGS Web Search 参数、规范化、错误和本地工具集成测试。"""
 
 import json
-import threading
-import time
-from dataclasses import replace
 from importlib import import_module
 
 import pytest
 from ddgs.exceptions import DDGSException, RatelimitException, TimeoutException
 from pydantic import ValidationError
 
-import app.tools.runtime as tool_runtime
-from app.tools.audit import NullToolAuditSink
+from app.config import get_settings
 from app.tools.context import ToolInvocationContext
 from app.tools.errors import ToolErrorCode, ToolExecutionError
-from app.tools.registry import ToolRegistry, get_tool_registry
-from app.tools.result import tool_success
-from app.tools.runtime import ToolRuntime, execute_registered_tool
+from app.tools.catalog import get_local_tool_specs
 from app.tools.schemas import WebSearchArgs, WebSearchOutput
+from tests.support.local_tools import invoke_local_tool
 
 
 web_search_module = import_module("app.tools.web_search")
@@ -34,8 +29,7 @@ class CollectingAuditSink:
 
 @pytest.fixture(autouse=True)
 def isolate_web_search(settings_env):
-    """固定 Web 搜索配置并隔离共享工具运行时。"""
-    tool_runtime.reset_tool_runtime()
+    """固定 Web 搜索配置。"""
     settings_env(
         web_search_region="us-en",
         web_search_safesearch="moderate",
@@ -43,24 +37,11 @@ def isolate_web_search(settings_env):
         web_search_proxy="",
     )
     yield
-    tool_runtime.reset_tool_runtime()
-
-
-def _runtime(registry, *, audit_sink=None, sleep_func=lambda _delay: None):
-    return ToolRuntime(
-        registry,
-        max_workers=2,
-        retry_base_delay_ms=0,
-        retry_max_delay_ms=0,
-        retry_jitter_ratio=0,
-        sleep_func=sleep_func,
-        audit_sink=audit_sink or NullToolAuditSink(),
-    )
 
 
 def _web_spec():
     """返回默认注册表中的 Web 搜索工具契约。"""
-    spec = get_tool_registry().get("web_search")
+    spec = next((item for item in get_local_tool_specs(get_settings()) if item.name == "web_search"), None)
     assert spec is not None
     return spec
 
@@ -281,7 +262,7 @@ def test_web_search_maps_public_ddgs_errors_without_leaking_details(
     assert calls == 1
 
 
-def test_runtime_executes_production_web_search_spec_with_permission(monkeypatch):
+def test_local_tool_executes_production_web_search_spec_with_permission(monkeypatch):
     calls = []
 
     class FakeDDGS:
@@ -293,17 +274,14 @@ def test_runtime_executes_production_web_search_spec_with_permission(monkeypatch
             return [{"title": "Release", "href": "https://example.com", "body": "News"}]
 
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
-    registry = ToolRegistry()
-    registry.register(_web_spec())
-    runtime = _runtime(registry)
-    try:
-        result = runtime.execute(
-            "web_search",
-            {"query": "  release news  ", "max_results": 2, "freshness": "week"},
-            context=ToolInvocationContext(permissions=("web:search",)),
-        )
-    finally:
-        runtime.close()
+    registry = []
+    registry.append(_web_spec())
+    result = invoke_local_tool(
+        registry,
+        "web_search",
+        {"query": "  release news  ", "max_results": 2, "freshness": "week"},
+        context=ToolInvocationContext(permissions=("web:search",)),
+    )
 
     assert result["ok"] is True
     assert result["tool_input"]["query"] == "release news"
@@ -334,10 +312,10 @@ def test_execution_entry_uses_web_runtime_and_output_model(
 
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     settings_env(tool_audit_enabled=False)
-    registry = ToolRegistry()
-    registry.register(_web_spec())
+    registry = []
+    registry.append(_web_spec())
 
-    result = execute_registered_tool(
+    result = invoke_local_tool(
         registry=registry,
         tool_name="web_search",
         tool_args=_args(),
@@ -361,9 +339,9 @@ def test_direct_execution_entry_denies_permission_before_ddgs(
 
     monkeypatch.setattr(web_search_module, "DDGS", ForbiddenDDGS)
     settings_env(tool_audit_enabled=False)
-    registry = ToolRegistry()
-    registry.register(_web_spec())
-    result = execute_registered_tool(
+    registry = []
+    registry.append(_web_spec())
+    result = invoke_local_tool(
         registry=registry,
         tool_name="web_search",
         tool_args=_args(),
@@ -371,73 +349,6 @@ def test_direct_execution_entry_denies_permission_before_ddgs(
     )
     assert result["error_code"] == "permission_denied"
     assert result["runtime"]["attempt_count"] == 0
-
-
-def test_runtime_retries_dependency_error_once_then_succeeds(monkeypatch):
-    calls = 0
-
-    class FakeDDGS:
-        def __init__(self, **kwargs):
-            del kwargs
-
-        def text(self, query, **kwargs):
-            nonlocal calls
-            del query, kwargs
-            calls += 1
-            if calls == 1:
-                raise DDGSException("temporary")
-            return [{"title": "OK", "href": "https://example.com/ok", "body": "done"}]
-
-    monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
-    registry = ToolRegistry()
-    registry.register(_web_spec())
-    runtime = _runtime(registry)
-    try:
-        result = runtime.execute(
-            "web_search",
-            _args(),
-            context=ToolInvocationContext(permissions=("web:search",)),
-        )
-    finally:
-        runtime.close()
-    assert result["ok"] is True
-    assert calls == 2
-    assert result["runtime"]["attempt_count"] == 2
-    assert result["runtime"]["max_attempts"] == 2
-    assert [item["error_code"] for item in result["runtime"]["attempts"]] == [
-        "dependency_unavailable",
-        "",
-    ]
-
-
-def test_runtime_output_model_rejects_invalid_web_output():
-    invalid_spec = replace(
-        _web_spec(),
-        handler=lambda args, context: tool_success(
-            "web_search",
-            args,
-            {
-                "query": args["query"],
-                "count": 2,
-                "provider": "ddgs",
-                "content_is_untrusted": True,
-                "results": [],
-            },
-        ),
-    )
-    registry = ToolRegistry()
-    registry.register(invalid_spec)
-    runtime = _runtime(registry)
-    try:
-        result = runtime.execute(
-            "web_search",
-            _args(),
-            context=ToolInvocationContext(permissions=("web:search",)),
-        )
-    finally:
-        runtime.close()
-    assert result["error_code"] == "output_validation_error"
-    assert result["runtime"]["attempt_count"] == 1
 
 
 def test_web_search_audit_summary_redacts_query_and_result_text(monkeypatch):
@@ -453,51 +364,18 @@ def test_web_search_audit_summary_redacts_query_and_result_text(monkeypatch):
 
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     sink = CollectingAuditSink()
-    registry = ToolRegistry()
-    registry.register(_web_spec())
-    runtime = _runtime(registry, audit_sink=sink)
-    try:
-        result = runtime.execute(
-            "web_search",
-            _args(query=secret_query),
-            context=ToolInvocationContext(permissions=("web:search",)),
-        )
-    finally:
-        runtime.close()
+    registry = []
+    registry.append(_web_spec())
+    result = invoke_local_tool(
+        registry,
+        "web_search",
+        _args(query=secret_query),
+        context=ToolInvocationContext(permissions=("web:search",)),
+        audit_sink=sink,
+    )
     serialized = json.dumps([event.to_dict() for event in sink.events])
     assert result["ok"] is True
     assert secret_query not in serialized
     assert "Secret title" not in serialized
     assert "Secret body" not in serialized
     assert '"count": 1' in serialized
-
-
-def test_tool_runtime_timeout_still_bounds_web_search(monkeypatch):
-    completed = threading.Event()
-
-    class SlowDDGS:
-        def __init__(self, **kwargs):
-            del kwargs
-
-        def text(self, query, **kwargs):
-            del query, kwargs
-            time.sleep(0.08)
-            completed.set()
-            return []
-
-    monkeypatch.setattr(web_search_module, "DDGS", SlowDDGS)
-    registry = ToolRegistry()
-    registry.register(replace(_web_spec(), timeout=0.01))
-    runtime = _runtime(registry)
-    try:
-        result = runtime.execute(
-            "web_search",
-            _args(),
-            context=ToolInvocationContext(permissions=("web:search",)),
-        )
-        assert completed.wait(timeout=1)
-    finally:
-        runtime.close()
-    assert result["error_code"] == "timeout"
-    assert result["runtime"]["attempt_count"] == 1
-    assert result["runtime"]["timed_out"] is True

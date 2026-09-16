@@ -1,197 +1,38 @@
-"""ChromaDB 存储适配模块。
-
-封装 collection 初始化、chunk 向量持久化、查询和缓存恢复等底层操作。
-"""
+"""通过 langchain-chroma 读取和查询本地向量索引。"""
 
 from __future__ import annotations
 
-import hashlib
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from app.config import AppSettings, get_settings
-from app.common.logging import get_logger
-
-logger = get_logger("chat_service")
+from app.config import AppSettings
+from app.rag.indexing import create_vector_store
 
 
 class ChromaUnavailableError(RuntimeError):
     """ChromaDB 不可用时抛出的异常。"""
 
 
-def _import_chromadb():
-    """延迟导入 ChromaDB，避免测试阶段过早依赖它。"""
-    try:
-        import chromadb
-    except ImportError as exc:
-        raise ChromaUnavailableError(
-            "未安装 chromadb，请先运行 `pip install -r requirements.txt`。"
-        ) from exc
-
-    return chromadb
-
-
-def _persist_dir(settings: AppSettings | None = None) -> Path:
-    """读取 ChromaDB 本地持久化目录配置。"""
-    return (settings or get_settings()).chroma_persist_dir
-
-
-def _collection_name(settings: AppSettings | None = None) -> str:
-    """读取 ChromaDB collection 名称配置，未配置时使用默认名称。"""
-    return (settings or get_settings()).chroma_collection_name
-
-
-def get_chroma_client(settings: AppSettings | None = None):
-    """创建本地持久化 ChromaDB 客户端。"""
-    chromadb = _import_chromadb()
-    persist_dir = _persist_dir(settings)
-    persist_dir.mkdir(parents=True, exist_ok=True)
-    return chromadb.PersistentClient(path=str(persist_dir))
-
-
-def get_chroma_collection(
-    create: bool = True,
-    settings: AppSettings | None = None,
-):
-    """获取存放 chunk 的 collection，必要时按 cosine 距离创建。"""
-    client = get_chroma_client(settings)
-    name = _collection_name(settings)
-
-    if create:
-        return client.get_or_create_collection(
-            name=name,
-            metadata={"hnsw:space": "cosine"},
-        )
-
-    return client.get_collection(name=name)
-
-
-def reset_chroma_collection():
-    """删除并重建 chunk collection，用于完整重建索引。"""
-    client = get_chroma_client()
-    name = _collection_name()
-
-    try:
-        client.delete_collection(name=name)
-    except Exception:
-        # collection 不存在时 ChromaDB 会抛异常，这里可以安全忽略。
-        pass
-
-    return client.get_or_create_collection(
-        name=name,
-        metadata={"hnsw:space": "cosine"},
-    )
-
-
 def chroma_collection_has_chunks() -> bool:
     """判断配置的 ChromaDB collection 是否存在且包含 chunk。"""
     try:
-        collection = get_chroma_collection(create=False)
-        return collection.count() > 0
+        store = create_vector_store(None, create_collection_if_not_exists=False)
+        return bool(store.get(limit=1, include=[]).get("ids"))
     except Exception:
         return False
-
-
-def sanitize_metadata(metadata: dict[str, Any] | None) -> dict[str, str | int | float | bool]:
-    """将 chunk 元数据转换为 ChromaDB 可接受的标量类型。"""
-    clean: dict[str, str | int | float | bool] = {}
-
-    for key, value in (metadata or {}).items():
-        if value is None:
-            continue
-
-        if isinstance(value, bool):
-            clean[str(key)] = value
-        elif isinstance(value, (str, int, float)):
-            clean[str(key)] = value
-        else:
-            clean[str(key)] = str(value)
-
-    return clean
-
-
-def make_chroma_id(chunk: dict[str, Any]) -> str:
-    """根据来源路径、位置和正文内容生成稳定的 ChromaDB 记录 ID。"""
-    metadata = chunk.get("metadata") or {}
-    raw = "\n".join([
-        str(metadata.get("source_path", "")),
-        str(metadata.get("position", "")),
-        str(chunk.get("text", "")),
-    ])
-    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()
-    return f"chunk-{digest}"
-
-
-def _as_embedding_list(embedding: Any) -> list[float]:
-    """将不同来源的 embedding 转换为 ChromaDB 可写入的 float 列表。"""
-    if hasattr(embedding, "tolist"):
-        return [float(x) for x in embedding.tolist()]
-    return [float(x) for x in embedding]
-
-
-def persist_chunks_to_chroma(
-    chunks: list[dict[str, Any]],
-    embeddings: Any,
-    reset: bool = True,
-    batch_size: int = 500,
-) -> int:
-    """将 chunk 文本、元数据和预先计算好的 embedding 写入 ChromaDB。"""
-    if embeddings is None:
-        raise ValueError("写入 ChromaDB 时必须提供 doc_embeddings")
-
-    collection = reset_chroma_collection() if reset else get_chroma_collection(create=True)
-    saved = 0
-
-    batch_ids: list[str] = []
-    batch_documents: list[str] = []
-    batch_metadatas: list[dict[str, str | int | float | bool]] = []
-    batch_embeddings: list[list[float]] = []
-
-    def flush_batch() -> None:
-        """将当前累计的 batch 写入 ChromaDB，并重置临时缓存。"""
-        nonlocal saved, batch_ids, batch_documents, batch_metadatas, batch_embeddings
-        if not batch_ids:
-            return
-
-        collection.upsert(
-            ids=batch_ids,
-            documents=batch_documents,
-            metadatas=batch_metadatas,
-            embeddings=batch_embeddings,
-        )
-        saved += len(batch_ids)
-        batch_ids = []
-        batch_documents = []
-        batch_metadatas = []
-        batch_embeddings = []
-
-    for idx, chunk in enumerate(chunks):
-        text = chunk.get("text", "") or ""
-        metadata = sanitize_metadata(chunk.get("metadata") or {})
-        record_id = make_chroma_id(chunk)
-        metadata["record_id"] = record_id
-        metadata["text_length"] = len(text)
-
-        batch_ids.append(record_id)
-        batch_documents.append(text)
-        batch_metadatas.append(metadata)
-        batch_embeddings.append(_as_embedding_list(embeddings[idx]))
-
-        if len(batch_ids) >= batch_size:
-            flush_batch()
-
-    flush_batch()
-    return saved
 
 
 def load_index_from_chroma(
     settings: AppSettings | None = None,
 ) -> tuple[list[dict[str, Any]], np.ndarray]:
-    """从 ChromaDB 恢复按 chunk_id 对齐的 chunk 与 embedding 矩阵。"""
-    collection = get_chroma_collection(create=False, settings=settings)
-    data = collection.get(include=["documents", "metadatas", "embeddings"])
+    """从 v2 Chroma 恢复 chunks，并重建 runtime compatibility IDs。"""
+    store = create_vector_store(
+        None,
+        settings,
+        create_collection_if_not_exists=False,
+    )
+    data = store.get(include=["documents", "metadatas", "embeddings"])
 
     documents = data.get("documents") or []
     metadatas = data.get("metadatas") or []
@@ -200,9 +41,7 @@ def load_index_from_chroma(
     if not documents:
         raise ValueError("ChromaDB 索引缓存中没有 documents")
     if len(metadatas) != len(documents):
-        raise ValueError(
-            "ChromaDB 索引缓存中的 metadata 数量与 document 数量不一致"
-        )
+        raise ValueError("ChromaDB 索引缓存中的 metadata 数量与 document 数量不一致")
     if raw_embeddings is None:
         raise ValueError("ChromaDB 索引缓存中缺少 embeddings")
 
@@ -214,32 +53,45 @@ def load_index_from_chroma(
     if embedding_matrix.ndim != 2 or embedding_matrix.shape[1] == 0:
         raise ValueError("ChromaDB 索引缓存中的 embeddings 必须是非空二维矩阵")
     if embedding_matrix.shape[0] != len(documents):
-        raise ValueError(
-            "ChromaDB 索引缓存中的 embedding 数量与 document 数量不一致"
-        )
+        raise ValueError("ChromaDB 索引缓存中的 embedding 数量与 document 数量不一致")
     if not np.isfinite(embedding_matrix).all():
         raise ValueError("ChromaDB 索引缓存中的 embeddings 包含非有限数值")
 
     records = [
         {
-            "chunk": {
-                "text": document or "",
-                "metadata": metadata or {},
-            },
+            "chunk": {"text": document or "", "metadata": metadata or {}},
             "embedding": embedding_matrix[index],
         }
         for index, (document, metadata) in enumerate(zip(documents, metadatas))
     ]
 
     def sort_key(record: dict[str, Any]):
-        """按 chunk_id 生成排序键，缺失或非法时回退到 0。"""
+        """优先按稳定 provenance 排序，兼容旧测试数据的 chunk_id。"""
         metadata = record["chunk"].get("metadata") or {}
+        source_path = str(metadata.get("source_path") or "")
         try:
-            return int(metadata.get("chunk_id", 0))
+            position = int(metadata.get("position", 0))
         except (TypeError, ValueError):
-            return 0
+            position = 0
+        if source_path:
+            return (0, source_path, position)
+        try:
+            chunk_id = int(metadata.get("chunk_id", 0))
+        except (TypeError, ValueError):
+            chunk_id = 0
+        return (1, "", chunk_id)
 
     records.sort(key=sort_key)
+    doc_ids: dict[str, str] = {}
+    for runtime_chunk_id, record in enumerate(records, start=1):
+        metadata = record["chunk"].setdefault("metadata", {})
+        source_path = str(metadata.get("source_path") or "")
+        if not source_path:
+            continue
+        if source_path not in doc_ids:
+            doc_ids[source_path] = f"doc_{len(doc_ids) + 1}"
+        metadata["doc_id"] = doc_ids[source_path]
+        metadata["chunk_id"] = runtime_chunk_id
     chunks = [record["chunk"] for record in records]
     aligned_embeddings = np.stack(
         [record["embedding"] for record in records]
@@ -248,33 +100,24 @@ def load_index_from_chroma(
 
 
 def query_chroma(query_embedding: Any, n_results: int) -> list[dict[str, Any]]:
-    """使用预先计算好的 query embedding 在 ChromaDB 中执行向量检索。"""
-    collection = get_chroma_collection(create=False)
-    count = collection.count()
-    if count <= 0:
-        return []
-
-    n_results = max(1, min(int(n_results), count))
-    result = collection.query(
-        query_embeddings=[_as_embedding_list(query_embedding)],
-        n_results=n_results,
-        include=["documents", "metadatas", "distances"],
+    """用 langchain-chroma 和既有 cosine distance 语义执行向量检索。"""
+    store = create_vector_store(None, create_collection_if_not_exists=False)
+    embedding = (
+        query_embedding.tolist()
+        if hasattr(query_embedding, "tolist")
+        else query_embedding
     )
-
-    ids = (result.get("ids") or [[]])[0]
-    documents = (result.get("documents") or [[]])[0]
-    metadatas = (result.get("metadatas") or [[]])[0]
-    distances = (result.get("distances") or [[]])[0]
-
-    hits = []
-    for record_id, document, metadata, distance in zip(ids, documents, metadatas, distances):
-        distance_value = float(distance)
-        hits.append({
-            "record_id": record_id,
-            "text": document or "",
-            "metadata": metadata or {},
-            "distance": distance_value,
-            "vector_score": 1.0 - distance_value,
-        })
-
-    return hits
+    matches = store.similarity_search_by_vector_with_relevance_scores(
+        [float(value) for value in embedding],
+        k=max(1, int(n_results)),
+    )
+    return [
+        {
+            "record_id": document.id,
+            "text": document.page_content,
+            "metadata": document.metadata,
+            "distance": float(distance),
+            "vector_score": 1.0 - float(distance),
+        }
+        for document, distance in matches
+    ]

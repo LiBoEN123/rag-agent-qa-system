@@ -27,6 +27,27 @@ __all__ = [
 logger = get_logger('chat_service')
 
 
+def _embed_query(model, question: str) -> np.ndarray:
+    """兼容官方 LangChain Embeddings 与现有测试用 SentenceTransformer fake。"""
+    if hasattr(model, "embed_query"):
+        return np.asarray(model.embed_query(question), dtype=np.float32)
+    return model.encode(
+        [question],
+        normalize_embeddings=True,
+        convert_to_numpy=True,
+    )[0]
+
+
+def _chunk_identity(metadata: dict, fallback: object = "") -> str:
+    """优先使用长期 provenance 匹配 Chroma hit 与 runtime chunk。"""
+    source_id = str(metadata.get("source_id") or "")
+    position = str(metadata.get("position") or "")
+    if source_id and position:
+        return f"{source_id}:{position}"
+    chunk_id = str(metadata.get("chunk_id") or "")
+    return chunk_id or str(fallback)
+
+
 # =========================
 # 通用文本与分数工具
 # =========================
@@ -54,8 +75,8 @@ def clamp01(value: float) -> float:
 
 
 def make_snippet(text: str, max_len: int = 300) -> str:
-    """去除文本空白并截取指定长度的预览片段。"""
-    text = "".join((text or "").split())
+    """将连续空白规范化为空格，并截取指定长度的预览片段。"""
+    text = " ".join((text or "").split())
     return text[:max_len]
 
 
@@ -130,11 +151,7 @@ def _retrieve_with_local_embeddings(
     tokenized_question = tokenize(question)
     bm25_score = bm25.get_scores(tokenized_question)
 
-    question_embedding = model.encode(
-        [question],
-        normalize_embeddings=True,
-        convert_to_numpy=True
-    )[0]
+    question_embedding = _embed_query(model, question)
 
     vector_score = doc_embeddings @ question_embedding
 
@@ -170,11 +187,7 @@ def _retrieve_with_chroma(
     """使用 ChromaDB 做向量召回，并与 BM25 候选合并。"""
     candidate_k = max(top_k * 5, top_k)
 
-    question_embedding = model.encode(
-        [question],
-        normalize_embeddings=True,
-        convert_to_numpy=True
-    )[0]
+    question_embedding = _embed_query(model, question)
 
     chroma_hits = query_chroma(question_embedding, n_results=candidate_k)
     if not chroma_hits:
@@ -186,16 +199,17 @@ def _retrieve_with_chroma(
 
     chunk_by_id = {}
     for idx, chunk in enumerate(chunks):
-        chunk_id = str((chunk.get("metadata") or {}).get("chunk_id", ""))
-        if chunk_id:
-            chunk_by_id[chunk_id] = (idx, chunk)
+        metadata = chunk.get("metadata") or {}
+        identity = _chunk_identity(metadata)
+        if identity:
+            chunk_by_id[identity] = (idx, chunk)
 
     candidates = {}
 
     for hit in chroma_hits:
         metadata = hit.get("metadata") or {}
-        chunk_id = str(metadata.get("chunk_id", ""))
-        idx, chunk = chunk_by_id.get(chunk_id, (None, None))
+        identity = _chunk_identity(metadata, hit.get("record_id", ""))
+        idx, chunk = chunk_by_id.get(identity, (None, None))
 
         if chunk is None:
             chunk = {
@@ -203,8 +217,7 @@ def _retrieve_with_chroma(
                 "metadata": metadata,
             }
 
-        candidate_key = chunk_id or str(hit.get("record_id", ""))
-        candidates[candidate_key] = {
+        candidates[identity] = {
             "chunk": chunk,
             "bm25_score": float(bm25_scores[idx]) if idx is not None else 0.0,
             "vector_score": float(hit.get("vector_score", 0.0)),
@@ -214,7 +227,7 @@ def _retrieve_with_chroma(
         idx = int(idx)
         chunk = chunks[idx]
         metadata = chunk.get("metadata") or {}
-        chunk_id = str(metadata.get("chunk_id", idx))
+        chunk_id = _chunk_identity(metadata, idx)
 
         if chunk_id not in candidates:
             candidates[chunk_id] = {

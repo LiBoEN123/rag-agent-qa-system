@@ -28,6 +28,7 @@ from app.tools.sql_readonly.serialization import (
 class SqlReadonlyService:
     """持有不可变配置快照，按调用惰性使用缓存 Engine。"""
 
+    # 保存只读 SQL 服务使用的应用配置。
     def __init__(self, settings: AppSettings) -> None:
         self._settings = settings
 
@@ -284,6 +285,7 @@ class SqlReadonlyService:
             )
         return safe_schema
 
+    # 按数据库方言规范化非空的数据库模式名称。
     @staticmethod
     def _normalized_schema(
         schema: str | None,
@@ -298,11 +300,13 @@ class SqlReadonlyService:
             dialect_name=dialect_name,
         )[0]
 
+    # 将允许访问表的显示名称拆分为可选模式名和表名。
     @staticmethod
     def _display_parts(table: AllowedTable) -> tuple[str | None, str]:
         parts = table.display_name.split(".")
         return (parts[0], parts[1]) if len(parts) == 2 else (None, parts[0])
 
+    # 按方言规则匹配实际表名与白名单表名，并跳过 SQLite 内部表。
     @staticmethod
     def _existing_table_name(
         actual_names: list[str],
@@ -347,6 +351,7 @@ class SqlReadonlyService:
                         "查询引用了不存在、临时或非物理表",
                     )
 
+    # 整理列名、类型和可空信息，并按方言规范化名称后判断是否为主键。
     @staticmethod
     def _column_description(
         column: Mapping[str, object],
@@ -368,6 +373,7 @@ class SqlReadonlyService:
             "primary_key": normalized_name in primary_key_names,
         }
 
+    # 根据超时和连接状态，将数据库异常转换为固定消息的只读 SQL 错误。
     @staticmethod
     def _raise_database_error(
         exc: SQLAlchemyError,

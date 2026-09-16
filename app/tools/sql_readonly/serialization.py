@@ -89,6 +89,7 @@ def serialize_query_output(
     row_limit_truncated = len(rows) > requested_max_rows
     serialized_rows: list[list[object]] = []
 
+    # 封装已序列化的查询行、列信息、执行耗时、截断状态和不可信标记。
     def payload(*, truncated: bool) -> dict[str, object]:
         return {
             "columns": normalized_columns,

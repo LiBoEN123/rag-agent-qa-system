@@ -1,15 +1,18 @@
 """Runtime inspection CLI 的公开架构契约。"""
 
+from pydantic import RootModel
+
 import json
 from importlib import import_module
 
 from pydantic import BaseModel
 
+from app.tools.catalog import get_local_tool_specs
 from app.agent import framework_agent
+from app.agent.framework_tools import get_local_tools
 from app.tools.context import build_default_tool_context
 from app.tools.contracts import ToolSpec
-from app.tools.providers import LocalToolProvider
-from app.tools.registry import ToolRegistry
+from tests.support.local_tools import local_tools
 from scripts import inspect_agent_runtime as inspection
 
 
@@ -41,7 +44,7 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "create_agent_is_only_agent_loop",
         "no_parent_agent_graph",
         "router_is_plain_python",
-        "runtime_invokes_create_agent_directly",
+        "runtime_only_prepares_agent_invocation",
         "middleware_does_not_depend_on_runtime",
         "native_tool_middleware_hooks",
         "accepted_model_governance_boundary",
@@ -53,8 +56,8 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "streaming_uses_create_agent_directly",
         "rag_graph_is_tool_owned",
         "local_tool_execution_entry_is_unique",
-        "local_handler_is_runtime_owned",
-        "local_provider_is_discovery_only",
+        "local_handler_is_adapter_owned",
+        "local_visibility_is_model_middleware",
         "mcp_governance_is_independent",
         "no_parent_event_projection_cursor",
         "agent_result_contract",
@@ -88,7 +91,7 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "gate_result": "PHASE6B_SKIPPED",
         "adapter_chain": ["_DeferredAgentModel", "_GovernedBoundModel"],
         "marker": "_project_model_governance",
-        "state_hooks": ["after_model", "aafter_model"],
+        "state_hooks": ["aafter_model"],
         "model_wrap_hooks_overridden": False,
         "status": "accepted_model_governance_boundary",
     }
@@ -99,10 +102,12 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "dependency": "0.3.2",
     }
     assert report["local_tool_execution"] == {
-        "provider": "LocalToolProvider.list_specs",
-        "adapter": "request-level StructuredTool",
-        "entry": "execute_registered_tool",
-        "runtime": "ToolRuntime.execute",
+        "catalog": "get_local_tools",
+        "visibility": "ProjectToolVisibilityMiddleware",
+        "adapter": "ProjectStructuredTool",
+        "input_validation": "LangChain StructuredTool/Pydantic",
+        "retry": "LangChain ToolRetryMiddleware",
+        "timeout": "shared bounded executor helper",
         "terminal": "ToolSpec.handler",
     }
     assert {
@@ -177,6 +182,24 @@ def test_tool_contracts_use_model_facing_json_schema(
         "registered_tool_count": len(tools),
         "visible_tool_count": len(report["default_visible_tools"]),
     }
+
+
+def test_all_local_framework_tool_schemas_match_registry_contract(settings_factory):
+    """全部八个 Local Tool 保持名称、描述、字段、required 与类型不变。"""
+    settings = _knowledge_only(settings_factory, "web:search", "web:fetch")
+    registry = get_local_tool_specs(settings)
+    tools = get_local_tools(settings)
+
+    assert len(tools) == 8
+    for tool in tools:
+        spec = next((item for item in registry if item.name == tool.name), None)
+        assert spec is not None
+        expected = spec.args_model.model_json_schema()
+        actual = tool.tool_call_schema.model_json_schema()
+        assert tool.name == spec.name
+        assert tool.description == spec.description
+        assert actual.get("properties") == expected.get("properties")
+        assert actual.get("required", []) == expected.get("required", [])
 
 
 def test_json_cli_is_parseable_stable_and_safe(capsys):
@@ -265,13 +288,13 @@ def test_inspection_does_not_initialize_model_or_handler(
         del args, kwargs
         raise AssertionError("inspection must not execute runtime dependencies")
 
-    registry = ToolRegistry()
-    registry.register(
+    registry = []
+    registry.append(
         ToolSpec(
             name="inspection_probe",
             version="1.0.0",
             description="仅用于验证 Runtime inspection 不执行 handler",
-            output_schema={"value": "integer"},
+            output_model=RootModel[dict],
             handler=forbidden,
             args_model=ProbeArgs,
         )
@@ -289,7 +312,7 @@ def test_inspection_does_not_initialize_model_or_handler(
     )
 
     report = inspection.inspect_runtime(
-        LocalToolProvider(registry),
+        local_tools(registry),
         settings=_knowledge_only(settings_factory),
     )
 

@@ -409,10 +409,18 @@ def bind_and_verify_citations_node(state: RAGGraphState) -> dict[str, Any]:
         final_chunks,
         parsed_output.get("references", []),
     )
+    # 完整正文仅用于已绑定引用的内部验证；公开 snippet 仍是展示预览。
+    chunk_text_by_reference = {
+        item["reference_id"]: item["text"] for item in final_chunks
+    }
+    verification_references = [
+        {"text": chunk_text_by_reference[ref["reference_id"]]}
+        for ref in final_references
+    ]
     citation_verification = verify_answer_citations(
         question=state.get("question", ""),
         answer=parsed_output.get("answer", ""),
-        references=final_references,
+        references=verification_references,
         min_overlap_ratio=0.1,
     )
     updates: dict[str, Any] = {

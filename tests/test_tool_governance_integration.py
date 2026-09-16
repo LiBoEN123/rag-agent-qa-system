@@ -1,92 +1,20 @@
-"""工具治理 Runtime、唯一执行入口和 LangChain 适配集成测试。"""
+"""工具治理结果、直接 BaseTool 入口和 trace 投影集成测试。"""
 
 import json
+from copy import deepcopy
 
-from pydantic import BaseModel
+import pytest
 
-from app.agent.state import AgentObservation
-from app.agent.tool_events import build_tool_trace
-from app.tools.audit import ToolAuditEvent
+from app.config import get_settings
+from app.agent.tool_events import build_tool_trace, normalize_governance_events
 from app.tools.context import ToolInvocationContext
-from app.tools.contracts import ToolRiskLevel, ToolSpec
-from app.tools.registry import ToolRegistry, get_tool_registry
-from app.tools.result import tool_success
-from app.tools.runtime import ToolRuntime, execute_registered_tool
-
-
-class IntegrationArgs(BaseModel):
-    value: int
-
-
-class Sink:
-    def __init__(self):
-        self.events: list[ToolAuditEvent] = []
-
-    def write(self, event: ToolAuditEvent) -> None:
-        self.events.append(event)
-
-
-def _runtime(spec: ToolSpec, sink: Sink) -> ToolRuntime:
-    registry = ToolRegistry()
-    registry.register(spec)
-    return ToolRuntime(
-        registry,
-        max_workers=1,
-        retry_base_delay_ms=0,
-        retry_max_delay_ms=0,
-        retry_jitter_ratio=0,
-        audit_sink=sink,
-    )
-
-
-def test_external_write_returns_structured_approval_without_handler_execution():
-    calls = 0
-
-    def handler(args, context):
-        nonlocal calls
-        calls += 1
-        return tool_success("external_tool", args, args)
-
-    sink = Sink()
-    runtime = _runtime(
-        ToolSpec(
-            name="external_tool",
-            version="1.0.0",
-            description="外部写测试",
-            output_schema={},
-            handler=handler,
-            args_model=IntegrationArgs,
-            risk_level=ToolRiskLevel.EXTERNAL_WRITE,
-            required_permissions=("external:write",),
-            requires_approval=True,
-        ),
-        sink,
-    )
-    result = runtime.execute(
-        "external_tool",
-        {"value": 1},
-        context=ToolInvocationContext(
-            principal_id="svc",
-            permissions=("external:write",),
-            source="test",
-            idempotency_key="idem-1",
-        ),
-    )
-    assert result["error_code"] == "approval_required"
-    assert result["governance"]["decision"] == "require_approval"
-    assert result["governance"]["args_fingerprint"].startswith("sha256:")
-    assert result["runtime"]["attempt_count"] == 0
-    assert calls == 0
-    assert [event.event_type.value for event in sink.events] == [
-        "requested",
-        "approval_required",
-    ]
-    runtime.close()
+from app.tools.catalog import get_local_tool_specs
+from tests.support.local_tools import invoke_local_tool
 
 
 def test_execution_entry_runs_default_registry_tool():
-    result = execute_registered_tool(
-        registry=get_tool_registry(),
+    result = invoke_local_tool(
+        registry=get_local_tool_specs(get_settings()),
         tool_name="simple_calculator",
         tool_args={"expression": "1 + 2"},
         context=ToolInvocationContext(trace_id="direct-trace"),
@@ -99,15 +27,6 @@ def test_execution_entry_runs_default_registry_tool():
 
 def test_public_tool_trace_redacts_args_and_summarizes_chunk_output():
     chunk_text = "private chunk body " * 100
-    observation = AgentObservation(
-        step_id=1,
-        tool_name="get_chunk_text",
-        success=True,
-        summary="chunk 原文工具执行完成",
-        output={"chunk": {"text": chunk_text, "token": "raw-token"}},
-        error="",
-        cost_ms=0,
-    )
     trace = build_tool_trace(
         step_id=1,
         tool_name="get_chunk_text",
@@ -115,11 +34,11 @@ def test_public_tool_trace_redacts_args_and_summarizes_chunk_output():
         result={
             "status": "success",
             "ok": True,
-            "output": observation["output"],
+            "output": {"chunk": {"text": chunk_text, "token": "raw-token"}},
             "governance": {"decision": "allow", "risk_level": "read_only"},
             "runtime": {"attempt_count": 1},
         },
-        observation=observation,
+        cost_ms=0,
     )
     serialized = json.dumps(trace, ensure_ascii=False)
     assert "raw-password" not in serialized
@@ -150,22 +69,12 @@ def test_knowledge_tool_trace_projects_public_final_evidence():
         "top_chunk_ids": ["final-b", "final-c"],
         "top_scores": [0.82, 0.73],
     }
-    observation = AgentObservation(
-        step_id=1,
-        tool_name="search_knowledge_base",
-        success=True,
-        summary="检索到 2 个候选 chunk",
-        output=output,
-        error="",
-        cost_ms=8,
-    )
-
     trace = build_tool_trace(
         step_id=1,
         tool_name="search_knowledge_base",
         tool_args={"query": "对比两个政策", "top_k": 2},
         result={"status": "success", "ok": True, "output": output},
-        observation=observation,
+        cost_ms=8,
     )
 
     assert trace["final_chunk_count"] == 2
@@ -175,3 +84,199 @@ def test_knowledge_tool_trace_projects_public_final_evidence():
         "final-b",
         "final-c",
     ]
+
+
+def test_governance_event_normalization_is_pure_and_keeps_separate_step_counts():
+    model = {
+        "kind": "model", "ok": True, "has_tool_calls": True,
+        "requested_tool_call_count": 1, "cost_ms": 2,
+        "available_tool_names": ["simple_calculator"],
+    }
+    tool = {
+        "kind": "tool", "name": "simple_calculator",
+        "args": {"expression": "1+2"},
+        "result": {
+            "ok": True, "status": "success", "output": {"result": 3},
+            "tool_call_id": "calc-1", "runtime": {"attempt_count": 1},
+        },
+        "ok": True, "counted_call": True, "handler_executed": True,
+        "cost_ms": 3, "tool_call_id": "calc-1",
+    }
+    blocked = {
+        "kind": "tool", "name": "simple_calculator",
+        "result": {"ok": False, "error": "blocked"},
+        "counted_call": False, "error_code": "repeated_tool_call",
+        "stop_reason": "repeated_tool_call", "tool_call_id": "calc-2",
+    }
+    events = [model, blocked, tool, model, blocked, tool]
+    original = deepcopy(events)
+
+    trace = normalize_governance_events(events)
+
+    assert events == original
+    assert normalize_governance_events(events) == trace
+    assert trace[0] == {
+        "step": "agent_iteration", "iteration_index": 1, "status": "success",
+        "model_has_tool_calls": True, "requested_tool_call_count": 1,
+        "model_cost_ms": 2, "available_tool_names": ["simple_calculator"],
+        "error_type": "",
+    }
+    assert trace[3] == {**trace[0], "iteration_index": 2}
+    assert trace[1] == trace[4] == {
+        "step": "tool_call", "action": "tool_call",
+        "tool_name": "simple_calculator", "tool_status": "error", "success": False,
+        "error": "blocked", "error_code": "repeated_tool_call",
+        "tool_call_id": "calc-2", "cost_ms": 0, "handler_executed": False,
+        "will_return_to_agent_model": False, "stop_reason": "repeated_tool_call",
+        "call_fingerprint": "",
+    }
+    assert trace[2] == {
+        "step": "tool_call", "step_id": 1, "action": "tool_call",
+        "tool_name": "simple_calculator", "tool_args": {"expression": "1+2"},
+        "sanitized_tool_args": {"expression": "1+2"}, "tool_status": "success",
+        "success": True, "summary": "计算工具执行完成", "error": "", "cost_ms": 3,
+        "error_code": "", "tool_call_id": "calc-1", "policy_decision": "",
+        "risk_level": "", "approval_required": False, "args_fingerprint": "",
+        "attempt_count": 1, "max_attempts": 0, "timed_out": False,
+        "output_summary": {"result": 3}, "failure_kind": "", "handler_executed": True,
+        "will_return_to_agent_model": True, "stop_reason": "", "call_fingerprint": "",
+    }
+    assert trace[5] == {**trace[2], "step_id": 2}
+
+
+@pytest.mark.parametrize(
+    ("result", "success"),
+    [
+        ({"status": "success"}, True),
+        ({"status": "error"}, False),
+        ({"ok": False, "status": "success"}, False),
+        ({"ok": True, "status": "error"}, True),
+        ({"ok": None, "status": "success"}, False),
+        ({"ok": "yes"}, True),
+        ({}, False),
+    ],
+)
+def test_public_tool_trace_keeps_ok_precedence(result, success):
+    trace = build_tool_trace(
+        step_id=1, tool_name="simple_calculator", tool_args={}, result=result, cost_ms=0,
+    )
+    assert trace["success"] is success
+    assert trace["summary"] == ("计算工具执行完成" if success else "工具执行失败")
+    assert trace["error"] == ("" if success else "Tool execution failed")
+
+
+@pytest.mark.parametrize(
+    ("error_code", "raw_error", "expected"),
+    [
+        *[(code, "安全策略错误 token=raw-token", "安全策略错误 token=***REDACTED***")
+          for code in (
+              "permission_denied", "sql_permission_denied", "approval_required",
+              "missing_idempotency_key", "invalid_invocation_context", "policy_denied",
+              "audit_write_failed",
+          )],
+        ("execution_error", "private backend detail", "工具执行失败（execution_error）"),
+        ("", "fallback password=raw-password", "fallback password=***REDACTED***"),
+        ("", "", "Tool execution failed"),
+        ("policy_denied", "", "Tool execution failed"),
+    ],
+)
+def test_public_tool_trace_keeps_safe_error_policy(error_code, raw_error, expected):
+    trace = build_tool_trace(
+        step_id=1, tool_name="simple_calculator", tool_args={}, cost_ms=0,
+        result={"ok": False, "error_code": error_code, "error": raw_error},
+    )
+    assert trace["error"] == expected
+    assert trace["summary"] == "工具执行失败"
+
+
+@pytest.mark.parametrize("tool_name", ["simple_calculator", "search_knowledge_base", "mcp_probe"])
+@pytest.mark.parametrize("output", [None, ["private raw output"], "private raw output"])
+def test_public_tool_trace_normalizes_non_dict_output(tool_name, output):
+    trace = build_tool_trace(
+        step_id=1, tool_name=tool_name, tool_args={}, cost_ms=0,
+        result={"ok": True, "output": output},
+    )
+    assert "private raw output" not in json.dumps(trace)
+    if tool_name == "search_knowledge_base":
+        assert trace["final_chunk_count"] == 0
+        assert trace["top_chunk_ids"] == trace["top_scores"] == trace["hits"] == []
+    else:
+        assert trace["output_summary"] == {}
+
+
+@pytest.mark.parametrize("tool_name", ["web_search", "web_fetch", "web_pdf_fetch", "query_sql_readonly"])
+def test_public_tool_trace_keeps_business_body_out_of_output_summary(tool_name, settings_env, tmp_path):
+    if tool_name == "query_sql_readonly":
+        settings_env(
+            sql_tool_enabled=True,
+            sql_database_url=f"sqlite:///{tmp_path / 'business.sqlite3'}",
+            sql_allowed_tables=("students",),
+        )
+    trace = build_tool_trace(
+        step_id=1, tool_name=tool_name, tool_args={"password": "raw-password"}, cost_ms=1,
+        result={
+            "ok": True, "summary": "完成 token=raw-token",
+            "output": {
+                "text": "private business body", "rows": [{"value": "private row"}],
+                "token": "raw-token", "credential": "raw-credential",
+            },
+        },
+    )
+    serialized = json.dumps(trace)
+    for value in ("raw-password", "raw-token", "raw-credential", "private business body", "private row"):
+        assert value not in serialized
+    assert "output" not in trace
+    assert trace["summary"] == "完成 token=***REDACTED***"
+
+
+def test_public_nonlocal_tool_trace_preserves_existing_redaction_boundary():
+    trace = build_tool_trace(
+        step_id=1, tool_name="mcp_probe", tool_args={"token": "raw-token"}, cost_ms=1,
+        result={
+            "ok": True, "summary": "完成 password=raw-password",
+            "output": {"count": 2, "token": "raw-token", "credential": "raw-credential"},
+        },
+    )
+    assert trace["output_summary"] == {
+        "count": 2, "token": "***REDACTED***", "credential": "***REDACTED***",
+    }
+    assert "output" not in trace
+    assert trace["summary"] == "完成 password=***REDACTED***"
+    assert "raw-" not in json.dumps(trace)
+
+
+def test_knowledge_tool_trace_caps_redacts_and_keeps_metadata_score_fallbacks():
+    chunks = [
+        {
+            "metadata": {"chunk_id": f"chunk-{index}", "file_name": "token=raw-token"},
+            "text": "private full chunk", "rerank_score": 0.9, "hybrid_score": 0.8,
+            "bm25_score": 0.7, "vector_score": 0.6,
+        }
+        for index in range(12)
+    ]
+    chunks[1].update(chunk_id="explicit-id", file_name="explicit.md")
+    chunks[2]["metadata"] = "invalid metadata"
+    chunks[3] = "invalid chunk"
+    trace = build_tool_trace(
+        step_id=1, tool_name="search_knowledge_base", tool_args={}, cost_ms=1,
+        result={"ok": True, "output": {
+            "count": 12, "chunks": chunks,
+            "top_chunk_ids": tuple(f"chunk-{index}" for index in range(12)),
+            "top_scores": [0.8] * 12,
+        }},
+    )
+    assert trace["final_chunk_count"] == 12
+    assert trace["top_chunk_ids"] == [f"chunk-{index}" for index in range(10)]
+    assert trace["top_scores"] == [0.8] * 10
+    assert len(trace["hits"]) == 9
+    assert trace["hits"][0] == {
+        "chunk_id": "chunk-0", "file_name": "token=***REDACTED***",
+        "rerank": 0.9, "score": 0.8, "bm25": 0.7, "vector": 0.6,
+    }
+    assert trace["hits"][1]["chunk_id"] == "explicit-id"
+    assert trace["hits"][1]["file_name"] == "explicit.md"
+    assert trace["hits"][2]["chunk_id"] is None
+    assert trace["hits"][2]["file_name"] is None
+    assert trace["hits"][-1]["chunk_id"] == "chunk-9"
+    assert "raw-token" not in json.dumps(trace)
+    assert "private full chunk" not in json.dumps(trace)

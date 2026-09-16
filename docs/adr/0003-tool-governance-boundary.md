@@ -7,6 +7,11 @@
 > 2026-08-16 修订：旧 `ToolRegistry.dispatch` / `dispatch_tool` plumbing 已按
 > [ADR 0004 修订说明](0004-registry-driven-tool-discovery.md#2026-08-16-修订说明)
 > 收口为 `execute_registered_tool → ToolRuntime.execute`；下文保留当时决策原文。
+>
+> 2026-09-08 修订：本地定义改由不可变 ToolSpec catalog 提供，LangChain 原生
+> `StructuredTool` 直接进入 `execute_project_tool → ToolSpec.handler`；权限可见性
+> 由模型调用前的 `ProjectToolVisibilityMiddleware` 处理。下文 Registry/Provider 描述
+> 仅记录历史实现，以[当前架构](../architecture/current-system.md)为准。
 
 ## 背景
 

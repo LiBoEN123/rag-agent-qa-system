@@ -269,12 +269,8 @@ def call_judge_json(
     user_prompt: str,
     judge_config: LLMJudgeConfig,
     trace_id: str = "",
-    call_judge_llm_fn: Any = None,
 ) -> Tuple[Dict[str, Any], str]:
     """调用 judge 并解析 JSON；JSON 解析失败时额外重试一次。"""
-    if call_judge_llm_fn is None:
-        call_judge_llm_fn = call_judge_llm
-
     parse_errors = []
     raw_text = ""
     for parse_attempt in range(2):
@@ -284,7 +280,7 @@ def call_judge_json(
                 "\n\n上一次输出不是合法 JSON。请重新输出严格 JSON："
                 "不要 Markdown，不要解释性文字，不要省略双引号。"
             )
-        raw_text = call_judge_llm_fn(system_prompt, prompt, judge_config, trace_id=trace_id)
+        raw_text = call_judge_llm(system_prompt, prompt, judge_config, trace_id=trace_id)
         try:
             return parse_llm_json_response(raw_text), raw_text
         except ValueError as exc:
@@ -406,7 +402,6 @@ def evaluate_key_points_with_llm(
     category: str = "",
     expected_behavior: str = "",
     qid: str = "",
-    call_judge_json_fn: Any = None,
 ) -> Dict[str, Any]:
     """使用 LLM judge 逐条判断关键点，再由程序计算 key_point_recall。"""
     points = point_texts(gold_key_points)
@@ -435,8 +430,7 @@ def evaluate_key_points_with_llm(
         category=category,
         expected_behavior=expected_behavior,
     )
-    judge_call = call_judge_json_fn or call_judge_json
-    raw, raw_text = judge_call(KEY_POINT_JUDGE_SYSTEM_PROMPT, prompt, judge_config, trace_id=f"{qid}:key_points")
+    raw, raw_text = call_judge_json(KEY_POINT_JUDGE_SYSTEM_PROMPT, prompt, judge_config, trace_id=f"{qid}:key_points")
     result = normalize_key_point_judge_result(raw, points)
     result["judge_raw_response"] = raw_text
     return result
@@ -450,7 +444,6 @@ def evaluate_forbidden_with_llm(
     judge_config: LLMJudgeConfig | None = None,
     gold_answer: str = "",
     qid: str = "",
-    call_judge_json_fn: Any = None,
 ) -> Dict[str, Any]:
     """使用 LLM judge 语义判断 forbidden hit，区分事实性编造和否定性提及。"""
     points = point_texts(forbidden_points)
@@ -477,8 +470,7 @@ def evaluate_forbidden_with_llm(
         gold_answer=gold_answer,
         evidence=evidence,
     )
-    judge_call = call_judge_json_fn or call_judge_json
-    raw, raw_text = judge_call(FORBIDDEN_JUDGE_SYSTEM_PROMPT, prompt, judge_config, trace_id=f"{qid}:forbidden")
+    raw, raw_text = call_judge_json(FORBIDDEN_JUDGE_SYSTEM_PROMPT, prompt, judge_config, trace_id=f"{qid}:forbidden")
     result = normalize_forbidden_judge_result(raw, points)
     result["judge_raw_response"] = raw_text
     return result

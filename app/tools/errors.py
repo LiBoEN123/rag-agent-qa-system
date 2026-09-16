@@ -57,6 +57,7 @@ class ToolErrorCode(str, Enum):
 class ToolExecutionError(Exception):
     """允许工具实现显式声明错误类别及其是否可重试。"""
 
+    # 保存工具执行错误消息、标准错误码和是否可重试的标记。
     def __init__(
         self,
         message: str,

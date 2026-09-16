@@ -1,0 +1,73 @@
+:root {
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: #20333c;
+  background: #f3f6f7;
+  font-synthesis: none;
+  --el-color-primary: #287d79;
+  --el-color-primary-light-3: #65a4a1;
+  --el-color-primary-light-5: #91bfbc;
+  --el-color-primary-light-7: #bed9d7;
+  --el-color-primary-light-8: #d4e7e5;
+  --el-color-primary-light-9: #eaf3f2;
+  --el-color-primary-dark-2: #206460;
+  --el-border-radius-base: 6px;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, input, textarea { font: inherit; }
+a { color: var(--el-color-primary); }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+code { font-size: .9em; }
+.app-shell { min-height: 100vh; }
+.sidebar { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; background: #fff; border-right: 1px solid #e1e8eb; overflow-x: hidden; }
+.brand { display: flex; gap: 12px; align-items: center; padding: 28px 20px 24px; }
+.brand-mark { display: grid; flex-shrink: 0; place-items: center; width: 32px; height: 34px; color: #fff; background: #183b47; border-radius: 8px; font-weight: 700; }
+.brand strong { font-size: 18px; letter-spacing: -.4px; white-space: nowrap; }
+.brand small { display: block; margin-top: 4px; font-size: 11px; color: #74858d; letter-spacing: 2px; }
+.new-conversation { padding: 0 16px 20px; }
+.new-conversation .el-button { width: 100%; }
+.sidebar .el-menu { border: 0; padding: 0 10px; }
+.sidebar .el-menu--collapse { width: 72px; padding: 0; }
+.sidebar .el-menu-item { border-radius: 6px; margin-bottom: 5px; height: 46px; }
+.sidebar .el-menu-item.is-active { background: #eaf3f2; font-weight: 600; }
+.nav-glyph { font-style: normal; font-size: 13px; border: 1px solid currentColor; border-radius: 4px; width: 20px; height: 20px; line-height: 18px; }
+.sidebar-status { margin: auto 18px 0; padding-top: 26px; font-size: 12px; }
+.status-title { display: flex; justify-content: space-between; align-items: center; font-weight: 600; padding-top: 18px; border-top: 1px solid #e7edef; }
+.sidebar-status dl { margin: 15px 0; }
+.sidebar-status dl div { display: flex; justify-content: space-between; gap: 8px; margin: 10px 0; }
+.sidebar-status dt, .session-label { color: #75868e; }
+.sidebar-status dd { margin: 0; overflow-wrap: anywhere; text-align: right; }
+.status-error { color: #b4493d; line-height: 1.5; overflow-wrap: anywhere; }
+.session-label { margin-top: 22px; margin-bottom: 8px; }
+.session-id { display: block; font-size: 10px; line-height: 1.7; color: #637781; overflow-wrap: anywhere; }
+.collapse-button { margin: 20px 10px 12px !important; }
+.workspace { min-width: 0; }
+.workspace-header { display: flex; justify-content: space-between; align-items: center; background: #fff; border-bottom: 1px solid #e1e8eb; padding: 0 32px; color: #7d8b92; font-size: 12px; }
+.workspace-header strong { color: #344c57; font-weight: 500; }
+.header-divider { padding: 0 14px; color: #c4cdd1; }
+.environment-label { display: inline-flex; align-items: center; gap: 7px; }
+.environment-label i { width: 6px; height: 6px; background: #a3afb6; border-radius: 50%; }
+.environment-label i.online { background: #419681; }
+.workspace-main { padding: 30px 32px 40px; min-width: 0; }
+.page-heading { margin: 0 0 8px; font-size: 25px; font-weight: 650; letter-spacing: -.5px; }
+.page-subtitle { margin: 0 0 24px; color: #72848d; font-size: 13px; line-height: 1.7; }
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 18px; }
+.section-card { margin-bottom: 20px; }
+.el-card { --el-card-border-color: #e1e8eb; box-shadow: none !important; border-radius: 8px; }
+.el-alert { margin-bottom: 16px; }
+.el-table { font-size: 12px; }
+.el-table th.el-table__cell { background: #f7f9fa; color: #657a84; font-weight: 500; }
+.el-table .cell { overflow-wrap: anywhere; }
+.el-descriptions__content { overflow-wrap: anywhere; }
+.muted { color: #768892; font-size: 12px; }
+@media (max-width: 1100px) {
+  .workspace-main { padding: 22px 20px; }
+  .workspace-header { padding: 0 20px; }
+}
+@media (max-width: 700px) {
+  .sidebar { max-width: 180px; }
+  .workspace-main { padding: 16px 12px; }
+  .workspace-header { padding: 0 12px; }
+  .environment-label { display: none; }
+  .brand { padding-left: 18px; }
+}

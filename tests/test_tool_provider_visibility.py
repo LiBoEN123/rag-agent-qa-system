@@ -1,4 +1,6 @@
-"""请求级工具可见性与 Runtime 最终授权边界测试。"""
+"""请求级工具可见性与 ProjectStructuredTool 最终授权边界测试。"""
+
+from pydantic import RootModel
 
 import json
 
@@ -7,14 +9,12 @@ from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_tools
-import app.tools.runtime as tool_runtime
 from app.tools.context import ToolInvocationContext, has_permission
 from app.tools.contracts import ToolRiskLevel, ToolSpec
-from app.tools.providers import LocalToolProvider
-from app.tools.providers.base import is_tool_visible
-from app.tools.registry import ToolRegistry
+from tests.support.local_tools import local_tools
+from tests.support.local_tools import visible_tools
 from app.tools.result import tool_success
-from app.tools.runtime import execute_registered_tool
+from tests.support.local_tools import invoke_local_tool
 from tests.support.agent_runtime import build_agent_harness
 
 
@@ -34,18 +34,9 @@ class VisibilityModel:
         self.bound_tool_names = [tool.name for tool in tools]
         return self
 
-    def invoke(self, messages):
+    async def ainvoke(self, messages):
         self.received_messages.append(list(messages))
         return self.responses.pop(0)
-
-
-@pytest.fixture(autouse=True)
-def isolate_tool_runtime():
-    tool_runtime.reset_tool_runtime()
-    yield
-    tool_runtime.reset_tool_runtime()
-
-
 def _spec(
     name: str,
     calls: list,
@@ -63,7 +54,7 @@ def _spec(
         name=name,
         version="1.0.0",
         description=description,
-        output_schema={"text": "string"},
+        output_model=RootModel[dict],
         handler=handler,
         args_model=TextArgs,
         risk_level=risk_level,
@@ -81,14 +72,14 @@ def _call(name: str, text: str, call_id: str) -> dict:
     }
 
 
-def _invoke_graph(monkeypatch, registry, model, context):
+async def _invoke_graph(monkeypatch, registry, model, context):
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_default_tool_provider",
-        lambda: LocalToolProvider(registry),
+        "get_local_tools",
+        lambda settings: local_tools(registry),
     )
-    return build_agent_harness().invoke(
+    return [state async for state in build_agent_harness().astream(
         {
             "original_question": "验证权限感知工具可见性",
             "effective_question": "验证权限感知工具可见性",
@@ -99,7 +90,11 @@ def _invoke_graph(monkeypatch, registry, model, context):
             "session_id": context.session_id,
         },
         context=context,
-    )
+    )][-1]
+
+
+def _visible(spec, *, context):
+    return bool(visible_tools(local_tools([spec]), context=context))
 
 
 def test_public_and_single_permission_visibility_is_exact():
@@ -107,9 +102,9 @@ def test_public_and_single_permission_visibility_is_exact():
     private = _spec(
         "private_tool", [], required_permissions=("documents:read",)
     )
-    assert is_tool_visible(public, context=ToolInvocationContext()) is True
-    assert is_tool_visible(private, context=ToolInvocationContext()) is False
-    assert is_tool_visible(
+    assert _visible(public, context=ToolInvocationContext()) is True
+    assert _visible(private, context=ToolInvocationContext()) is False
+    assert _visible(
         private,
         context=ToolInvocationContext(permissions=("documents:read",)),
     ) is True
@@ -124,11 +119,11 @@ def test_multiple_permissions_use_and_semantics():
         [],
         required_permissions=("documents:read", "documents:export"),
     )
-    assert is_tool_visible(
+    assert _visible(
         spec,
         context=ToolInvocationContext(permissions=("documents:read",)),
     ) is False
-    assert is_tool_visible(
+    assert _visible(
         spec,
         context=ToolInvocationContext(
             permissions=("documents:read", "documents:export")
@@ -137,7 +132,7 @@ def test_multiple_permissions_use_and_semantics():
 
 
 def test_provider_filters_in_order_without_mutation_or_execution():
-    registry = ToolRegistry()
+    registry = []
     calls: list = []
     public = _spec("public_tool", calls)
     hidden = _spec("hidden_tool", calls, required_permissions=("hidden:read",))
@@ -145,10 +140,10 @@ def test_provider_filters_in_order_without_mutation_or_execution():
         "allowed_tool", calls, required_permissions=("documents:read",)
     )
     for spec in (public, hidden, allowed):
-        registry.register(spec)
+        registry.append(spec)
     context = ToolInvocationContext(permissions=("documents:read",))
     before = (context, public.required_permissions, hidden.required_permissions)
-    specs = LocalToolProvider(registry).list_specs(context=context)
+    specs = [t.project_spec for t in visible_tools(local_tools(registry), context=context)]
     assert specs == [public, allowed]
     assert (context, public.required_permissions, hidden.required_permissions) == before
     assert calls == []
@@ -163,23 +158,23 @@ def test_execution_policy_fields_do_not_hide_authorized_tool():
         requires_approval=True,
     )
     context = ToolInvocationContext(permissions=("documents:write",))
-    assert is_tool_visible(spec, context=context) is True
+    assert _visible(spec, context=context) is True
 
 
 def test_same_provider_keeps_request_visibility_isolated():
-    registry = ToolRegistry()
-    registry.register(_spec("public_tool", []))
-    registry.register(
+    registry = []
+    registry.append(_spec("public_tool", []))
+    registry.append(
         _spec("private_tool", [], required_permissions=("documents:read",))
     )
-    provider = LocalToolProvider(registry)
+    provider = local_tools(registry)
 
     contexts = (
         ToolInvocationContext(),
         ToolInvocationContext(permissions=("documents:read",)),
     )
     names = [
-        [spec.name for spec in provider.list_specs(context=context)]
+        [spec.name for spec in visible_tools(provider, context=context)]
         for context in contexts
     ]
     assert names == [["public_tool"], ["public_tool", "private_tool"]]
@@ -205,7 +200,7 @@ def test_production_web_permissions_are_independent(
     """同一生产 Provider 连续请求保持 Search 与 Fetch 权限隔离。"""
     names = {
         spec.name
-        for spec in LocalToolProvider(tool_registry).list_specs(
+        for spec in visible_tools(local_tools(tool_registry),
             context=ToolInvocationContext(permissions=permissions)
         )
     }
@@ -215,11 +210,12 @@ def test_production_web_permissions_are_independent(
     assert ("web_pdf_fetch" in names) is has_fetch
 
 
-def test_agent_binds_visible_tools_and_executes_authorized_tool(monkeypatch):
-    registry = ToolRegistry()
+@pytest.mark.asyncio
+async def test_agent_binds_visible_tools_and_executes_authorized_tool(monkeypatch):
+    registry = []
     calls: list = []
-    registry.register(_spec("public_tool", calls))
-    registry.register(
+    registry.append(_spec("public_tool", calls))
+    registry.append(
         _spec("private_tool", calls, required_permissions=("documents:read",))
     )
     model = VisibilityModel(
@@ -237,19 +233,10 @@ def test_agent_binds_visible_tools_and_executes_authorized_tool(monkeypatch):
         permissions=("documents:read",),
         source="visibility_test",
     )
-    runtime_calls = []
-    original_execute = tool_runtime.ToolRuntime.execute
-
-    def recording_execute(self, name, args=None, *, context=None):
-        runtime_calls.append((name, context))
-        return original_execute(self, name, args, context=context)
-
-    monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", recording_execute)
-    output = _invoke_graph(monkeypatch, registry, model, context)
+    output = await _invoke_graph(monkeypatch, registry, model, context)
     assert model.bound_tool_names == ["public_tool", "private_tool"]
-    assert len(runtime_calls) == 1
-    assert runtime_calls[0][0] == "private_tool"
-    execution_context = runtime_calls[0][1]
+    assert len(calls) == 1
+    execution_context = calls[0][2]
     assert execution_context.trace_id == context.trace_id
     assert execution_context.permissions == context.permissions
     assert execution_context.effective_question
@@ -257,12 +244,13 @@ def test_agent_binds_visible_tools_and_executes_authorized_tool(monkeypatch):
     assert output["result"]["answer"] == "authorized tool complete"
 
 
-def test_forged_hidden_tool_is_unknown_without_metadata_leak(monkeypatch):
-    registry = ToolRegistry()
+@pytest.mark.asyncio
+async def test_forged_hidden_tool_is_denied_by_execution_policy(monkeypatch):
+    registry = []
     calls: list = []
     secret_description = "SECRET CAPABILITY DESCRIPTION"
-    registry.register(_spec("public_tool", calls))
-    registry.register(
+    registry.append(_spec("public_tool", calls))
+    registry.append(
         _spec(
             "private_tool",
             calls,
@@ -281,30 +269,27 @@ def test_forged_hidden_tool_is_unknown_without_metadata_leak(monkeypatch):
     )
     context = ToolInvocationContext(trace_id="trace-hidden")
 
-    def forbidden_execute(*args, **kwargs):
-        raise AssertionError("hidden tool must not reach ToolRuntime")
-
-    monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", forbidden_execute)
-    output = _invoke_graph(monkeypatch, registry, model, context)
-    message = model.received_messages[1][-1]
+    output = await _invoke_graph(monkeypatch, registry, model, context)
+    message = next(m for m in output["messages"] if isinstance(m, ToolMessage))
     payload = json.loads(message.content)
     assert model.bound_tool_names == ["public_tool"]
     assert isinstance(message, ToolMessage)
-    assert payload["error_code"] == "unknown_tool"
-    assert "documents:read" not in message.content
+    assert payload["error_code"] == "permission_denied"
+    assert payload["governance"]["missing_permissions"] == ["documents:read"]
     assert secret_description not in message.content
     assert calls == []
-    assert output["result"]["answer"] == "hidden tool handled safely"
+    assert output["result"]["status"] == "TOOL_ERROR"
+    assert len(model.received_messages) == 1
 
 
 def test_direct_execution_entry_remains_runtime_authorized():
-    registry = ToolRegistry()
+    registry = []
     calls: list = []
-    registry.register(
+    registry.append(
         _spec("private_tool", calls, required_permissions=("documents:read",))
     )
 
-    result = execute_registered_tool(
+    result = invoke_local_tool(
         registry=registry,
         tool_name="private_tool",
         tool_args={"text": "blocked"},

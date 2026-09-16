@@ -1,13 +1,14 @@
-import app.rag as rag
+from app.rag import pipeline
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from pydantic import ValidationError
 
 import app.tools.compare_documents as compare_documents_module
+from app.config import get_settings
 from app.llm.schemas import CompareDocumentsLLMOutput
 from app.tools.context import build_default_tool_context
-from app.tools.registry import get_tool_registry
-from app.tools.runtime import execute_registered_tool
+from app.tools.catalog import get_local_tool_specs
+from tests.support.local_tools import invoke_local_tool
 from app.tools.schemas import CompareDocumentsArgs
 
 
@@ -51,16 +52,13 @@ def _validated_compare_args(values: dict | None = None, **overrides) -> dict:
     ],
 )
 def test_compare_documents_rejects_invalid_args_at_runtime(tool_args):
-    """基础字段和范围错误统一由 Runtime 参数边界拒绝。"""
-    result = execute_registered_tool(
-        registry=get_tool_registry(),
-        tool_name="compare_documents",
-        tool_args=tool_args,
-    )
-
-    assert result["ok"] is False
-    assert result["error_code"] == "invalid_arguments"
-    assert result["runtime"]["attempt_count"] == 0
+    """基础字段和范围错误由 StructuredTool/Pydantic 边界拒绝。"""
+    with pytest.raises(ValidationError):
+        invoke_local_tool(
+            registry=get_local_tool_specs(get_settings()),
+            tool_name="compare_documents",
+            tool_args=tool_args,
+        )
 
 
 def test_compare_documents_same_docs_returns_error():
@@ -97,7 +95,7 @@ def test_compare_documents_success(monkeypatch):
             "metadata": {"file_name": "new.md", "chunk_id": 3},
         },
     ]
-    monkeypatch.setattr(rag, "chunks", fake_chunks, raising=False)
+    monkeypatch.setattr(pipeline, "chunks", fake_chunks)
     monkeypatch.setattr(
         compare_documents_module,
         "_call_compare_documents_llm",
@@ -134,6 +132,11 @@ def test_compare_documents_success(monkeypatch):
     assert output["doc_a_evidence"][0]["chunk_id"] == 1
     assert output["doc_b_evidence"][0]["chunk_id"] == 2
 
+    monkeypatch.setattr(pipeline, "chunks", fake_chunks[1:])
+    after_reload = compare_documents_tool(result["tool_input"])
+    assert after_reload["ok"] is False
+    assert "doc_a 未找到匹配文档 chunk" in after_reload["error"]
+
 
 def test_compare_documents_same_numeric_terms_not_conflict(monkeypatch):
     """验证同一规定值的不同措辞不会仅因文本不完全一致而判定冲突。"""
@@ -149,7 +152,7 @@ def test_compare_documents_same_numeric_terms_not_conflict(monkeypatch):
             "metadata": {"file_name": "new.md", "chunk_id": 2},
         },
     ]
-    monkeypatch.setattr(rag, "chunks", fake_chunks, raising=False)
+    monkeypatch.setattr(pipeline, "chunks", fake_chunks)
     monkeypatch.setattr(
         compare_documents_module,
         "_call_compare_documents_llm",
@@ -189,7 +192,7 @@ def test_compare_documents_returns_error_when_llm_fails(monkeypatch):
             "metadata": {"file_name": "new.md", "chunk_id": 2},
         },
     ]
-    monkeypatch.setattr(rag, "chunks", fake_chunks, raising=False)
+    monkeypatch.setattr(pipeline, "chunks", fake_chunks)
 
     def fake_llm(**kwargs):
         """模拟 LLM 调用失败。"""
@@ -308,14 +311,14 @@ def test_execution_entry_propagates_compare_documents_trace_id(
             summary="摘要",
         )
 
-    monkeypatch.setattr(rag, "chunks", fake_chunks, raising=False)
+    monkeypatch.setattr(pipeline, "chunks", fake_chunks)
     monkeypatch.setattr(
         compare_documents_module.ModelGateway,
         "invoke_structured",
         fake_invoke_structured,
     )
-    result = execute_registered_tool(
-        registry=get_tool_registry(),
+    result = invoke_local_tool(
+        registry=get_local_tool_specs(get_settings()),
         tool_name="compare_documents",
         tool_args={
             "query": "  普通本科四年制最长学习年限  ",

@@ -9,16 +9,25 @@
 app.api
   → app.services
   → app.agent
+  → app.sources
   → app.tools
   → app.rag
-  → app.llm
   → app.storage / app.observability
+  → app.ingestion
+  → app.llm
   → app.contracts / app.config / app.common
 ```
 
 箭头表示允许依赖的方向。高层可以直接依赖任意更低层；低层不能直接或间接依赖
-更高层。`app.storage : app.observability` 暂时属于同一层，允许保留必要的相互
-依赖。`app.contracts | app.config | app.common` 是三个彼此独立的基础模块。
+更高层。`app.storage : app.observability` 属于同一层；其中 storage 可以实现
+`app.ingestion` 定义的 repository contract，但 domain 不反向依赖 storage。
+`app.contracts | app.config | app.common` 是三个彼此独立的基础模块。
+
+PDF/DOCX 的稳定结构值对象位于 `app.ingestion.document_blocks`，由
+`KnowledgeDocument.structured_content` 持有并随 candidate JSON 持久化；
+Docling 仅由 `app.rag.parsing` infrastructure 适配，Local/Upload 共用此入口。
+Ingestion domain 不导入 Docling 或反向导入 rag/sources，详见
+[结构化文档合同](../ingestion/structured-documents.md)。
 
 `app.main` 是只调用 `app.api.application.create_app()` 并导出 ASGI app 的进程
 入口，允许依赖 API；当前并不直接导入 FastAPI。`app.rebuild_kb` 是维护命令入口，
@@ -32,10 +41,12 @@ app.api
 | `app.api` | FastAPI app、HTTP Schema/middleware、Uvicorn 适配、lifespan、路由和依赖组装 | 所有下层 | 无低层限制；它是组合根 |
 | `app.services` | Chat 应用用例，编排 Agent Runtime、Result、Session、Metrics、Query Rewrite | agent 及所有更低层 | api、FastAPI、Starlette |
 | `app.agent` | 直接 `create_agent` Runtime、Router、框架适配、治理事件和结果转换 | tools、rag、llm 及基础设施/基础层 | api、services |
+| `app.sources` | 显式外部 source fetch、纯 Adapter、proposal/approval 与 approved-only indexing 编排 | tools、rag、ingestion 及基础层 | api、services、agent |
 | `app.tools` | ToolSpec、Provider、Registry、Runtime 和具体工具 | rag、llm、storage 及基础层 | api、services、agent |
 | `app.rag` | 索引、检索、重排、生成、引用和独立 RAG Graph | llm、storage、observability 及基础层 | api、services、agent、tools |
+| `app.ingestion` | 永久知识进入前的 source、identity、provenance、trust、policy 与 approval domain | common | api、services、agent、tools、rag、llm、storage、observability |
 | `app.llm` | 模型传输、工厂、错误和模型 Schema | contracts、config、common | rag、tools、agent、services、api |
-| `app.storage` | SQLite、session、trace 持久化 | observability 及基础层 | 业务层 |
+| `app.storage` | SQLite session、ingestion repository 持久化适配 | ingestion 及基础层 | api、services、agent、tools、rag、sources |
 | `app.observability` | 框架无关 metrics、trace ID 和日志数据处理 | storage 及基础层 | 业务层、FastAPI、Starlette |
 | `app.contracts` | 跨层稳定值对象和状态策略 | 无 | config、common 及所有应用/基础设施层 |
 | `app.config` | 唯一 AppSettings、配置 helper、校验和惰性缓存 | 无内部 package | contracts、common 及所有上层 |
@@ -58,8 +69,8 @@ Observability 和基础层都不能导入 API。ChatService 继续接收框架�
 FastAPI 与 Starlette 只允许出现在 `app.api`；`app.main` 只导入 application
 factory 并公开 `app`。
 
-- `app/api/middleware.py` 拥有 `/chat` trace ID、`request_enter_time`、
-  `request_enter_perf` 和 `X-Trace-Id`/`X-Total-Cost-Ms`。
+- `app/api/middleware.py` 拥有 `/chat/stream` trace ID、`request_enter_time`、
+  `request_enter_perf` 和 `X-Trace-Id`；完整耗时由 SSE final 提供。
 - `app/api/http_logging.py` 拥有 Uvicorn access-log URL 解码与控制字符转义。
 - `app/api/application.py` 拥有 FastAPI 实例、Router 注册和 lifespan 组合。
 - `app/api/lifecycle.py` 拥有 RAG/Agent 初始化与 Runtime 关闭细节。
@@ -83,15 +94,17 @@ Import Linter 2.13 的 `allow_indirect_imports = True`，只禁止 source packag
 
 ## 合同清单
 
-`.importlinter` 声明六项合同：
+`.importlinter` 声明七项合同：
 
 1. `application-layers`：固化总体单向层级；
 2. `top-level-acyclic`：禁止 `app` 顶层 package 形成循环；
 3. `framework-middleware-does-not-depend-on-runtime`：禁止 Middleware 反向依赖
    Agent Runtime，治理规则只能从 `guardrails.py` 等低耦合模块取得；
 4. `foundation-does-not-depend-on-application`：为基础层反向依赖提供明确错误；
-5. `http-framework-only-in-api`：限制 FastAPI/Starlette；
-6. `pydantic-settings-only-in-config`：限制 pydantic-settings 的直接导入。
+5. `ingestion-domain-is-independent`：禁止永久知识合同反向依赖 Runtime、Tool、
+   RAG、MCP 或基础设施实现；
+6. `http-framework-only-in-api`：限制 FastAPI/Starlette；
+7. `pydantic-settings-only-in-config`：限制 pydantic-settings 的直接导入。
 
 合同不包含 `ignore_imports`。函数内 import 和包级 re-export 都会进入 Import
 Linter 的图，不是规避手段；也不得用 `importlib`、Service Locator 或动态 Registry
@@ -124,7 +137,9 @@ python scripts/inspect_agent_runtime.py --check
 3. 跨层且框架无关的稳定类型放入 `app.contracts`；纯 helper 放入
    `app.common`；配置解析和语义留在 `app.config`。
 4. Agent Loop 与直接 Runtime 放入 `app.agent`，工具执行放入 `app.tools`；只有独立
-   RAG Graph、索引、检索和生成放入 `app.rag`。不要重新创建 Parent Agent Graph。
+   RAG Graph、索引、检索和生成放入 `app.rag`；进入永久知识前的 identity、
+   provenance、policy 和 approval 放入 `app.ingestion`；受治理外部 fetch 与这些边界的
+   薄编排放入 `app.sources`。不要重新创建 Parent Agent Graph。
 5. 更新 `.importlinter` 时把新 package 加到职责匹配的层，不通过调整顺序把偶然
    耦合合法化，也不添加 ignore。
 6. 运行 `lint-imports --verbose` 查看完整 importer/imported 链，再运行 focused

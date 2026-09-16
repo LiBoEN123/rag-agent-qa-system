@@ -1,24 +1,28 @@
+import sqlite3
+
 import pytest
 
 
 def test_init_db_creates_tables(tmp_path):
     """验证初始化数据库会创建全部持久化表。"""
-    from app.storage.database import get_connection, init_db
+    from app.storage.database import init_db
 
     db_path = tmp_path / "test.sqlite"
     init_db(db_path)
 
-    with get_connection(db_path) as conn:
+    with sqlite3.connect(db_path) as conn:
         rows = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()
 
-    names = {row["name"] for row in rows}
+    names = {row[0] for row in rows}
 
     assert "sessions" in names
     assert "messages" in names
-    assert "agent_runs" in names
-    assert "agent_steps" in names
+    assert "agent_runs" not in names
+    assert "agent_steps" not in names
+    assert "ingestion_candidates" in names
+    assert "ingestion_index_runs" in names
 
 
 def test_sqlite_memory_append_and_get_history(tmp_path):
@@ -81,88 +85,3 @@ def test_append_message_sqlite_rejects_invalid_role(tmp_path):
 
     with pytest.raises(ValueError):
         append_message_sqlite("s1", "system", "bad", db_path=db_path)
-
-
-def test_save_agent_trace_writes_run_and_steps(tmp_path):
-    """验证 Agent 运行摘要和步骤能够完整写入 SQLite。"""
-    from app.storage.traces import get_agent_run, get_agent_steps, save_agent_trace
-
-    db_path = tmp_path / "test.sqlite"
-
-    tool_trace = [
-        {
-            "step": "decide",
-            "action": "search_knowledge_base",
-            "tool_name": "search_knowledge_base",
-            "tool_args": {"query": "测试", "top_k": 5},
-            "status": "success",
-        },
-        {
-            "step": "tool_call",
-            "step_id": 1,
-            "action": "tool_call",
-            "tool_name": "search_knowledge_base",
-            "tool_args": {"query": "测试", "top_k": 5},
-            "tool_status": "success",
-            "success": True,
-            "cost_ms": 123,
-        },
-    ]
-
-    save_agent_trace(
-        trace_id="trace_001",
-        session_id="session_001",
-        question="测试问题",
-        rewritten_question="测试问题",
-        final_answer="测试答案",
-        status="OK",
-        reason="ok",
-        tool_trace=tool_trace,
-        total_cost_ms=456,
-        db_path=db_path,
-    )
-
-    run = get_agent_run("trace_001", db_path=db_path)
-    steps = get_agent_steps("trace_001", db_path=db_path)
-
-    assert run is not None
-    assert run["trace_id"] == "trace_001"
-    assert run["session_id"] == "session_001"
-    assert run["question"] == "测试问题"
-    assert run["final_answer"] == "测试答案"
-    assert run["status"] == "OK"
-    assert run["total_cost_ms"] == 456
-
-    assert len(steps) == 2
-    assert steps[0]["trace_id"] == "trace_001"
-    assert steps[1]["tool_name"] == "search_knowledge_base"
-    assert steps[1]["cost_ms"] == 123
-
-
-def test_save_agent_trace_replaces_existing_steps(tmp_path):
-    """验证重复保存同一 trace 时旧步骤会被替换。"""
-    from app.storage.traces import get_agent_steps, save_agent_trace
-
-    db_path = tmp_path / "test.sqlite"
-
-    save_agent_trace(
-        trace_id="trace_001",
-        session_id=None,
-        question="q",
-        tool_trace=[{"step": "one"}],
-        db_path=db_path,
-    )
-
-    save_agent_trace(
-        trace_id="trace_001",
-        session_id=None,
-        question="q",
-        tool_trace=[{"step": "two"}, {"step": "three"}],
-        db_path=db_path,
-    )
-
-    steps = get_agent_steps("trace_001", db_path=db_path)
-
-    assert len(steps) == 2
-    assert "two" in steps[0]["observation_json"]
-    assert "three" in steps[1]["observation_json"]

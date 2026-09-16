@@ -12,7 +12,7 @@ def list_documents() -> dict:
     tool_name = "list_documents"
     tool_input = {}
     try:
-        from app.rag import preview_docs
+        from app.rag.pipeline import preview_docs
 
         documents = preview_docs()
         return tool_success(
@@ -29,7 +29,7 @@ def get_chunk_text(chunk_id: int | str) -> dict:
     tool_name = "get_chunk_text"
     tool_input = {"chunk_id": chunk_id}
     try:
-        from app.rag import get_chunk_full_text
+        from app.rag.pipeline import get_chunk_full_text
 
         chunk = get_chunk_full_text(chunk_id)
         if not chunk.get("found"):
@@ -74,7 +74,7 @@ def search_knowledge_base(
     tool_name = "search_knowledge_base"
     try:
         from app.config import get_settings
-        from app.rag import search_relevant_chunks
+        from app.rag.pipeline import search_relevant_chunks
         from app.rag.graph import run_rag_subgraph
 
         query = args["query"]

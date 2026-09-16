@@ -1,19 +1,19 @@
 """Agent 错误预算、循环防护与终止治理的真实工具链测试。"""
 
+import pytest
+from pydantic import RootModel
+
 import json
 
-import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_tools
 from app.config import get_settings
-import app.tools.runtime as tool_runtime
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolRiskLevel, ToolSpec
 from app.tools.errors import ToolErrorCode
-from app.tools.providers import LocalToolProvider
-from app.tools.registry import ToolRegistry
+from tests.support.local_tools import local_tools
 from app.tools.result import tool_error, tool_success
 from tests.support.agent_runtime import build_agent_harness
 
@@ -34,18 +34,9 @@ class FakeModel:
         self.bound_tools = list(tools)
         return self
 
-    def invoke(self, messages):
+    async def ainvoke(self, messages):
         self.received_messages.append(list(messages))
         return self.responses.pop(0)
-
-
-@pytest.fixture(autouse=True)
-def isolate_tool_runtimes():
-    tool_runtime.reset_tool_runtime()
-    yield
-    tool_runtime.reset_tool_runtime()
-
-
 def _call(tool_name: str, value: int | None, call_id: str) -> dict:
     args = {} if value is None else {"value": value}
     return {
@@ -68,7 +59,7 @@ def _spec(
         name=name,
         version="1.0.0",
         description=f"执行 {name} 的受控 Agent 错误恢复测试工具",
-        output_schema={"value": "integer"},
+        output_model=RootModel[dict],
         handler=handler,
         args_model=ValueArgs,
         risk_level=risk_level,
@@ -78,10 +69,10 @@ def _spec(
     )
 
 
-def _invoke(
+async def _invoke(
     monkeypatch,
     *,
-    registry: ToolRegistry,
+    registry: list[ToolSpec],
     model: FakeModel,
     context: ToolInvocationContext | None = None,
     max_tool_errors: int = 3,
@@ -89,12 +80,12 @@ def _invoke(
     max_same_errors: int = 2,
 ):
     """按指定错误预算组装并调用受控 Agent 图。"""
-    provider = LocalToolProvider(registry)
+    provider = local_tools(registry)
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
-        "get_default_tool_provider",
-        lambda: provider,
+        "get_local_tools",
+        lambda settings: provider,
     )
     settings = get_settings().model_copy(
         update={
@@ -114,7 +105,7 @@ def _invoke(
         source="agent_error_recovery_test",
         idempotency_key="idem-test",
     )
-    return build_agent_harness(settings).invoke(
+    return [state async for state in build_agent_harness(settings).astream(
         {
             "original_question": "执行测试工具",
             "effective_question": "执行测试工具",
@@ -125,7 +116,7 @@ def _invoke(
             "session_id": resolved_context.session_id,
         },
         context=resolved_context,
-    )
+    )][-1]
 
 
 def _payloads(output) -> dict[str, dict]:
@@ -136,7 +127,8 @@ def _payloads(output) -> dict[str, dict]:
     }
 
 
-def test_max_tool_errors_stops_on_third_failure_without_another_model_call(
+@pytest.mark.asyncio
+async def test_max_tool_errors_stops_on_third_failure_without_another_model_call(
     monkeypatch,
 ):
     calls: list[int] = []
@@ -150,8 +142,8 @@ def test_max_tool_errors_stops_on_third_failure_without_another_model_call(
             error_code=ToolErrorCode.EXECUTION_ERROR.value,
         )
 
-    registry = ToolRegistry()
-    registry.register(_spec("failing_tool", handler))
+    registry = []
+    registry.append(_spec("failing_tool", handler))
     model = FakeModel(
         [
             AIMessage(content="", tool_calls=[_call("failing_tool", 1, "e1")]),
@@ -160,25 +152,29 @@ def test_max_tool_errors_stops_on_third_failure_without_another_model_call(
         ]
     )
 
-    output = _invoke(monkeypatch, registry=registry, model=model)
+    output = await _invoke(monkeypatch, registry=registry, model=model)
 
     assert calls == [1, 2, 3]
     assert len(model.received_messages) == 3
-    assert output["tool_error_count"] == 3
+    assert sum(
+        bool(event.get("counted_call")) and not event.get("ok")
+        for event in output["governance_events"]
+    ) == 3
     assert output["stop_reason"] == "max_tool_errors_reached"
     assert output["status"] == "model_error"
     assert output["result"]["status"] == "MODEL_ERROR"
 
 
-def test_third_identical_call_is_blocked_before_structured_tool(monkeypatch):
+@pytest.mark.asyncio
+async def test_third_identical_call_is_blocked_before_structured_tool(monkeypatch):
     calls: list[int] = []
 
     def handler(args, context):
         calls.append(args["value"])
         return tool_success("repeatable_tool", args, {"value": args["value"]})
 
-    registry = ToolRegistry()
-    registry.register(_spec("repeatable_tool", handler))
+    registry = []
+    registry.append(_spec("repeatable_tool", handler))
     model = FakeModel(
         [
             AIMessage(content="", tool_calls=[_call("repeatable_tool", 1, "r1")]),
@@ -187,19 +183,26 @@ def test_third_identical_call_is_blocked_before_structured_tool(monkeypatch):
         ]
     )
 
-    output = _invoke(monkeypatch, registry=registry, model=model)
+    output = await _invoke(monkeypatch, registry=registry, model=model)
     payload = _payloads(output)["r3"]
 
     assert calls == [1, 1]
-    assert output["tool_call_count"] == 2
-    assert output["consecutive_same_tool_call_count"] == 3
+    assert sum(
+        bool(event.get("counted_call"))
+        for event in output.get("governance_events", [])
+    ) == 2
+    tool_events = [event for event in output["governance_events"] if event["kind"] == "tool"]
+    assert len(tool_events) == 3
+    assert len({event["call_fingerprint"] for event in tool_events}) == 1
+    assert [event["counted_call"] for event in tool_events] == [True, True, False]
     assert output["stop_reason"] == "repeated_tool_call"
     assert payload["error_source"] == "agent_guardrail"
     assert payload["handler_executed"] is False
     assert payload["stop_reason"] == "repeated_tool_call"
 
 
-def test_same_tool_with_different_arguments_does_not_trigger_call_guard(
+@pytest.mark.asyncio
+async def test_same_tool_with_different_arguments_does_not_trigger_call_guard(
     monkeypatch,
 ):
     calls: list[int] = []
@@ -208,8 +211,8 @@ def test_same_tool_with_different_arguments_does_not_trigger_call_guard(
         calls.append(args["value"])
         return tool_success("varying_tool", args, {"value": args["value"]})
 
-    registry = ToolRegistry()
-    registry.register(_spec("varying_tool", handler))
+    registry = []
+    registry.append(_spec("varying_tool", handler))
     model = FakeModel(
         [
             AIMessage(content="", tool_calls=[_call("varying_tool", 1, "v1")]),
@@ -218,14 +221,17 @@ def test_same_tool_with_different_arguments_does_not_trigger_call_guard(
         ]
     )
 
-    output = _invoke(monkeypatch, registry=registry, model=model)
+    output = await _invoke(monkeypatch, registry=registry, model=model)
 
     assert calls == [1, 2]
     assert output["stop_reason"] == "completed"
-    assert output["consecutive_same_tool_call_count"] == 1
+    tool_events = [event for event in output["governance_events"] if event["kind"] == "tool"]
+    assert len(tool_events) == 2
+    assert tool_events[0]["call_fingerprint"] != tool_events[1]["call_fingerprint"]
 
 
-def test_second_identical_error_is_saved_then_stops(monkeypatch):
+@pytest.mark.asyncio
+async def test_second_identical_error_is_saved_then_stops(monkeypatch):
     calls: list[int] = []
 
     def handler(args, context):
@@ -237,8 +243,8 @@ def test_second_identical_error_is_saved_then_stops(monkeypatch):
             error_code=ToolErrorCode.EXECUTION_ERROR.value,
         )
 
-    registry = ToolRegistry()
-    registry.register(_spec("same_error_tool", handler))
+    registry = []
+    registry.append(_spec("same_error_tool", handler))
     model = FakeModel(
         [
             AIMessage(content="", tool_calls=[_call("same_error_tool", 1, "s1")]),
@@ -246,7 +252,7 @@ def test_second_identical_error_is_saved_then_stops(monkeypatch):
         ]
     )
 
-    output = _invoke(monkeypatch, registry=registry, model=model)
+    output = await _invoke(monkeypatch, registry=registry, model=model)
     payload = _payloads(output)["s2"]
 
     assert calls == [1, 1]
@@ -256,7 +262,8 @@ def test_second_identical_error_is_saved_then_stops(monkeypatch):
     assert payload["stop_reason"] == "repeated_tool_error"
 
 
-def test_same_error_code_with_different_arguments_is_not_same_error_loop(
+@pytest.mark.asyncio
+async def test_same_error_code_with_different_arguments_is_not_same_error_loop(
     monkeypatch,
 ):
     def handler(args, context):
@@ -267,8 +274,8 @@ def test_same_error_code_with_different_arguments_is_not_same_error_loop(
             error_code=ToolErrorCode.EXECUTION_ERROR.value,
         )
 
-    registry = ToolRegistry()
-    registry.register(_spec("different_error_calls", handler))
+    registry = []
+    registry.append(_spec("different_error_calls", handler))
     model = FakeModel(
         [
             AIMessage(
@@ -283,14 +290,17 @@ def test_same_error_code_with_different_arguments_is_not_same_error_loop(
         ]
     )
 
-    output = _invoke(monkeypatch, registry=registry, model=model)
+    output = await _invoke(monkeypatch, registry=registry, model=model)
 
     assert len(model.received_messages) == 3
-    assert output["consecutive_same_tool_error_count"] == 1
+    tool_events = [event for event in output["governance_events"] if event["kind"] == "tool"]
+    assert len(tool_events) == 2
+    assert tool_events[0]["error_fingerprint"] != tool_events[1]["error_fingerprint"]
     assert output["stop_reason"] == "completed"
 
 
-def test_approval_required_stops_and_aborts_later_batch_call(monkeypatch):
+@pytest.mark.asyncio
+async def test_approval_required_stops_and_aborts_later_batch_call(monkeypatch):
     approval_calls: list[int] = []
     later_calls: list[int] = []
 
@@ -302,8 +312,8 @@ def test_approval_required_stops_and_aborts_later_batch_call(monkeypatch):
         later_calls.append(args["value"])
         return tool_success("later_tool", args, {"value": args["value"]})
 
-    registry = ToolRegistry()
-    registry.register(
+    registry = []
+    registry.append(
         _spec(
             "approval_tool",
             approval_handler,
@@ -312,7 +322,7 @@ def test_approval_required_stops_and_aborts_later_batch_call(monkeypatch):
             requires_approval=True,
         )
     )
-    registry.register(_spec("later_tool", later_handler))
+    registry.append(_spec("later_tool", later_handler))
     model = FakeModel(
         [
             AIMessage(
@@ -325,7 +335,7 @@ def test_approval_required_stops_and_aborts_later_batch_call(monkeypatch):
         ]
     )
 
-    output = _invoke(monkeypatch, registry=registry, model=model)
+    output = await _invoke(monkeypatch, registry=registry, model=model)
     payloads = _payloads(output)
 
     assert approval_calls == []
@@ -338,7 +348,8 @@ def test_approval_required_stops_and_aborts_later_batch_call(monkeypatch):
     assert payloads["later"]["handler_executed"] is False
 
 
-def test_missing_idempotency_key_stops_without_handler_or_model_retry(
+@pytest.mark.asyncio
+async def test_missing_idempotency_key_stops_without_handler_or_model_retry(
     monkeypatch,
 ):
     calls: list[int] = []
@@ -347,8 +358,8 @@ def test_missing_idempotency_key_stops_without_handler_or_model_retry(
         calls.append(args["value"])
         return tool_success("write_tool", args, {"value": args["value"]})
 
-    registry = ToolRegistry()
-    registry.register(
+    registry = []
+    registry.append(
         _spec(
             "write_tool",
             handler,
@@ -366,7 +377,7 @@ def test_missing_idempotency_key_stops_without_handler_or_model_retry(
         source="agent_error_recovery_test",
     )
 
-    output = _invoke(
+    output = await _invoke(
         monkeypatch,
         registry=registry,
         model=model,
@@ -379,30 +390,29 @@ def test_missing_idempotency_key_stops_without_handler_or_model_retry(
     assert _payloads(output)["write"]["handler_executed"] is False
 
 
-def test_runtime_unavailable_is_terminal(monkeypatch):
+@pytest.mark.asyncio
+async def test_runtime_unavailable_is_terminal(monkeypatch):
+    from app.tools import execution
+    from app.tools.runtime import ProjectToolExecutorError
+
     calls: list[int] = []
 
     def handler(args, context):
         calls.append(args["value"])
         return tool_success("runtime_tool", args, {"value": args["value"]})
 
-    registry = ToolRegistry()
-    registry.register(_spec("runtime_tool", handler))
+    registry = []
+    registry.append(_spec("runtime_tool", handler))
     model = FakeModel(
         [AIMessage(content="", tool_calls=[_call("runtime_tool", 1, "runtime")])]
     )
 
-    def unavailable(self, tool_name, tool_args=None, *, context=None):
-        return tool_error(
-            tool_name,
-            tool_args or {},
-            "runtime closed",
-            error_code=ToolErrorCode.RUNTIME_UNAVAILABLE.value,
-            runtime={"attempt_count": 0, "max_attempts": 0},
-        )
+    def unavailable(*args, **kwargs):
+        del args, kwargs
+        raise ProjectToolExecutorError
 
-    monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", unavailable)
-    output = _invoke(monkeypatch, registry=registry, model=model)
+    monkeypatch.setattr(execution, "run_with_timeout", unavailable)
+    output = await _invoke(monkeypatch, registry=registry, model=model)
 
     assert calls == []
     assert len(model.received_messages) == 1
@@ -410,7 +420,8 @@ def test_runtime_unavailable_is_terminal(monkeypatch):
     assert _payloads(output)["runtime"]["failure_kind"] == "terminal_runtime"
 
 
-def test_hidden_tool_is_unknown_and_public_batch_call_still_executes(monkeypatch):
+@pytest.mark.asyncio
+async def test_hidden_tool_is_denied_and_public_batch_call_is_aborted(monkeypatch):
     protected_calls: list[int] = []
     normal_calls: list[int] = []
 
@@ -422,15 +433,15 @@ def test_hidden_tool_is_unknown_and_public_batch_call_still_executes(monkeypatch
         normal_calls.append(args["value"])
         return tool_success("normal_tool", args, {"value": args["value"]})
 
-    registry = ToolRegistry()
-    registry.register(
+    registry = []
+    registry.append(
         _spec(
             "protected_tool",
             protected_handler,
             required_permissions=("protected:read",),
         )
     )
-    registry.register(_spec("normal_tool", normal_handler))
+    registry.append(_spec("normal_tool", normal_handler))
     model = FakeModel(
         [
             AIMessage(
@@ -450,7 +461,7 @@ def test_hidden_tool_is_unknown_and_public_batch_call_still_executes(monkeypatch
         source="agent_error_recovery_test",
     )
 
-    output = _invoke(
+    output = await _invoke(
         monkeypatch,
         registry=registry,
         model=model,
@@ -459,22 +470,24 @@ def test_hidden_tool_is_unknown_and_public_batch_call_still_executes(monkeypatch
     payloads = _payloads(output)
 
     assert protected_calls == []
-    assert normal_calls == [2]
-    assert output["stop_reason"] == "completed"
+    assert normal_calls == []
+    assert output["stop_reason"] == "fatal_tool_error"
     assert set(payloads) == {"denied", "normal"}
-    assert payloads["denied"]["error_code"] == "unknown_tool"
-    assert payloads["normal"]["ok"] is True
+    assert payloads["denied"]["error_code"] == "permission_denied"
+    assert payloads["normal"]["error_code"] == "agent_batch_aborted"
+    assert payloads["normal"]["handler_executed"] is False
 
 
-def test_structured_tool_validation_error_is_corrected_next_round(monkeypatch):
+@pytest.mark.asyncio
+async def test_structured_tool_validation_error_is_corrected_next_round(monkeypatch):
     calls: list[int] = []
 
     def handler(args, context):
         calls.append(args["value"])
         return tool_success("validated_tool", args, {"value": args["value"]})
 
-    registry = ToolRegistry()
-    registry.register(_spec("validated_tool", handler))
+    registry = []
+    registry.append(_spec("validated_tool", handler))
     model = FakeModel(
         [
             AIMessage(content="", tool_calls=[_call("validated_tool", None, "bad")]),
@@ -483,20 +496,20 @@ def test_structured_tool_validation_error_is_corrected_next_round(monkeypatch):
         ]
     )
 
-    output = _invoke(monkeypatch, registry=registry, model=model)
+    output = await _invoke(monkeypatch, registry=registry, model=model)
     first_payload = json.loads(model.received_messages[1][-1].content)
 
     assert calls == [7]
     assert first_payload["error_code"] == "invalid_arguments"
     assert first_payload["error_source"] == "structured_tool_validation"
     assert first_payload["handler_executed"] is False
-    assert "value" in first_payload["error"]
+    assert first_payload["error"] == "工具参数校验失败"
     assert output["result"]["answer"] == "corrected"
 
 
-def test_execution_error_can_switch_tools_and_both_use_runtime(monkeypatch):
+@pytest.mark.asyncio
+async def test_execution_error_can_switch_tools(monkeypatch):
     executed: list[str] = []
-    runtime_calls: list[str] = []
 
     def first_handler(args, context):
         executed.append("first")
@@ -511,16 +524,9 @@ def test_execution_error_can_switch_tools_and_both_use_runtime(monkeypatch):
         executed.append("second")
         return tool_success("second_tool", args, {"value": args["value"]})
 
-    registry = ToolRegistry()
-    registry.register(_spec("first_tool", first_handler))
-    registry.register(_spec("second_tool", second_handler))
-    original_execute = tool_runtime.ToolRuntime.execute
-
-    def recording_execute(self, tool_name, tool_args=None, *, context=None):
-        runtime_calls.append(tool_name)
-        return original_execute(self, tool_name, tool_args, context=context)
-
-    monkeypatch.setattr(tool_runtime.ToolRuntime, "execute", recording_execute)
+    registry = []
+    registry.append(_spec("first_tool", first_handler))
+    registry.append(_spec("second_tool", second_handler))
     model = FakeModel(
         [
             AIMessage(content="", tool_calls=[_call("first_tool", 1, "first")]),
@@ -529,8 +535,7 @@ def test_execution_error_can_switch_tools_and_both_use_runtime(monkeypatch):
         ]
     )
 
-    output = _invoke(monkeypatch, registry=registry, model=model)
+    output = await _invoke(monkeypatch, registry=registry, model=model)
 
     assert executed == ["first", "second"]
-    assert runtime_calls == ["first_tool", "second_tool"]
     assert output["result"]["answer"] == "used fallback tool"

@@ -1,8 +1,12 @@
 """统一 LLM Factory 的配置映射与缓存测试。"""
 
+import socket
+
 import pytest
+from langchain_openai import ChatOpenAI
 
 from app.llm import factory
+from app.llm.errors import ModelCallError
 
 
 class FakeChatOpenAI:
@@ -180,3 +184,58 @@ def test_factory_cache_can_be_cleared(settings_env):
     assert third is not first
     assert third.kwargs["model"] == "model-b"
     assert len(FakeChatOpenAI.instances) == 2
+
+
+def test_real_chat_openai_constructor_without_network(monkeypatch, settings_env):
+    """锁定 SDK 接受 Factory 参数；仅构造客户端，并禁止网络连接。"""
+    def deny_network(*args, **kwargs):
+        raise AssertionError("constructor smoke must not open a network connection")
+
+    monkeypatch.setattr(socket.socket, "connect", deny_network)
+    monkeypatch.setattr(socket.socket, "connect_ex", deny_network)
+    monkeypatch.setattr(factory, "ChatOpenAI", ChatOpenAI)
+    settings_env(
+        llm_api_key="test-key",
+        llm_api_url="http://localhost:12345/v1/chat/completions",
+        model_name="test-model",
+        temperature=0,
+        llm_max_tokens=10,
+        llm_timeout=1,
+        llm_max_retries=0,
+    )
+
+    model = factory.get_answer_model()
+
+    assert isinstance(model, ChatOpenAI)
+    assert model.model_name == "test-model"
+    assert model.openai_api_key.get_secret_value() == "test-key"
+    assert model.openai_api_base == "http://localhost:12345/v1"
+    assert model.temperature == 0
+    assert model.max_tokens == 10
+    assert model.request_timeout == 1
+    assert model.max_retries == 0
+    assert model.model_kwargs == {}
+
+
+def test_constructor_failure_maps_to_model_call_error(monkeypatch, settings_env):
+    """初始化异常仍统一映射为不可重试的 ModelCallError。"""
+    failure = ValueError("invalid constructor configuration")
+
+    def fail_constructor(**kwargs):
+        raise failure
+
+    monkeypatch.setattr(factory, "ChatOpenAI", fail_constructor)
+    settings_env(
+        llm_api_url="http://localhost:12345/v1",
+        model_name="test-model",
+    )
+
+    with pytest.raises(ModelCallError) as error:
+        factory.get_answer_model()
+
+    assert error.value.user_message == "answer 模型客户端初始化失败，请检查模型配置。"
+    assert error.value.detail == "ValueError"
+    assert error.value.provider == "langchain"
+    assert error.value.model_name == "test-model"
+    assert error.value.retryable is False
+    assert error.value.__cause__ is failure

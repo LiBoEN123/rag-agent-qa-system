@@ -5,9 +5,19 @@ import json
 from dataclasses import dataclass
 
 from langchain_core.messages import ToolMessage
-from langchain_core.tools import StructuredTool
 from langchain_mcp_adapters.interceptors import MCPToolCallRequest
-from mcp.types import CallToolResult, ImageContent, TextContent
+from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool
+from mcp.types import (
+    AudioContent,
+    BlobResourceContents,
+    CallToolResult,
+    EmbeddedResource,
+    ImageContent,
+    ResourceLink,
+    TextContent,
+    TextResourceContents,
+    Tool,
+)
 from pydantic import BaseModel
 
 from app.agent.framework_middleware import parse_tool_result
@@ -16,8 +26,14 @@ from app.tools.context import PrincipalType, ToolInvocationContext
 from app.tools.mcp.bridge import (
     McpToolCallInterceptor,
     build_governed_mcp_tool,
+    invoke_mcp_tool,
 )
 from app.tools.mcp.config import McpServerConfig
+from app.tools.mcp.serialization import (
+    MCP_INGESTION_MAX_TEXT_CHARS,
+    McpSerializationProfile,
+    normalize_mcp_tool_message,
+)
 
 
 class WeatherArgs(BaseModel):
@@ -36,6 +52,10 @@ class RecordingSink:
 class Runtime:
     context: ToolInvocationContext
     tool_call_id: str = "mcp-call-1"
+    mcp_serialization_profile: McpSerializationProfile = (
+        McpSerializationProfile.AGENT
+    )
+    mcp_ingestion_output: dict | None = None
 
 
 def _runtime(*permissions):
@@ -50,8 +70,49 @@ def _runtime(*permissions):
     )
 
 
-def _payload(message: ToolMessage):
-    return json.loads(message.content)
+def _payload(result: CallToolResult):
+    """通过公开 adapter/BaseTool 路径读取 interceptor 的最终项目结果。"""
+
+    class ResultSession:
+        async def call_tool(self, name, args, progress_callback=None):
+            del name, args, progress_callback
+            return result
+
+    remote = Tool(
+        name="get_weather",
+        description="weather",
+        inputSchema={"type": "object", "properties": {}},
+    )
+    tool = convert_mcp_tool_to_langchain_tool(
+        ResultSession(),
+        remote,
+        server_name="weather",
+        tool_name_prefix=True,
+        handle_tool_errors=True,
+    )
+    message = asyncio.run(
+        tool.ainvoke(
+            {
+                "type": "tool_call",
+                "name": tool.name,
+                "args": {},
+                "id": "adapter-test-call",
+            }
+        )
+    )
+    assert message.tool_call_id == "adapter-test-call"
+    assert message.status == ("error" if result.isError else "success")
+    if result.structuredContent is not None:
+        assert message.artifact == {
+            "structured_content": result.structuredContent,
+        }
+    payload = normalize_mcp_tool_message(
+        message,
+        tool_name="weather_get_weather",
+        args={"location": "Beijing"},
+    )
+    assert payload is not None
+    return payload
 
 
 def _request(runtime, **args):
@@ -323,19 +384,31 @@ def test_timeout_transport_and_remote_errors_are_safe(settings_factory):
         del request
         return CallToolResult(
             isError=True,
-            content=[TextContent(type="text", text="cookie=remote-secret")],
+            content=[
+                TextContent(type="text", text="remote reason"),
+                EmbeddedResource(
+                    type="resource",
+                    resource=TextResourceContents(
+                        uri="github://owner/repo/error.txt",
+                        text="cookie=remote-secret " + "x" * 1000,
+                    ),
+                ),
+            ],
         )
 
     remote = _payload(
         asyncio.run(
             McpToolCallInterceptor(
-                settings_factory(),
+                settings_factory(mcp_max_text_chars=128),
                 server_configs=_server_configs(),
                 audit_sink=RecordingSink(),
             )(_request(runtime), remote_failure)
         )
     )
     assert remote["error_code"] == "mcp_execution_error"
+    assert remote["error"].startswith("MCP tool execution failed: remote reason")
+    assert "***REDACTED***" in remote["error"]
+    assert len(remote["error"]) <= 128
     assert "remote-secret" not in json.dumps(remote)
 
 
@@ -368,40 +441,121 @@ def test_plain_text_credentials_are_redacted(settings_factory):
     assert "***REDACTED***" in serialized
 
 
-def test_unsupported_binary_and_large_outputs_are_bounded(settings_factory):
+def test_official_mixed_content_is_safely_normalized_and_audited(settings_factory):
     runtime = _runtime("mcp:weather")
+    sink = RecordingSink()
 
-    async def image_handler(request):
+    async def mixed_handler(request):
         del request
         return CallToolResult(
             content=[
+                TextContent(type="text", text="plain text"),
+                EmbeddedResource(
+                    type="resource",
+                    resource=TextResourceContents(
+                        uri=(
+                            "https://alice:uri-password@example.com/readme"
+                            "?token=query-secret#fragment"
+                        ),
+                        mimeType="text/plain",
+                        text="embedded cookie=embedded-secret",
+                    ),
+                ),
+                EmbeddedResource(
+                    type="resource",
+                    resource=BlobResourceContents(
+                        uri="github://owner/repo/archive.bin",
+                        mimeType="application/octet-stream",
+                        blob="blob-raw-base64",
+                    ),
+                ),
+                ResourceLink(
+                    type="resource_link",
+                    name="README",
+                    uri=(
+                        "https://alice:uri-password@example.com/README.md"
+                        "?access_token=query-secret#fragment"
+                    ),
+                    mimeType="text/markdown",
+                ),
                 ImageContent(
                     type="image",
-                    data="base64-private-binary",
+                    data="image-raw-base64",
                     mimeType="image/png",
-                )
-            ]
+                ),
+                AudioContent(
+                    type="audio",
+                    data="audio-raw-base64",
+                    mimeType="audio/wav",
+                ),
+            ],
+            structuredContent={"token": "structured-secret", "count": 6},
         )
 
-    unsupported = _payload(
+    payload = _payload(
         asyncio.run(
             McpToolCallInterceptor(
                 settings_factory(),
                 server_configs=_server_configs(),
-                audit_sink=RecordingSink(),
-            )(_request(runtime), image_handler)
+                audit_sink=sink,
+            )(_request(runtime), mixed_handler)
         )
     )
-    assert unsupported["error_code"] == "mcp_unsupported_content"
-    assert "base64-private-binary" not in json.dumps(unsupported)
+    serialized = json.dumps(payload, ensure_ascii=False)
+    serialized_audit = json.dumps(
+        [event.to_dict() for event in sink.events],
+        ensure_ascii=False,
+    )
+
+    assert payload["ok"] is True
+    assert payload["output"]["content_is_untrusted"] is True
+    assert payload["output"]["structured_content"] == {
+        "token": "***REDACTED***",
+        "count": 6,
+    }
+    assert "plain text" in payload["output"]["content"]
+    assert "embedded cookie=***REDACTED***" in payload["output"]["content"]
+    assert '"type":"embedded_blob"' in payload["output"]["content"]
+    assert f'"size_chars":{len("blob-raw-base64")}' in payload["output"]["content"]
+    assert '"type":"resource_link"' in payload["output"]["content"]
+    assert '"type":"image"' in payload["output"]["content"]
+    assert f'"data_chars":{len("image-raw-base64")}' in payload["output"]["content"]
+    assert '"type":"audio"' in payload["output"]["content"]
+    assert f'"data_chars":{len("audio-raw-base64")}' in payload["output"]["content"]
+    assert "https://example.com/README.md" in payload["output"]["content"]
+    for secret in (
+        "uri-password",
+        "query-secret",
+        "structured-secret",
+        "blob-raw-base64",
+        "image-raw-base64",
+        "audio-raw-base64",
+    ):
+        assert secret not in serialized
+        assert secret not in serialized_audit
+
+
+def test_large_text_embedded_text_and_structured_outputs_are_bounded(
+    settings_factory,
+):
+    runtime = _runtime("mcp:weather")
 
     async def large_handler(request):
         del request
         return CallToolResult(
-            content=[TextContent(type="text", text="x" * 1000)],
+            content=[
+                TextContent(type="text", text="x" * 1000),
+                EmbeddedResource(
+                    type="resource",
+                    resource=TextResourceContents(
+                        uri="github://owner/repo/large.txt",
+                        text="y" * 1000,
+                    ),
+                ),
+            ],
             structuredContent={
                 "items": [
-                    {"value": "y" * 200, "api_key": "structured-secret"}
+                    {"value": "z" * 200, "api_key": "structured-secret"}
                     for _ in range(50)
                 ]
             },
@@ -423,6 +577,8 @@ def test_unsupported_binary_and_large_outputs_are_bounded(settings_factory):
     output = bounded["output"]
     assert len(output["content"]) <= 128
     assert output["truncated"] is True
+    assert "content_blocks" not in output
+    assert "serialization_profile" not in output
     assert (
         len(
             json.dumps(
@@ -436,6 +592,117 @@ def test_unsupported_binary_and_large_outputs_are_bounded(settings_factory):
     assert "structured-secret" not in json.dumps(output)
 
 
+def test_ingestion_profile_preserves_complete_text_without_changing_agent_profile(
+    settings_factory,
+):
+    body = "complete body " * 2000
+    sink = RecordingSink()
+
+    async def handler(request):
+        del request
+        return CallToolResult(
+            content=[
+                TextContent(type="text", text="description"),
+                EmbeddedResource(
+                    type="resource",
+                    resource=TextResourceContents(
+                        uri="repo://owner/repo/sha/"
+                        "f7fc20386c23e20d55f438222fab301cfccc4c65/contents/README.md",
+                        mimeType="text/markdown",
+                        text=body,
+                    ),
+                ),
+            ]
+        )
+
+    settings = settings_factory(mcp_max_text_chars=128)
+    interceptor = McpToolCallInterceptor(
+        settings,
+        server_configs=_server_configs(),
+        audit_sink=sink,
+    )
+    agent = _payload(
+        asyncio.run(interceptor(_request(_runtime("mcp:weather")), handler))
+    )["output"]
+    ingestion_runtime = _runtime("mcp:weather")
+    ingestion_runtime.mcp_serialization_profile = McpSerializationProfile.INGESTION
+    asyncio.run(interceptor(_request(ingestion_runtime), handler))
+    ingestion = ingestion_runtime.mcp_ingestion_output
+    assert ingestion is not None
+
+    assert len(agent["content"]) == 128
+    assert agent["truncated"] is True
+    assert "content_blocks" not in agent
+    assert ingestion["truncated"] is False
+    assert ingestion["serialization_profile"] == "ingestion"
+    assert ingestion["content_blocks"][0] == {
+        "type": "text",
+        "text": "description",
+        "size_chars": 11,
+    }
+    assert ingestion["content_blocks"][1]["text"] == body
+    assert ingestion["content_blocks"][1]["size_chars"] == len(body)
+    assert "complete body" not in json.dumps(
+        [event.to_dict() for event in sink.events],
+        ensure_ascii=False,
+    )
+
+
+def test_oversized_ingestion_output_is_bounded_and_drops_block_body(settings_factory):
+    body = "x" * (MCP_INGESTION_MAX_TEXT_CHARS + 1)
+    runtime = _runtime("mcp:weather")
+    runtime.mcp_serialization_profile = McpSerializationProfile.INGESTION
+
+    async def handler(request):
+        del request
+        return CallToolResult(content=[TextContent(type="text", text=body)])
+
+    asyncio.run(
+        McpToolCallInterceptor(
+            settings_factory(),
+            server_configs=_server_configs(),
+            audit_sink=RecordingSink(),
+        )(_request(runtime), handler)
+    )
+    output = runtime.mcp_ingestion_output
+    assert output is not None
+
+    assert len(output["content"]) == MCP_INGESTION_MAX_TEXT_CHARS
+    assert output["truncated"] is True
+    assert output["content_blocks"] == [
+        {
+            "type": "text",
+            "size_chars": MCP_INGESTION_MAX_TEXT_CHARS + 1,
+            "truncated": True,
+        }
+    ]
+
+
+def test_unknown_future_content_fails_without_payload_repr(settings_factory):
+    class FutureContent:
+        def __repr__(self):
+            return "FutureContent(payload=unknown-secret)"
+
+    async def handler(request):
+        del request
+        return CallToolResult.model_construct(content=[FutureContent()])
+
+    payload = _payload(
+        asyncio.run(
+            McpToolCallInterceptor(
+                settings_factory(),
+                server_configs=_server_configs(),
+                audit_sink=RecordingSink(),
+            )(_request(_runtime("mcp:weather")), handler)
+        )
+    )
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["error_code"] == "mcp_unsupported_content"
+    assert "FutureContent" in payload["error"]
+    assert "unknown-secret" not in serialized
+
+
 def _governed_tool(settings):
     interceptor = McpToolCallInterceptor(
         settings,
@@ -443,42 +710,58 @@ def _governed_tool(settings):
         audit_sink=RecordingSink(),
     )
 
-    async def raw_coroutine(runtime=None, **args):
-        request = _request(runtime, **args)
-
-        async def handler(_request):
+    class WeatherSession:
+        async def call_tool(self, name, args, progress_callback=None):
+            del name, args, progress_callback
             return CallToolResult(
                 content=[TextContent(type="text", text="Weather ready")]
             )
 
-        return await interceptor(request, handler), None
-
-    raw_tool = StructuredTool(
-        name="weather_get_weather",
-        description="Remote weather",
-        args_schema=WeatherArgs,
-        coroutine=raw_coroutine,
-        response_format="content_and_artifact",
+    raw_tool = convert_mcp_tool_to_langchain_tool(
+        WeatherSession(),
+        Tool(
+            name="get_weather",
+            description="Remote weather",
+            inputSchema=WeatherArgs.model_json_schema(),
+        ),
+        tool_interceptors=[interceptor],
+        server_name="weather",
+        tool_name_prefix=True,
+        handle_tool_errors=True,
     )
-    return build_governed_mcp_tool(
+    coroutine = raw_tool.coroutine
+    tool = build_governed_mcp_tool(
         raw_tool,
         server_alias="weather",
         remote_tool_name="get_weather",
         description="Safe weather",
     )
+    assert tool is raw_tool
+    assert tool.coroutine is coroutine
+    return tool
 
 
-def test_governed_tool_supports_sync_and_native_async_paths(settings_factory):
+def test_governed_tool_preserves_native_async_contract(settings_factory):
     tool = _governed_tool(settings_factory())
     runtime = _runtime("mcp:weather")
 
-    sync_result = tool.func(runtime=runtime, location="Beijing")
-    async_result = asyncio.run(tool.coroutine(runtime=runtime, location="Beijing"))
+    def call(call_id):
+        return {
+            "type": "tool_call",
+            "name": tool.name,
+            "args": {"location": "Beijing", "runtime": runtime},
+            "id": call_id,
+        }
 
-    assert sync_result["ok"] is True
+    async_message = asyncio.run(tool.ainvoke(call("async")))
+    async_result = parse_tool_result(
+        async_message, known=True, name=tool.name, args={"location": "Beijing"}
+    )
+
+    assert tool.func is None
     assert async_result["ok"] is True
-    assert sync_result["output"] == async_result["output"]
-    assert "runtime" not in tool.tool_call_schema.model_fields
+    assert tool.args_schema == WeatherArgs.model_json_schema()
+    assert "runtime" not in tool.tool_call_schema["properties"]
     parsed = parse_tool_result(
         ToolMessage(
             content=json.dumps(async_result),
@@ -491,14 +774,18 @@ def test_governed_tool_supports_sync_and_native_async_paths(settings_factory):
     assert parsed["ok"] is True
 
 
-def test_sync_bridge_fails_safely_inside_existing_event_loop(settings_factory):
+def test_direct_ingestion_profile_rejects_non_read_only_tool(settings_factory):
     tool = _governed_tool(settings_factory())
-    runtime = _runtime("mcp:weather")
+    tool.metadata["risk_level"] = "external_write"
 
-    async def call_sync_from_loop():
-        return tool.func(runtime=runtime, location="Beijing")
-
-    result = asyncio.run(call_sync_from_loop())
+    result = asyncio.run(
+        invoke_mcp_tool(
+            tool,
+            {"location": "Beijing"},
+            context=_runtime("mcp:weather").context,
+            serialization_profile=McpSerializationProfile.INGESTION,
+        )
+    )
 
     assert result["ok"] is False
     assert result["error_code"] == "mcp_execution_error"

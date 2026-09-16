@@ -1,9 +1,9 @@
-"""唯一 Agent Runtime：准备请求、执行 ``create_agent`` 并返回 AgentResult。"""
+"""Agent Runtime 的参数校验、Router、上下文准备与构图缓存。"""
 
 from __future__ import annotations
 
 import time
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import Any, Protocol, cast
@@ -14,20 +14,11 @@ from pydantic import TypeAdapter, ValidationError
 import app.agent.framework_tools as framework_tools
 from app.agent.framework_agent import build_framework_agent
 from app.agent.framework_middleware import ProjectToolGovernanceMiddleware
-from app.agent.results import (
-    build_agent_runtime_error_result,
-    build_framework_agent_result,
-    build_short_circuit_result,
-)
 from app.agent.router import RouteDecision, route_agent_action
-from app.common.logging import get_logger
 from app.config import AppSettings, get_settings
 from app.tools.context import ToolInvocationContext, build_default_tool_context
 from app.tools.mcp.provider import list_mcp_tools_for_context
-from app.tools.providers import ToolProvider
 
-
-logger = get_logger("chat_service")
 
 _INTEGER_ADAPTER = TypeAdapter(int)
 
@@ -35,14 +26,7 @@ _INTEGER_ADAPTER = TypeAdapter(int)
 class CompiledAgentRuntime(Protocol):
     """Runtime 和 Streaming 使用的 ``create_agent`` 可执行边界。"""
 
-    def invoke(
-        self,
-        input_value: Mapping[str, object],
-        *,
-        config: Mapping[str, object],
-        context: ToolInvocationContext,
-    ) -> object: ...
-
+    # 约定编译后运行时的异步事件流接口及流模式、子图和版本参数。
     def astream(
         self,
         input_value: Mapping[str, object],
@@ -54,6 +38,7 @@ class CompiledAgentRuntime(Protocol):
         version: str,
     ) -> AsyncIterator[object]: ...
 
+    # 约定获取运行时图结构的接口，供检查和可视化使用。
     def get_graph(self, **kwargs: Any) -> Any: ...
 
 
@@ -64,6 +49,7 @@ def validate_runtime_counts(
 ) -> tuple[int, int]:
     """保留公开 Runtime 数字输入原有的边界约束。"""
 
+    # 将召回数量校验为指定范围内的整数，并拒绝布尔值。
     def validate(name: str, value: object, lower: int, upper: int) -> int:
         if isinstance(value, bool):
             raise ValueError(f"{name} must be an integer")
@@ -84,22 +70,14 @@ def validate_runtime_counts(
 @lru_cache(maxsize=4)
 def _get_cached_framework_agent(
     settings: AppSettings,
-    provider: ToolProvider,
 ) -> CompiledAgentRuntime:
     """缓存不依赖 MCP discovery 的本地 ``create_agent`` 结构。"""
     governance = ProjectToolGovernanceMiddleware(settings=settings)
-    context = build_default_tool_context(
-        source="agent_runtime",
-        settings=settings,
-    )
     return cast(
         CompiledAgentRuntime,
         build_framework_agent(
             settings,
-            tools=framework_tools.build_framework_tools(
-                provider,
-                context=context,
-            ),
+            tools=framework_tools.get_local_tools(settings),
             governance=governance,
         ),
     )
@@ -110,19 +88,13 @@ def get_compiled_agent_runtime(
     *,
     tool_context: ToolInvocationContext | None = None,
 ) -> CompiledAgentRuntime:
-    """返回与当前请求可见工具集合一致的 CompiledStateGraph。"""
+    """Local 权限变化共用编译缓存；仅额外 MCP 工具集合需要构图。"""
     resolved_settings = settings or get_settings()
-    provider = framework_tools.get_default_tool_provider()
-    if tool_context is None:
-        return _get_cached_framework_agent(resolved_settings, provider)
-    if (
-        tool_context.principal_id
-        == resolved_settings.tool_default_principal_id
-        and tool_context.permissions
-        == resolved_settings.tool_default_permissions
-        and not list_mcp_tools_for_context(tool_context)
+    if tool_context is None or not list_mcp_tools_for_context(
+        tool_context,
+        settings=resolved_settings,
     ):
-        return _get_cached_framework_agent(resolved_settings, provider)
+        return _get_cached_framework_agent(resolved_settings)
 
     governance = ProjectToolGovernanceMiddleware(settings=resolved_settings)
     return cast(
@@ -131,6 +103,7 @@ def get_compiled_agent_runtime(
             resolved_settings,
             tools=framework_tools.resolve_agent_tools(
                 tool_context,
+                resolved_settings,
             ),
             governance=governance,
         ),
@@ -229,73 +202,11 @@ def prepare_agent_runtime_invocation(
     )
 
 
-def run_agent(
-    write_bad_cases: Callable[[dict[str, Any]], None] | None,
-    top_k: int,
-    decompose_top_k: int,
-    trace_id: str = "",
-    session_id: str | None = None,
-    bad_case: dict[str, Any] | None = None,
-    *,
-    original_question: str,
-    effective_question: str,
-    tool_context: ToolInvocationContext | None = None,
-) -> dict[str, Any]:
-    """路由后直接执行 ``create_agent`` 并返回已验证 Result。"""
-    resolved_original = (original_question or "").strip()
-    resolved_effective = (effective_question or "").strip()
-    try:
-        invocation = prepare_agent_runtime_invocation(
-            top_k=top_k,
-            decompose_top_k=decompose_top_k,
-            trace_id=trace_id,
-            session_id=session_id,
-            original_question=resolved_original,
-            effective_question=resolved_effective,
-            tool_context=tool_context,
-        )
-        logger.info(
-            "[trace_id=%s] [agent] runtime_start action=%s session_id_present=%s",
-            trace_id,
-            invocation.decision.get("action", ""),
-            bool((session_id or "").strip()),
-        )
-        if invocation.agent is None:
-            result = build_short_circuit_result(invocation)
-        else:
-            output = invocation.agent.invoke(
-                invocation.agent_input,
-                config=invocation.agent_config,
-                context=invocation.tool_context,
-            )
-            if not isinstance(output, Mapping):
-                raise RuntimeError("create_agent did not produce a valid state")
-            result = build_framework_agent_result(invocation, output)
-        logger.info(
-            "[trace_id=%s] [agent] runtime_end status=%s",
-            trace_id,
-            result.get("status", ""),
-        )
-        return result
-    except Exception as exc:
-        logger.exception("[trace_id=%s] [agent] runtime_failed", trace_id)
-        return build_agent_runtime_error_result(
-            write_bad_cases=write_bad_cases,
-            bad_case=bad_case,
-            trace_id=trace_id,
-            session_id=session_id,
-            original_question=resolved_original,
-            effective_question=resolved_effective,
-            exc=exc,
-        )
-
-
 __all__ = [
     "AgentRuntimeInvocation",
     "CompiledAgentRuntime",
     "get_compiled_agent_runtime",
     "prepare_agent_runtime_invocation",
     "reset_agent_runtime",
-    "run_agent",
     "validate_runtime_counts",
 ]

@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.embeddings import DeterministicFakeEmbedding
 from pydantic import ValidationError
 
 from app.llm.schemas import QueryDecomposeOutput
@@ -8,6 +9,95 @@ from app.rag import decomposition
 from app.rag.decomposition import normalize_decompose_result, should_decompose_query
 from app.rag import retrieval
 from app.rag.policy import should_refuse
+from app.ingestion import IngestionRequester, IngestionService, build_knowledge_document
+from app.rag import indexing, store
+from tests.support.structured_document import admission_structure, imut_admission_structure, registration_structure
+
+
+def test_table_semantics_reach_real_chroma_bm25_retrieval(tmp_path, monkeypatch):
+    document = build_knowledge_document(
+        source_type="local_file", source_uri=str(tmp_path / "table.pdf"), title="企业登记办理要求",
+        content="", structured_content=registration_structure(), metadata={"file_type": "pdf"},
+    )
+    candidate = IngestionService().propose(document=document, requester=IngestionRequester(
+        principal_id="table-smoke", principal_type="system", source="pytest",
+    ))
+    [table_chunk] = indexing.candidate_to_langchain_documents(candidate, chunk_size=600, chunk_overlap=0)
+    for number in range(12):
+        (tmp_path / f"distractor-{number}.txt").write_text(f"校园图书馆开放时间：周一至周五。分馆编号{number}。")
+    documents = [table_chunk, *indexing.load_local_langchain_documents(str(tmp_path))]
+    embeddings = DeterministicFakeEmbedding(size=32)
+    indexing.sync_documents(documents, embeddings)
+    bundle = store.load_index_cache(model=embeddings, rerank_model=object())
+    assert bundle["ok"], bundle["message"]
+
+    def no_fallback(*args, **kwargs):
+        pytest.fail("table smoke must query real Chroma, not fall back to local vectors")
+
+    monkeypatch.setattr(retrieval, "_retrieve_with_local_embeddings", no_fallback)
+    query = "企业注册需要哪些材料"
+    hits = retrieval.retrieve(
+        query, bundle["chunks"], bundle["bm25"], bundle["doc_embeddings"], embeddings, top_k=3,
+    )
+    hit = next(item for item in hits if item["metadata"].get("element_type") == "table")
+    assert hit["text"] == table_chunk.page_content
+    assert "事项：企业注册；条件：年满18岁；材料：身份证、申请表。" in hit["text"]
+    assert hit["bm25_score"] > 0
+    assert hit["bm25_score"] == max(item["bm25_score"] for item in hits)
+    assert hit["metadata"]["source_id"] == document.source_id
+    assert hit["position"] == 1
+
+
+@pytest.mark.parametrize("structure_factory, physics_row_offset", [
+    (admission_structure, 0), (imut_admission_structure, 1),
+])
+@pytest.mark.parametrize("query, section, expected_row, evidence", [
+    ("内蒙古本科批物理类安全工程最低分是多少？", "内蒙古本科批物理类", 7,
+     ("专业名称：安全工程", "最低分：501")),
+    ("内蒙古本科批物理类材料成型及控制工程民族班最低分是多少？", "内蒙古本科批物理类", 9,
+     ("专业名称：材料成型及控制工程", "最低分：480", "备注：民族班")),
+    ("内蒙古本科提前B段艺术类环境设计平均分是多少？", "内蒙古本科提前B段艺术类", 4,
+     ("专业名称：环境设计", "平均分：477.87")),
+])
+def test_admission_section_semantics_reach_real_chroma_bm25(
+    tmp_path, monkeypatch, query, section, expected_row, evidence, structure_factory, physics_row_offset,
+):
+    if expected_row >= 7:
+        expected_row += physics_row_offset  # 实抓表保留了艺术类末尾的总计行。
+    document = build_knowledge_document(
+        source_type="local_file", source_uri=str(tmp_path / "admission.pdf"), title="录取分数统计",
+        content="", structured_content=structure_factory(), metadata={"file_type": "pdf"},
+    )
+    candidate = IngestionService().propose(document=document, requester=IngestionRequester(
+        principal_id="section-smoke", principal_type="system", source="pytest",
+    ))
+    table_chunks = indexing.candidate_to_langchain_documents(candidate, chunk_size=160, chunk_overlap=0)
+    for number in range(12):
+        (tmp_path / f"distractor-{number}.txt").write_text(f"校园图书馆开放时间：周一至周五。分馆编号{number}。")
+    embeddings = DeterministicFakeEmbedding(size=32)
+    indexing.sync_documents([*table_chunks, *indexing.load_local_langchain_documents(str(tmp_path))], embeddings)
+    bundle = store.load_index_cache(model=embeddings, rerank_model=object())
+    assert bundle["ok"], bundle["message"]
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("section smoke must use real Chroma and existing BM25, without fallback or reranking")
+
+    monkeypatch.setattr(retrieval, "_retrieve_with_local_embeddings", forbidden)
+    monkeypatch.setattr(retrieval, "rerank", forbidden)
+    hits = retrieval.retrieve(
+        query, bundle["chunks"], bundle["bm25"], bundle["doc_embeddings"], embeddings, top_k=3,
+    )
+    hit = next(item for item in hits if item["metadata"].get("row_start") == expected_row)
+    assert hit["metadata"]["section_title"] == section
+    assert hit["metadata"]["row_end"] == expected_row
+    assert f"分区：{section}" in hit["text"]
+    assert "上下文：内蒙古工业大学2026年分省录取分数统计" in hit["text"]
+    assert all(value in hit["text"] for value in evidence)
+    assert hit["text"] == next(chunk.page_content for chunk in table_chunks
+                               if chunk.metadata["row_start"] == expected_row)
+    assert hit["bm25_score"] > 0
+    assert hit["bm25_score"] == max(item["bm25_score"] for item in hits)
+    assert hit["metadata"]["source_id"] == document.source_id
 
 
 @pytest.mark.parametrize(

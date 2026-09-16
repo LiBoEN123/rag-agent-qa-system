@@ -2,7 +2,10 @@ import json
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from scripts.evaluation import rag_evaluator as evaluator
+from scripts.evaluation import rag_evaluator
+from scripts.evaluation.rag import judge as evaluator
+from scripts.evaluation.rag.common import ChunkIndex
+from scripts.evaluation.rag.evaluation import evaluate
 
 
 def judge_config() -> evaluator.LLMJudgeConfig:
@@ -30,6 +33,19 @@ def patch_judge(monkeypatch, key_point_result=None, forbidden_result=None):
     monkeypatch.setattr(evaluator, "call_judge_json", fake_call_judge_json)
 
 
+def test_judge_json_retry_uses_canonical_call_boundary(monkeypatch):
+    prompts = []
+
+    def fake_call(system_prompt, user_prompt, config, trace_id=""):
+        prompts.append(user_prompt)
+        return "invalid" if len(prompts) == 1 else '{"score": 1}'
+
+    monkeypatch.setattr(evaluator, "call_judge_llm", fake_call)
+    parsed, raw = evaluator.call_judge_json("system", "user", judge_config())
+    assert parsed == {"score": 1} and raw == '{"score": 1}'
+    assert len(prompts) == 2 and "严格 JSON" in prompts[1]
+
+
 def test_call_judge_llm_uses_factory_gateway_and_cli_config(monkeypatch):
     """离线 Judge 通过统一工厂和 Gateway 调用并保留 CLI 配置。"""
     captured = {}
@@ -48,7 +64,7 @@ def test_call_judge_llm_uses_factory_gateway_and_cli_config(monkeypatch):
         captured.update(kwargs)
         return model
 
-    monkeypatch.setattr(evaluator._judge, "get_judge_model", fake_get_judge_model)
+    monkeypatch.setattr(evaluator, "get_judge_model", fake_get_judge_model)
     config = evaluator.LLMJudgeConfig(
         enabled=True,
         model="cli-judge",
@@ -60,7 +76,7 @@ def test_call_judge_llm_uses_factory_gateway_and_cli_config(monkeypatch):
         temperature=0.2,
     )
 
-    result = evaluator._judge.call_judge_llm(
+    result = evaluator.call_judge_llm(
         "judge system",
         "judge user",
         config,
@@ -274,10 +290,10 @@ def test_evaluate_uses_llm_judge_fields(monkeypatch):
     }
     preds = {"q-test": {"answer": "学生证补办仅在每学期第 14 周办理，不是随时都能补办。"}}
 
-    rows, summary, details = evaluator.evaluate(
+    rows, summary, details = evaluate(
         [question],
         preds,
-        evaluator.ChunkIndex({}, {}, "none"),
+        ChunkIndex({}, {}, "none"),
         k=5,
         judge_config=judge_config(),
     )
@@ -309,8 +325,8 @@ def test_cached_judge_evaluators_reuse_report_without_llm_calls(tmp_path):
         encoding="utf-8",
     )
 
-    cache = evaluator.load_judge_cache_report(cache_report)
-    key_point_evaluator, forbidden_evaluator = evaluator.make_cached_judge_evaluators(cache)
+    cache = rag_evaluator.load_judge_cache_report(cache_report)
+    key_point_evaluator, forbidden_evaluator = rag_evaluator.make_cached_judge_evaluators(cache)
 
     key_result = key_point_evaluator(
         question="",
@@ -332,7 +348,7 @@ def test_cached_judge_evaluators_reuse_report_without_llm_calls(tmp_path):
 
 
 def test_cached_judge_evaluator_missing_qid_fails_fast():
-    key_point_evaluator, _ = evaluator.make_cached_judge_evaluators({})
+    key_point_evaluator, _ = rag_evaluator.make_cached_judge_evaluators({})
 
     try:
         key_point_evaluator(

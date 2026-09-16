@@ -1,7 +1,9 @@
 """统一 ModelGateway 及 RAG generation 接入的回归测试。"""
 
 import pytest
+from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from pydantic import BaseModel, ValidationError
 
 from app.llm.errors import ModelCallError, StructuredOutputError
 from app.llm.gateway import ModelGateway
@@ -167,23 +169,47 @@ def test_gateway_logs_trace_id_and_redacts_exception_text(monkeypatch):
     assert api_key not in logs
 
 
-def test_structured_call_returns_schema_instance():
-    """服务支持 structured output 时直接返回 Pydantic 实例。"""
+def test_pydantic_v2_validation_preserves_instance_identity():
+    """真实 Pydantic v2 支持字典转换、实例复用并拒绝非法输入。"""
+
+    class Example(BaseModel):
+        value: int
+
+    instance = Example(value=1)
+    validated = Example.model_validate({"value": "2"})
+
+    assert isinstance(validated, Example)
+    assert validated.value == 2
+    assert Example.model_validate(instance) is instance
+    with pytest.raises(ValidationError):
+        Example.model_validate({"value": "invalid"})
+
+
+@pytest.mark.parametrize("as_dict", [False, True], ids=["instance", "dict"])
+def test_structured_call_returns_schema_instance(as_dict):
+    """原生 structured 输出转换为 Schema，已有实例保持对象身份。"""
     expected = AnswerOutput(answer="structured", references=["Reference 1"])
 
     class StructuredRunnable:
         def invoke(self, messages):
             assert isinstance(messages[0], SystemMessage)
-            return expected
+            return expected.model_dump() if as_dict else expected
 
     class StructuredModel(RecordingModel):
         def with_structured_output(self, schema):
             assert schema is AnswerOutput
             return StructuredRunnable()
 
-    gateway = ModelGateway(role="answer", langchain_model=StructuredModel())
+    model = StructuredModel()
+    gateway = ModelGateway(role="answer", langchain_model=model)
 
-    assert gateway.invoke_structured(MESSAGES, AnswerOutput) is expected
+    result = gateway.invoke_structured(MESSAGES, AnswerOutput)
+
+    assert isinstance(result, AnswerOutput)
+    assert result == expected
+    if not as_dict:
+        assert result is expected
+    assert model.calls == []
 
 
 def test_structured_incompatibility_degrades_to_same_model_text_json():
@@ -207,13 +233,14 @@ def test_structured_incompatibility_degrades_to_same_model_text_json():
     assert len(model.calls) == 1
 
 
-def test_provider_capability_error_during_invoke_degrades_to_text_json():
+@pytest.mark.parametrize("status_code", [400, 422])
+def test_provider_capability_error_during_invoke_degrades_to_text_json(status_code):
     """供应商在请求阶段明确拒绝 response_format 时才执行文本 fallback。"""
 
     class UnsupportedStructuredRunnable:
         def invoke(self, messages):
             raise FakeStatusError(
-                400,
+                status_code,
                 "response_format json_schema is not supported by this model",
             )
 
@@ -298,6 +325,32 @@ def test_invalid_native_structured_result_does_not_retry_as_text():
 
     assert model.calls == []
     assert error.value.schema_name == "AnswerOutput"
+    assert error.value.detail == "ValidationError"
+    assert isinstance(error.value.__cause__, ValidationError)
+
+
+def test_native_structured_parser_error_does_not_retry_as_text():
+    """原生解析器错误保留结构化错误合同，且不会再请求文本模型。"""
+    parser_error = OutputParserException("invalid structured output")
+
+    class InvalidStructuredRunnable:
+        def invoke(self, messages):
+            raise parser_error
+
+    class StructuredModel(RecordingModel):
+        def with_structured_output(self, schema):
+            return InvalidStructuredRunnable()
+
+    model = StructuredModel(response=AIMessage(content="must not run"))
+    gateway = ModelGateway(role="answer", langchain_model=model)
+
+    with pytest.raises(StructuredOutputError) as error:
+        gateway.invoke_structured(MESSAGES, AnswerOutput)
+
+    assert model.calls == []
+    assert error.value.schema_name == "AnswerOutput"
+    assert error.value.detail == "OutputParserException"
+    assert error.value.__cause__ is parser_error
 
 
 def test_invalid_structured_text_maps_to_structured_output_error():

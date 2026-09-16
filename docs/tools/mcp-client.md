@@ -2,7 +2,7 @@
 
 本项目可以作为 MCP Client，在 FastAPI 启动阶段从部署者静态配置的外部 MCP Server
 发现只读工具和部署者精确声明的待审批外部写工具，并把它们与本地
-`ToolRegistry` 工具一起交给唯一的 LangChain
+cached local StructuredTool 一起交给唯一的 LangChain
 `create_agent`。本项目不是 MCP Server，也不实现 MCP JSON-RPC、`tools/list` 或
 `tools/call`；协议、Streamable HTTP session 和 MCP Tool 到 LangChain Tool 的转换均由
 官方 `langchain-mcp-adapters` 的 `MultiServerMCPClient` 完成。
@@ -10,22 +10,22 @@
 ## 架构与治理边界
 
 ```text
-Local ToolRegistry → ToolRuntime → StructuredTool ─┐
+ToolSpec catalog → cached ProjectStructuredTool ───┐
                                                    ├→ create_agent
 MultiServerMCPClient → governed StructuredTool ────┘
 ```
 
-本地工具继续使用 `ToolSpec → ToolRegistry → ToolRuntime`，MCP adapter 已经把远端
+本地工具使用 `ToolSpec → ProjectStructuredTool → execute_project_tool`，MCP adapter 已经把远端
 Schema 转换成 LangChain `StructuredTool`，因此不会把 MCP Tool 反向转换成
-`ToolSpec`。本地工具按当前请求权限构造成 StructuredTool；MCP 工具保留 Bridge 已生成的
+`ToolSpec`。本地 StructuredTool 按配置缓存，并由 Model Middleware 按请求权限过滤；MCP 工具保留 Bridge 已生成的
 governed StructuredTool，不再经过 framework 二次 wrapper。两类 BaseTool 都由
 `create_agent` ToolNode 的原生
-`ProjectToolGovernanceMiddleware.wrap_tool_call/awrap_tool_call` 截获，共用调用数、
+`ProjectToolGovernanceMiddleware.awrap_tool_call` 截获，共用调用数、
 错误数、重复调用、累计耗时、同批 fail-closed 和 ToolMessage pairing；MCP Server
 Access Policy、审批、远端超时、审计和序列化仍只在 MCP Bridge 内执行。
 
 MCP Tool 不进入本地 RAG；只有本地 `search_knowledge_base` 会调用独立 RAG Graph。
-`/chat`、`/chat/stream`、ChatService、Agent Runtime 和 SSE Schema 都没有 MCP 特判。
+`/chat/stream`、ChatService、Agent Runtime 和 SSE Schema 都没有 MCP 特判。
 
 ## 第一版范围
 
@@ -61,7 +61,9 @@ MCP_MAX_STRUCTURED_CHARS=20000
 ```
 
 关闭时不会读取 MCP JSON、构造 `MultiServerMCPClient`、连接 Server、执行 discovery
-或改变默认本地工具集合。Evaluation Baseline 因而继续使用原有工具合同。
+或改变默认本地工具集合。Evaluation Core 和 Online profile 会显式保持该关闭语义；
+只有 Extended Evaluation 的 `--include-mcp` / `--include-mixed` 才在隔离 Settings
+scope 内初始化并清理 MCP runtime。
 `MCP_SERVERS_CONFIG_PATH` 的代码默认值已经是
 `config/mcp_servers.local.json`，所以正常本地使用只需设置
 `MCP_TOOLS_ENABLED=true`。部署者仍可用项目内相对路径或绝对路径覆盖它。
@@ -167,7 +169,7 @@ JSON，然后重启服务。不需要修改 Python、`AppSettings`、`.env`、`.
 
 ## Discovery、allowlist 与名称隔离
 
-FastAPI lifespan 在 RAG 和同步 Graph 准备完成后执行一次：
+FastAPI lifespan 在 RAG 初始化和 Agent 构图完成后执行一次：
 
 ```text
 读取并校验配置
@@ -250,35 +252,52 @@ Server description、文本、structured content、resource 和错误均属于�
 system/developer/tool-policy/permission 指令。结果固定带
 `content_is_untrusted=true`，不能修改 Prompt、权限、allowlist、Settings 或 Guardrail。
 
-第一版只把以下内容交给 Agent：
+当前 serializer 只把以下安全内容交给 Agent：
 
 - 有限普通文本；
+- `EmbeddedResource(TextResourceContents)` 中的有限文本；
+- `BlobResourceContents`、image 和 audio 的类型、MIME 与 payload 字符数摘要，绝不保留
+  base64/blob；
+- `ResourceLink` 的有限名称、MIME 和安全 URI 描述；URI 会移除 userinfo、query 和
+  fragment，也不会被自动 fetch；
 - 经现有 `redact_sensitive_data()` 脱敏、限制深度/项目/字符串和整体 JSON 体量的
   structured content；
 - JSON-compatible 标量、列表和字典中的有限值。
 
 文本超过 `MCP_MAX_TEXT_CHARS` 会在字符边界截断并标记 `truncated=true`。结构化结果
 超过 `MCP_MAX_STRUCTURED_CHARS` 会逐级收紧为完整 JSON value；不会把半截 JSON 放进
-模型上下文。image、audio、binary blob、resource link 和 embedded resource 第一版
-统一返回 `mcp_unsupported_content`，不会把 base64、资源正文或二进制写入 ToolMessage、
-日志或 SSE。
+模型上下文。混合出现的合法官方 MCP content blocks 不会导致整个结果失败；只有当前
+SDK 未知的未来 block 类型才返回 `mcp_unsupported_content`，错误中只包含 Python 类型名，
+不会使用 `repr(block)` 或记录 payload。
 
-## 同步与流式执行
+永久知识 source fetch 只能由显式 operator/service 调用 `invoke_mcp_tool()` 时选择
+`ingestion` serialization profile。它复用同一个 cached Provider、interceptor、权限、
+timeout、transport、脱敏和审计，但文本上限为 1,000,000 字符，并额外保留有限、安全的
+`content_blocks` 类型信息，让 GitHub adapter 能区分说明文本与
+`EmbeddedResource(TextResourceContents)` 正文。普通 Agent 调用仍默认使用 12,000 字符
+profile，工具参数 schema 中不存在 profile 字段，完整正文不会进入 Agent context。
 
-官方 MCP `StructuredTool` 以 coroutine 为主。项目包装器保留原始 MCP Tool Schema，
-并提供两个执行入口：
+部署者也可为 GitHub file / Firecrawl scrape 显式开启
+[Agent candidate promotion](../ingestion/operations-api.md#agent-工具结果提出候选默认关闭)。
+它保留普通 Agent 上限，只使用本次完整的 source 内容块提出 pending 候选，仍须人工审批和显式索引。
 
-- `/chat → graph.invoke`：只对 MCP Tool 使用最小同步 bridge，在没有运行中 event loop
-  的 ToolNode 工作线程中执行 `asyncio.run()`；
-- `/chat/stream → create_agent.astream`：直接 await 原生 MCP coroutine。
+ingestion 结果一旦 `truncated=true` 就不能产生可索引文档；超过 1,000,000 字符同样
+fail closed。截断结果的 `content_blocks` 不保留正文，只保留类型、MIME、URI 和字符数等
+有限摘要。审计仍只记录字段、正文字符数、截断标志和状态，不记录完整正文。
 
-同步 bridge 不使用 `nest_asyncio`，不创建永久 event-loop thread，也不改造整个项目为
-async。如果误从已有 event loop 调用同步入口，会返回受控
-`mcp_execution_error`，而不是嵌套 `asyncio.run()`。
+## 异步执行
 
-两条路径最终都返回现有 `tool_success()` / `tool_error()` 结构，再由
-`parse_tool_result()` 和 `ProjectToolGovernanceMiddleware` 计算 success/error、重复调用、
-错误预算、总耗时和停止原因。MCP 项目层重试固定为零，避免与 adapter/HTTP 层形成多层
+官方 MCP `StructuredTool` 保留原始 Schema 和 coroutine。`build_governed_mcp_tool()`
+只补充项目描述与 metadata，执行沿用官方 adapter：
+
+- Agent：`ChatService.stream → stream_agent → create_agent.astream → async ToolNode → MCP coroutine`；
+- 显式 source / ingestion：`await invoke_mcp_tool() → await tool.ainvoke() → MCP coroutine`。
+
+输出通过现有 `tool_success()` / `tool_error()` 结构，再由 `parse_tool_result()` 和
+`ProjectToolGovernanceMiddleware.awrap_tool_call` 计算 success/error、重复调用、
+错误预算、总耗时和停止原因。本地同步工具继续由框架调度。
+
+MCP 项目层重试固定为零，避免与 adapter/HTTP 层形成多层
 重试。
 
 ## 错误、审计与 SSE
@@ -288,6 +307,10 @@ MCP 使用有限稳定错误码：`mcp_not_configured`、`mcp_permission_denied`
 `mcp_transport_error`、`mcp_execution_error`、`mcp_unsupported_content` 和
 `mcp_output_too_large`。模型只看到可操作的泛化消息，不会看到 traceback、HTTP client
 repr、完整 URL query 或远端异常中的凭据。
+
+`CallToolResult.isError=true` 仍保持 `status=error` 和
+`error_code=mcp_execution_error`；若远端同时返回文本错误，serializer 会把脱敏且最多
+2,000 字符（同时受 `MCP_MAX_TEXT_CHARS` 约束）的文本附在错误消息后，供 Agent 安全恢复。
 
 每次实际调用复用项目 `ToolAuditEvent` / audit sink，记录 trace、session、principal、
 带前缀工具名、Server alias、参数指纹、耗时、成功状态和错误码。MCP 审计输出固定为

@@ -44,7 +44,8 @@ HTTP middleware 移到 `app/api/middleware.py`。Uvicorn URL 解码 filter 与�
 - common 保存不依赖框架或业务层的纯 helper。
 
 Tools 可以依赖 RAG，因为知识库工具是受治理的 RAG 能力入口，仍通过
-`ToolRegistry.dispatch → ToolRuntime.execute → ToolSpec.handler`。RAG 不允许依赖
+`execute_project_tool → ToolSpec.handler`。本地 ToolSpec catalog
+属于 Tools 层，LangChain 适配与权限可见性 middleware 属于 Agent 层。RAG 不允许依赖
 Tools，否则索引/检索算法会反向绑定工具协议并形成错误所有权。
 
 pydantic-settings 合同允许合法的

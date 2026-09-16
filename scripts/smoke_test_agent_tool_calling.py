@@ -19,11 +19,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.agent.framework_tools import build_framework_tools  # noqa: E402
+from app.agent.framework_tools import get_local_tools  # noqa: E402
 from app.llm.factory import get_answer_model  # noqa: E402
 from app.tools.context import build_default_tool_context  # noqa: E402
-from app.tools.providers import get_default_tool_provider  # noqa: E402
-from app.tools.redaction import redact_sensitive_data  # noqa: E402
+from app.config import get_settings  # noqa: E402
+from app.common.redaction import redact_sensitive_data  # noqa: E402
 
 
 SCENARIOS = (
@@ -58,7 +58,14 @@ def main() -> int:
         raise RuntimeError("回答模型不可用，请先配置 LLM_API_KEY 和模型地址")
 
     context = build_default_tool_context(source="manual_tool_calling_smoke")
-    tools = build_framework_tools(get_default_tool_provider(), context=context)
+    from langchain.agents.middleware import ModelRequest
+    from langgraph.runtime import Runtime
+    from app.agent.tool_visibility import ProjectToolVisibilityMiddleware
+
+    tools = ProjectToolVisibilityMiddleware.visible_request(ModelRequest(
+        model=model, messages=[], tools=list(get_local_tools(get_settings())),
+        runtime=Runtime(context=context),
+    )).tools
     tool_map = {tool.name: tool for tool in tools}
     print("bound_tool_names:", sorted(tool_map))
     for required_name in ("search_knowledge_base", "simple_calculator"):

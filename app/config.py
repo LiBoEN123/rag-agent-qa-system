@@ -168,6 +168,7 @@ class AppSettings(BaseSettings):
     index_store_dir: Path = BASE_DIR / "data" / "manifest"
     chroma_persist_dir: Path = BASE_DIR / "data" / "chroma"
     chroma_collection_name: str = "mini_rag_chunks"
+    chroma_index_collection_name: str = "mini_rag_chunks_v2"
     top_k: int = Field(default=5, ge=1, le=10)
     decompose_top_k: int = Field(default=10, ge=1, le=20)
     chunk_size: int = 600
@@ -246,7 +247,6 @@ class AppSettings(BaseSettings):
         ge=1,
         le=3_600_000,
     )
-    enable_agent_trace_store: bool = False
 
     # 工具运行时与治理
     tool_runtime_max_workers: int = Field(default=8, ge=1)
@@ -289,6 +289,11 @@ class AppSettings(BaseSettings):
         ge=128,
         le=2_000_000,
     )
+
+    # 永久知识运营 API（默认不注册）
+    ingestion_admin_api_enabled: bool = False
+    ingestion_admin_api_key: SecretStr | None = None
+    ingestion_upload_max_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
 
     # 受治理的只读 SQL 工具
     sql_tool_enabled: bool = False
@@ -405,6 +410,7 @@ class AppSettings(BaseSettings):
         "decompose_api_key",
         "judge_api_key",
         "sql_database_url",
+        "ingestion_admin_api_key",
         mode="before",
     )
     @classmethod
@@ -741,6 +747,14 @@ def validate_startup_environment(settings: AppSettings) -> None:
     """校验 API 启动外部前提，不访问网络或初始化运行时。"""
     if settings.llm_api_key is None:
         raise ValueError("缺少 LLM_API_KEY 或 DEEPSEEK_API_KEY，请检查 .env")
+    if (
+        settings.ingestion_admin_api_enabled
+        and settings.ingestion_admin_api_key is None
+    ):
+        raise ValueError(
+            "INGESTION_ADMIN_API_ENABLED=true 时必须配置 "
+            "INGESTION_ADMIN_API_KEY"
+        )
     validate_rag_environment(settings)
 
     file_paths = [("SQLITE_DB_PATH", settings.sqlite_db_path)]
