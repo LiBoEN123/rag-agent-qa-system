@@ -47,7 +47,7 @@ from app.storage.ingestion import (
     SQLiteIndexRunRepository,
 )
 from app.sources.upload import load_upload_document
-from tests.support.structured_document import build_table_docx
+from tests.support.structured_document import admission_structure, build_table_docx
 
 
 FIXED_TIME = datetime(2026, 9, 2, 10, 0, tzinfo=timezone.utc)
@@ -685,13 +685,14 @@ def test_upload_approve_index_retrieve_and_force_rebuild(persisted_runtime, monk
         ).load_latest_successfully_indexed()] == [candidate_id]
 
 
-def test_version_migration_rechunks_sqlite_structure_and_preserves_legacy(persisted_runtime, monkeypatch):
+@pytest.mark.parametrize("old_version", [2, 3])
+def test_version_migration_rechunks_sqlite_structure_and_preserves_legacy(persisted_runtime, monkeypatch, old_version):
     runtime = persisted_runtime
     document = load_upload_document(
         BytesIO(build_table_docx(merged=True)), filename="table.docx", max_bytes=2_000_000,
     )
     candidate = _approve(runtime.domain, document)
-    # 模拟 v2 已成功索引的正文 chunk 与 manifest，SQLite 仍保存完整 structure。
+    # 模拟旧版已成功索引的正文 chunk 与 manifest，SQLite 仍保存完整 structure。
     old_chunk = Document(page_content=document.content, metadata={
         "source_id": document.source_id, "document_uid": document.document_uid,
         "source_type": "upload", "source_uri": document.source_uri,
@@ -708,18 +709,25 @@ def test_version_migration_rechunks_sqlite_structure_and_preserves_legacy(persis
     _index_with_run(runtime, legacy)
     local_table = runtime.local_dir / "local.docx"
     local_table.write_bytes(build_table_docx())
-    old_manifest = {**rag_store.build_current_manifest(str(runtime.local_dir)), "pipeline_version": 2}
+    old_manifest = {**rag_store.build_current_manifest(str(runtime.local_dir)), "pipeline_version": old_version}
     rag_store.save_manifest(old_manifest)
     assert rag_store.needs_rebuild(str(runtime.local_dir)) == (True, "pipeline_version 变化，需要 force rebuild")
     old_upload_ids = indexing.create_vector_store(None).get(where={"source_id": document.source_id})["ids"]
     restored_inputs = []
+    parsed_local_paths = []
     convert = pipeline.candidate_to_langchain_documents
+    parse_local = indexing.parse_document
 
     def capture(candidate, **kwargs):
         restored_inputs.append(candidate)
         return convert(candidate, **kwargs)
 
+    def capture_local(path):
+        parsed_local_paths.append(path)
+        return parse_local(path)
+
     monkeypatch.setattr(pipeline, "candidate_to_langchain_documents", capture)
+    monkeypatch.setattr(indexing, "parse_document", capture_local)
     # 没有原文件、原 parser 或 source fetch，force rebuild 只能消费 candidate_json。
     def no_parse(*args, **kwargs):
         pytest.fail("force rebuild attempted to parse an uploaded document again")
@@ -732,7 +740,8 @@ def test_version_migration_rechunks_sqlite_structure_and_preserves_legacy(persis
         needs_rebuild=rag_store.needs_rebuild,
         rebuild_and_persist_index=pipeline.rebuild_and_persist_index,
     ))
-    assert rag_store.load_manifest()["pipeline_version"] == 3
+    assert rag_store.load_manifest()["pipeline_version"] == 4
+    assert parsed_local_paths == [local_table]
     assert rag_store.needs_rebuild(str(runtime.local_dir))[0] is False
     restored = next(item for item in restored_inputs if item.candidate_id == candidate.candidate_id)
     assert restored == candidate
@@ -759,6 +768,62 @@ def test_version_migration_rechunks_sqlite_structure_and_preserves_legacy(persis
     runtime.embeddings.reset()
     assert runtime.source_service.index_approved(candidate.candidate_id)["num_skipped"] == len(upload_chunks)
     assert runtime.embeddings.document_texts == []
+
+
+@pytest.mark.parametrize("source_type, source_uri, file_type", [
+    ("upload", "upload://local/admission", "docx"),
+    ("firecrawl", "https://example.com/admission", "html"),
+])
+def test_section_pipeline_migration_rechunks_persisted_candidates_without_acquisition(
+    persisted_runtime, monkeypatch, source_type, source_uri, file_type,
+):
+    runtime = persisted_runtime
+    document = build_knowledge_document(
+        source_type=source_type, source_uri=source_uri, title="录取分数统计", content="",
+        structured_content=admission_structure(), metadata={"file_type": file_type},
+    )
+    candidate = _approve(runtime.domain, document)
+    namespace = indexing.EXTERNAL_RECORD_NAMESPACE_BY_SOURCE_TYPE[document.source_type]
+    # 持久化原始结构与成功历史；旧 chunk 无 section，重建必须替换其表示。
+    old_chunk = Document(page_content=document.content, metadata={
+        "source_id": document.source_id, "document_uid": document.document_uid,
+        "source_type": source_type, "source_uri": source_uri, "position": 1,
+    })
+    result = indexing.sync_documents([old_chunk], runtime.embeddings, namespace=namespace)
+    runtime.runs.succeed(runtime.runs.create_running(candidate.candidate_id).id, added=result["num_added"])
+    old_ids = indexing.create_vector_store(None).get(where={"source_id": document.source_id})["ids"]
+    expected = indexing.candidate_to_langchain_documents(candidate)
+    manifest = rag_store.build_current_manifest(str(runtime.local_dir))
+    rag_store.save_manifest({**manifest, "pipeline_version": 3})
+    history = runtime.runs.list()
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("section rebuild must use SQLite structure, without upload, fetch or parser")
+
+    monkeypatch.setattr(runtime.source_service, "_fetch", forbidden)
+    monkeypatch.setattr("app.sources.service.invoke_mcp_tool", forbidden)
+    monkeypatch.setattr("app.sources.upload.parse_document", forbidden)
+    monkeypatch.setattr("app.sources.firecrawl.parse_html_document", forbidden)
+    monkeypatch.setattr("app.rag.parsing._document_converter", forbidden)
+    assert rag_store.needs_rebuild(str(runtime.local_dir)) == (True, "pipeline_version 变化，需要 force rebuild")
+    initialize_rag(StartupDependencies(
+        settings=runtime.settings.model_copy(update={"rag_file_path": runtime.local_dir, "auto_rebuild_on_startup": False}),
+        needs_rebuild=rag_store.needs_rebuild,
+        rebuild_and_persist_index=pipeline.rebuild_and_persist_index,
+    ))
+    assert rag_store.load_manifest() == manifest
+    assert manifest["pipeline_version"] == 4
+    assert rag_store.needs_rebuild(str(runtime.local_dir))[0] is False
+    restored = SQLiteCandidateRepository(runtime.settings.sqlite_db_path).get(candidate.candidate_id)
+    assert restored == candidate
+    assert runtime.runs.list() == history
+    actual = [chunk for chunk in pipeline.chunks if chunk["metadata"]["source_id"] == document.source_id]
+    assert [chunk["text"] for chunk in actual] == [chunk.page_content for chunk in expected]
+    assert {chunk["metadata"]["section_index"] for chunk in actual} == {1, 2}
+    assert all("上下文：内蒙古工业大学2026年分省录取分数统计" in chunk["text"] for chunk in actual)
+    records = indexing.create_vector_store(None).get(where={"source_id": document.source_id})
+    assert set(old_ids).isdisjoint(records["ids"])
+    assert set(records["ids"]) == set(indexing.create_record_manager(namespace=namespace).list_keys())
 
 
 def test_firecrawl_html_sqlite_index_retrieval_and_rebuild_keep_legacy(persisted_runtime, monkeypatch):
@@ -817,7 +882,7 @@ def test_firecrawl_html_sqlite_index_retrieval_and_rebuild_keep_legacy(persisted
     history = runtime.runs.list()
     ok, message = pipeline.rebuild_and_persist_index(str(runtime.local_dir), force_rebuild=True)
     assert ok, message
-    assert rag_store.load_manifest()["pipeline_version"] == 3
+    assert rag_store.load_manifest()["pipeline_version"] == 4
     assert runtime.runs.list() == history
     assert repository.get(candidate.candidate_id) == restored
     [legacy_chunk] = [chunk for chunk in pipeline.chunks if chunk["metadata"]["source_id"] == legacy.document.source_id]

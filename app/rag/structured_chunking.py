@@ -1,16 +1,56 @@
 """把已校验的 ParsedDocument 按 reading order 转为检索 chunks，不访问源文件。"""
 
+from collections.abc import Iterator
+
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from app.ingestion.document_blocks import ParsedDocument, TableBlock, TableCell, TextBlock
 
 
-def _table_view(table: TableBlock) -> tuple[list[str], list[tuple[int, str]]]:
-    """临时展开 spans；仅前导、非空且全部标记为 header 的行构成列标题带。
+def _unique_row_cells(row: list[TableCell | None]) -> list[TableCell]:
+    return list({
+        (cell.row_index, cell.column_index): cell
+        for cell in row if cell is not None and cell.text.strip()
+    }.values())
 
-    合同不区分 row/column header，混合数据行中的 header cell 仍作为该行的值保留。
-    缺少列标题时使用“列N”，不猜测第一行是表头；原 cells 不变。
+
+def _is_full_width_row(cells: list[TableCell], column_count: int) -> bool:
+    return (len(cells) == 1 and cells[0].column_index == 0
+            and cells[0].column_span == column_count)
+
+
+def _build_header_labels(grid: list[list[TableCell | None]], start: int, end: int) -> list[str]:
+    labels = []
+    for column in range(len(grid[start])):
+        # 锚点去重防止 rowspan 重复同一标题，colspan 则贡献给覆盖的每一列。
+        headers = {
+            (cell.row_index, cell.column_index): cell.text
+            for row in grid[start:end]
+            if (cell := row[column]) is not None and cell.text.strip()
+        }
+        labels.append(" > ".join(headers.values()) or f"列{column + 1}")
+
+    return labels
+
+
+def _render_data_row(cells: list[TableCell], labels: list[str]) -> str:
+    fields = []
+    for cell in cells:
+        label = " / ".join(dict.fromkeys(
+            labels[cell.column_index:cell.column_index + cell.column_span]
+        ))
+        fields.append(f"{label}：{cell.text}")
+    return "；".join(fields) + "。"
+
+
+def _table_view(table: TableBlock) -> Iterator[
+    tuple[str, dict[str, str | int], list[tuple[int | None, str]]]
+]:
+    """扫描结构状态；section/header 变化时交出旧行组，保留原 spans 投影。
+
+    非空行全部标记 header 才构成表头带；混合行的 row header 仍作为值。
+    header 标记优先保留多级表头；单列表没有横向合并信号，仍走普通数据路径。
     """
     grid: list[list[TableCell | None]] = [
         [None] * table.column_count for _ in range(table.row_count)
@@ -19,90 +59,113 @@ def _table_view(table: TableBlock) -> tuple[list[str], list[tuple[int, str]]]:
         for row in range(cell.row_index, cell.row_index + cell.row_span):
             for column in range(cell.column_index, cell.column_index + cell.column_span):
                 grid[row][column] = cell
+    unique = [_unique_row_cells(row) for row in grid]
+    headers = [bool(cells) and all(cell.is_header for cell in cells) for cells in unique]
+    contextual = [
+        table.column_count > 1 and not headers[row] and _is_full_width_row(cells, table.column_count)
+        for row, cells in enumerate(unique)
+    ]
+    # 从后向前记录连续 header band 终点，lookahead 不反复扫描长表头。
+    header_ends = list(range(table.row_count + 1))
+    for row in reversed(range(table.row_count)):
+        if headers[row]:
+            header_ends[row] = header_ends[row + 1]
+    sections = {
+        row for row in range(table.row_count - 1)
+        if contextual[row] and headers[row + 1]
+        and unique[row][0].row_index == row
+        and (end := header_ends[row + 1]) < table.row_count
+        and unique[end] and not contextual[end]
+    }
+    # 只有紧连首个可靠 section 的前导全宽序列才传播为 global context。
+    start = 0
+    while start < table.row_count and contextual[start] and start not in sections:
+        start += 1
+    if start not in sections:
+        start = 0
+    global_context = [unique[row][0].text for row in range(start) if unique[row][0].row_index == row]
+    section_title = None
+    section_index = 0
+    labels = [f"列{column + 1}" for column in range(table.column_count)]
+    rows: list[tuple[int | None, str]] = []
 
-    header_end = 0
-    for row in grid:
-        populated = [cell for cell in row if cell is not None and cell.text.strip()]
-        if any(not cell.is_header for cell in populated):
-            break
-        header_end += 1
+    def view():
+        prefix = "\n".join([
+            "[表格]",
+            *([f"标题：{table.caption}"] if table.caption else []),
+            *[f"上下文：{text}" for text in global_context],
+            *([f"分区：{section_title}"] if section_title else []),
+            *(["表头：" + "；".join(labels)] if labels else []),
+        ])
+        metadata = {"section_index": section_index, "section_title": section_title} if section_title else {}
+        return prefix, metadata, rows
 
-    labels = []
-    for column in range(table.column_count):
-        # 锚点去重防止 rowspan 重复同一标题，colspan 则贡献给覆盖的每一列。
-        headers = {
-            (cell.row_index, cell.column_index): cell.text
-            for row in grid[:header_end]
-            if (cell := row[column]) is not None and cell.text.strip()
-        }
-        labels.append(" > ".join(headers.values()) or f"列{column + 1}")
-
-    rows = []
-    for row_index in range(header_end, table.row_count):
-        fields = []
-        seen = set()
-        for cell in grid[row_index]:
-            if cell is None or not cell.text.strip():
-                continue
-            anchor = (cell.row_index, cell.column_index)
-            if anchor in seen:
-                continue
-            seen.add(anchor)
-            label = " / ".join(dict.fromkeys(
-                labels[cell.column_index:cell.column_index + cell.column_span]
-            ))
-            fields.append(f"{label}：{cell.text}")
-        if fields:
-            rows.append((row_index, "；".join(fields) + "。"))
-    return labels, rows
+    row = start
+    while row < table.row_count:
+        if row in sections:
+            if rows:
+                yield view()
+                rows = []
+            section_title = unique[row][0].text
+            section_index += 1
+        elif headers[row]:
+            if rows:
+                yield view()
+                rows = []
+            labels = _build_header_labels(grid, row, header_ends[row])
+            row = header_ends[row]
+            continue
+        elif contextual[row]:
+            # 不可靠全宽行只出现一次，不改变 section，也不计入 data row 范围。
+            if unique[row][0].row_index == row:
+                rows.append((None, f"说明：{unique[row][0].text}"))
+        elif unique[row]:
+            rows.append((row, _render_data_row(unique[row], labels)))
+        row += 1
+    yield view()
 
 
 def _chunk_table_block(table: TableBlock, chunk_size: int) -> list[Document]:
     """按完整连续 body rows 分组，字符预算为 soft target，不做 row overlap。
 
-    row_start/row_end 沿用原 TableCell.row_index：0-based、inclusive，排除列标题带。
+    row_start/row_end 沿用原 TableCell.row_index：0-based、inclusive，仅取 data rows 的端点。
     全空行不生成证据；只有标题/表头、没有数据行的表仍保留，省略 row 范围。
     """
     if not (table.caption or "").strip() and not any(cell.text.strip() for cell in table.cells):
         return []
-    labels, rows = _table_view(table)
-    prefix = "\n".join([
-        "[表格]",
-        *([f"标题：{table.caption}"] if table.caption else []),
-        *(["表头：" + "；".join(labels)] if labels else []),
-    ])
     suffix = "\n[/表格]"
-    groups: list[list[tuple[int, str]]] = []
-    current: list[tuple[int, str]] = []
-    size = len(prefix) + len(suffix)
-    for row in rows:
-        row_size = 1 + len(row[1])
-        if current and size + row_size > chunk_size:
-            groups.append(current)
-            current = []
-            size = len(prefix) + len(suffix)
-        current.append(row)
-        size += row_size
-    if current or not groups:
-        groups.append(current)
-
     chunks = []
-    for chunk_index, group in enumerate(groups, start=1):
-        metadata = {
-            "element_type": "table",
-            "table_id": table.block_id,
-            "block_order": table.order,
-            "table_chunk_index": chunk_index,
-            "table_chunk_count": len(groups),
-        }
-        if group:
-            metadata.update(row_start=group[0][0], row_end=group[-1][0])
-        if table.page_number is not None:
-            metadata["page_number"] = table.page_number
-        chunks.append(Document(
-            page_content=prefix + "".join("\n" + text for _, text in group) + suffix,
-            metadata=metadata,
-        ))
+    for prefix, section_metadata, rows in _table_view(table):
+        groups: list[list[tuple[int | None, str]]] = []
+        current: list[tuple[int | None, str]] = []
+        size = len(prefix) + len(suffix)
+        for row in rows:
+            row_size = 1 + len(row[1])
+            if current and size + row_size > chunk_size:
+                groups.append(current)
+                current = []
+                size = len(prefix) + len(suffix)
+            current.append(row)
+            size += row_size
+        if current or not groups:
+            groups.append(current)
+
+        for group in groups:
+            metadata = {
+                "element_type": "table", "table_id": table.block_id,
+                "block_order": table.order, **section_metadata,
+            }
+            data_rows = [row for row, _ in group if row is not None]
+            if data_rows:
+                metadata.update(row_start=data_rows[0], row_end=data_rows[-1])
+            if table.page_number is not None:
+                metadata["page_number"] = table.page_number
+            chunks.append(Document(
+                page_content=prefix + "".join("\n" + text for _, text in group) + suffix,
+                metadata=metadata,
+            ))
+    for chunk_index, chunk in enumerate(chunks, start=1):
+        chunk.metadata.update(table_chunk_index=chunk_index, table_chunk_count=len(chunks))
     return chunks
 
 

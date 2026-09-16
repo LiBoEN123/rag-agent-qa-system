@@ -515,12 +515,13 @@ def test_local_and_upload_keep_same_structure_and_table_aware_chunks(tmp_path, m
     assert all("structured_content" not in document.metadata for document in documents)
 
 
-def test_pipeline_version_change_requires_force_rebuild_without_renaming_index(tmp_path, monkeypatch):
+@pytest.mark.parametrize("old_version", [2, 3])
+def test_pipeline_version_change_requires_force_rebuild_without_renaming_index(tmp_path, monkeypatch, old_version):
     current = store.build_current_manifest(str(tmp_path))
-    assert current["pipeline_version"] == 3
+    assert current["pipeline_version"] == 4
     assert current["chroma_collection"] == get_settings().chroma_index_collection_name
     assert current["record_manager_namespace"] == indexing.LOCAL_RECORD_NAMESPACE
-    monkeypatch.setattr(store, "load_manifest", lambda: {**current, "pipeline_version": 2})
+    monkeypatch.setattr(store, "load_manifest", lambda: {**current, "pipeline_version": old_version})
     assert store.needs_rebuild(str(tmp_path)) == (True, "pipeline_version 变化，需要 force rebuild")
     indexing.create_record_manager()
     monkeypatch.setattr(store, "chroma_collection_has_chunks", lambda: True)

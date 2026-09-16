@@ -11,10 +11,28 @@ from docling_core.types.doc import (
 
 from app.ingestion.document_blocks import TableBlock, TextBlock, canonical_document_text
 from app.rag import parsing
-from tests.support.structured_document import REGISTRATION_HTML, build_table_docx
+from tests.support.structured_document import (
+    ADMISSION_HTML, REGISTRATION_HTML, admission_structure, build_table_docx,
+)
 
 
 PDF_FIXTURE = Path(__file__).parent / "fixtures" / "structured-table.pdf"
+
+
+def test_real_html_admission_sections_preserve_full_width_and_repeated_headers():
+    parsed = parsing.parse_html_document(ADMISSION_HTML, name="section-admission")
+    [table] = parsed.blocks
+    assert isinstance(table, TableBlock)
+    assert (table.row_count, table.column_count) == (13, 5)
+    for row in (0, 1, 5):
+        [cell] = [cell for cell in table.cells if cell.row_index == row]
+        assert (cell.column_index, cell.row_span, cell.column_span, cell.is_header) == (0, 1, 5, False)
+    for row in (2, 6):
+        cells = [cell for cell in table.cells if cell.row_index == row]
+        assert [cell.column_index for cell in cells] == list(range(5))
+        assert all(cell.is_header and cell.row_span == cell.column_span == 1 for cell in cells)
+    # 包含每个 cell 的原始坐标、span、header 与文本；chunking fixture 不臆造 parser 输出。
+    assert parsed == admission_structure()
 
 
 @pytest.mark.parametrize("merged", [False, True])

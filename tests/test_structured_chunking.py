@@ -7,7 +7,7 @@ from app.ingestion import IngestionRequester, IngestionService, build_knowledge_
 from app.ingestion.document_blocks import ParsedDocument, TableBlock, TableCell, TextBlock
 from app.rag import indexing
 from app.rag.structured_chunking import chunk_structured_document
-from tests.support.structured_document import registration_structure
+from tests.support.structured_document import ADMISSION_ROWS, admission_structure, registration_structure
 
 
 def _candidate(structure, *, file_type="pdf", source_type="local_file"):
@@ -215,3 +215,159 @@ def test_empty_and_header_only_tables_do_not_invent_body_ranges(kind):
         [chunk] = chunks
         assert ("空表说明" if kind == "caption_only" else "表头：材料") in chunk.page_content
         assert "row_start" not in chunk.metadata and "row_end" not in chunk.metadata
+
+
+@pytest.mark.parametrize("chunk_size", [160, 10000])
+def test_admission_sections_propagate_context_isolate_rows_and_preserve_duplicates(chunk_size):
+    table = admission_structure().blocks[0]
+    original = table.model_dump_json()
+    chunks = _chunks(table, chunk_size=chunk_size)
+    covered = []
+    for index, chunk in enumerate(chunks, 1):
+        section = chunk.metadata["section_index"]
+        title = ADMISSION_ROWS[1 if section == 1 else 5][0]
+        assert chunk.page_content.startswith(
+            f"[表格]\n上下文：{ADMISSION_ROWS[0][0]}\n分区：{title}\n"
+            "表头：专业名称；最高分；最低分；平均分；备注\n"
+        )
+        assert chunk.metadata["section_title"] == title
+        assert ADMISSION_ROWS[5 if section == 1 else 1][0] not in chunk.page_content
+        rows = list(range(chunk.metadata["row_start"], chunk.metadata["row_end"] + 1))
+        assert set(rows) <= (set(range(3, 5)) if section == 1 else set(range(7, 13)))
+        covered.extend(rows)
+        expected = ["；".join(f"{label}：{value}" for label, value in zip(ADMISSION_ROWS[2], ADMISSION_ROWS[row])) + "。"
+                    for row in rows]
+        assert chunk.page_content.splitlines()[4:-1] == expected
+        assert chunk.metadata["table_chunk_index"] == index
+        assert chunk.metadata["table_chunk_count"] == len(chunks)
+        assert all(type(value) in (str, int, float, bool) for value in chunk.metadata.values())
+    assert covered == [3, 4, 7, 8, 9, 10, 11, 12]
+    text = "\n".join(chunk.page_content for chunk in chunks)
+    for label in ADMISSION_ROWS[2]:
+        assert f"{label}：{label}" not in text
+    assert text.count("专业名称：材料成型及控制工程；") == 2
+    assert text.count("专业名称：储能科学与工程；") == 3
+    assert "最高分：549；最低分：509；平均分：517.98；备注：物理类。" in text
+    assert "最高分：503；最低分：480；平均分：487.75；备注：民族班。" in text
+    physics = [chunk for chunk in chunks if chunk.metadata["section_index"] == 2]
+    if chunk_size == 160:
+        assert len(physics) > 1
+    else:
+        assert len(chunks) == 2
+    assert table.model_dump_json() == original
+
+
+def test_section_detection_is_structural_and_cell_order_independent():
+    table = admission_structure().blocks[0]
+    cells = tuple(cell.model_copy(update={"text": {0: "Overview", 1: "Group A", 5: "Group B"}.get(
+        cell.row_index, cell.text,
+    )}) for cell in reversed(table.cells))
+    chunks = _chunks(table.model_copy(update={"cells": cells}), chunk_size=10000)
+    assert [chunk.metadata["section_title"] for chunk in chunks] == ["Group A", "Group B"]
+    assert all("上下文：Overview" in chunk.page_content for chunk in chunks)
+
+
+@pytest.mark.parametrize("chunk_size", [1, 10000])
+def test_ambiguous_full_width_note_is_kept_once_without_changing_section(chunk_size):
+    table = admission_structure().blocks[0]
+    # 数据中间的全宽说明后面直接跟 data，不能成为 section 或 global context。
+    cells = tuple(cell for cell in table.cells if cell.row_index != 8) + (
+        TableCell(text="unclassified note", row_index=8, column_index=0, column_span=5),
+    )
+    chunks = _chunks(table.model_copy(update={"cells": cells}), chunk_size=chunk_size)
+    assert sum(chunk.page_content.count("说明：unclassified note") for chunk in chunks) == 1
+    physics = [chunk for chunk in chunks if chunk.metadata["section_index"] == 2]
+    assert all(chunk.metadata["section_title"] == ADMISSION_ROWS[5][0] for chunk in physics)
+    if chunk_size == 1:
+        [note] = [chunk for chunk in chunks if "unclassified note" in chunk.page_content]
+        assert "row_start" not in note.metadata and "row_end" not in note.metadata
+        assert all(chunk.metadata.get("row_start") != 8 for chunk in chunks)
+
+
+def test_full_width_without_header_followed_by_data_stays_note():
+    table = TableBlock(block_id="b0", order=0, row_count=3, column_count=2, cells=(
+        TableCell(text="uncertain", row_index=0, column_index=0, column_span=2),
+        TableCell(text="value", row_index=1, column_index=0),
+        TableCell(text="trailing note", row_index=2, column_index=0, column_span=2),
+    ))
+    [chunk] = _chunks(table)
+    assert "说明：uncertain\n列1：value。\n说明：trailing note" in chunk.page_content
+    assert (chunk.metadata["row_start"], chunk.metadata["row_end"]) == (1, 1)
+    assert "section_title" not in chunk.metadata and "section_index" not in chunk.metadata
+    assert "上下文：" not in chunk.page_content and "分区：" not in chunk.page_content
+
+
+def test_full_width_and_header_without_data_do_not_invent_section():
+    table = TableBlock(block_id="b0", order=0, row_count=2, column_count=2, cells=(
+        TableCell(text="uncertain", row_index=0, column_index=0, column_span=2),
+        TableCell(text="one", row_index=1, column_index=0, is_header=True),
+        TableCell(text="two", row_index=1, column_index=1, is_header=True),
+    ))
+    chunks = _chunks(table)
+    assert any("说明：uncertain" in chunk.page_content for chunk in chunks)
+    assert all("section_title" not in chunk.metadata and "row_start" not in chunk.metadata for chunk in chunks)
+
+
+def test_full_width_rowspan_note_does_not_turn_inherited_cell_into_section():
+    table = TableBlock(block_id="b0", order=0, row_count=4, column_count=2, cells=(
+        TableCell(text="uncertain", row_index=0, column_index=0, column_span=2, row_span=2),
+        TableCell(text="one", row_index=2, column_index=0, is_header=True),
+        TableCell(text="two", row_index=2, column_index=1, is_header=True),
+        TableCell(text="value", row_index=3, column_index=0),
+    ))
+    chunks = _chunks(table)
+    assert sum(chunk.page_content.count("uncertain") for chunk in chunks) == 1
+    assert all("section_title" not in chunk.metadata for chunk in chunks)
+    assert [(chunk.metadata.get("row_start"), chunk.metadata.get("row_end")) for chunk in chunks] == [
+        (None, None), (3, 3),
+    ]
+
+
+def test_repeated_multilevel_header_refreshes_labels_and_keeps_body_spans():
+    cells = []
+    for start, title, parent in ((0, "Group A", "要求"), (5, "Group B", "新要求")):
+        cells.extend((
+            TableCell(text=title, row_index=start, column_index=0, column_span=3),
+            TableCell(text="事项", row_index=start + 1, column_index=0, row_span=2, is_header=True),
+            TableCell(text=parent, row_index=start + 1, column_index=1, column_span=2, is_header=True),
+            TableCell(text="条件", row_index=start + 2, column_index=1, is_header=True),
+            TableCell(text="材料", row_index=start + 2, column_index=2, is_header=True),
+            TableCell(text="办理", row_index=start + 3, column_index=0, row_span=2),
+            TableCell(text="完整值", row_index=start + 3, column_index=1, column_span=2),
+            TableCell(text="次行", row_index=start + 4, column_index=1),
+        ))
+    chunks = _chunks(TableBlock(block_id="b0", order=0, row_count=10, column_count=3, cells=tuple(cells)), chunk_size=1)
+    assert [chunk.metadata["row_start"] for chunk in chunks] == [3, 4, 8, 9]
+    for first, second, parent in ((chunks[0], chunks[1], "要求"), (chunks[2], chunks[3], "新要求")):
+        assert f"事项：办理；{parent} > 条件 / {parent} > 材料：完整值。" in first.page_content
+        assert f"事项：办理；{parent} > 条件：次行。" in second.page_content
+        assert first.metadata["section_title"] == second.metadata["section_title"]
+
+
+def test_repeated_header_without_new_section_flushes_and_keeps_current_section():
+    table = admission_structure().blocks[0]
+    # 去掉第二个分区标签，但保留 repeated header，仍属于第一个 section。
+    table = table.model_copy(update={"cells": tuple(cell for cell in table.cells if cell.row_index != 5)})
+    chunks = _chunks(table, chunk_size=10000)
+    assert len(chunks) == 2
+    assert all(chunk.metadata["section_title"] == ADMISSION_ROWS[1][0] for chunk in chunks)
+    assert [(chunk.metadata["row_start"], chunk.metadata["row_end"]) for chunk in chunks] == [(3, 4), (7, 12)]
+
+
+def test_full_width_header_and_single_column_table_preserve_existing_projection():
+    table = TableBlock(block_id="b0", order=0, row_count=3, column_count=2, cells=(
+        TableCell(text="要求", row_index=0, column_index=0, column_span=2, is_header=True),
+        TableCell(text="条件", row_index=1, column_index=0, is_header=True),
+        TableCell(text="材料", row_index=1, column_index=1, is_header=True),
+        TableCell(text="成人", row_index=2, column_index=0),
+        TableCell(text="证件", row_index=2, column_index=1),
+    ))
+    [chunk] = _chunks(table)
+    assert "要求 > 条件：成人；要求 > 材料：证件。" in chunk.page_content
+    assert "section_title" not in chunk.metadata
+    [single] = _chunks(TableBlock(block_id="b0", order=0, row_count=2, column_count=1, cells=(
+        TableCell(text="材料", row_index=0, column_index=0, is_header=True),
+        TableCell(text="证件", row_index=1, column_index=0),
+    )))
+    assert single.page_content == "[表格]\n表头：材料\n材料：证件。\n[/表格]"
+    assert (single.metadata["row_start"], single.metadata["row_end"]) == (1, 1)

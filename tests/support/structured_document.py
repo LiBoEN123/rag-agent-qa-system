@@ -16,6 +16,42 @@ REGISTRATION_HTML = """<html><body>
 </body></html>"""
 
 
+ADMISSION_ROWS = (
+    ("内蒙古工业大学2026年分省录取分数统计",),
+    ("内蒙古本科提前B段艺术类",),
+    ("专业名称", "最高分", "最低分", "平均分", "备注"),
+    ("服装与服饰设计", "501", "465", "470", "投档成绩"),
+    ("环境设计", "487", "475", "477.87", "投档成绩"),
+    ("内蒙古本科批物理类",),
+    ("专业名称", "最高分", "最低分", "平均分", "备注"),
+    ("安全工程", "527", "501", "508.32", "物理类"),
+    ("材料成型及控制工程", "549", "509", "517.98", "物理类"),
+    ("材料成型及控制工程", "503", "480", "487.75", "民族班"),
+    ("储能科学与工程", "566", "555", "556.69", "新能源学院"),
+    ("储能科学与工程", "537", "529", "533.4", "兴边固边（新能源学院）"),
+    ("储能科学与工程", "561", "544", "546.38", "物理类"),
+)
+ADMISSION_HTML = "<html><body><table>" + "".join(
+    '<tr><td colspan="5">' + values[0] + "</td></tr>" if len(values) == 1 else
+    "<tr>" + "".join(f"<{tag}>{value}</{tag}>" for value in values) + "</tr>"
+    for row, values in enumerate(ADMISSION_ROWS)
+    for tag in ["th" if row in (2, 6) else "td"]
+) + "</table></body></html>"
+
+
+def admission_structure() -> ParsedDocument:
+    """与真实 Docling HTML 输出逐 cell 比对的分区表，纯 chunking 测试无需 parser。"""
+    return ParsedDocument(blocks=(TableBlock(
+        block_id="b0", order=0, row_count=len(ADMISSION_ROWS), column_count=5,
+        cells=tuple(
+            TableCell(text=text, row_index=row, column_index=column,
+                      column_span=5 if len(values) == 1 else 1, is_header=row in (2, 6))
+            for row, values in enumerate(ADMISSION_ROWS)
+            for column, text in enumerate(values)
+        ),
+    ),))
+
+
 def registration_structure() -> ParsedDocument:
     """已持久化合同形态的中文表格，供 chunking 与真实索引/检索测试共用。"""
     values = [

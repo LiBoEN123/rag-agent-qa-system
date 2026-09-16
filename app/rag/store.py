@@ -99,7 +99,7 @@ def build_current_manifest(
         settings.chunk_overlap if chunk_overlap is None else chunk_overlap
     )
     return {
-        "pipeline_version": 3,
+        "pipeline_version": 4,
         "embedding_model": settings.embedding_model_name,
         "rerank_model": settings.rerank_model_name,
         "record_manager_namespace": LOCAL_RECORD_NAMESPACE,
