@@ -119,30 +119,27 @@ def _invocation(action="agent", **decision):
     )
 
 
-def _knowledge_output(rag_result):
+def _knowledge_output():
     knowledge = {
-        "ok": True,
-        "status": "success",
-        "output": {"count": 2, "chunks": [], "rag_result": rag_result},
+        "ok": True, "status": "success",
+        "output": {
+            "count": 2,
+            "chunks": [{"chunk_id": "a", "text": "候选一"}, {"chunk_id": "b", "text": "候选二"}],
+            "top_chunk_ids": ["a", "b"], "top_scores": [0.9, 0.8],
+        },
     }
     return {
         "governance_events": [
             {"kind": "model", "ok": True, "has_tool_calls": True},
-            {"kind": "model", "ok": False},
             {
-                "kind": "tool",
-                "name": "search_knowledge_base",
-                "ok": True,
-                "counted_call": True,
-                "handler_executed": True,
-                "cost_ms": 5,
-                "result": knowledge,
+                "kind": "tool", "name": "search_knowledge_base", "ok": True,
+                "counted_call": True, "handler_executed": True,
+                "cost_ms": 5, "result": knowledge,
             },
+            {"kind": "model", "ok": True, "has_tool_calls": False},
         ],
-        "knowledge_base_result": knowledge,
-        # 已完成的 RAG Result 优先于框架停止原因与模型消息。
-        "stop_reason": "max_iterations_reached",
-        "messages": [AIMessage(content="不应覆盖 RAG 回答")],
+        "stop_reason": "completed",
+        "messages": [AIMessage(content="最终模型回答")],
     }
 
 
@@ -267,141 +264,55 @@ def test_unsupported_short_circuit_action_fails_closed(action):
     _validate_usage(result)
 
 
-@pytest.mark.parametrize(
-    ("rag_status", "result_status", "trace_status"),
-    [
-        ("OK", "OK", "ok"),
-        ("NEED_CLARIFICATION", "NEED_CLARIFICATION", "clarify"),
-        ("NO_RELEVANT_INFO", "NO_RELEVANT_INFO", "no_evidence"),
-        ("MODEL_ERROR", "MODEL_ERROR", "model_error"),
-        ("MODEL_BAD_OUTPUT", "MODEL_ERROR", "model_error"),
-        ("unexpected", "INTERNAL_ERROR", "error"),
-        ("ok", "INTERNAL_ERROR", "error"),
-    ],
-)
-def test_rag_result_maps_directly_without_losing_fields_or_mutating_input(
-    rag_status,
-    result_status,
-    trace_status,
-    settings_env,
-):
+def test_kb_evidence_uses_final_ai_answer_without_fabricating_grounding(settings_env):
     settings = settings_env()
-    rag_result = {
-        "status": rag_status,
-        "answer": "RAG 回答或澄清问题",
-        "references": [{"reference_id": "Reference 1", "chunk_id": "chunk-1"}],
-        "reason": "RAG 判断原因",
-        "decompose_llm_used": True,
-        "answer_llm_used": True,
-        "llm_call_count": 2,
-        "retrieval_confidence": 0.9,
-        "answer_confidence": 0.8,
-        "timings": {"llm_cost_ms": 3, "decompose_cost_ms": 4},
-    }
-    output = _knowledge_output(rag_result)
-    invocation = _invocation()
-    original_output, original_invocation = deepcopy(output), deepcopy(invocation)
+    output = _knowledge_output()
+    original = deepcopy(output)
 
-    result = build_framework_agent_result(invocation, output)
+    result = build_framework_agent_result(_invocation(), output)
 
+    assert output == original
     assert not settings.sqlite_db_path.exists()
-    assert output == original_output and invocation == original_invocation
-    assert result["status"] == result_status
-    for field in (
-        "answer",
-        "references",
-        "reason",
-        "retrieval_confidence",
-        "answer_confidence",
-        "timings",
-    ):
-        assert result[field] == rag_result[field]
-    assert result["need_clarification"] is (result_status == "NEED_CLARIFICATION")
-    assert result["clarification_question"] == (
-        rag_result["answer"] if result_status == "NEED_CLARIFICATION" else ""
-    )
-    assert result["tool_result_summary"] == (
-        "未调用工具，问题需要澄清"
-        if result_status == "NEED_CLARIFICATION"
-        else "知识库检索完成，召回 2 个 chunk"
-    )
+    assert result["status"] == "OK"
+    assert result["answer"] == "最终模型回答"
+    assert result["references"] == []
+    assert result["retrieval_confidence"] == result["answer_confidence"] == 0.0
+    assert result["timings"] == {}
+    assert result["tool_result_summary"] == "知识库检索完成，召回 2 个 chunk"
     assert [step["step"] for step in result["tool_trace"]] == [
-        "decide",
-        "agent_iteration",
-        "agent_iteration",
-        "tool_call",
-        "compose_final_answer",
-        "llm_usage",
+        "decide", "agent_iteration", "tool_call", "agent_iteration",
+        "compose_final_answer", "llm_usage",
     ]
-    assert result["tool_trace"][-2] == {
-        "step": "compose_final_answer",
-        "mode": "rag",
-        "status": trace_status,
-        "answer_len": len(rag_result["answer"]),
-        "reference_count": 1,
-        "reason": rag_result["reason"],
-        "retrieval_confidence": 0.9,
-        "answer_confidence": 0.8,
-        "timings": rag_result["timings"],
-        "rag_llm_call_count": 2,
-    }
-    _validate_usage(result, decompose=True, answer=True, count=3)
+    assert result["tool_trace"][-2]["mode"] == "agent_loop"
+    _validate_usage(result, answer=True, count=2)
 
 
-@pytest.mark.parametrize(
-    ("model_calls", "rag_calls", "decompose", "answer", "expected"),
-    [
-        (1, 0, False, False, 1),
-        (2, 3, True, True, 5),
-        (0, 0, True, True, 2),
-        (1, -1, False, False, 1),
-        (0, 1, False, True, 1),
-    ],
-)
-def test_rag_llm_usage_counts_successful_models_and_rag_once(
-    model_calls,
-    rag_calls,
-    decompose,
-    answer,
-    expected,
-):
-    output = _knowledge_output(
-        {
-            "status": "NO_RELEVANT_INFO",
-            "answer": "无可用证据",
-            "decompose_llm_used": decompose,
-            "answer_llm_used": answer,
-            "llm_call_count": rag_calls,
-        }
-    )
+@pytest.mark.parametrize("model_calls", [0, 1, 3])
+def test_kb_tool_does_not_add_llm_calls(model_calls):
+    output = _knowledge_output()
+    tool_event = output["governance_events"][1]
     output["governance_events"] = [
         *[{"kind": "model", "ok": True} for _ in range(model_calls)],
+        tool_event,
         {"kind": "model", "ok": False},
     ]
 
     result = build_framework_agent_result(_invocation(), output)
 
-    assert result["answer"] == "无可用证据"
-    assert result["references"] == []
-    _validate_usage(result, decompose=decompose, answer=answer, count=expected)
+    _validate_usage(result, answer=model_calls > 0, count=model_calls)
 
 
-@pytest.mark.parametrize(
-    "references", [None, "invalid", ["invalid", {"chunk_id": "1"}]]
-)
-def test_rag_reference_filter_and_timing_defaults_remain_compatible(references):
-    output = _knowledge_output(
-        {"status": "OK", "references": references, "timings": []}
-    )
+@pytest.mark.parametrize("stop_reason", ["max_iterations_reached", "fatal_tool_error"])
+def test_successful_kb_evidence_cannot_override_terminal_guardrail(stop_reason):
+    output = _knowledge_output()
+    output["stop_reason"] = stop_reason
 
     result = build_framework_agent_result(_invocation(), output)
 
-    assert result["references"] == (
-        [{"chunk_id": "1"}] if isinstance(references, list) else []
-    )
-    assert result["timings"] == {}
-    assert result["retrieval_confidence"] == result["answer_confidence"] == 0.0
-    _validate_usage(result, count=1)
+    assert result["status"] != "OK"
+    assert result["answer"] != "最终模型回答"
+    assert result["reason"] == stop_reason
+    assert result["references"] == []
 
 
 @pytest.mark.parametrize("stop_reason", ["", "completed"])
@@ -571,8 +482,8 @@ def test_tool_result_summary_uses_last_three_public_tool_summaries(summaries):
 
 
 def test_knowledge_summary_uses_public_final_chunk_count():
-    output = _knowledge_output({"status": "OK", "answer": "知识库回答"})
-    output["knowledge_base_result"]["output"].update(
+    output = _knowledge_output()
+    output["governance_events"][1]["result"]["output"].update(
         count=2, chunks=[{"chunk_id": "one-visible-hit"}],
     )
     result = build_framework_agent_result(_invocation(), output)

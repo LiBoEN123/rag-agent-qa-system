@@ -4,6 +4,7 @@
 """
 
 from app.tools.context import ToolInvocationContext
+from app.tools.errors import ToolErrorCode, ToolExecutionError
 from app.tools.result import tool_error, tool_success
 
 
@@ -70,40 +71,24 @@ def search_knowledge_base(
     args: dict,
     context: ToolInvocationContext | None = None,
 ) -> dict:
-    """检索本地证据并在工具内部执行独立 RAG Graph。"""
+    """按本轮工具参数混合召回、重排，只返回候选证据。"""
     tool_name = "search_knowledge_base"
     try:
-        from app.config import get_settings
-        from app.rag.pipeline import search_relevant_chunks
-        from app.rag.graph import run_rag_subgraph
+        from app.rag.pipeline import get_rag_status, rerank, search_relevant_chunks
+
+        if not get_rag_status()["ready"]:
+            raise ToolExecutionError(
+                "知识库尚未准备完成",
+                code=ToolErrorCode.DEPENDENCY_UNAVAILABLE,
+                retryable=False,
+            )
 
         query = args["query"]
         top_k = args["top_k"]
         tool_input = {"query": query, "top_k": top_k}
 
-        prefetched_chunks = search_relevant_chunks(query, top_k=top_k)
-        effective_question = (
-            (context.effective_question if context is not None else "").strip()
-            or query
-        )
-        rag_top_k = (
-            context.top_k
-            if context is not None and context.top_k > 0
-            else top_k
-        )
-        decompose_top_k = (
-            context.decompose_top_k
-            if context is not None and context.decompose_top_k > 0
-            else get_settings().decompose_top_k
-        )
-        rag_result = run_rag_subgraph(
-            question=effective_question,
-            top_k=rag_top_k,
-            decompose_top_k=decompose_top_k,
-            retrieved_chunks=prefetched_chunks,
-            trace_id=context.trace_id if context is not None else "",
-        )
-        final_chunks = rag_result.get("final_chunks") or []
+        candidates = search_relevant_chunks(query, top_k=top_k)
+        final_chunks = rerank(candidates, query)[:top_k]
         return tool_success(
             tool_name,
             tool_input,
@@ -118,9 +103,10 @@ def search_knowledge_base(
                     _round_chunk_score(chunk, "hybrid_score")
                     for chunk in final_chunks
                 ],
-                "rag_result": rag_result,
             },
         )
+    except ToolExecutionError:
+        raise
     except Exception as exc:
         return tool_error(
             tool_name,

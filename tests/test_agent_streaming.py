@@ -253,7 +253,7 @@ def test_stream_executes_create_agent_and_returns_authoritative_result(
     assert events[0].data == {"stage": "routing", "status": "completed"}
     result = next(event.data["result"] for event in events if event.event == "result")
     assert questions == ["请回答测试问题"]
-    assert model.received_messages[0][0].content == "请回答测试问题"
+    assert model.received_messages[0][-1].content == "请回答测试问题"
     decide = next(step for step in result["tool_trace"] if step["step"] == "decide")
     assert decide["route_cost_ms"] >= 0
     assert result["status"] == ("MODEL_ERROR" if failure else "OK")

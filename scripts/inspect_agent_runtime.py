@@ -319,9 +319,18 @@ def inspect_runtime(
             "stream Runtime directly consumes create_agent.astream",
         ),
         _check(
-            "rag_graph_is_tool_owned",
-            "run_rag_subgraph(" in knowledge_source,
-            "knowledge base tool invokes independent RAG graph",
+            "knowledge_tool_is_retrieval_only",
+            "run_rag_subgraph" not in knowledge_source
+            and "search_relevant_chunks(query, top_k=top_k)" in knowledge_source
+            and "rerank(candidates, query)[:top_k]" in knowledge_source,
+            "knowledge base tool reuses hybrid retrieval and rerank",
+        ),
+        _check(
+            "knowledge_success_returns_to_agent",
+            "knowledge_base_result" not in agent_source
+            and "rag_result" not in results_source
+            and "search_knowledge_base" not in middleware_source,
+            "successful KB evidence returns through the ordinary ToolMessage loop",
         ),
         _check(
             "local_tool_execution_entry_is_unique",

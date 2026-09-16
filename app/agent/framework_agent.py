@@ -25,6 +25,7 @@ from app.agent.framework_tools import ProjectStructuredTool, resolve_agent_tools
 from app.agent.tool_visibility import ProjectToolVisibilityMiddleware
 from app.config import AppSettings, get_settings
 from app.llm.factory import get_answer_model
+from app.prompts import AGENT_SYSTEM_PROMPT
 from app.tools.context import ToolInvocationContext, build_default_tool_context
 from app.tools.execution import project_failure_content, retry_project_failure
 
@@ -34,26 +35,12 @@ def _prefer_stop_reason(left: str, right: str) -> str:
     return right or left
 
 
-def _prefer_knowledge_base_result(
-    left: dict[str, Any] | None,
-    right: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    """同批知识库调用完成时保留最后一个非空交接结果。"""
-    return right or left
-
-
 class FrameworkAgentState(LangChainAgentState):
     """create_agent 内部使用的最小治理状态。"""
 
     governance_events: NotRequired[Annotated[list[dict[str, Any]], operator.add]]
     agent_elapsed_ms: NotRequired[int]
     stop_reason: NotRequired[Annotated[str, _prefer_stop_reason]]
-    knowledge_base_result: NotRequired[
-        Annotated[
-            dict[str, Any] | None,
-            _prefer_knowledge_base_result,
-        ]
-    ]
 
 
 class _DeferredAgentModel:
@@ -190,6 +177,7 @@ def build_framework_agent(
     agent = create_agent(
         _DeferredAgentModel(),
         tools=resolved_tools,
+        system_prompt=AGENT_SYSTEM_PROMPT,
         middleware=[
             ProjectToolVisibilityMiddleware(),
             resolved_governance,

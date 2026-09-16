@@ -83,7 +83,7 @@ class ToolInvocationContext:
     source: str = ""
     idempotency_key: str = ""
 
-    # Agent Runtime 传给知识库工具的请求级 RAG 参数；普通工具不会使用。
+    # 保留请求与 legacy RAG 参数；检索工具以本轮 Tool Call 的 query/top_k 为准。
     effective_question: str = ""
     top_k: int = 0
     decompose_top_k: int = 0

@@ -75,7 +75,7 @@ def summarize_tool_trace_for_result(
         # step_id 仅属于 counted call；handler_executed 会排除已计数的失败。
         if trace.get("step") != "tool_call" or "step_id" not in trace:
             continue
-        if trace.get("tool_name") == "search_knowledge_base":
+        if trace.get("tool_name") == "search_knowledge_base" and trace.get("success"):
             count = trace.get("final_chunk_count", 0)
             summaries.append(f"知识库检索完成，召回 {count} 个 chunk")
             continue
@@ -112,19 +112,6 @@ def build_decide_trace(
         "router_llm_used": False,
         "route_cost_ms": max(0, int(route_cost_ms or 0)),
     }
-
-
-def resolve_llm_call_count(
-    *,
-    decompose_llm_used: bool,
-    answer_llm_used: bool,
-    current_count: int,
-) -> int:
-    """解析 Agent Model 与 RAG 回答侧已经累计的精确调用数。"""
-    return max(
-        int(bool(decompose_llm_used)) + int(bool(answer_llm_used)),
-        max(0, int(current_count or 0)),
-    )
 
 
 def upsert_llm_usage_trace(
@@ -300,64 +287,23 @@ def build_framework_agent_result(
         build_decide_trace(invocation.decision, route_cost_ms=invocation.route_cost_ms),
         *event_trace,
     ]
-    decompose_llm_used = False
     answer_llm_used = successful_models > 0
-    rag_llm_call_count = 0
-    references = []
-    retrieval_confidence = answer_confidence = 0.0
-    timings = {}
-
-    raw_knowledge_result = framework_output.get("knowledge_base_result")
-    knowledge_result = (
-        raw_knowledge_result if isinstance(raw_knowledge_result, Mapping) else {}
-    )
-    knowledge_output = knowledge_result.get("output")
-    rag_result = (
-        knowledge_output.get("rag_result")
-        if isinstance(knowledge_output, Mapping)
-        else None
-    )
-    if isinstance(rag_result, Mapping):
-        status = {
-            "OK": AgentResultStatus.OK,
-            "NEED_CLARIFICATION": AgentResultStatus.NEED_CLARIFICATION,
-            "NO_RELEVANT_INFO": AgentResultStatus.NO_RELEVANT_INFO,
-            "MODEL_ERROR": AgentResultStatus.MODEL_ERROR,
-            "MODEL_BAD_OUTPUT": AgentResultStatus.MODEL_ERROR,
-        }.get(str(rag_result.get("status") or "").strip(), AgentResultStatus.INTERNAL_ERROR)
-        answer = str(rag_result.get("answer") or "")
-        reason = str(rag_result.get("reason") or "")
-        raw_references = rag_result.get("references")
-        references = (
-            [dict(item) for item in raw_references if isinstance(item, dict)]
-            if isinstance(raw_references, list)
-            else []
-        )
-        retrieval_confidence = rag_result.get("retrieval_confidence", 0.0)
-        answer_confidence = rag_result.get("answer_confidence", 0.0)
-        raw_timings = rag_result.get("timings")
-        timings = dict(raw_timings) if isinstance(raw_timings, dict) else {}
-        decompose_llm_used = bool(rag_result.get("decompose_llm_used"))
-        answer_llm_used = bool(rag_result.get("answer_llm_used"))
-        rag_llm_call_count = max(0, int(rag_result.get("llm_call_count", 0) or 0))
-        mode = "rag"
+    stop_reason = str(framework_output.get("stop_reason") or "")
+    if stop_reason and stop_reason != AgentStopReason.COMPLETED.value:
+        status, answer = _stop_result(stop_reason)
+        reason = stop_reason
+        mode = "error"
     else:
-        stop_reason = str(framework_output.get("stop_reason") or "")
-        if stop_reason and stop_reason != AgentStopReason.COMPLETED.value:
-            status, answer = _stop_result(stop_reason)
-            reason = stop_reason
-            mode = "error"
-        else:
-            message = _last_final_ai(framework_output.get("messages"))
-            answer = _normalize_ai_content(message.content if message else "")
-            status = AgentResultStatus.OK if answer else AgentResultStatus.MODEL_ERROR
-            reason = (
-                "Agent model produced final answer"
-                if answer
-                else "Agent model returned empty final answer"
-            )
-            mode = "agent_loop" if answer else "error"
-            answer = answer or "模型未生成可用的最终回答。"
+        message = _last_final_ai(framework_output.get("messages"))
+        answer = _normalize_ai_content(message.content if message else "")
+        status = AgentResultStatus.OK if answer else AgentResultStatus.MODEL_ERROR
+        reason = (
+            "Agent model produced final answer"
+            if answer
+            else "Agent model returned empty final answer"
+        )
+        mode = "agent_loop" if answer else "error"
+        answer = answer or "模型未生成可用的最终回答。"
     compose_trace = {
         "step": "compose_final_answer",
         "mode": mode,
@@ -365,26 +311,14 @@ def build_framework_agent_result(
         "answer_len": len(answer),
         "reason": reason,
     }
-    if mode == "rag":
-        compose_trace.update(
-            reference_count=len(references),
-            retrieval_confidence=retrieval_confidence,
-            answer_confidence=answer_confidence,
-            timings=timings,
-            rag_llm_call_count=rag_llm_call_count,
-        )
     tool_trace.append(compose_trace)
-    llm_call_count = resolve_llm_call_count(
-        decompose_llm_used=decompose_llm_used,
-        answer_llm_used=answer_llm_used,
-        current_count=successful_models + rag_llm_call_count,
-    )
+    llm_call_count = successful_models
     result = AgentRunResult(
         status=status,
         answer=answer,
-        references=references,
-        retrieval_confidence=retrieval_confidence,
-        answer_confidence=answer_confidence,
+        references=[],
+        retrieval_confidence=0.0,
+        answer_confidence=0.0,
         need_clarification=status is AgentResultStatus.NEED_CLARIFICATION,
         clarification_question=(
             answer if status is AgentResultStatus.NEED_CLARIFICATION else ""
@@ -396,15 +330,15 @@ def build_framework_agent_result(
         ),
         tool_trace=upsert_llm_usage_trace(
             tool_trace,
-            decompose_llm_used=decompose_llm_used,
+            decompose_llm_used=False,
             answer_llm_used=answer_llm_used,
             llm_call_count=llm_call_count,
         ),
         router_llm_used=False,
-        decompose_llm_used=decompose_llm_used,
+        decompose_llm_used=False,
         answer_llm_used=answer_llm_used,
         llm_call_count=llm_call_count,
-        timings=timings,
+        timings={},
     )
     return _finalize_agent_result(result)
 
@@ -569,6 +503,5 @@ __all__ = [
     "build_short_circuit_result",
     "create_agent_result",
     "get_route_decision_for_trace",
-    "resolve_llm_call_count",
     "upsert_llm_usage_trace",
 ]

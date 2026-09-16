@@ -14,6 +14,26 @@ from app.config import AppSettings, get_settings
 from app.tools.context import ToolInvocationContext
 
 
+class FakeToolCallingModel:
+    """按顺序返回 AIMessage，并记录工具绑定和每轮完整输入。"""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.bound_tool_names: list[str] = []
+        self.received_messages: list[list] = []
+
+    def bind_tools(self, tools):
+        self.bound_tool_names = [tool.name for tool in tools]
+        return self
+
+    async def ainvoke(self, messages):
+        self.received_messages.append(list(messages))
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
 class AgentRuntimeHarness:
     """让治理集成测试取得框架状态和最终公共 Result。"""
 
@@ -117,4 +137,4 @@ def build_agent_harness(
     return AgentRuntimeHarness(settings)
 
 
-__all__ = ["AgentRuntimeHarness", "build_agent_harness"]
+__all__ = ["AgentRuntimeHarness", "FakeToolCallingModel", "build_agent_harness"]

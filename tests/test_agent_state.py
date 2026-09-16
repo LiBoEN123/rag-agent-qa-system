@@ -20,7 +20,7 @@ def test_parent_agent_graph_state_module_is_removed():
     """生产状态只剩 create_agent 内部 Schema 与最终 Result。"""
     assert not (PROJECT_ROOT / "app" / "graph" / "state.py").is_file()
     fields = FrameworkAgentState.__annotations__
-    assert "knowledge_base_result" in fields
+    assert "knowledge_base_result" not in fields
     assert "framework_events_applied" not in fields
     assert "pending_rag_result" not in fields
     assert "decision" not in fields

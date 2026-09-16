@@ -1,7 +1,5 @@
 """迭代式 Agent Loop 的消息、工具治理和预算回归测试。"""
 
-from pydantic import RootModel
-
 import json
 
 import pytest
@@ -14,8 +12,8 @@ from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from tests.support.local_tools import local_tools
 from app.tools.result import tool_success
-from app.tools.schemas import SearchKnowledgeBaseArgs
-from tests.support.agent_runtime import build_agent_harness
+from app.tools.schemas import SearchKnowledgeBaseArgs, SearchKnowledgeBaseOutput
+from tests.support.agent_runtime import FakeToolCallingModel, build_agent_harness
 
 
 @pytest.fixture(autouse=True)
@@ -27,26 +25,6 @@ def isolate_tool_audit(settings_env, monkeypatch):
         lambda chunk_id: {"found": chunk_id != "missing", "text": f"正文 {chunk_id}"},
     )
     yield
-
-
-class FakeToolCallingModel:
-    """按顺序返回 AIMessage，并记录工具绑定和每轮完整输入。"""
-
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self.bound_tool_names: list[str] = []
-        self.received_messages: list[list] = []
-
-    def bind_tools(self, tools):
-        self.bound_tool_names = [tool.name for tool in tools]
-        return self
-
-    async def ainvoke(self, messages):
-        self.received_messages.append(list(messages))
-        response = self.responses.pop(0)
-        if isinstance(response, Exception):
-            raise response
-        return response
 
 
 async def _invoke_graph(
@@ -575,90 +553,39 @@ async def test_agent_loop_model_failure_after_tool_does_not_replay_tool(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_agent_selected_knowledge_search_keeps_rag_citation_path(
-    monkeypatch,
-):
-    """异步模型选择知识库检索后保留 RAG 引用路径。"""
-    model = FakeToolCallingModel(
-        [
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "search_knowledge_base",
-                        "args": {"query": "奖学金申请", "top_k": 5},
-                        "id": "rag-search-call",
-                        "type": "tool_call",
-                    }
-                ],
-            )
-        ]
+async def test_agent_selected_knowledge_search_returns_evidence_to_model(monkeypatch):
+    """知识库与普通工具相同，成功后模型读取 evidence 并回答。"""
+    model = FakeToolCallingModel([
+        AIMessage(content="", tool_calls=[{
+            "name": "search_knowledge_base",
+            "args": {"query": "奖学金申请", "top_k": 5},
+            "id": "knowledge-call", "type": "tool_call",
+        }]),
+        AIMessage(content="奖学金申请在九月开始。"),
+    ])
+    chunk = {"chunk_id": "chunk-1", "text": "奖学金申请在九月开始。"}
+    spec = ToolSpec(
+        name="search_knowledge_base", version="1.0.0",
+        description="从测试知识库检索证据",
+        output_model=SearchKnowledgeBaseOutput,
+        handler=lambda args, context: tool_success("search_knowledge_base", args, {
+            "count": 1, "chunks": [chunk], "top_chunk_ids": ["chunk-1"],
+            "top_scores": [0.8],
+        }),
+        args_model=SearchKnowledgeBaseArgs,
+        required_permissions=("knowledge_base:read",),
     )
-    chunk = {
-        "chunk_id": "chunk-rag-1",
-        "text": "奖学金申请在九月开始。",
-        "file_name": "policy.md",
-    }
-    rag_calls = []
-
-    registry = []
-    registry.append(
-        ToolSpec(
-            name="search_knowledge_base",
-            version="1.0.0",
-            description="从测试知识库检索证据",
-            output_model=RootModel[dict],
-            handler=lambda args, context: tool_success(
-                "search_knowledge_base",
-                args,
-                {
-                    "count": 1,
-                    "chunks": [chunk],
-                    "rag_result": fake_rag_subgraph(
-                        question=context.effective_question,
-                        top_k=context.top_k,
-                        decompose_top_k=context.decompose_top_k,
-                        retrieved_chunks=[chunk],
-                        trace_id=context.trace_id,
-                    ),
-                },
-            ),
-            args_model=SearchKnowledgeBaseArgs,
-            required_permissions=("knowledge_base:read",),
-        )
-    )
-
-    def fake_rag_subgraph(**kwargs):
-        rag_calls.append(kwargs)
-        return {
-            "status": "OK",
-            "answer": "奖学金申请在九月开始。",
-            "references": [{"reference_id": "Reference 1"}],
-            "reason": "证据充分",
-            "decompose_llm_used": False,
-            "answer_llm_used": True,
-            "llm_call_count": 1,
-            "timings": {},
-            "retrieval_confidence": 0.9,
-            "answer_confidence": 0.8,
-        }
-
-    monkeypatch.setattr(
-        framework_tools,
-        "get_local_tools",
-        lambda settings: local_tools(registry),
-    )
+    monkeypatch.setattr(framework_tools, "get_local_tools", lambda settings: local_tools([spec]))
 
     output = await _invoke_graph(monkeypatch, model)
 
-    assert len(model.received_messages) == 1
-    assert len(rag_calls) == 1
-    assert rag_calls[0]["retrieved_chunks"] == [chunk]
-    assert output["result"]["status"] == "OK"
-    assert output["result"]["references"] == [
-        {"reference_id": "Reference 1"}
-    ]
-    assert any(
-        item.get("mode") == "rag"
-        for item in output["result"]["tool_trace"]
-    )
+    assert len(model.received_messages) == 2
+    message = model.received_messages[1][-1]
+    assert isinstance(message, ToolMessage)
+    assert message.tool_call_id == "knowledge-call"
+    assert json.loads(message.content)["output"]["chunks"] == [chunk]
+    assert "knowledge_base_result" not in output
+    assert output["result"]["answer"] == "奖学金申请在九月开始。"
+    assert output["result"]["references"] == []
+    assert output["result"]["llm_call_count"] == 2
+    assert output["result"]["tool_trace"][-2]["mode"] == "agent_loop"

@@ -10,6 +10,13 @@ from app.tools.context import ToolInvocationContext
 from tests.support.local_tools import visible_tools
 
 
+def test_knowledge_tool_description_explains_candidate_evidence(settings_factory):
+    spec = catalog.get_local_tool_specs(settings_factory())[0]
+    assert spec.name == "search_knowledge_base"
+    for guidance in ("候选 evidence", "不生成最终答案", "阅读结果", "修改 query", "不可信数据"):
+        assert guidance in spec.description
+
+
 def test_catalog_caches_configuration_and_preserves_order(settings_factory):
     settings = settings_factory()
     changed = settings_factory(agent_max_total_cost_ms=60_000)

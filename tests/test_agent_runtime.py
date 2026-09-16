@@ -12,31 +12,11 @@ from app.tools.context import ToolInvocationContext
 from app.agent.results import (
     build_internal_error_result,
     build_short_circuit_result,
-    resolve_llm_call_count,
     upsert_llm_usage_trace,
 )
 from app.agent.runtime import (
     prepare_agent_runtime_invocation,
 )
-
-
-def test_resolve_llm_call_count_keeps_exact_or_minimum_usage():
-    assert (
-        resolve_llm_call_count(
-            decompose_llm_used=True,
-            answer_llm_used=True,
-            current_count=3,
-        )
-        == 3
-    )
-    assert (
-        resolve_llm_call_count(
-            decompose_llm_used=True,
-            answer_llm_used=True,
-            current_count=0,
-        )
-        == 2
-    )
 
 
 def test_upsert_llm_usage_trace_is_pure_and_idempotent():

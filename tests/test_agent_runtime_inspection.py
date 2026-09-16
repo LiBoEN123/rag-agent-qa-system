@@ -38,7 +38,7 @@ def test_runtime_report_preserves_direct_create_agent_contract(
 
     assert inspection.EXPECTED_AGENT_NODES <= agent_nodes
     assert inspection.FORBIDDEN_PARENT_NODES.isdisjoint(agent_nodes)
-    assert "knowledge_base_result" in state_fields
+    assert "knowledge_base_result" not in state_fields
     assert "framework_events_applied" not in state_fields
     assert {
         "create_agent_is_only_agent_loop",
@@ -54,7 +54,8 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "result_builder_owns_agent_result",
         "chat_service_consumes_agent_result",
         "streaming_uses_create_agent_directly",
-        "rag_graph_is_tool_owned",
+        "knowledge_tool_is_retrieval_only",
+        "knowledge_success_returns_to_agent",
         "local_tool_execution_entry_is_unique",
         "local_handler_is_adapter_owned",
         "local_visibility_is_model_middleware",

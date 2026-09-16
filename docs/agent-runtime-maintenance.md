@@ -1,7 +1,8 @@
 # Agent Runtime 维护指南
 
 当前唯一 Agent Loop 是 LangChain `create_agent` 返回的 CompiledStateGraph。项目没有
-Parent Agent Graph；LangGraph 只继续承载框架内部 model/tools 循环和独立 RAG Graph。
+Parent Agent Graph；知识库检索经 ToolMessage 返回框架内部 model/tools 循环。Legacy RAG
+Graph 暂时保留用于独立测试与诊断，已不在生产 Agent KB 路径上。
 `scripts/inspect_agent_runtime.py` 是结构与 Tool Schema 的维护入口。
 
 ## 十分钟阅读路径
@@ -14,11 +15,11 @@ Parent Agent Graph；LangGraph 只继续承载框架内部 model/tools 循环和
 | 4 | `app/agent/runtime.py` | 普通 Python Router、请求准备、Agent 缓存 |
 | 5 | `app/agent/streaming.py` | 直接 astream、消息缓冲和安全事件投影 |
 | 6 | `app/agent/framework_agent.py` | `create_agent`、最小内部 State 和 Middleware 顺序 |
-| 7 | `app/agent/framework_middleware.py` | LangChain 生命周期 Hook、同批 fail-closed 与 RAG 终止协调 |
+| 7 | `app/agent/framework_middleware.py` | LangChain 生命周期 Hook、同批 fail-closed 与工具成功返回模型 |
 | 8 | `app/agent/framework_tools.py` | ToolSpec 到动态 StructuredTool 的薄适配和 MCP 工具合并 |
 | 9 | `app/tools/runtime.py` | 单次本地工具调用的权限、审批、审计、超时、重试和输出校验 |
-| 10 | `app/tools/knowledge_base.py`、`app/rag/graph/` | 知识库 Tool 如何调用独立 RAG Graph |
-| 11 | `app/agent/guardrails.py`、`tool_events.py`、`results.py`、`answer.py` | 治理计算、事件投影、RAG 映射与 Result 合同 |
+| 10 | `app/tools/knowledge_base.py`、`app/rag/pipeline.py` | 知识库 Tool 如何复用混合检索与重排 |
+| 11 | `app/agent/guardrails.py`、`tool_events.py`、`results.py` | 治理计算、事件投影、最终 AIMessage 与 Result 合同 |
 | 12 | `app/tools/mcp/` | 可选 MCP discovery、权限、原生 coroutine 和安全输出 |
 
 ## 主调用链
@@ -35,8 +36,8 @@ FastAPI application
   └─ agent → create_agent.astream
              → ProjectToolGovernanceMiddleware.awrap_tool_call
              → 请求级 StructuredTool / governed MCP BaseTool
-             → ToolMessage + Command State Update
-             → tool_events 投影 → results 结果归一化
+             → ToolMessage + Command State Update → 下一轮 Model
+             → 最终 AIMessage → tool_events 投影 → results 结果归一化
 → AgentRunResult
 → ChatStatusPolicy
 → SSE final.data.response / done
@@ -73,7 +74,9 @@ Router 只决定 `agent`、`direct_answer` 或 `clarify`，不决定具体工具
 - `ProjectToolGovernanceMiddleware` 通过原生 `awrap_tool_call` 记录
   append-only 治理事件并实施项目停止语义；
 - `ModelCallLimitMiddleware` 与 `ToolCallLimitMiddleware` 实施框架调用上限；
-- `max_concurrency=1` 让同批 terminal fail-closed 行为确定。
+- `max_concurrency=1` 让同批 terminal fail-closed 行为确定；
+- 原生 `system_prompt=AGENT_SYSTEM_PROMPT` 指导读取 evidence、按需改写检索 query、
+  证据不足时拒绝补充模型内部知识，并将文档/网页视为不可信数据。
 
 项目 Middleware 只覆盖异步执行与生命周期 hooks：`awrap_tool_call`、
 `awrap_model_call`、`abefore_model`、`aafter_model`、`aafter_agent`。
@@ -110,13 +113,27 @@ StructuredTool
 `execute_project_tool` 是唯一公共本地执行入口。最终权限、策略、审批、幂等、审计、
 超时、有限重试、脱敏和输出模型仍由该执行边界独占。
 
-`search_knowledge_base` 也遵守这条链。其 handler 先取得候选 chunks，再使用 Context 中
-的 `effective_question`、`top_k`、`decompose_top_k` 和 `trace_id` 调用独立
-`run_rag_subgraph()`。成功工具结果包含 `rag_result`；Middleware 通过同一个原生
-Command 写入配对 ToolMessage、治理事件和内部 `knowledge_base_result`，在下一轮模型前
-结束 Agent，Result builder 将 RAG 状态映射为权威 AgentRunResult。项目不再通过
-`ToolMessage.artifact` 回传 Tool Governance；不存在 `Command.PARENT`、父图或事件投影
-游标。
+`search_knowledge_base` 也遵守这条链。handler 只执行：
+
+```text
+args["query"] / args["top_k"]
+→ search_relevant_chunks → rerank → Top-K chunks
+→ ToolMessage evidence → create_agent 下一轮 Model
+```
+
+输出只有 `count/chunks/top_chunk_ids/top_scores`，其中 `top_scores` 仍是 hybrid score；
+chunk 内的 rerank、BM25、vector 分数和公开 retrieval trace 保留。成功零命中仍返回
+ToolMessage，由 Agent 决定改 query 或说明证据不足；readiness 为 false 的 KB 经现有
+`ToolExecutionError(dependency_unavailable)` / Tool Runtime 返回错误消息，不阻断安全恢复。
+
+Query Rewrite 仍负责多轮指代消解；Context 的 `effective_question` 和请求级 `top_k`
+不再覆盖本轮 Tool Call 参数。`decompose_top_k` 等 legacy 合同暂时保留，但检索工具不使用。
+Middleware 不再写 `knowledge_base_result` 或因 KB 成功提前结束；现有 terminal guardrails
+仍有效。项目没有新增 evidence State、Parent Graph 或私有 Agent Loop。
+
+Legacy RAG Graph source remains temporarily, but is no longer on the production Agent KB path.
+旧拆分、Evidence Gate、生成和引用验证仅保留在独立 RAG 路径；`compare_documents` 仍是
+LLM-backed specialized tool，本阶段不做迁移。
 
 `web_search`、`web_fetch`、`web_pdf_fetch` 与 MCP 是普通 ToolMessage
 路径，不进入本地 RAG，也不生成本地 references。MCP adapter `StructuredTool` 不
@@ -128,8 +145,7 @@ Command 写入配对 ToolMessage、治理事件和内部 `knowledge_base_result`
 
 - `messages`；
 - append-only `governance_events`；
-- `agent_elapsed_ms` 和 `stop_reason`；
-- 可选 `knowledge_base_result`。
+- `agent_elapsed_ms` 和 `stop_reason`。
 
 `tool_events.py` 在调用结束后把治理事件一次性转换成公开 tool trace；
 `results.py` 直接使用同一份 trace 生成 `tool_result_summary`，不再保留 observation
@@ -144,7 +160,7 @@ Router decision 和问题语义保留在 Runtime Invocation；`results.py` 从�
 ```text
 Router short-circuit 或 create_agent final state
 → app.agent.tool_events 直接生成 public tool trace（agent 路径）
-→ app.agent.results 确定性归一化（RAG status 直接映射最终 Result status）
+→ app.agent.results 确定性归一化（最终 AIMessage 与治理停止原因）
 → AgentRunResult
 → model_dump(mode="json")
 → ChatService 附加受控 Query Rewrite trace
@@ -152,10 +168,12 @@ Router short-circuit 或 create_agent final state
 → ChatServiceOutcome / API / metrics
 ```
 
-RAG 的 `OK`、`NEED_CLARIFICATION`、`NO_RELEVANT_INFO`、`MODEL_ERROR` 和
-`MODEL_BAD_OUTPUT` 先由 RAG-to-Agent mapper 收敛。未知状态与未知异常一律 fail
-closed；Pydantic 模型只在 Result builder 做一次边界校验，ChatService 收到普通字典且
-不再重复构造或校验 Agent Result。
+最终答案来自正常 Agent Loop 的最终 AIMessage。公开 `references` 字段保留为 `[]`，
+`retrieval_confidence` / `answer_confidence` 均为 `0.0`，不会把召回 chunks 当成实际引用。
+统一 evidence pool、citation binding 和 grounded finalization 留待后续阶段；当前拒答文本
+仍属于普通完成的 Agent 回答（`OK`），不会根据空检索伪造 `NO_RELEVANT_INFO` 状态。
+LLM usage 只保留原成功 Agent Model 计数，KB 不再添加旧 RAG 调用数；ChatService 继续合并
+实际 Query Rewrite 调用。Pydantic 只在 Result builder 校验，ChatService 不重复构造结果。
 
 ## 配置与生命周期
 
@@ -185,7 +203,7 @@ Agent trace 通过 `AgentRunResult.tool_trace` 返回，不再单独持久化到
 | `app/agent/runtime.py` | 参数校验、Router、请求 Context、Agent 缓存 |
 | `app/agent/streaming.py` | 直接 astream、安全 projector、取消传播和最终状态捕获 |
 | `app/agent/framework_agent.py` | `create_agent` 与最小 Framework State |
-| `app/agent/framework_middleware.py` | LangChain 模型/工具生命周期 Hook 和 RAG 终止协调 |
+| `app/agent/framework_middleware.py` | LangChain 模型/工具生命周期 Hook 与 terminal guardrails |
 | `app/agent/framework_tools.py` | ToolSpec 到缓存 StructuredTool 的薄适配及 MCP 合并 |
 | `app/agent/tool_visibility.py` | 模型调用前按 Runtime Context 过滤本地可见工具 |
 | `app/agent/guardrails.py` | 工具治理规则、预算、错误分类、停止原因和指纹 |
@@ -194,8 +212,8 @@ Agent trace 通过 `AgentRunResult.tool_trace` 返回，不再单独持久化到
 | `app/tools/context.py` | 请求主体、权限、trace 和 RAG 请求参数 |
 | `app/tools/catalog.py` | 不可变 ToolSpec catalog、重名检查、配置缓存与名称导出 |
 | `app/tools/runtime.py` | 执行期权限、策略、审计、超时、重试、脱敏和输出校验 |
-| `app/tools/knowledge_base.py` | 知识库检索和独立 RAG Graph 调用 |
-| `app/rag/graph/` | 专用 RAG 状态、节点、条件和运行入口 |
+| `app/tools/knowledge_base.py` | 混合召回、重排与候选 evidence 输出 |
+| `app/rag/graph/` | 保留的 Legacy RAG 状态、节点、条件和独立入口 |
 | `app/services/chat_service.py` | Query Rewrite、Runtime、状态策略、session 与 telemetry 编排 |
 
 ## 常见问题定位
@@ -208,7 +226,8 @@ Agent trace 通过 `AgentRunResult.tool_trace` 返回，不再单独持久化到
 | 工具可见但执行被拒绝 | ToolRuntime 权限、审批、幂等和策略 |
 | 工具错误后未恢复 | error code 分类、stop reason、同批 fail-closed |
 | 重复调用未停止 | governance event 指纹与连续计数 |
-| 知识库未返回引用 | 工具结果是否含合法 `rag_result`，RAG 状态和引用验证 |
+| 知识库未返回引用 | 本阶段 references 为空是预期行为；检查 Agent 回答与 retrieval trace |
+| 首轮 KB 后模型未继续 | 配对 ToolMessage、stop_reason、模型/工具预算；不存在 KB 成功终止规则 |
 | 流式泄漏参数或正文 | `project_agent_stream_part()` 白名单与 tainted buffer |
 | 流式最终结果不一致 | 最终 `values` 与 `build_framework_agent_result()` 输入 |
 | MCP 工具不存在 | 启动期 discovery、Server allowlist、默认主体/请求权限 |
@@ -224,8 +243,8 @@ Agent trace 通过 `AgentRunResult.tool_trace` 返回，不再单独持久化到
 4. 为 catalog、执行期 Policy、Middleware 可见性和框架调用补测试。
 5. 运行 Runtime inspection、Import Linter 和全量测试。
 
-通常不需要修改 Router、`create_agent` 或 Middleware。只有知识库完整 RAG 工具使用
-`knowledge_base_result` 终止下一轮模型；新增普通工具不能复制这个专用语义。
+通常不需要修改 Router、`create_agent` 或 Middleware。知识库和其他普通工具成功后都通过
+配对 ToolMessage 返回模型；不要添加工具成功即终止的专用通道。
 
 ## 不应该做什么
 
@@ -252,7 +271,7 @@ git diff --check
 Inspection 直接读取 `create_agent.get_graph()` / `get_graph(xray=True)` 和模型可见的
 Pydantic JSON Schema；不会初始化真实模型、执行 handler、访问网络或读取/重建 RAG
 索引。它同时检查 Parent Graph 文件/符号不存在、请求准备与执行分离、
-`stream_agent` 直接调用 `astream`、知识库 Tool 调用独立 RAG Graph、默认工具和可选 SQL/MCP 合同、
+`stream_agent` 直接调用 `astream`、知识库检索与 Legacy RAG 解耦及返回 Agent、默认工具和 MCP 合同、
 Result/Status Policy、应用组合根和当前架构文档。实际模块方向由官方 `lint-imports`
 全量判定。
 

@@ -100,14 +100,11 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
         "chunks",
         "top_chunk_ids",
         "top_scores",
-        "rag_result",
     }
     assert set(knowledge_schema["required"]) == set(
         knowledge_schema["properties"]
     )
-    assert knowledge_schema["properties"]["rag_result"] == {
-        "$ref": "#/$defs/RAGResult"
-    }
+    assert "RAGResult" not in json.dumps(knowledge_schema)
 
 
 def test_list_documents_rejects_malformed_output(tool_registry):
@@ -137,145 +134,64 @@ def test_list_documents_rejects_malformed_output(tool_registry):
     assert result["output"] is None
 
 
-def test_invoke_local_tool_runs_search_knowledge_base(
-    monkeypatch,
-    tool_registry,
-):
-    """Graph 输入保留预检索候选，对外 evidence 只使用最终候选。"""
+def test_invoke_local_tool_runs_search_and_rerank(monkeypatch, tool_registry):
+    """真实工具保留参数规范化、重排分数及 metadata 字段回退。"""
     from app.rag import pipeline
 
-    prefetched_chunks = [
-        {"chunk_id": "initial-a", "text": "初始候选 A", "hybrid_score": 0.4},
-        {"chunk_id": "initial-b", "text": "初始候选 B", "hybrid_score": 0.3},
+    candidates = [
+        {"chunk_id": "a", "text": "候选 A", "hybrid_score": 0.87654},
+        {"metadata": {"chunk_id": "b", "hybrid_score": "invalid-score"}, "text": "候选 B"},
     ]
-    final_chunks = [
-        {"chunk_id": "final-c", "text": "最终候选 C", "hybrid_score": 0.87654},
-        {
-            "metadata": {
-                "chunk_id": "final-d",
-                "hybrid_score": "invalid-score",
-            },
-            "text": "最终候选 D",
-        },
-    ]
-    rag_call = {}
+    calls = []
 
-    def fake_search_relevant_chunks(query, top_k=5):
-        assert query == "普通本科四年制专业最长学习年限是多少？"
-        assert top_k == 5
-        return prefetched_chunks
+    def search(query, top_k):
+        calls.append((query, top_k))
+        return candidates
 
-    def fake_run_rag_subgraph(**kwargs):
-        rag_call.update(kwargs)
-        return {
-            "status": "OK",
-            "answer": "测试 RAG 回答",
-            "references": [],
-            "final_chunks": final_chunks,
-            "retrieval_confidence": 0.91,
-            "answer_confidence": 0.8,
-            "need_clarification": False,
-            "clarification_question": "",
-            "reason": "测试证据充分",
-            "timings": {},
-            "decompose_llm_used": False,
-            "answer_llm_used": True,
-            "llm_call_count": 1,
-        }
+    def rerank(chunks, query):
+        assert chunks is candidates
+        assert query == "学习年限"
+        return [{**chunk, "rerank_score": 0.9} for chunk in chunks]
 
-    monkeypatch.setattr(
-        pipeline,
-        "search_relevant_chunks",
-        fake_search_relevant_chunks,
-    )
-    monkeypatch.setattr(
-        "app.rag.graph.run_rag_subgraph",
-        fake_run_rag_subgraph,
-    )
-
+    monkeypatch.setattr(pipeline, "RAG_READY", True)
+    monkeypatch.setattr(pipeline, "search_relevant_chunks", search)
+    monkeypatch.setattr(pipeline, "rerank", rerank)
     result = invoke_local_tool(
-        registry=tool_registry,
-        tool_name="search_knowledge_base",
-        tool_args={
-            "query": "  普通本科四年制专业最长学习年限是多少？  ",
-            "top_k": "5",
-        },
+        registry=tool_registry, tool_name="search_knowledge_base",
+        tool_args={"query": "  学习年限  ", "top_k": "5"},
     )
 
-    assert result["ok"] is True
-    assert result["status"] == "success"
-    assert result["tool_name"] == "search_knowledge_base"
-    assert result["tool_input"] == {
-        "query": "普通本科四年制专业最长学习年限是多少？",
-        "top_k": 5,
+    assert result["ok"] is True and result["status"] == "success"
+    assert calls == [("学习年限", 5)]
+    assert result["tool_input"] == {"query": "学习年限", "top_k": 5}
+    assert result["output"] == {
+        "count": 2, "chunks": [{**chunk, "rerank_score": 0.9} for chunk in candidates],
+        "top_chunk_ids": ["a", "b"], "top_scores": [0.8765, 0.0],
     }
-    assert rag_call["retrieved_chunks"] is prefetched_chunks
-    assert result["output"]["count"] == 2
-    assert result["output"]["chunks"] == final_chunks
-    assert result["output"]["top_chunk_ids"] == ["final-c", "final-d"]
-    assert result["output"]["top_scores"] == [0.8765, 0.0]
-    assert result["output"]["rag_result"]["answer"] == "测试 RAG 回答"
 
 
-def test_search_knowledge_base_exposes_multi_query_final_chunks(
-    monkeypatch,
-    tool_registry,
-):
-    """模拟多查询改变候选集合后，公开 evidence 不回退到预检索结果。"""
+def test_search_knowledge_base_applies_tool_top_k_after_rerank(monkeypatch, tool_registry):
     from app.rag import pipeline
 
-    prefetched_chunks = [
-        {"chunk_id": "initial-a", "text": "初始候选 A", "hybrid_score": 0.4}
+    chunks = [
+        {"chunk_id": "a", "text": "候选 A", "hybrid_score": 0.9},
+        {"chunk_id": "b", "text": "候选 B", "hybrid_score": 0.8},
     ]
-    final_chunks = [
-        {"chunk_id": "final-b", "text": "最终候选 B", "hybrid_score": 0.82},
-        {"chunk_id": "final-c", "text": "最终候选 C", "hybrid_score": 0.73},
-    ]
-    rag_call = {}
-
-    monkeypatch.setattr(
-        pipeline,
-        "search_relevant_chunks",
-        lambda query, top_k=5: prefetched_chunks,
-    )
-
-    def fake_run_rag_subgraph(**kwargs):
-        rag_call.update(kwargs)
-        return {
-            "status": "NO_RELEVANT_INFO",
-            "answer": "没有足够证据支持回答。",
-            "references": [],
-            "final_chunks": final_chunks,
-            "retrieval_confidence": 0.5,
-            "answer_confidence": 0.0,
-            "need_clarification": False,
-            "clarification_question": "",
-            "reason": "多查询候选不足以支持回答",
-            "timings": {},
-            "decompose_llm_used": True,
-            "answer_llm_used": False,
-            "llm_call_count": 1,
-        }
-
-    monkeypatch.setattr(
-        "app.rag.graph.run_rag_subgraph",
-        fake_run_rag_subgraph,
-    )
-
+    monkeypatch.setattr(pipeline, "RAG_READY", True)
+    monkeypatch.setattr(pipeline, "search_relevant_chunks", lambda query, top_k: chunks)
+    monkeypatch.setattr(pipeline, "rerank", lambda candidates, query: candidates[::-1])
     result = invoke_local_tool(
-        registry=tool_registry,
-        tool_name="search_knowledge_base",
-        tool_args={"query": "对比两个政策", "top_k": 1},
+        registry=tool_registry, tool_name="search_knowledge_base",
+        tool_args={"query": "政策", "top_k": 1},
+        context=ToolInvocationContext(
+            permissions=("knowledge_base:read",), effective_question="原问题", top_k=9,
+        ),
     )
 
     assert result["ok"] is True
-    assert result["status"] == "success"
-    assert rag_call["retrieved_chunks"] is prefetched_chunks
-    assert result["output"]["chunks"] == final_chunks
-    assert result["output"]["count"] == 2
-    assert result["output"]["top_chunk_ids"] == ["final-b", "final-c"]
-    assert result["output"]["top_scores"] == [0.82, 0.73]
-    assert result["output"]["rag_result"]["status"] == "NO_RELEVANT_INFO"
+    assert result["output"] == {
+        "count": 1, "chunks": [chunks[1]], "top_chunk_ids": ["b"], "top_scores": [0.8],
+    }
 
 
 def test_search_knowledge_base_rejects_inconsistent_output_counts(tool_registry):
@@ -283,21 +199,6 @@ def test_search_knowledge_base_rejects_inconsistent_output_counts(tool_registry)
     spec = next((item for item in tool_registry if item.name == "search_knowledge_base"), None)
     assert spec is not None
     assert spec.output_model is SearchKnowledgeBaseOutput
-    rag_result = {
-        "status": "OK",
-        "answer": "测试回答",
-        "references": [],
-        "final_chunks": [],
-        "retrieval_confidence": 0.0,
-        "answer_confidence": 0.0,
-        "need_clarification": False,
-        "clarification_question": "",
-        "reason": "测试",
-        "timings": {},
-        "decompose_llm_used": False,
-        "answer_llm_used": False,
-        "llm_call_count": 0,
-    }
     registry = []
     registry.append(
         spec.model_copy(update={'handler': lambda args, context: tool_success(
@@ -308,7 +209,6 @@ def test_search_knowledge_base_rejects_inconsistent_output_counts(tool_registry)
                     "chunks": [],
                     "top_chunk_ids": [],
                     "top_scores": [],
-                    "rag_result": rag_result,
                 },
             )})
     )

@@ -18,6 +18,29 @@ from app.tools.catalog import (
     ToolRiskLevel as RegistryToolRiskLevel,
 )
 from app.tools.catalog import ToolSpec as RegistryToolSpec
+from app.tools.schemas import SearchKnowledgeBaseOutput
+
+
+def test_knowledge_output_contains_only_retrieval_evidence():
+    schema = SearchKnowledgeBaseOutput.model_json_schema()
+    assert set(schema["properties"]) == {"count", "chunks", "top_chunk_ids", "top_scores"}
+    assert "RAGResult" not in json.dumps(schema)
+
+
+@pytest.mark.parametrize("field", ["rag_result", "answer", "references"])
+def test_knowledge_output_rejects_answer_contract(field):
+    with pytest.raises(ValueError):
+        SearchKnowledgeBaseOutput.model_validate({
+            "count": 0, "chunks": [], "top_chunk_ids": [], "top_scores": [], field: {},
+        })
+
+
+@pytest.mark.parametrize("field,value", [("count", 1), ("top_chunk_ids", ["a"]), ("top_scores", [0.8])])
+def test_knowledge_output_keeps_count_consistency(field, value):
+    with pytest.raises(ValueError):
+        SearchKnowledgeBaseOutput.model_validate({
+            "count": 0, "chunks": [], "top_chunk_ids": [], "top_scores": [], field: value,
+        })
 
 
 class EchoArgs(BaseModel):
@@ -255,4 +278,3 @@ def test_high_risk_tool_requires_approval(risk_level):
             risk_level=risk_level,
             requires_approval=False,
         )
-

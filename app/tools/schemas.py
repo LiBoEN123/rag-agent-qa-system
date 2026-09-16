@@ -15,9 +15,6 @@ from pydantic import (
     model_validator,
 )
 
-from app.rag.schemas import RAGResult
-
-
 _WEB_FETCH_URL_MAX_CHARS = 2048
 
 
@@ -93,7 +90,6 @@ class SearchKnowledgeBaseOutput(BaseModel):
     chunks: list[dict[str, Any]]
     top_chunk_ids: list[int | str | None]
     top_scores: list[float]
-    rag_result: RAGResult
 
     @model_validator(mode="after")
     def validate_evidence_counts(self) -> "SearchKnowledgeBaseOutput":

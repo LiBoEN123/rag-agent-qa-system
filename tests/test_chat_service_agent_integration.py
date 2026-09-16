@@ -295,7 +295,7 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
     assert outcome.question == "请走完整 Agent 工具主路径"
     assert routed_questions == ["请执行改写后的完整 Agent 工具主路径"]
     assert model.calls == 2
-    assert model.received_messages[0][0].content == (
+    assert model.received_messages[0][-1].content == (
         "请执行改写后的完整 Agent 工具主路径"
     )
     assert model.bound_tool_names == ["chat_echo"]
@@ -345,27 +345,29 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
 
 
 @pytest.mark.parametrize("tool_mode", [ToolMode.RAG_ONLY, ToolMode.FULL])
-def test_chat_service_preserves_rag_handoff_with_request_tool_mode(monkeypatch, settings_env, tool_mode):
+def test_chat_service_returns_kb_evidence_to_agent_with_request_tool_mode(monkeypatch, settings_env, tool_mode):
     settings = settings_env(tool_default_permissions=("knowledge_base:read", "web:search"))
     model = ChatAgentModel()
-    model.ainvoke = AsyncMock(return_value=AIMessage(content="", tool_calls=[{
-        "name": "search_knowledge_base", "args": {"query": "学习年限", "top_k": 3},
-        "id": "rag-mode-call", "type": "tool_call",
-    }]))
+    model.ainvoke = AsyncMock(side_effect=[
+        AIMessage(content="", tool_calls=[{
+            "name": "search_knowledge_base", "args": {"query": "学习年限", "top_k": 3},
+            "id": "kb-mode-call", "type": "tool_call",
+        }]),
+        AIMessage(content="无法根据当前证据确定学习年限。"),
+    ])
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
-    search = Mock(return_value=[])
-    rag = Mock(return_value={
-        "status": "OK", "answer": "知识库回答", "references": [], "final_chunks": [],
-        "retrieval_confidence": 0.9, "answer_confidence": 0.9,
-        "need_clarification": False, "clarification_question": "", "reason": "fixture",
-        "timings": {}, "decompose_llm_used": False, "answer_llm_used": True, "llm_call_count": 1,
-    })
+    search, rerank = Mock(return_value=[]), Mock(return_value=[])
+    rag = Mock(side_effect=AssertionError("Agent KB path must not call legacy RAG"))
+    monkeypatch.setattr(rag_pipeline, "RAG_READY", True)
     monkeypatch.setattr(rag_pipeline, "search_relevant_chunks", search)
+    monkeypatch.setattr(rag_pipeline, "rerank", rerank)
     monkeypatch.setattr(rag_graph, "run_rag_subgraph", rag)
     service = ChatService(ChatServiceDependencies(
         settings_provider=lambda: settings,
         get_history=lambda session: [],
-        rewrite_query_with_history=lambda **kwargs: {"rewritten_question": "本科生学习年限是多少？"},
+        rewrite_query_with_history=lambda **kwargs: {
+            "rewritten_question": "本科生学习年限是多少？", "rewrite_llm_used": True,
+        },
         log_and_write_metrics=lambda record: None,
         write_bad_cases=lambda record: None,
         append_message=lambda *args: None,
@@ -374,16 +376,21 @@ def test_chat_service_preserves_rag_handoff_with_request_tool_mode(monkeypatch, 
     ))
     outcome = collect_outcome(service, ChatServiceRequest(
         question="学习年限是多少？", top_k=4, decompose_top_k=8,
-        session_id="rag-mode-session", trace_id="rag-mode-trace", tool_mode=tool_mode,
+        session_id="kb-mode-session", trace_id="kb-mode-trace", tool_mode=tool_mode,
     ))
     assert outcome.result["status"] == "OK"
-    assert outcome.result["answer"] == "知识库回答"
-    model.ainvoke.assert_awaited_once()  # RAG 结果交接后直接结束，无第二轮 Agent 模型调用。
+    assert outcome.result["answer"] == "无法根据当前证据确定学习年限。"
+    assert outcome.result["references"] == []
+    assert outcome.result["llm_call_count"] == 3  # 两轮 Agent + 一次 Query Rewrite
+    assert model.ainvoke.await_count == 2
+    first_messages = model.ainvoke.await_args_list[0].args[0]
+    assert first_messages[-1].content == "本科生学习年限是多少？"
+    message = model.ainvoke.await_args_list[1].args[0][-1]
+    assert isinstance(message, ToolMessage) and message.tool_call_id == "kb-mode-call"
+    assert json.loads(message.content)["output"]["count"] == 0
     search.assert_called_once_with("学习年限", top_k=3)
-    rag.assert_called_once_with(
-        question="本科生学习年限是多少？", top_k=4, decompose_top_k=8,
-        retrieved_chunks=[], trace_id="rag-mode-trace",
-    )
+    rerank.assert_called_once_with([], "学习年限")
+    rag.assert_not_called()
     if tool_mode is ToolMode.RAG_ONLY:
         assert model.bound_tool_names == ["search_knowledge_base"]
     else:
