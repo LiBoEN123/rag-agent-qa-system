@@ -75,8 +75,8 @@ def clamp01(value: float) -> float:
 
 
 def make_snippet(text: str, max_len: int = 300) -> str:
-    """去除文本空白并截取指定长度的预览片段。"""
-    text = "".join((text or "").split())
+    """将连续空白规范化为空格，并截取指定长度的预览片段。"""
+    text = " ".join((text or "").split())
     return text[:max_len]
 
 

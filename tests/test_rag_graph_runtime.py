@@ -601,6 +601,109 @@ def test_citation_verification_failure_keeps_final_candidates(monkeypatch):
     assert result["final_chunks"] == chunks
 
 
+@pytest.mark.parametrize("prefix", ["", "Background details. " * 25])
+def test_citation_verification_uses_full_bound_chunk(monkeypatch, prefix):
+    """词间空格和 300 字符展示限制不能让真实引用证据丢失。"""
+    answer = "需要 Identity card。"
+    chunks = [
+        make_chunk(2, text="Unrelated background."),
+        make_chunk(7, text=prefix + "Registration requires Identity card."),
+    ]
+    configure_success_path(monkeypatch)
+
+    def fake_answer(question, context, trace_id=""):
+        assert "[Reference 7]" in context
+        assert "Identity card" in context
+        return AnswerOutput(answer=answer, references=["Reference 7"])
+
+    monkeypatch.setattr(rag_graph_nodes, "call_llm", fake_answer)
+
+    result = run_rag_subgraph(
+        question="申请需要什么材料？",
+        retrieved_chunks=chunks,
+    )
+
+    assert result["status"] == "OK"
+    assert result["answer"] == answer
+    assert result["citation_verification"]["supported"] is True
+    assert {"identity", "card"} <= set(
+        result["citation_verification"]["matched_keywords"]
+    )
+    reference, = result["references"]
+    assert reference["reference_id"] == "Reference 7"
+    assert reference["chunk_id"] == "chunk-7"
+    assert set(reference) == {
+        "reference_id", "file_name", "source_path", "chunk_id", "position",
+        "snippet", "score", "rerank_score",
+    }
+    assert len(reference["snippet"]) <= 300
+    if prefix:
+        assert len(prefix) > 300
+        assert "Identity card" not in reference["snippet"]
+    else:
+        assert "Identity card" in reference["snippet"]
+
+
+@pytest.mark.parametrize(
+    ("references", "bound_ids", "supported"),
+    [
+        (["Reference 999"], [], False),
+        ([], [], False),
+        (["Reference 2"], ["Reference 2"], False),
+        (["Reference 2", "Reference 999"], ["Reference 2"], False),
+        (["Reference 999", "Reference 1"], ["Reference 1"], True),
+    ],
+)
+def test_citation_verification_only_uses_successfully_bound_references(
+    monkeypatch, references, bound_ids, supported,
+):
+    """未选中或无效引用不能借用其它 final chunk 的正确证据。"""
+    configure_success_path(monkeypatch)
+    monkeypatch.setattr(
+        rag_graph_nodes,
+        "call_llm",
+        lambda *args, **kwargs: AnswerOutput(
+            answer="需要 Identity card。", references=references,
+        ),
+    )
+
+    result = run_rag_subgraph(
+        question="申请需要什么材料？",
+        retrieved_chunks=[
+            make_chunk(1, text="Registration requires Identity card."),
+            make_chunk(2, text="Unrelated background.", snippet="Identity card"),
+        ],
+    )
+
+    assert result["citation_verification"]["supported"] is supported
+    assert result["status"] == ("OK" if supported else "NO_RELEVANT_INFO")
+    assert [ref["reference_id"] for ref in result["references"]] == bound_ids
+
+
+@pytest.mark.parametrize("references", [[], ["Reference 1"]])
+def test_refusal_keeps_existing_citation_verification_semantics(
+    monkeypatch, references,
+):
+    configure_success_path(monkeypatch)
+    answer = "我无法根据提供的文档确定答案"
+    monkeypatch.setattr(
+        rag_graph_nodes,
+        "call_llm",
+        lambda *args, **kwargs: AnswerOutput(answer=answer, references=references),
+    )
+
+    result = run_rag_subgraph(
+        question="申请需要什么材料？", retrieved_chunks=[make_chunk()],
+    )
+
+    assert result["status"] == "NO_RELEVANT_INFO"
+    assert result["answer"] == answer
+    assert result["citation_verification"]["supported"] is True
+    assert result["citation_verification"]["reason"] == (
+        "refusal answer does not require citation verification"
+    )
+
+
 @pytest.mark.parametrize(
     ("references", "answer"),
     [

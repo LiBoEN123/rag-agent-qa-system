@@ -1,5 +1,8 @@
 # TABLE-AWARE-EVAL RESULT
 
+本节保留修复前的评估记录；后续引用完整性修复及复验见文末
+[RAG-CITATION-INTEGRITY-1 RESULT](#rag-citation-integrity-1-result)。
+
 ## STATUS
 
 **PASS_WITH_FINDINGS** — 评估完成，真实模型与现有评估入口均可运行。
@@ -337,3 +340,143 @@ NOT_RUN_BY_DESIGN：全量 pytest、65 题 baseline、Core Agent、Combined、MC
 下一阶段只针对这两条失败证据，最小化检查引用摘要保留英文词边界的方式，并保留现有引用验证的治理作用。
 用 t001/t003 及必要的引用校验回归验证，不改 parser、chunker、retrieval、reranker、context 参数，也不降低验证门槛。
 真实表格质量结论需另有已正常入库的结构化业务样本。本次到评估与 Finding 为止，**未实施修复**。
+
+---
+
+# RAG-CITATION-INTEGRITY-1 RESULT
+
+## STATUS
+
+**PASS** — 确定性回归、固定原始答案重放及 t001/t003 真实模型复跑均通过。
+生产改动仅为 snippet 空白规范化和 graph node 内的验证证据来源。
+
+## BRANCH / HEAD
+
+- Branch：`refactor/tool-output-models`。
+- HEAD：`d42f301abb0eb6585fed530972edddb27228e0cf`，修复保留为未提交工作区改动。
+- 开始时工作区 clean；没有切分支、reset、rebase、commit 或 push。
+
+## ROOT CAUSE
+
+修复前链路：full chunk → `format_reference()` → `make_snippet()` 删除空白并截断到
+300 字符 → verifier 使用展示 snippet → 正确答案可能被误拒答。
+其中 `Identity card` 被变成 `Identitycard`，破坏了原有英文关键词匹配；
+即使只修空白，300 字符之后的证据仍然不可见。
+
+## FIX
+
+1. `make_snippet()` 用 `" ".join((text or "").split())` 合并连续空白，随后执行原有
+   `[:max_len]` 截断；`Identity card` 保留词边界，`身份证\n申请表` 展示为 `身份证 申请表`。
+2. `bind_and_verify_citations_node()` 先调用原有 `format_reference()` 完成绑定，
+   再按成功绑定的 `reference_id` 从 `final_chunks` 取完整 `text`，只将内部临时
+   `{"text": ...}` 列表交给原 verifier。
+3. 公开 references 仍只有原有八个字段，没有新增 `text`/`content`；临时证据不写入
+   graph state 或公开 references。既有内部 RAG result 的 `final_chunks` 合同不变。
+
+graph 门槛仍为 **0.1**，verifier 默认门槛仍为 **0.2**。
+没有修改关键词算法、refusal/Evidence Gate 语义、graph topology/state schema、Prompt、模型配置、
+parser、chunking、检索、reranker、pipeline version 或依赖。
+
+## SECURITY / BINDING
+
+- 只有 `Reference 999` 或空引用：非 refusal 答案仍失败，返回 `NO_RELEVANT_INFO`。
+- 正确证据在未引用的 Reference 1，而模型仅引用无关的 Reference 2：仍失败。
+- 无关 Reference 2 与无效 Reference 999 混合：仍失败；无效 ID 不贡献证据。
+- 有效 Reference 1 与无效 Reference 999 混合：仅 Reference 1 绑定并提供证据，沿用原有过滤语义。
+- 引用按 ID 绑定；测试以乱序、不连续的 Reference 2 / Reference 7 防止按列表位置误配。
+- Refusal 仍跳过支撑验证，最终保留原有拒答状态和答案。
+
+## FILES CHANGED
+
+| 文件 | 修改 |
+| --- | --- |
+| `app/rag/retrieval.py` | snippet 合并空白、保留词边界 |
+| `app/rag/graph/nodes.py` | 仅将已绑定 chunk 全文传给 verifier |
+| `tests/test_citation_verifier.py` | 空白规范化与 max_len 回归 |
+| `tests/test_rag_graph_runtime.py` | 全文证据、截断解耦、绑定边界、公开字段和 refusal 回归 |
+| `docs/evaluation/table-aware-eval.md` | 保留历史报告并补充本次结果 |
+
+`app/rag/generation.py`、`app/rag/citations.py` 和 eval gold 未修改。
+
+## TESTS
+
+实际执行：
+
+- 修复前运行新增 focused cases：**7 failed、10 passed、36 deselected**，复现词边界和截断误拒答。
+  命令为 `.venv/bin/python -m pytest tests/test_citation_verifier.py tests/test_rag_graph_runtime.py -q
+  -k 'make_snippet or full_bound_chunk or successfully_bound_references or refusal_keeps_existing'`。
+- `.venv/bin/python -m pytest tests/test_citation_verifier.py -q`：**13 passed**，包含既有中文用例。
+- `.venv/bin/python -m pytest tests/test_rag_graph_runtime.py tests/test_rag_graph_builder.py tests/test_rag_generation_confidence.py -q`：**48 passed**。
+- `.venv/bin/ruff check app/rag/retrieval.py app/rag/graph/nodes.py tests/test_citation_verifier.py tests/test_rag_graph_runtime.py`：通过。
+- `.venv/bin/lint-imports`：**7 kept、0 broken**。
+- `git diff --check`：通过。
+
+新增测试中，正确英文证据放在 500 字符前缀之后；模型确实在 context 看到并引用该 chunk，
+公开 snippet 不含 `Identity card`，实际 graph/verifier 仍返回 `supported=True` 和 `OK`。
+这证明验证已与 display truncation 解耦，而不只是修复了英文空格。
+
+未跑全量 pytest、完整 14 题重测、65 题 baseline、Core Agent、MCP、Online、Mixed、SQL、SSE 或 LLM Judge。
+pytest 仅出现既有 jieba/pkg_resources 弃用警告。
+
+## TABLE EVAL REGRESSION
+
+固定题集仍为 `data/eval/rag_eval_table_v1.json`；仅选择 **t001、t003**。
+before 使用上一阶段保存的独立补采记录，不冒充正式 predictions 的原始 token 记录。
+
+| qid | before：supported / overlap / status | 固定原始答案重放 after | 真实模型复跑 after |
+| --- | --- | --- | --- |
+| t001 | false / 0.0435 / NO_RELEVANT_INFO | true / 0.2174 / OK | true / 0.2174 / OK |
+| t003 | false / 0.0556 / NO_RELEVANT_INFO | true / 0.2778 / OK | true / 0.2778 / OK |
+
+**确定性验证**：保留上一阶段同一原始答案、成功绑定 ID 和 final chunks，
+直接重放生产绑定节点及成功结果节点，没有调用模型。两题都恢复正确答案。
+
+**真实模型复跑**：复用原有只选择 t001/t003 的 `inspect_failures.py` 逻辑，
+仅调整输出位置并记录不含凭据的运行参数；observer 原样调用生产 verifier，不改变返回值。
+两题 raw answer 均包含 `Identity card`，t003 同时包含 `Age 18+`，且最终答案与 raw answer 一致。
+Answer/Decompose 为 `qwen-plus`；Embedding 为 `Qwen/Qwen3-Embedding-0.6B`，
+Reranker 为 `BAAI/bge-reranker-v2-m3`，使用本地 CUDA 缓存；top_k/decompose_top_k=5/5，
+max_context_chars=4000，Judge 关闭。没有用两题结果推算完整 13/13 成绩。
+
+产物单独保存在 [citation-integrity-d42f301](../../outputs/evaluation_baseline_v2/citation-integrity-d42f301/)：
+
+- [deterministic-replay.json](../../outputs/evaluation_baseline_v2/citation-integrity-d42f301/deterministic-replay.json)：固定答案重放。
+- [live-replay.json](../../outputs/evaluation_baseline_v2/citation-integrity-d42f301/live-replay.json)：本次真实模型原始答案、完整内部验证输入及结果。
+- [run-environment.json](../../outputs/evaluation_baseline_v2/citation-integrity-d42f301/run-environment.json)：模型和运行参数。
+- [protected-after.json](../../outputs/evaluation_baseline_v2/citation-integrity-d42f301/protected-after.json)：**91/91 保护文件 SHA-256 不变**。
+
+只打开上一阶段 17 chunks 受控索引的文件副本，未触发 rebuild、重新解析或语料 embedding。
+生产 Chroma、RecordManager、SQLite、manifest、`.env`、表格题集和正式 RAG 题集，
+以及上一阶段隔离索引文件均在保护哈希内；没有覆盖旧补采结果。
+这些输出按仓库既有规则忽略，不属于提交内容，跨机器复核需一并归档。
+
+复现命令（从仓库根目录执行，`isolated/` 已由原评估目录复制）：
+
+```bash
+PYTHONPATH=. .venv/bin/python outputs/evaluation_baseline_v2/citation-integrity-d42f301/replay_fixed_answers.py
+
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 ANONYMIZED_TELEMETRY=False \
+RAG_FILE_PATH="$PWD/outputs/evaluation_baseline_v2/citation-integrity-d42f301/isolated/kb" \
+INDEX_STORE_DIR="$PWD/outputs/evaluation_baseline_v2/citation-integrity-d42f301/isolated/manifest" \
+CHROMA_PERSIST_DIR="$PWD/outputs/evaluation_baseline_v2/citation-integrity-d42f301/isolated/chroma" \
+SQLITE_DB_PATH="$PWD/outputs/evaluation_baseline_v2/citation-integrity-d42f301/isolated/app.sqlite" \
+PYTHONPATH=. .venv/bin/python -u outputs/evaluation_baseline_v2/citation-integrity-d42f301/inspect_citations.py
+```
+
+## PRODUCTION LOC
+
+以 `git diff --numstat -- app/` 统计，包含注释/docstring：
+**added=11、deleted=3、net=+8**。
+
+## FINDINGS
+
+本次已验证的 citation false-negative 消失。现有 verifier 仍是关键词重合启发式，
+不代表逐项事实推理验证；本次没有改变该算法的能力边界。
+真实模型结果只覆盖这两道受控题，原报告关于真实业务表格覆盖不足的限制仍成立。
+
+## NEXT
+
+**STOP_TABLE_AWARE_EXPANSION**。
+
+当前没有证据支持继续修改 parser / chunking / retrieval / reranker。
+本次到引用完整性修复及复验结束，不启动下一阶段。

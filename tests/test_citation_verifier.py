@@ -1,4 +1,28 @@
+import pytest
+
 from app.rag.citations import verify_answer_citations
+from app.rag.retrieval import make_snippet
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Identity card", "Identity card"),
+        ("  Identity   card\nAge\t18+  ", "Identity card Age 18+"),
+        ("身份证\n申请表", "身份证 申请表"),
+        ("\t\n ", ""),
+        ("", ""),
+    ],
+)
+def test_make_snippet_preserves_word_boundaries(text, expected):
+    assert make_snippet(text) == expected
+
+
+@pytest.mark.parametrize("max_len", [0, 8, 300])
+def test_make_snippet_truncates_after_normalizing_whitespace(max_len):
+    text = "Identity   card\n" * 40
+
+    assert make_snippet(text, max_len) == ("Identity card " * 40).strip()[:max_len]
 
 
 def test_verify_answer_citations_supported():
