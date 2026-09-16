@@ -1,4 +1,4 @@
-"""三个离线集成 case：真实 ChatService/本地计算器，以及 fixture RAG 预测与报告。"""
+"""三个离线集成 case：真实 ChatService/本地文档列表，以及 fixture RAG 预测与报告。"""
 
 from dataclasses import replace
 import json
@@ -9,7 +9,7 @@ from scripts.evaluation import agent, rag_evaluator, rag_predictions, report
 from scripts.evaluation.contracts import AgentEvaluationCase
 
 
-@pytest.mark.parametrize("tool", ["", "simple_calculator"], ids=["direct", "local_tool"])
+@pytest.mark.parametrize("tool", ["", "list_documents"], ids=["direct", "local_tool"])
 def test_minimal_agent_smoke(tool, settings_factory, monkeypatch, tmp_path):
     from app.agent import framework_tools, streaming
     from app.agent.streaming import AgentRuntimeStreamEvent
@@ -21,6 +21,7 @@ def test_minimal_agent_smoke(tool, settings_factory, monkeypatch, tmp_path):
     from app.tools.policy import ToolPolicyEngine
 
     settings = settings_factory(mcp_tools_enabled=False)
+    monkeypatch.setattr("app.rag.pipeline.preview_docs", lambda: [])
     base = chat_service.get_default_chat_service_dependencies()
     monkeypatch.setattr(chat_service, "get_default_chat_service_dependencies", lambda: replace(
         base, rewrite_query_with_history=lambda question, history, trace_id: {
@@ -33,22 +34,22 @@ def test_minimal_agent_smoke(tool, settings_factory, monkeypatch, tmp_path):
         if tool:
             spec = next(s for s in get_local_tool_specs(settings) if s.name == tool)
             output = framework_tools.execute_project_tool(
-                spec=spec, tool_args={"expression": "1+2"}, context=kwargs["tool_context"],
+                spec=spec, tool_args={}, context=kwargs["tool_context"],
                 settings=settings, policy_engine=ToolPolicyEngine(), audit_sink=NullToolAuditSink(),
             )
-            assert output["ok"] and output["output"]["result"] == 3
+            assert output["ok"] and output["output"] == {"count": 0, "documents": []}
             calls.append({"step": "tool_call", "tool_name": tool, "tool_status": "success"})
         yield AgentRuntimeStreamEvent("result", {"result": create_agent_result(
-            status=AgentResultStatus.OK, answer="3" if tool else "你好", action="agent",
+            status=AgentResultStatus.OK, answer="文档列表为空" if tool else "你好", action="agent",
             tool_trace=calls,
         )})
 
     monkeypatch.setattr(streaming, "stream_agent", fake_runtime)
     case = AgentEvaluationCase.model_validate({
         "id": tool or "direct", "version": 2, "suite": "core", "category": "smoke",
-        "question": "1+2" if tool else "你好", "expected": {
+        "question": "请列出知识库文档" if tool else "你好", "expected": {
             "status": "OK", "first_tool": tool, "tool_sequence": [tool] if tool else [],
-            "tool_output_keys": ["result"] if tool else [],
+            "tool_output_keys": ["count", "documents"] if tool else [],
         },
     })
     row = agent.execute_agent_case(case, settings=settings, top_k=1, decompose_top_k=1)

@@ -73,8 +73,8 @@ def test_core_agent_builds_when_environment_enables_mcp(
 
     with runner.evaluation_settings_scope(evaluation):
         invocation = prepare_agent_runtime_invocation(
-            original_question="请计算 1+1",
-            effective_question="请计算 1+1",
+            original_question="请列出知识库文档",
+            effective_question="请列出知识库文档",
             top_k=5,
             decompose_top_k=10,
             trace_id="evaluation-mcp-disabled",
@@ -119,7 +119,6 @@ def test_core_evaluation_exposes_only_authorized_local_tools(
     assert visible_names == [
         "search_knowledge_base",
         "compare_documents",
-        "simple_calculator",
         "list_documents",
         "get_chunk_text",
     ]
@@ -325,7 +324,7 @@ def test_capture_tool_output_keys_never_keeps_values(monkeypatch):
             "status": "success",
             "ok": True,
             "tool_name": spec.name,
-            "output": {"result": 7, "private_value": "must-not-persist"},
+            "output": {"count": 7, "private_value": "must-not-persist"},
         }
 
     monkeypatch.setattr(
@@ -335,19 +334,19 @@ def test_capture_tool_output_keys_never_keeps_values(monkeypatch):
     )
 
     with agent_evaluation.capture_tool_output_keys() as records:
-        spec = next((item for item in get_local_tool_specs(get_settings()) if item.name == "simple_calculator"), None)
+        spec = next((item for item in get_local_tool_specs(get_settings()) if item.name == "list_documents"), None)
         assert spec is not None
         framework_tools.execute_project_tool(
             spec=spec,
-            tool_args={"expression": "1+2"},
+            tool_args={},
         )
 
     assert records == [
         {
-            "tool_name": "simple_calculator",
+            "tool_name": "list_documents",
             "status": "success",
             "ok": True,
-            "output_keys": ["private_value", "result"],
+            "output_keys": ["count", "private_value"],
         }
     ]
     assert "must-not-persist" not in repr(records)

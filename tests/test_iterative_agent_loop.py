@@ -19,9 +19,13 @@ from tests.support.agent_runtime import build_agent_harness
 
 
 @pytest.fixture(autouse=True)
-def isolate_tool_audit(settings_env):
+def isolate_tool_audit(settings_env, monkeypatch):
     """Agent loop 测试不写生产工具审计文件。"""
     settings_env(tool_audit_enabled=False)
+    monkeypatch.setattr(
+        "app.rag.pipeline.get_chunk_full_text",
+        lambda chunk_id: {"found": chunk_id != "missing", "text": f"正文 {chunk_id}"},
+    )
     yield
 
 
@@ -63,8 +67,8 @@ async def _invoke_graph(
     )
     return [state async for state in build_agent_harness(settings).astream(
         {
-            "original_question": "请计算 1+2",
-            "effective_question": "请计算 1+2",
+            "original_question": "请读取 chunk-a",
+            "effective_question": "请读取 chunk-a",
             "top_k": 5,
             "decompose_top_k": 10,
             "trace_id": "trace-loop",
@@ -120,21 +124,21 @@ async def test_agent_loop_answers_without_calling_tools(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_agent_loop_returns_single_tool_message_to_model(monkeypatch):
-    """一次计算调用通过 Runtime 后，以关联 ToolMessage 进入第二轮。"""
+    """一次片段读取调用通过 Runtime 后，以关联 ToolMessage 进入第二轮。"""
     model = FakeToolCallingModel(
         [
             AIMessage(
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "1+2"},
-                        "id": "calc-call-1",
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": "chunk-a"},
+                        "id": "chunk-call-1",
                         "type": "tool_call",
                     }
                 ],
             ),
-            AIMessage(content="计算结果是 3。"),
+            AIMessage(content="片段读取完成。"),
         ]
     )
 
@@ -144,11 +148,11 @@ async def test_agent_loop_returns_single_tool_message_to_model(monkeypatch):
     )
 
     assert len(model.received_messages) == 2
-    assert "simple_calculator" in model.bound_tool_names
+    assert "get_chunk_text" in model.bound_tool_names
     tool_message = model.received_messages[1][-1]
     assert isinstance(tool_message, ToolMessage)
-    assert tool_message.tool_call_id == "calc-call-1"
-    assert tool_message.name == "simple_calculator"
+    assert tool_message.tool_call_id == "chunk-call-1"
+    assert tool_message.name == "get_chunk_text"
     assert not (
         isinstance(tool_message.artifact, dict)
         and "_project_tool_governance" in tool_message.artifact
@@ -156,14 +160,14 @@ async def test_agent_loop_returns_single_tool_message_to_model(monkeypatch):
     payload = json.loads(tool_message.content)
     assert payload["ok"] is True
     assert payload["status"] == "success"
-    assert payload["output"]["result"] == 3
+    assert payload["output"]["chunk"]["text"] == "正文 chunk-a"
     assert payload["runtime"]["attempt_count"] == 1
     assert payload["tool_call_id"]
     assert sum(
         bool(event.get("counted_call"))
         for event in output.get("governance_events", [])
     ) == 1
-    assert output["result"]["answer"] == "计算结果是 3。"
+    assert output["result"]["answer"] == "片段读取完成。"
 
 
 @pytest.mark.asyncio
@@ -175,9 +179,9 @@ async def test_agent_loop_runs_two_sequential_tool_calls(monkeypatch):
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "1+2"},
-                        "id": "calc-seq-1",
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": "chunk-a"},
+                        "id": "chunk-seq-1",
                         "type": "tool_call",
                     }
                 ],
@@ -186,14 +190,14 @@ async def test_agent_loop_runs_two_sequential_tool_calls(monkeypatch):
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "3*4"},
-                        "id": "calc-seq-2",
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": "chunk-b"},
+                        "id": "chunk-seq-2",
                         "type": "tool_call",
                     }
                 ],
             ),
-            AIMessage(content="两次计算结果分别是 3 和 12。"),
+            AIMessage(content="两个片段读取完成。"),
         ]
     )
 
@@ -203,11 +207,11 @@ async def test_agent_loop_runs_two_sequential_tool_calls(monkeypatch):
     )
 
     assert len(model.received_messages) == 3
-    assert model.received_messages[1][-1].tool_call_id == "calc-seq-1"
-    assert model.received_messages[2][-1].tool_call_id == "calc-seq-2"
+    assert model.received_messages[1][-1].tool_call_id == "chunk-seq-1"
+    assert model.received_messages[2][-1].tool_call_id == "chunk-seq-2"
     assert any(
         isinstance(message, ToolMessage)
-        and message.tool_call_id == "calc-seq-1"
+        and message.tool_call_id == "chunk-seq-1"
         for message in model.received_messages[2]
     )
     assert sum(
@@ -215,13 +219,13 @@ async def test_agent_loop_runs_two_sequential_tool_calls(monkeypatch):
         for event in output.get("governance_events", [])
     ) == 2
     assert [
-        item["output_summary"]["result"]
+        item["tool_args"]["chunk_id"]
         for item in output["result"]["tool_trace"] if "step_id" in item
     ] == [
-        3,
-        12,
+        "chunk-a",
+        "chunk-b",
     ]
-    assert output["result"]["answer"] == "两次计算结果分别是 3 和 12。"
+    assert output["result"]["answer"] == "两个片段读取完成。"
 
 
 @pytest.mark.asyncio
@@ -233,20 +237,20 @@ async def test_agent_loop_executes_all_tool_calls_from_one_message(monkeypatch):
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "2+2"},
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": "chunk-c"},
                         "id": "parallel-1",
                         "type": "tool_call",
                     },
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "5*5"},
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": "chunk-d"},
                         "id": "parallel-2",
                         "type": "tool_call",
                     },
                 ],
             ),
-            AIMessage(content="结果是 4 和 25。"),
+            AIMessage(content="两个片段读取完成。"),
         ]
     )
 
@@ -269,11 +273,11 @@ async def test_agent_loop_executes_all_tool_calls_from_one_message(monkeypatch):
         for event in output.get("governance_events", [])
     ) == 2
     assert [
-        item["output_summary"]["result"]
+        item["tool_args"]["chunk_id"]
         for item in output["result"]["tool_trace"] if "step_id" in item
     ] == [
-        4,
-        25,
+        "chunk-c",
+        "chunk-d",
     ]
 
 
@@ -286,9 +290,9 @@ async def test_agent_loop_allows_model_to_correct_failed_tool_arguments(monkeypa
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "1/0"},
-                        "id": "bad-calc",
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": "missing"},
+                        "id": "bad-chunk",
                         "type": "tool_call",
                     }
                 ],
@@ -297,14 +301,14 @@ async def test_agent_loop_allows_model_to_correct_failed_tool_arguments(monkeypa
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "1+2"},
-                        "id": "fixed-calc",
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": "chunk-a"},
+                        "id": "fixed-chunk",
                         "type": "tool_call",
                     }
                 ],
             ),
-            AIMessage(content="修正后结果是 3。"),
+            AIMessage(content="修正后片段读取完成。"),
         ]
     )
 
@@ -330,7 +334,7 @@ async def test_agent_loop_allows_model_to_correct_failed_tool_arguments(monkeypa
         True,
     ]
     assert output["result"]["status"] == "OK"
-    assert output["result"]["answer"] == "修正后结果是 3。"
+    assert output["result"]["answer"] == "修正后片段读取完成。"
 
 
 @pytest.mark.asyncio
@@ -342,8 +346,8 @@ async def test_agent_loop_stops_at_max_iterations(monkeypatch):
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "1+1"},
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": "chunk-e"},
                         "id": "iteration-1",
                         "type": "tool_call",
                     }
@@ -353,8 +357,8 @@ async def test_agent_loop_stops_at_max_iterations(monkeypatch):
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "2+2"},
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": "chunk-c"},
                         "id": "iteration-2",
                         "type": "tool_call",
                     }
@@ -391,8 +395,8 @@ async def test_agent_loop_stops_before_exceeding_tool_call_budget(monkeypatch):
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "1+1"},
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": "chunk-e"},
                         "id": "budget-1",
                         "type": "tool_call",
                     }
@@ -402,8 +406,8 @@ async def test_agent_loop_stops_before_exceeding_tool_call_budget(monkeypatch):
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "2+2"},
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": "chunk-c"},
                         "id": "budget-2",
                         "type": "tool_call",
                     }
@@ -482,14 +486,14 @@ async def test_agent_loop_preserves_runtime_context_and_audit_chain(monkeypatch)
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "6*7"},
-                        "id": "governed-calc",
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": "chunk-f"},
+                        "id": "governed-chunk",
                         "type": "tool_call",
                     }
                 ],
             ),
-            AIMessage(content="结果是 42。"),
+            AIMessage(content="片段读取完成。"),
         ]
     )
     context = ToolInvocationContext(
@@ -544,8 +548,8 @@ async def test_agent_loop_model_failure_after_tool_does_not_replay_tool(monkeypa
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "8+9"},
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": "chunk-g"},
                         "id": "before-model-failure",
                         "type": "tool_call",
                     }

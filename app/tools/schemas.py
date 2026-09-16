@@ -78,14 +78,6 @@ class GetChunkTextArgs(BaseModel):
     )
 
 
-class SimpleCalculatorArgs(BaseModel):
-    """simple_calculator 工具参数。"""
-
-    model_config = ConfigDict(str_strip_whitespace=True)
-
-    expression: str = Field(..., min_length=1, description="安全的四则运算表达式")
-
-
 class ListDocumentsArgs(BaseModel):
     """list_documents 工具参数。"""
 
@@ -128,15 +120,6 @@ class CompareDocumentsOutput(BaseModel):
     comparison: str
     conflict_detected: bool
     summary: str
-
-
-class SimpleCalculatorOutput(BaseModel):
-    """安全计算器工具的稳定输出。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    expression: str
-    result: int | float
 
 
 class ListDocumentsOutput(BaseModel):

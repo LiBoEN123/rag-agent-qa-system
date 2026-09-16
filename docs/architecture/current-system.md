@@ -152,20 +152,18 @@ LLM 计数与 tool trace 语义。本地同步工具由框架调度，MCP 由异
 
 ## 工具系统与治理边界
 
-生产 catalog 默认固定包含八个 `ToolSpec`：
+生产 catalog 按以下稳定顺序包含七个 `ToolSpec`：
 
 1. `search_knowledge_base`
-2. `compare_documents`
-3. `simple_calculator`
-4. `list_documents`
-5. `get_chunk_text`
-6. `web_search`
-7. `web_fetch`
-8. `web_pdf_fetch`
+2. `web_search`
+3. `web_fetch`
+4. `web_pdf_fetch`
+5. `compare_documents`
+6. `list_documents`
+7. `get_chunk_text`
 
-只有 `SQL_TOOL_ENABLED=true` 时才额外注册 `list_sql_tables`、
-`describe_sql_table` 和 `query_sql_readonly`。模型可见性由 LangChain Model Middleware
-根据请求权限过滤；
+模型可见性由 LangChain Model Middleware 根据请求 `tool_mode` 与权限过滤；
+`rag_only` 只允许 `search_knowledge_base`，`full` 按权限开放剩余工具。
 本地工具的执行期治理始终经过：
 
 ```text

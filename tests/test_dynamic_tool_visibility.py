@@ -46,28 +46,28 @@ def stream(agent, context):
     return asyncio.run(stream())
 
 
-@pytest.mark.parametrize("sql_enabled", [False, True])
-def test_native_agent_binds_exact_schemas_for_each_context(monkeypatch, settings_factory, sql_enabled, sql_business_db):
-    settings = settings_factory(sql_tool_enabled=sql_enabled, sql_database_url=f"sqlite:///{sql_business_db}", sql_allowed_tables=("students",))
+def test_native_agent_binds_exact_schemas_for_each_context(monkeypatch, settings_factory):
+    settings = settings_factory()
     tools = framework_tools.get_local_tools(settings)
     model = SchemaModel()
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     agent = build_framework_agent(settings, tools=tools)
-    kb = ["search_knowledge_base", "compare_documents", "simple_calculator", "list_documents", "get_chunk_text"]
+    kb = ["search_knowledge_base", "compare_documents", "list_documents", "get_chunk_text"]
     cases = [
         (build_default_tool_context(settings=settings), kb),
-        (ToolInvocationContext(), ["simple_calculator"]),
+        (ToolInvocationContext(), []),
         (ToolInvocationContext(permissions=("knowledge_base:read",)), kb),
-        (ToolInvocationContext(permissions=("web:search",)), ["web_search", "simple_calculator"]),
-        (ToolInvocationContext(permissions=("web:fetch",)), ["web_fetch", "web_pdf_fetch", "simple_calculator"]),
-        (ToolInvocationContext(permissions=("database:read",)), ["simple_calculator"] + (["list_sql_tables", "describe_sql_table", "query_sql_readonly"] if sql_enabled else [])),
+        (ToolInvocationContext(permissions=("web:search",)), ["web_search"]),
+        (ToolInvocationContext(permissions=("web:fetch",)), ["web_fetch", "web_pdf_fetch"]),
         (ToolInvocationContext(permissions=("knowledge_base:read", "web:search")), ["search_knowledge_base", "web_search", *kb[1:]]),
-        (ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "web:search", "web:fetch", "database:read", "mcp:github")), ["search_knowledge_base"]),
+        (ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "web:search", "web:fetch", "mcp:github")), ["search_knowledge_base"]),
         (ToolInvocationContext(tool_mode=ToolMode.FULL, permissions=("knowledge_base:read", "web:search")), ["search_knowledge_base", "web_search", *kb[1:]]),
     ]
     for context, expected in cases:
+        model.schemas.clear()
         stream(agent, context)
-        schemas = model.schemas[-1]
+        # 无可见工具时框架直接调用模型，不会调用 bind_tools。
+        schemas = model.schemas[-1] if model.schemas else {}
         assert list(schemas) == expected
         assert schemas == {t.name: t.tool_call_schema.model_json_schema() for t in tools if t.name in expected}
         assert all("runtime" not in schema["properties"] for schema in schemas.values())
@@ -104,7 +104,7 @@ def test_mcp_base_tool_survives_local_filter(monkeypatch, settings_factory, serv
     model = SchemaModel()
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     stream(build_framework_agent(settings, tools=tools), context)
-    assert list(model.schemas[-1]) == ["simple_calculator", external.name]
+    assert list(model.schemas[-1]) == [external.name]
     assert tools[-1] is external
 
 
@@ -134,7 +134,7 @@ def test_rag_only_filters_even_registered_mcp_tools(monkeypatch, settings_factor
 
 
 @pytest.mark.parametrize(("name", "args"), [
-    ("simple_calculator", {"expression": "1 + 1"}),
+    ("compare_documents", {"query": "test", "doc_a": "a.md", "doc_b": "b.md"}),
     ("web_search", {"query": "test"}),
 ])
 def test_rag_only_forged_calls_are_denied_before_handler(monkeypatch, settings_factory, name, args):

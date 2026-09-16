@@ -232,7 +232,7 @@ def test_short_circuit_direct_answer_keeps_capability_text_and_trace(settings_en
     assert result["answer"] == (
         "我是一个 RAG 知识库问答助手。"
         "我可以基于已导入的文档回答问题并提供引用，"
-        "也可以列出知识库文档、查看指定 chunk、对比文档内容，以及进行简单四则运算。"
+        "也可以列出知识库文档、查看指定 chunk、对比文档内容。"
     )
     assert result["reason"] == "能力介绍"
     assert result["action"] == "direct_answer"
@@ -423,7 +423,7 @@ def test_framework_final_ai_content_and_governance_trace_are_preserved(
             AIMessage(
                 content="工具请求",
                 tool_calls=[
-                    {"name": "simple_calculator", "args": {}, "id": "call-1"},
+                    {"name": "list_documents", "args": {}, "id": "call-1"},
                 ],
             ),
             ToolMessage(content="工具输出", tool_call_id="call-1"),
@@ -611,7 +611,7 @@ def test_counted_pre_handler_failure_keeps_failure_summary(error_code):
         _invocation(), {
             "stop_reason": "fatal_tool_error",
             "governance_events": [{
-                "kind": "tool", "name": "simple_calculator", "counted_call": True,
+                "kind": "tool", "name": "list_documents", "counted_call": True,
                 "handler_executed": False,
                 "result": {"ok": False, "error_code": error_code},
             }],

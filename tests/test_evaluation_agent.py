@@ -11,9 +11,9 @@ from scripts.evaluation.contracts import ExpectedOutcome
 def _result(
     *,
     status="OK",
-    tool="simple_calculator",
+    tool="list_documents",
     tool_status="success",
-    answer="结果是 7",
+    answer="共有 7 份文档",
     rewrite=None,
 ):
     trace = []
@@ -40,8 +40,8 @@ def _result(
                 "tool_name": tool,
                 "tool_status": tool_status,
                 "tool_output": {
-                    "expression": "1+2*3",
-                    "result": 7,
+                    "documents": [{}] * 7,
+                    "count": 7,
                 },
             },
         ]
@@ -63,13 +63,13 @@ def _expected(**changes):
         "decision": "use_agent",
         "action": "agent",
         "status": "OK",
-        "first_tool": "simple_calculator",
-        "tools_contains": ["simple_calculator"],
+        "first_tool": "list_documents",
+        "tools_contains": ["list_documents"],
         "keywords": ["7"],
         "min_keyword_hits": 1,
         "sources": ["rules.md"],
         "source_match": "any",
-        "tool_output_keys": ["expression", "result"],
+        "tool_output_keys": ["count", "documents"],
     }
     values.update(changes)
     return ExpectedOutcome.model_validate(values)
@@ -82,7 +82,7 @@ def _score(expected=None, result=None, **changes):
         suite="core",
         tags=["fixture"],
         turn_index=1,
-        question="计算",
+        question="请列出知识库文档",
         expected=expected or _expected(),
         result=result or _result(),
         metrics={"llm_call_count": 3},
@@ -109,10 +109,10 @@ def test_score_agent_turn_uses_captured_keys_without_persisting_values():
         result=result,
         tool_output_records=[
             {
-                "tool_name": "simple_calculator",
+                "tool_name": "list_documents",
                 "status": "success",
                 "ok": True,
-                "output_keys": ["expression", "result"],
+                "output_keys": ["count", "documents"],
             }
         ],
     )
@@ -127,16 +127,16 @@ def test_score_agent_turn_accepts_explicit_error_then_success_recovery():
     result["tool_trace"].append(
         {
             "step": "tool_call",
-            "tool_name": "simple_calculator",
+            "tool_name": "list_documents",
             "tool_status": "success",
             "tool_output": {
-                "expression": "1+2*3",
-                "result": 7,
+                "documents": [{}] * 7,
+                "count": 7,
             },
         }
     )
     expected = _expected(
-        tool_sequence=["simple_calculator", "simple_calculator"],
+        tool_sequence=["list_documents", "list_documents"],
         tool_status_sequence=["error", "success"],
     )
 
@@ -455,7 +455,7 @@ def test_mcp_execution_error_before_remote_handler_is_application_regression():
 def test_first_tool_any_of_accepts_a_reasonable_alternative_route():
     expected = _expected(
         first_tool="",
-        first_tool_any_of=["simple_calculator", "search_knowledge_base"],
+        first_tool_any_of=["list_documents", "search_knowledge_base"],
     )
 
     row = _score(expected=expected)

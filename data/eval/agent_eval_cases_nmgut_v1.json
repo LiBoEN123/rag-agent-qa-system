@@ -319,20 +319,6 @@
     "check_focus": "测试 chunk 查询是否进入 get_chunk_text 工具，并能读取当前元数据中 chunk_id=2 的内容。"
   },
   {
-    "id": "T004",
-    "category": "tool_use",
-    "question": "请帮我算一下 1 + 2 * 3",
-    "expected_decision": "use_tool",
-    "expected_action": "simple_calculator",
-    "expected_tool": "simple_calculator",
-    "expected_status": "OK",
-    "expected_sources": [],
-    "expected_keywords": [
-      "7"
-    ],
-    "check_focus": "测试简单四则运算是否调用 simple_calculator 工具，而不是进入知识库检索。"
-  },
-  {
     "id": "compare_documents_explicit_001",
     "category": "compare_documents",
     "question": "请对比《内蒙古工业大学学生手册》和《内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知》中关于普通本科四年制最长学习年限的规定差异。",

@@ -25,7 +25,7 @@ FIXTURE = (
     / "minimal_agent_cases_v2.json"
 )
 KNOWN_TOOLS = {
-    "simple_calculator",
+    "list_documents",
     "search_knowledge_base",
 }
 
@@ -54,7 +54,7 @@ def test_load_valid_single_turn_fixture():
     dataset = load_agent_evaluation_dataset(FIXTURE)
 
     assert len(dataset.cases) == 1
-    assert dataset.cases[0].question == "1+1 等于多少？"
+    assert dataset.cases[0].question == "请列出知识库文档"
 
 
 def test_valid_multi_turn_case():
@@ -177,7 +177,7 @@ def test_first_tool_any_of_is_exclusive_with_first_tool():
             expected={
                 "status": "OK",
                 "first_tool_any_of": [
-                    "simple_calculator",
+                    "list_documents",
                     "search_knowledge_base",
                 ],
             }
@@ -188,7 +188,7 @@ def test_first_tool_any_of_is_exclusive_with_first_tool():
     raw = _single_case(
         expected={
             "status": "OK",
-            "first_tool": "simple_calculator",
+            "first_tool": "list_documents",
             "first_tool_any_of": ["search_knowledge_base"],
         }
     )

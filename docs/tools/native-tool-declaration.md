@@ -1,5 +1,8 @@
 # FRAMEWORK-SLIM-3 — Local Tool declaration 审计
 
+> 历史记录：下文描述当时的审计或决策。当前已移除计算器与业务数据库只读工具，
+> 工具集合以[当前系统架构](../architecture/current-system.md)为准。
+
 审计基线：`refactor/tool-output-models`，HEAD `2acdeaa50801303bead362b6ff12679b382bcb15`，工作区干净。
 当前安装：LangChain 1.3.14、langchain-core 1.4.9、LangGraph 1.2.9、Pydantic 2.12.5。
 

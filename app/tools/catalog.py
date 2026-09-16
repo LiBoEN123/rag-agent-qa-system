@@ -3,7 +3,6 @@
 from functools import lru_cache
 
 from app.config import AppSettings, get_settings
-from app.tools.calculator import simple_calculator
 from app.tools.compare_documents import compare_documents_tool
 from app.tools.contracts import (
     ToolAuditOutputMode,
@@ -25,8 +24,6 @@ from app.tools.schemas import (
     ListDocumentsOutput,
     SearchKnowledgeBaseArgs,
     SearchKnowledgeBaseOutput,
-    SimpleCalculatorArgs,
-    SimpleCalculatorOutput,
     WebFetchArgs,
     WebFetchOutput,
     WebPdfFetchArgs,
@@ -34,18 +31,9 @@ from app.tools.schemas import (
     WebSearchArgs,
     WebSearchOutput,
 )
-from app.tools.sql_readonly.tools import build_sql_readonly_tool_specs
 from app.tools.web_fetch import web_fetch
 from app.tools.web_pdf_fetch import web_pdf_fetch
 from app.tools.web_search import web_search
-
-
-def _handle_simple_calculator(
-    args: dict,
-    context: ToolInvocationContext,
-) -> dict:
-    """适配计算器工具的参数格式。"""
-    return simple_calculator(args["expression"])
 
 
 def _handle_list_documents(
@@ -74,7 +62,7 @@ def _handle_compare_documents(
 
 @lru_cache(maxsize=4)
 def get_local_tool_specs(settings: AppSettings) -> tuple[ToolSpec, ...]:
-    """按完整配置缓存默认声明；SQL 工具追加在固定位置。"""
+    """按完整配置缓存默认本地工具声明。"""
     specs = [
         ToolSpec(
             name="search_knowledge_base",
@@ -183,24 +171,6 @@ def get_local_tool_specs(settings: AppSettings) -> tuple[ToolSpec, ...]:
             audit_output_mode=ToolAuditOutputMode.SUMMARY,
         ),
         ToolSpec(
-            name="simple_calculator",
-            version="1.0.0",
-            description=(
-                "用于计算明确的数字四则运算表达式并返回数值结果；参数 expression"
-                " 是待计算表达式。不用于解释知识库中的数字含义或执行代码。"
-            ),
-            output_model=SimpleCalculatorOutput,
-            handler=_handle_simple_calculator,
-            args_model=SimpleCalculatorArgs,
-            risk_level=ToolRiskLevel.READ_ONLY,
-            required_permissions=(),
-            timeout=3.0,
-            max_retries=0,
-            idempotent=True,
-            requires_approval=False,
-            audit_output_mode=ToolAuditOutputMode.SANITIZED,
-        ),
-        ToolSpec(
             name="list_documents",
             version="1.0.0",
             description=(
@@ -237,8 +207,6 @@ def get_local_tool_specs(settings: AppSettings) -> tuple[ToolSpec, ...]:
             audit_output_mode=ToolAuditOutputMode.NONE,
         ),
     ]
-    if settings.sql_tool_enabled:
-        specs.extend(build_sql_readonly_tool_specs(settings))
     names = [spec.name for spec in specs]
     if len(names) != len(set(names)):
         raise ValueError("本地工具名称重复，禁止静默覆盖")

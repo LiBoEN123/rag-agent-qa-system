@@ -409,7 +409,6 @@ async def test_consecutive_requests_keep_web_visibility_isolated_and_execute_gra
     assert {
         "search_knowledge_base",
         "compare_documents",
-        "simple_calculator",
         "list_documents",
         "get_chunk_text",
         "web_search",

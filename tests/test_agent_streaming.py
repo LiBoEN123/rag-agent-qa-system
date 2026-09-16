@@ -88,21 +88,21 @@ def test_update_projector_emits_safe_tool_completion():
                 "tools": [
                     {
                         "messages": [
-                            ToolMessage(content="private", tool_call_id="calc-1")
+                            ToolMessage(content="private", tool_call_id="list-1")
                         ]
                     },
                     {
                         "governance_events": [
                             {
                                 "kind": "tool",
-                                "name": "simple_calculator",
+                                "name": "list_documents",
                                 "ok": True,
                                 "cost_ms": 4,
-                                "tool_call_id": "calc-1",
-                                "args": {"expression": "private"},
+                                "tool_call_id": "list-1",
+                                "args": {"private": "private"},
                                 "result": {
                                     "output": {
-                                        "result": 3,
+                                        "count": 0,
                                         "governance_events": [
                                             {
                                                 "kind": "tool",
@@ -123,7 +123,7 @@ def test_update_projector_emits_safe_tool_completion():
 
     assert [event.data for event in events] == [
         {
-            "tool_name": "simple_calculator",
+            "tool_name": "list_documents",
             "phase": "completed",
             "status": "success",
             "cost_ms": 4,
@@ -186,14 +186,14 @@ class AsyncAnswerModel:
 
 
 class AsyncToolAnswerModel:
-    """先调用计算器，再通过异步模型返回最终回答。"""
+    """先调用文档列表，再通过异步模型返回最终回答。"""
 
     def __init__(self):
         self.calls = 0
 
     def bind_tools(self, tools, **kwargs):
         del kwargs
-        assert "simple_calculator" in {tool.name for tool in tools}
+        assert "list_documents" in {tool.name for tool in tools}
         return self
 
     async def ainvoke(self, messages):
@@ -203,15 +203,15 @@ class AsyncToolAnswerModel:
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "1+2"},
-                        "id": "stream-calc-call",
+                        "name": "list_documents",
+                        "args": {},
+                        "id": "stream-list-call",
                         "type": "tool_call",
                     }
                 ],
             )
         assert isinstance(messages[-1], ToolMessage)
-        return AIMessage(content="计算结果是 3。")
+        return AIMessage(content="文档列表读取完成。")
 
 
 @pytest.mark.parametrize("failure", [False, True])
@@ -266,6 +266,7 @@ def test_stream_executes_create_agent_and_returns_authoritative_result(
 
 def test_stream_projects_native_command_tool_completion(monkeypatch):
     """原生 Command tools update 仍产生一次开始和一次完成事件。"""
+    monkeypatch.setattr("app.rag.pipeline.preview_docs", lambda: [])
     model = AsyncToolAnswerModel()
     monkeypatch.setattr(
         framework_agent,
@@ -278,8 +279,8 @@ def test_stream_projects_native_command_tool_completion(monkeypatch):
             event
             async for event in stream_agent(
                 write_bad_cases=lambda record: None,
-                original_question="请计算 1+2",
-                effective_question="请计算 1+2",
+                original_question="请列出知识库文档",
+                effective_question="请列出知识库文档",
                 top_k=5,
                 decompose_top_k=10,
                 trace_id="trace-tool-stream",
@@ -293,7 +294,7 @@ def test_stream_projects_native_command_tool_completion(monkeypatch):
         event
         for event in events
         if event.event == "tool"
-        and event.data.get("tool_name") == "simple_calculator"
+        and event.data.get("tool_name") == "list_documents"
     ]
     result = next(event.data["result"] for event in events if event.event == "result")
 
@@ -302,7 +303,7 @@ def test_stream_projects_native_command_tool_completion(monkeypatch):
         "completed",
     ]
     assert tool_events[-1].data["status"] == "success"
-    assert result["answer"] == "计算结果是 3。"
+    assert result["answer"] == "文档列表读取完成。"
     assert result["tool_trace"][-1]["step"] == "llm_usage"
 
 

@@ -1,7 +1,7 @@
 """真实模型供应商 Tool Calling 协议的手动冒烟程序。
 
 用途：绑定当前工具 Schema，确认供应商返回工具名、参数和 tool_call_id 的协议形态。
-输入：当前回答模型配置、工具注册合同，以及程序内固定的计算和知识库检索场景。
+输入：当前回答模型配置、工具注册合同，以及程序内固定的文档列表和知识库检索场景。
 输出：脱敏后的 Schema/tool_calls 诊断信息；协议不符合预期时以异常失败。
 边界：会调用真实模型，但不会执行模型返回的工具；不会由 Pytest 或 CI 自动运行。
 """
@@ -28,8 +28,8 @@ from app.common.redaction import redact_sensitive_data  # noqa: E402
 
 SCENARIOS = (
     (
-        "simple_calculator",
-        "请计算 12*8，必须调用计算器工具。",
+        "list_documents",
+        "请列出知识库中的文档，必须调用文档列表工具。",
     ),
     (
         "search_knowledge_base",
@@ -68,7 +68,7 @@ def main() -> int:
     )).tools
     tool_map = {tool.name: tool for tool in tools}
     print("bound_tool_names:", sorted(tool_map))
-    for required_name in ("search_knowledge_base", "simple_calculator"):
+    for required_name in ("search_knowledge_base", "list_documents"):
         tool = tool_map.get(required_name)
         if tool is None:
             raise RuntimeError(f"模型工具列表缺少 {required_name}")

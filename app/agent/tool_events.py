@@ -21,7 +21,6 @@ def summarize_tool_result(tool_name: str, tool_result: dict[str, Any]) -> str:
 
     summaries = {
         "compare_documents": "文档对比工具执行完成",
-        "simple_calculator": "计算工具执行完成",
         "list_documents": "文档列表工具执行完成",
         "get_chunk_text": "chunk 原文工具执行完成",
     }
@@ -53,7 +52,6 @@ def build_tool_trace(
     raw_error = str(result.get("error") or "")
     safe_policy_codes = {
         "permission_denied",
-        "sql_permission_denied",
         "approval_required",
         "missing_idempotency_key",
         "invalid_invocation_context",

@@ -6,8 +6,6 @@
 [当前系统架构](docs/architecture/current-system.md)。
 架构演进见 [2026 年 Agent 演进归档](docs/history/agent-evolution-2026.md)，已接受的
 Model Governance 边界见 [ADR 0006](docs/adr/0006-framework-native-agent-runtime.md)。
-受治理的业务数据库接入见
-[只读 SQL 工具](docs/tools/sql-readonly.md)。
 外部只读工具接入见
 [受治理的 MCP Client 工具源](docs/tools/mcp-client.md)。
 
@@ -24,7 +22,7 @@ Model Governance 边界见 [ADR 0006](docs/adr/0006-framework-native-agent-runti
 - 权限感知的动态工具发现：本地 Provider 按 `required_permissions` 过滤 Registry tools；可选 MCP Provider 通过 Server 默认可见性或显式 `mcp:<server>` 授权过滤启动期缓存的 adapter tools，两者由同一 Middleware 注入模型和执行层。
 - Agent 循环防护：工具错误总数、连续相同调用、连续相同错误和模型/工具累计耗时均有独立预算；终止错误对同批后续调用 fail-closed，并补齐关联 ToolMessage。
 - 多轮追问改写：同一 `session_id` 下通过 SQLite 保留最近会话历史，短追问和指代问题会先改写成独立检索问题。
-- 工具调用：支持知识库检索、公开网页搜索与受治理的正文提取、文档工具、计算，以及默认关闭的 allowlist 只读 SQL 与 Streamable HTTP MCP Client 工具源。
+- 工具调用：支持知识库检索、公开网页搜索与受治理的正文提取、文档工具，以及默认关闭的 Streamable HTTP MCP Client 工具源。
 - 引用绑定和拒答机制：模型输出的 `Reference N` 会绑定回真实文件与 chunk；证据不足或引用支撑不足时拒答。
 - 流式聊天：唯一公开入口 `POST /chat/stream`，响应 `Content-Type: text/event-stream`，提供 progress、tool、安全答案增量和权威 final SSE 事件。
 - 可观测性：每次聊天请求记录 `trace_id`、阶段耗时、状态、工具调用、引用数量和 LLM 调用次数。
@@ -72,7 +70,7 @@ Phase 6B 的 Model private marker 是已接受设计，不是待迁移 TODO。�
 | Agent 路由 | `app.agent.runtime` 是唯一 Router 调用者；正常请求输出 `agent`，`direct_answer` / `clarify` 在普通 Python 中安全短路 |
 | 工具发现 | 不可变本地 ToolSpec/StructuredTool catalog 按配置缓存；LangChain Model Middleware 按请求权限过滤模型可见工具。可选 MCP Provider 继续过滤启动期 discovery cache |
 | Agent Guardrail | 工具错误总数、连续相同调用/错误、累计模型与工具耗时预算、同批 fail-closed、无悬空 ToolMessage |
-| 工具调用 | 默认 catalog 保持八个生产工具；显式启用只读 SQL 后追加 `list_sql_tables`、`describe_sql_table`、`query_sql_readonly`。模型可见集合始终由请求权限决定 |
+| 工具调用 | 默认 catalog 包含七个生产工具。模型可见集合由请求 tool_mode 与权限共同决定 |
 | 可观测性 | `trace_id`、请求耗时、阶段耗时、工具调用日志、metrics 汇总接口 |
 | 失败分析 | `logs/bad_cases.jsonl` 记录值得分析的失败样例 |
 | 评测 | 支持规则评测、Chroma/chunks 索引取证和可选 LLM Judge 语义评估 |
@@ -133,26 +131,6 @@ Phase 6B 的 Model private marker 是已接受设计，不是待迁移 TODO。�
 - bad case 日志用于定位失败样例，包括模型结构化输出校验失败、引用异常、工具异常、内部异常和索引未就绪。
 
 模型客户端、`create_agent` Agent Loop 和独立 RAG Graph 彼此分层；本次 Agent Runtime 瘦身不改变 RAG 检索、Rerank、ChromaDB 数据结构和引用机制。
-
-## 只读 SQL 工具
-
-只读 SQL 能力默认关闭；关闭时不创建 Engine、不连接数据库、不注册工具，默认八个
-工具和 Evaluation Baseline 合同保持不变。显式启用时还必须配置非空表 allowlist，
-并把 `database:read` 加入目标请求主体权限：
-
-```env
-SQL_TOOL_ENABLED=true
-SQL_DATABASE_URL=sqlite:////srv/rag-agent/business.sqlite3
-SQL_ALLOWED_TABLES=students,courses
-TOOL_DEFAULT_PERMISSIONS=knowledge_base:read,database:read
-```
-
-第一版正式验证 SQLite，并在 sqlglot 单语句只读 AST、物理表 allowlist、危险函数、
-AST `LIMIT`、语句超时和有限输出之外，同时使用 SQLite `mode=ro` 与
-`PRAGMA query_only=ON`。AST 不是数据库权限替代品；其他数据库未来安装驱动后仍必须
-使用数据库侧只读账号。数据库内容统一标记为不可信数据，不能当成系统或工具指令。
-该数据源不得指向项目 Session、Checkpoint、Chroma 或 Evaluation 持久化。完整配置、
-错误边界和手动冒烟命令见[只读 SQL 工具文档](docs/tools/sql-readonly.md)。
 
 ## MCP Client 工具源
 
@@ -234,7 +212,7 @@ python scripts/smoke_test_online_tools.py fetch \
 
 ## Web PDF Fetch
 
-`web_pdf_fetch` 是第八个注册生产工具，用于读取已知公开 PDF 的指定连续页范围。它与 `web_fetch` 保持明确分工：`web_fetch` 只处理 HTML、XHTML 和纯文本并继续拒绝 PDF；`web_pdf_fetch` 只处理 PDF，并使用项目已经锁定的 `pypdf==6.14.2` 提取数字文本。两者共用 `app/tools/web_download.py` 中基于 `requests-hardened==1.3.0` 的下载、逐跳重定向、可信代理、streaming 和资源关闭边界；默认模式实施本地 SSRF 校验，显式受信代理模式则按上一节所述委托网络策略。
+`web_pdf_fetch` 用于读取已知公开 PDF 的指定连续页范围。它与 `web_fetch` 保持明确分工：`web_fetch` 只处理 HTML、XHTML 和纯文本并继续拒绝 PDF；`web_pdf_fetch` 只处理 PDF，并使用项目已经锁定的 `pypdf==6.14.2` 提取数字文本。两者共用 `app/tools/web_download.py` 中基于 `requests-hardened==1.3.0` 的下载、逐跳重定向、可信代理、streaming 和资源关闭边界；默认模式实施本地 SSRF 校验，显式受信代理模式则按上一节所述委托网络策略。
 
 模型只能提供 `url`、1-based `start_page`、1–20 的 `max_pages` 和 1000–30000 的 `max_chars`。服务端另以 `WEB_PDF_MAX_RESPONSE_BYTES`、`WEB_PDF_MAX_DOCUMENT_PAGES` 和 `WEB_PDF_TOOL_TIMEOUT_SECONDS` 控制下载字节、总页数和总体 ToolRuntime 时间。工具接受 `application/pdf`、`application/x-pdf`，并仅在内容具有 `%PDF-` 签名时兼容 `application/octet-stream`；所有允许类型最终都检查 PDF magic。
 
@@ -444,14 +422,6 @@ Tool Runtime 与 Agent Runtime 缓存；生产服务通常直接重启进程。�
 | `WEB_PDF_MAX_RESPONSE_BYTES` | Web PDF 解压后响应上限，默认 `10000000` bytes |
 | `WEB_PDF_MAX_DOCUMENT_PAGES` | Web PDF 允许的文档总页数上限，默认 `1000` |
 | `WEB_PDF_TOOL_TIMEOUT_SECONDS` | Web PDF ToolRuntime 总体超时，默认 `45` 秒，必须大于连接与读取超时之和 |
-| `SQL_TOOL_ENABLED` | 是否注册只读 SQL 工具，默认 `false`；关闭时不创建 Engine 或连接数据库 |
-| `SQL_DATABASE_URL` | `SecretStr` 业务数据库 URL；启用时必填，禁止指向项目内部持久化 |
-| `SQL_ALLOWED_TABLES` | 逗号分隔的 `table` / `schema.table` 硬 allowlist；启用时必填 |
-| `SQL_DEFAULT_SCHEMA` | 可选默认 Schema；模型只能请求它或 allowlist 明示 Schema |
-| `SQL_MAX_ROWS` / `SQL_MAX_COLUMNS` | 查询最大返回行数和列数，默认 `50` / `50` |
-| `SQL_MAX_CELL_CHARS` / `SQL_MAX_OUTPUT_CHARS` | 单元格与整体结构化输出字符上限，默认 `1000` / `50000` |
-| `SQL_STATEMENT_TIMEOUT_MS` | 数据库语句超时，默认 `5000` ms，必须小于工具总体超时 |
-| `SQL_TOOL_TIMEOUT_SECONDS` | ToolRuntime SQL 工具总体超时，默认 `10` 秒 |
 | `MCP_TOOLS_ENABLED` | 是否启用 MCP Client，默认 `false`；关闭时不读取配置或连接 Server |
 | `MCP_SERVERS_CONFIG_PATH` | MCP Server 静态 JSON 路径；默认是 Git 忽略的 `config/mcp_servers.local.json`，可用项目内相对路径或绝对路径覆盖 |
 | `MCP_DISCOVERY_TIMEOUT_SECONDS` / `MCP_TOOL_TIMEOUT_SECONDS` | 启动 discovery 与单次 MCP Tool 超时，默认 `5` / `15` 秒 |
@@ -876,7 +846,6 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   ├── tools/
 │   │   ├── __init__.py          # 包说明；业务从具体职责模块导入
 │   │   ├── result.py            # 统一成功/失败返回协议
-│   │   ├── calculator.py        # 安全四则运算
 │   │   ├── knowledge_base.py    # 文档、chunk 和检索工具
 │   │   ├── compare_documents.py # 双文档证据对比
 │   │   ├── context.py           # 请求级工具调用上下文

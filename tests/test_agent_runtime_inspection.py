@@ -71,7 +71,6 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "http_framework_boundary",
         "settings_framework_boundary",
         "zero_import_ignores",
-        "sql_tools_disabled_by_default",
         "mcp_disabled_by_default",
         "tool_runtime_governance_preserved",
     } <= {item["name"] for item in report["checks"]}
@@ -141,7 +140,6 @@ def test_tool_contracts_use_model_facing_json_schema(
         "web_fetch",
         "web_pdf_fetch",
         "compare_documents",
-        "simple_calculator",
         "list_documents",
         "get_chunk_text",
     }
@@ -152,7 +150,6 @@ def test_tool_contracts_use_model_facing_json_schema(
     assert report["default_visible_tools"] == [
         "search_knowledge_base",
         "compare_documents",
-        "simple_calculator",
         "list_documents",
         "get_chunk_text",
     ]
@@ -185,12 +182,12 @@ def test_tool_contracts_use_model_facing_json_schema(
 
 
 def test_all_local_framework_tool_schemas_match_registry_contract(settings_factory):
-    """全部八个 Local Tool 保持名称、描述、字段、required 与类型不变。"""
+    """全部七个 Local Tool 保持名称、描述、字段、required 与类型不变。"""
     settings = _knowledge_only(settings_factory, "web:search", "web:fetch")
     registry = get_local_tool_specs(settings)
     tools = get_local_tools(settings)
 
-    assert len(tools) == 8
+    assert len(tools) == 7
     for tool in tools:
         spec = next((item for item in registry if item.name == tool.name), None)
         assert spec is not None

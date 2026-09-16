@@ -29,6 +29,9 @@ Online 搜索结果和网页内容会变化，因此不应成为稳定 CI 门禁
 - RAG：`data/eval/rag_eval_questions_v2_semantic_fixed.json`
 - 示例阈值：`data/eval/evaluation_thresholds_v2.example.json`
 
+工具瘦身后，Agent v1/v2 数据集均删除了计算工具专属用例 `T004`；
+Agent v2 现有 28 条用例，历史结果应按各自记录的数据集 hash 解释。
+
 v1 文件保留。Agent v2 的每条 case 必须包含 `version: 2`，并且只能选择
 `question` 单轮结构或至少两轮的 `turns` 结构。`suite` 只能是 `core`、
 `online`、`mcp` 或 `mixed`。合法 status 来自 `AgentResultStatus`。本地/Web 工具名
@@ -200,7 +203,7 @@ temperature、top-k 相同；Agent dataset hash、Agent budgets、Tool contract 
   预算；
 - Prediction Schema 版本、`max_context_chars`、请求/有效的 `top_k` 与
   `decompose_top_k`，以及生产 Context 选择源文件和 SHA-256；
-- 当前八个工具名、完整 Tool contract hash；
+- 当前七个工具名、完整 Tool contract hash；
 - Prompt、Query Rewrite、Decompose、Generation、Compare 和工具描述所在源文件
   的 SHA-256；
 - Judge 是否启用、模型和缓存来源。

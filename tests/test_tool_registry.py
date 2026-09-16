@@ -12,7 +12,7 @@ from tests.support.local_tools import invoke_local_tool
 from app.tools.schemas import (
     SearchKnowledgeBaseArgs,
     SearchKnowledgeBaseOutput,
-    SimpleCalculatorOutput,
+    ListDocumentsOutput,
 )
 
 
@@ -21,7 +21,6 @@ def test_tool_registry_names_include_builtin_tools(tool_registry):
     names = [item.name for item in tool_registry]
 
     assert "search_knowledge_base" in names
-    assert "simple_calculator" in names
     assert "list_documents" in names
     assert "get_chunk_text" in names
     assert "compare_documents" in names
@@ -31,7 +30,7 @@ def test_tool_registry_names_include_builtin_tools(tool_registry):
 
 
 def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
-    """验证八个注册生产工具发布完整且符合要求的 V2 契约。"""
+    """验证七个注册生产工具发布完整且符合要求的 V2 契约。"""
     from app.agent.framework_tools import build_local_tool, local_tool_contract
 
     specs = [local_tool_contract(build_local_tool(item)) for item in tool_registry]
@@ -39,7 +38,6 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
     expected_permissions = {
         "search_knowledge_base": ["knowledge_base:read"],
         "compare_documents": ["knowledge_base:read"],
-        "simple_calculator": [],
         "list_documents": ["knowledge_base:read"],
         "get_chunk_text": ["knowledge_base:read"],
         "web_search": ["web:search"],
@@ -49,7 +47,6 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
     expected_timeouts = {
         "search_knowledge_base": 120.0,
         "compare_documents": 20.0,
-        "simple_calculator": 3.0,
         "list_documents": 5.0,
         "get_chunk_text": 5.0,
         "web_search": 10.0,
@@ -77,7 +74,6 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
         assert spec["output_model"] == {
             "search_knowledge_base": "SearchKnowledgeBaseOutput",
             "compare_documents": "CompareDocumentsOutput",
-            "simple_calculator": "SimpleCalculatorOutput",
             "list_documents": "ListDocumentsOutput",
             "get_chunk_text": "GetChunkTextOutput",
             "web_search": "WebSearchOutput",
@@ -114,38 +110,25 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
     }
 
 
-def test_invoke_local_tool_runs_simple_calculator(tool_registry):
-    """验证唯一执行入口可以调用已注册计算器工具。"""
-    result = invoke_local_tool(
-        registry=tool_registry,
-        tool_name="simple_calculator",
-        tool_args={"expression": "1 + 2 * 3"},
-    )
-
-    assert result["ok"] is True
-    assert result["status"] == "success"
-    assert result["output"]["result"] == 7
-
-
-def test_migrated_calculator_rejects_malformed_output(tool_registry):
-    """生产计算器契约会在 Runtime 拒绝结构错误的成功输出。"""
-    spec = next((item for item in tool_registry if item.name == "simple_calculator"), None)
+def test_list_documents_rejects_malformed_output(tool_registry):
+    """生产文档列表契约会在 Runtime 拒绝结构错误的成功输出。"""
+    spec = next((item for item in tool_registry if item.name == "list_documents"), None)
     assert spec is not None
-    assert spec.output_model is SimpleCalculatorOutput
+    assert spec.output_model is ListDocumentsOutput
 
     registry = []
     registry.append(
         spec.model_copy(update={'handler': lambda args, context: tool_success(
-                "simple_calculator",
+                "list_documents",
                 args,
-                {"expression": args["expression"], "result": {"invalid": True}},
+                {"count": 1, "documents": []},
             )})
     )
 
     result = invoke_local_tool(
         registry=registry,
-        tool_name="simple_calculator",
-        tool_args={"expression": "1 + 2"},
+        tool_name="list_documents",
+        tool_args={},
     )
 
     assert result["ok"] is False
@@ -429,32 +412,6 @@ def test_get_chunk_text_rejects_blank_string_in_structured_tool(tool_registry, c
         )
 
 
-@pytest.mark.parametrize("expression", ["", "   "])
-def test_simple_calculator_rejects_blank_expression_in_structured_tool(
-    tool_registry,
-    expression,
-):
-    """空白表达式由参数模型拒绝，计算器只处理已校验表达式。"""
-    with pytest.raises(ValidationError):
-        invoke_local_tool(
-            registry=tool_registry,
-            tool_name="simple_calculator",
-            tool_args={"expression": expression},
-        )
-
-
-def test_simple_calculator_keeps_ast_safety_rules(tool_registry):
-    """表达式结构合法后仍由计算器 AST 白名单拒绝代码执行。"""
-    result = invoke_local_tool(
-        registry=tool_registry,
-        tool_name="simple_calculator",
-        tool_args={"expression": "__import__('os').getcwd()"},
-    )
-
-    assert result["error_code"] == "execution_error"
-    assert "只支持简单数字四则运算" in result["error"]
-
-
 def test_invoke_local_tool_rejects_unknown_tool(tool_registry):
     """直接调用只能构造已注册的 BaseTool；未知工具不另设 Runtime API。"""
     with pytest.raises(LookupError, match="unknown local tool"):
@@ -536,16 +493,17 @@ def test_execution_entry_uses_structured_tool_validation_before_handler():
     assert called["count"] == 0
 
 
-def test_execution_entry_accepts_explicit_context(tool_registry):
+def test_execution_entry_accepts_explicit_context(tool_registry, monkeypatch):
     """验证唯一执行入口保留显式请求上下文。"""
-    context = ToolInvocationContext(trace_id="test-trace")
+    monkeypatch.setattr("app.rag.pipeline.preview_docs", lambda: [])
+    context = ToolInvocationContext(trace_id="test-trace", permissions=("knowledge_base:read",))
     result = invoke_local_tool(
         registry=tool_registry,
-        tool_name="simple_calculator",
-        tool_args={"expression": "2 + 3"},
+        tool_name="list_documents",
+        tool_args={},
         context=context,
     )
 
     assert result["ok"] is True
     assert result["status"] == "success"
-    assert result["output"]["result"] == 5
+    assert result["output"] == {"count": 0, "documents": []}

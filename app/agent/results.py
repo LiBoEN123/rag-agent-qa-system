@@ -17,7 +17,7 @@ INTERNAL_ERROR_MARKER = "internal_error"
 DIRECT_ANSWER_TEXT = (
     "我是一个 RAG 知识库问答助手。"
     "我可以基于已导入的文档回答问题并提供引用，"
-    "也可以列出知识库文档、查看指定 chunk、对比文档内容，以及进行简单四则运算。"
+    "也可以列出知识库文档、查看指定 chunk、对比文档内容。"
 )
 
 # 仅供公开 trace 序列化，保留既有值；不参与 Result 状态决策。

@@ -387,7 +387,7 @@ def test_chat_service_preserves_rag_handoff_with_request_tool_mode(monkeypatch, 
     if tool_mode is ToolMode.RAG_ONLY:
         assert model.bound_tool_names == ["search_knowledge_base"]
     else:
-        assert {"search_knowledge_base", "web_search", "simple_calculator"} <= set(model.bound_tool_names)
+        assert {"search_knowledge_base", "web_search", "compare_documents"} <= set(model.bound_tool_names)
 
 
 def test_chat_service_completes_web_search_and_fetch_through_production_chain(

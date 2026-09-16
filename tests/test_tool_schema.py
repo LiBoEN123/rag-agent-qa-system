@@ -6,7 +6,6 @@ from app.tools.schemas import (
     GetChunkTextArgs,
     ListDocumentsArgs,
     SearchKnowledgeBaseArgs,
-    SimpleCalculatorArgs,
 )
 
 
@@ -74,14 +73,6 @@ def test_compare_documents_args_normalizes_text_and_top_k():
         "doc_b": "new.md",
         "top_k": 5,
     }
-
-
-def test_simple_calculator_args_requires_expression():
-    for expression in ("", "   "):
-        with pytest.raises(ValidationError):
-            SimpleCalculatorArgs(expression=expression)
-
-    assert SimpleCalculatorArgs(expression=" 1 + 2 ").expression == "1 + 2"
 
 
 def test_get_chunk_text_args_accepts_int_or_str():

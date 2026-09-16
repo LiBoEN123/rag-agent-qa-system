@@ -388,11 +388,6 @@ def inspect_runtime(
             for name, passed in module_boundaries.items()
         ),
         _check(
-            "sql_tools_disabled_by_default",
-            resolved_settings.sql_tool_enabled is False,
-            "SQL tools remain opt-in",
-        ),
-        _check(
             "mcp_disabled_by_default",
             resolved_settings.mcp_tools_enabled is False,
             "MCP tools remain opt-in",

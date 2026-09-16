@@ -171,14 +171,9 @@ class ToolPolicyEngine:
             if not has_permission(context.permissions, permission)
         )
         if missing_permissions:
-            permission_error = (
-                ToolErrorCode.SQL_PERMISSION_DENIED
-                if "database:read" in missing_permissions
-                else ToolErrorCode.PERMISSION_DENIED
-            )
             return self._deny(
                 reason="调用主体缺少工具要求的权限",
-                code=permission_error,
+                code=ToolErrorCode.PERMISSION_DENIED,
                 risk_level=risk_level,
                 args_fingerprint=args_fingerprint,
                 missing_permissions=missing_permissions,

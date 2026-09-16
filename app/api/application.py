@@ -21,7 +21,6 @@ from app.api.lifecycle import (
     StartupDependencies,
     aclose_agent_runtime,
     close_mcp_runtime,
-    close_sql_engine_runtime,
     close_tool_executor,
     initialize_agent_runtime,
     initialize_mcp_runtime,
@@ -135,7 +134,6 @@ async def lifespan(_app: FastAPI):
     finally:
         await close_mcp_runtime()
         close_tool_executor()
-        close_sql_engine_runtime()
         await aclose_agent_runtime()
 
 

@@ -1,7 +1,6 @@
 """全量测试的配置与本地持久化副作用隔离。"""
 
 from collections.abc import Callable
-import sqlite3
 
 import pytest
 from pydantic import AliasChoices
@@ -13,44 +12,7 @@ from app.llm.factory import clear_model_factory_cache
 from app.tools.catalog import get_local_tool_specs
 from app.tools.runtime import close_tool_executor
 from app.tools.mcp.client import reset_mcp_runtime
-from app.tools.sql_readonly.engine import clear_sql_engine_cache
 from app.storage.database import clear_storage_engine_cache
-
-
-@pytest.fixture
-def sql_business_db(tmp_path):
-    """创建只含测试业务表的独立 SQLite 文件。"""
-    database_path = tmp_path / "business.sqlite3"
-    connection = sqlite3.connect(database_path)
-    connection.executescript(
-        """
-        CREATE TABLE students (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            note TEXT,
-            payload BLOB
-        );
-        CREATE TABLE courses (
-            id INTEGER PRIMARY KEY,
-            title TEXT NOT NULL
-        );
-        CREATE TABLE secret_internal (
-            id INTEGER PRIMARY KEY,
-            secret TEXT NOT NULL
-        );
-        CREATE VIEW student_names AS SELECT name FROM students;
-        INSERT INTO students(name, note, payload)
-        VALUES
-            ('张三', 'first', X'000102'),
-            ('李四', 'second', X'FF'),
-            ('王五', NULL, NULL);
-        INSERT INTO courses(title) VALUES ('数据库'), ('算法');
-        INSERT INTO secret_internal(secret) VALUES ('not-authorized');
-        """
-    )
-    connection.commit()
-    connection.close()
-    return database_path
 
 
 def _field_environment_names(name: str) -> tuple[str, ...]:
@@ -99,7 +61,6 @@ def _clear_configuration_dependent_caches() -> None:
     clear_model_factory_cache()
     get_local_tool_specs.cache_clear()
     get_local_tools.cache_clear()
-    clear_sql_engine_cache()
     clear_storage_engine_cache()
     reset_mcp_runtime()
     clear_settings_cache()

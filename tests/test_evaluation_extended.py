@@ -165,13 +165,13 @@ def test_github_permission_cannot_execute_firecrawl(settings_factory):
     assert calls == 0
 
 
-def test_core_dataset_hash_and_existing_29_cases_remain_unchanged():
+def test_core_dataset_hash_and_remaining_28_cases_are_pinned():
     dataset = load_agent_evaluation_dataset(CORE_DATASET)
 
-    assert len(dataset.cases) == 29
+    assert len(dataset.cases) == 28
     assert {case.suite for case in dataset.cases} == {"core", "online"}
     assert sha256_file(CORE_DATASET) == (
-        "cae2ee4cdc48e0b59fb6a7013ad4b8c48980d35ca73992541f502a6e0f58646c"
+        "87d864e8c3dfffc783bb6602e4c9c1ae9e71b47600bacf0cb3589a5f7ab1fb0c"
     )
     validate_dataset(CORE_DATASET)
 

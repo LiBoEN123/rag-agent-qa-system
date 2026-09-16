@@ -118,7 +118,7 @@ Command 写入配对 ToolMessage、治理事件和内部 `knowledge_base_result`
 `ToolMessage.artifact` 回传 Tool Governance；不存在 `Command.PARENT`、父图或事件投影
 游标。
 
-`web_search`、`web_fetch`、`web_pdf_fetch`、只读 SQL 与 MCP 是普通 ToolMessage
+`web_search`、`web_fetch`、`web_pdf_fetch` 与 MCP 是普通 ToolMessage
 路径，不进入本地 RAG，也不生成本地 references。MCP adapter `StructuredTool` 不
 反向转换为 ToolSpec，但继续受统一的请求权限、治理事件、调用预算与安全输出约束。
 
@@ -171,7 +171,6 @@ Agent Runtime 缓存。
 | Local ToolSpec catalog | 首次 `get_local_tool_specs(settings)` | `get_local_tool_specs.cache_clear()` |
 | Local StructuredTool catalog | 首次 `get_local_tools(settings)` | `get_local_tools.cache_clear()` |
 | Tool Runtime | 首次正式执行本地工具 | `reset_tool_runtime()` |
-| SQL Engine | 第一次实际 SQL 工具调用 | `clear_sql_engine_cache()` |
 | MCP Client / Tool cache | 显式启用时由 lifespan discovery | `close_mcp_runtime()` |
 | `create_agent` Runtime | lifespan 预编译或首次普通请求 | `reset_agent_runtime()` |
 
