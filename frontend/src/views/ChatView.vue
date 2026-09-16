@@ -7,13 +7,14 @@ const { messages, sending, send, cancel } = useChat()
 const question = ref('')
 const topK = ref(5)
 const decomposeTopK = ref(5)
+const extendedTools = ref(false)
 const conversation = ref<HTMLElement>()
 
 async function submit(): Promise<void> {
   if (!question.value.trim() || sending.value) return
   const text = question.value
   question.value = ''
-  await send(text, topK.value, decomposeTopK.value)
+  await send(text, topK.value, decomposeTopK.value, extendedTools.value ? 'full' : 'rag_only')
 }
 
 watch(() => messages.value.at(-1)?.content, async () => {
@@ -50,6 +51,11 @@ function text(value: unknown): string {
     <el-form inline class="chat-options" :disabled="sending" label-position="left">
       <el-form-item label="召回条数"><el-input-number v-model="topK" :min="1" :max="10" size="small" aria-label="召回条数" /></el-form-item>
       <el-form-item label="拆分后召回条数"><el-input-number v-model="decomposeTopK" :min="1" :max="10" size="small" aria-label="拆分后召回条数" /></el-form-item>
+      <el-form-item label="扩展工具">
+        <el-tooltip content="关闭：仅使用本地知识库 RAG；开启：允许 Agent 按权限使用 Web、SQL、MCP 等扩展工具">
+          <el-switch v-model="extendedTools" inactive-text="仅 RAG" active-text="开启" aria-label="扩展工具" />
+        </el-tooltip>
+      </el-form-item>
     </el-form>
 
     <div ref="conversation" class="conversation" aria-live="polite" aria-relevant="additions text">

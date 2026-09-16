@@ -26,7 +26,7 @@ function response(events: { event: string; data: object }[]): Response {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('POST chat SSE transport', () => {
-  it('uses the SSE library for all seven public events and sends no admin credential', async () => {
+  it.each(['rag_only', 'full'] as const)('uses the SSE library and sends %s without admin credentials', async (toolMode) => {
     const received: ChatStreamEvent[] = []
     const fetch = vi.fn().mockResolvedValue(response([
       start, { event: 'progress', data: { stage: 'agent', status: 'started' } },
@@ -34,24 +34,24 @@ describe('POST chat SSE transport', () => {
       { event: 'answer_delta', data: { text: '临时结果' } }, final, { event: 'done', data: { reason: 'completed' } },
     ]))
     vi.stubGlobal('fetch', fetch)
-    await streamChat({ question: '测试问题', session_id: 'web_test' }, new AbortController().signal, (event) => received.push(event))
+    await streamChat({ tool_mode: toolMode, question: '测试问题', session_id: 'web_test' }, new AbortController().signal, (event) => received.push(event))
     expect(received.map((event) => event.event)).toEqual(['start', 'progress', 'tool', 'answer_delta', 'final', 'done'])
     expect(fetch).toHaveBeenCalledOnce()
     expect(fetch.mock.calls[0]?.[0]).toBe('/chat/stream')
     const options = fetch.mock.calls[0]?.[1] as RequestInit
     expect(options.method).toBe('POST')
     expect(new Headers(options.headers).get('X-Ingestion-Admin-Key')).toBeNull()
-    expect(JSON.parse(String(options.body))).toEqual({ question: '测试问题', session_id: 'web_test' })
+    expect(JSON.parse(String(options.body))).toEqual({ question: '测试问题', session_id: 'web_test', tool_mode: toolMode })
 
     fetch.mockResolvedValue(response([start, { event: 'error', data: { code: 'STREAM_ERROR', message: '流式处理失败' } }, { event: 'done', data: { reason: 'error' } }]))
-    await streamChat({ question: '失败' }, new AbortController().signal, (event) => received.push(event))
+    await streamChat({ tool_mode: 'rag_only', question: '失败' }, new AbortController().signal, (event) => received.push(event))
     expect(received.at(-2)?.event).toBe('error')
   })
 
   it('rejects a prematurely closed stream without retrying the POST', async () => {
     const fetch = vi.fn().mockResolvedValue(response([start, { event: 'answer_delta', data: { text: '部分回答' } }]))
     vi.stubGlobal('fetch', fetch)
-    await expect(streamChat({ question: '测试问题' }, new AbortController().signal, vi.fn())).rejects.toThrow('未收到 done')
+    await expect(streamChat({ tool_mode: 'rag_only', question: '测试问题' }, new AbortController().signal, vi.fn())).rejects.toThrow('未收到 done')
     expect(fetch).toHaveBeenCalledOnce()
   })
 
@@ -62,10 +62,10 @@ describe('POST chat SSE transport', () => {
     const fetch = vi.fn().mockResolvedValueOnce(response([error, done]))
       .mockResolvedValueOnce(response([start, final, error, done]))
     vi.stubGlobal('fetch', fetch)
-    await streamChat({ question: '测试问题' }, new AbortController().signal, (event) => received.push(event))
+    await streamChat({ tool_mode: 'rag_only', question: '测试问题' }, new AbortController().signal, (event) => received.push(event))
     expect(received.map((event) => event.event)).toEqual(['error', 'done'])
     received.length = 0
-    await streamChat({ question: '测试问题' }, new AbortController().signal, (event) => received.push(event))
+    await streamChat({ tool_mode: 'rag_only', question: '测试问题' }, new AbortController().signal, (event) => received.push(event))
     expect(received.map((event) => event.event)).toEqual(['start', 'final', 'error', 'done'])
     expect(fetch).toHaveBeenCalledTimes(2)
   })
@@ -75,24 +75,24 @@ describe('POST chat SSE transport', () => {
       event: 'final', data: { ...final.data, response: { ...chatResponse, data: { answer: '不完整响应', status: 'ok' } } },
     }]))
     vi.stubGlobal('fetch', fetch)
-    await expect(streamChat({ question: '测试问题' }, new AbortController().signal, vi.fn())).rejects.toThrow('完整的最终响应')
+    await expect(streamChat({ tool_mode: 'rag_only', question: '测试问题' }, new AbortController().signal, vi.fn())).rejects.toThrow('完整的最终响应')
     expect(fetch).toHaveBeenCalledOnce()
   })
 
   it('requires a final response before completed done', async () => {
     const fetch = vi.fn().mockResolvedValue(response([start, { event: 'done', data: { reason: 'completed' } }]))
     vi.stubGlobal('fetch', fetch)
-    await expect(streamChat({ question: '测试问题' }, new AbortController().signal, vi.fn())).rejects.toThrow('缺少 final 或 error')
+    await expect(streamChat({ tool_mode: 'rag_only', question: '测试问题' }, new AbortController().signal, vi.fn())).rejects.toThrow('缺少 final 或 error')
     expect(fetch).toHaveBeenCalledOnce()
   })
 
   it('keeps public HTTP errors and disables network retries', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ code: 'REQUEST_VALIDATION_ERROR', message: '请求格式无效' }), { status: 422, headers: { 'Content-Type': 'application/json' } }))
     vi.stubGlobal('fetch', fetch)
-    await expect(streamChat({ question: '' }, new AbortController().signal, vi.fn())).rejects.toThrow('请求格式无效')
+    await expect(streamChat({ tool_mode: 'rag_only', question: '' }, new AbortController().signal, vi.fn())).rejects.toThrow('请求格式无效')
     expect(fetch).toHaveBeenCalledOnce()
     fetch.mockRejectedValue(new TypeError('Failed to fetch'))
-    await expect(streamChat({ question: '测试问题' }, new AbortController().signal, vi.fn())).rejects.toThrow('Failed to fetch')
+    await expect(streamChat({ tool_mode: 'rag_only', question: '测试问题' }, new AbortController().signal, vi.fn())).rejects.toThrow('Failed to fetch')
     expect(fetch).toHaveBeenCalledTimes(2)
   })
 
@@ -105,7 +105,7 @@ describe('POST chat SSE transport', () => {
     const fetch = vi.fn().mockResolvedValue(response([start, emptyFinal, { event: 'done', data: { reason: 'completed' } }]))
     vi.stubGlobal('fetch', fetch)
     const received: ChatStreamEvent[] = []
-    await streamChat({ question: '   ' }, new AbortController().signal, (event) => received.push(event))
+    await streamChat({ tool_mode: 'rag_only', question: '   ' }, new AbortController().signal, (event) => received.push(event))
     expect(received.map((event) => event.event)).toEqual(['start', 'final', 'done'])
     expect(received[1]?.data).toEqual(emptyFinal.data)
     expect(fetch).toHaveBeenCalledOnce()
@@ -118,7 +118,7 @@ describe('POST chat SSE transport', () => {
     const body = await response([start, final, { event: 'done', data: { reason: 'completed' } }]).text()
     const fetch = vi.fn().mockResolvedValue(new Response(body.replace(before, after), { headers: { 'Content-Type': 'text/event-stream' } }))
     vi.stubGlobal('fetch', fetch)
-    await expect(streamChat({ question: '测试问题' }, new AbortController().signal, vi.fn())).rejects.toThrow('信封无效或事件缺失')
+    await expect(streamChat({ tool_mode: 'rag_only', question: '测试问题' }, new AbortController().signal, vi.fn())).rejects.toThrow('信封无效或事件缺失')
     expect(fetch).toHaveBeenCalledOnce()
   })
 

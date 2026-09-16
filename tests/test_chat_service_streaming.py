@@ -108,7 +108,11 @@ def _build_service(
         }
 
     dependencies = ChatServiceDependencies(
-        settings_provider=lambda: SimpleNamespace(top_k=5, decompose_top_k=10),
+        settings_provider=lambda: SimpleNamespace(
+            top_k=5, decompose_top_k=10,
+            tool_default_principal_id="test",
+            tool_default_permissions=("knowledge_base:read",),
+        ),
         get_history=lambda session_id: [],
         rewrite_query_with_history=fake_rewrite,
         log_and_write_metrics=lambda record: calls["metrics"].append(dict(record)),

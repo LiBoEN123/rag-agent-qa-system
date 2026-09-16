@@ -5,7 +5,7 @@
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.contracts.chat import PublicStatus
+from app.contracts.chat import PublicStatus, ToolMode
 
 
 # 定义聊天请求的问题、召回数量和可选会话标识。
@@ -16,6 +16,7 @@ class ChatRequest(BaseModel):
         None, ge=1, le=10, description="问题拆分后的召回条数"
     )
     session_id: str | None = Field(None, description="多轮会话 ID")
+    tool_mode: ToolMode = ToolMode.FULL
 
     model_config = ConfigDict(
         json_schema_extra={

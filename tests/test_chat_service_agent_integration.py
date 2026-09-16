@@ -6,14 +6,18 @@ import asyncio
 import json
 from importlib import import_module
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock
 
+import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_tools
 from app.agent import runtime as agent_runtime
 from app.agent.runtime import reset_agent_runtime
+from app.contracts.chat import ToolMode
 from app.rag import graph as rag_graph
+from app.rag import pipeline as rag_pipeline
 from app.services.chat_service import (
     ChatService,
     ChatServiceDependencies,
@@ -306,6 +310,7 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
     assert context.principal_id == "chat-user"
     assert context.permissions == ("knowledge_base:read",)
     assert context.source == "chat_api"
+    assert context.tool_mode is ToolMode.FULL
     assert session_writes == [
         ("session-chat-integration", "user", "请走完整 Agent 工具主路径"),
         (
@@ -337,6 +342,52 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
     )
     assert metric_writes[0]["route_cost_ms"] == decide_trace["route_cost_ms"]
     assert bad_cases == []
+
+
+@pytest.mark.parametrize("tool_mode", [ToolMode.RAG_ONLY, ToolMode.FULL])
+def test_chat_service_preserves_rag_handoff_with_request_tool_mode(monkeypatch, settings_env, tool_mode):
+    settings = settings_env(tool_default_permissions=("knowledge_base:read", "web:search"))
+    model = ChatAgentModel()
+    model.ainvoke = AsyncMock(return_value=AIMessage(content="", tool_calls=[{
+        "name": "search_knowledge_base", "args": {"query": "学习年限", "top_k": 3},
+        "id": "rag-mode-call", "type": "tool_call",
+    }]))
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    search = Mock(return_value=[])
+    rag = Mock(return_value={
+        "status": "OK", "answer": "知识库回答", "references": [], "final_chunks": [],
+        "retrieval_confidence": 0.9, "answer_confidence": 0.9,
+        "need_clarification": False, "clarification_question": "", "reason": "fixture",
+        "timings": {}, "decompose_llm_used": False, "answer_llm_used": True, "llm_call_count": 1,
+    })
+    monkeypatch.setattr(rag_pipeline, "search_relevant_chunks", search)
+    monkeypatch.setattr(rag_graph, "run_rag_subgraph", rag)
+    service = ChatService(ChatServiceDependencies(
+        settings_provider=lambda: settings,
+        get_history=lambda session: [],
+        rewrite_query_with_history=lambda **kwargs: {"rewritten_question": "本科生学习年限是多少？"},
+        log_and_write_metrics=lambda record: None,
+        write_bad_cases=lambda record: None,
+        append_message=lambda *args: None,
+        now_iso=lambda: "2026-09-16T10:00:00.000",
+        perf_counter=IncrementingClock(),
+    ))
+    outcome = collect_outcome(service, ChatServiceRequest(
+        question="学习年限是多少？", top_k=4, decompose_top_k=8,
+        session_id="rag-mode-session", trace_id="rag-mode-trace", tool_mode=tool_mode,
+    ))
+    assert outcome.result["status"] == "OK"
+    assert outcome.result["answer"] == "知识库回答"
+    model.ainvoke.assert_awaited_once()  # RAG 结果交接后直接结束，无第二轮 Agent 模型调用。
+    search.assert_called_once_with("学习年限", top_k=3)
+    rag.assert_called_once_with(
+        question="本科生学习年限是多少？", top_k=4, decompose_top_k=8,
+        retrieved_chunks=[], trace_id="rag-mode-trace",
+    )
+    if tool_mode is ToolMode.RAG_ONLY:
+        assert model.bound_tool_names == ["search_knowledge_base"]
+    else:
+        assert {"search_knowledge_base", "web_search", "simple_calculator"} <= set(model.bound_tool_names)
 
 
 def test_chat_service_completes_web_search_and_fetch_through_production_chain(

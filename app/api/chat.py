@@ -25,6 +25,7 @@ def _build_service_request(
         top_k=req.top_k,
         decompose_top_k=req.decompose_top_k,
         session_id=req.session_id or "",
+        tool_mode=req.tool_mode,
         trace_id=trace_id,
         request_enter_time=getattr(
             request.state,

@@ -37,6 +37,7 @@ from app.observability.metrics import (
     write_bad_cases,
 )
 from app.storage.memory import append_message_sqlite, get_history_sqlite
+from app.tools.context import build_default_tool_context
 from app.services.chat_models import (
     ChatRequestContext,
     ChatServiceOutcome,
@@ -219,6 +220,13 @@ class ChatService:
                     trace_id=context.request.trace_id,
                     session_id=context.session_id or None,
                     bad_case=context.bad_case,
+                    tool_context=build_default_tool_context(
+                        trace_id=context.request.trace_id,
+                        session_id=context.session_id,
+                        source="chat_api",
+                        tool_mode=context.request.tool_mode,
+                        settings=settings,
+                    ),
                 )
                 async for runtime_event in runtime_stream:
                     if runtime_event.event == "result":

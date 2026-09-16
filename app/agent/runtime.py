@@ -16,6 +16,7 @@ from app.agent.framework_agent import build_framework_agent
 from app.agent.framework_middleware import ProjectToolGovernanceMiddleware
 from app.agent.router import RouteDecision, route_agent_action
 from app.config import AppSettings, get_settings
+from app.contracts.chat import ToolMode
 from app.tools.context import ToolInvocationContext, build_default_tool_context
 from app.tools.mcp.provider import list_mcp_tools_for_context
 
@@ -90,7 +91,9 @@ def get_compiled_agent_runtime(
 ) -> CompiledAgentRuntime:
     """Local 权限变化共用编译缓存；仅额外 MCP 工具集合需要构图。"""
     resolved_settings = settings or get_settings()
-    if tool_context is None or not list_mcp_tools_for_context(
+    if tool_context is None or tool_context.tool_mode is ToolMode.RAG_ONLY:
+        return _get_cached_framework_agent(resolved_settings)
+    if not list_mcp_tools_for_context(
         tool_context,
         settings=resolved_settings,
     ):

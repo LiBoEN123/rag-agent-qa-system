@@ -1,10 +1,12 @@
 import { defineComponent, nextTick } from 'vue'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
+import ElementPlus from 'element-plus'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { streamChat, type ChatStreamEvent } from '../api/chat'
 import type { ChatResponse } from '../api/types'
 import { useChat } from '../composables/useChat'
 import { useSession } from '../composables/useSession'
+import ChatView from '../views/ChatView.vue'
 
 vi.mock('../api/chat', () => ({ streamChat: vi.fn() }))
 
@@ -81,7 +83,30 @@ describe('chat conversation', () => {
     await sending
     expect(wrapper.vm.sending).toBe(false)
     expect(wrapper.vm.messages[1]?.state).toBe('completed')
-    expect(streamChat).toHaveBeenCalledWith(expect.objectContaining({ question: '测试问题', top_k: 5, decompose_top_k: 3, session_id: useSession().sessionId.value }), expect.any(AbortSignal), expect.any(Function))
+    expect(streamChat).toHaveBeenCalledWith(expect.objectContaining({ question: '测试问题', top_k: 5, decompose_top_k: 3, session_id: useSession().sessionId.value, tool_mode: 'rag_only' }), expect.any(AbortSignal), expect.any(Function))
+  })
+
+  it('defaults the view to rag_only, disables the switch while sending, and sends full when enabled', async () => {
+    const wrapper = mount(ChatView, { global: { plugins: [ElementPlus] } })
+    wrappers.push(wrapper)
+    const toggle = wrapper.get('input[role="switch"]')
+    expect(toggle.attributes('aria-checked')).toBe('false')
+    expect(wrapper.text()).toContain('扩展工具')
+    await wrapper.get('textarea').setValue('默认知识库问题')
+    await wrapper.get('form.composer').trigger('submit')
+    expect(vi.mocked(streamChat).mock.calls[0]?.[0].tool_mode).toBe('rag_only')
+    expect(toggle.attributes('disabled')).toBeDefined()
+    finish()
+    await flushPromises()
+    expect(toggle.attributes('disabled')).toBeUndefined()
+    await toggle.setValue(true)
+    expect(toggle.attributes('aria-checked')).toBe('true')
+    await wrapper.get('textarea').setValue('使用扩展工具')
+    await wrapper.get('form.composer').trigger('submit')
+    expect(vi.mocked(streamChat).mock.calls[1]?.[0].tool_mode).toBe('full')
+    expect(toggle.attributes('disabled')).toBeDefined()
+    finish()
+    await flushPromises()
   })
 
   it('shows public stream errors and does not treat done(error) as success', async () => {

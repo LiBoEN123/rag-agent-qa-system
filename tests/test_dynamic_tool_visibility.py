@@ -4,6 +4,7 @@ from pydantic import RootModel
 
 import asyncio
 import json
+from unittest.mock import Mock
 
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
@@ -12,6 +13,8 @@ from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_tools
 from app.agent.framework_agent import build_framework_agent
+from app.contracts.chat import ToolMode
+from app.tools.catalog import get_local_tool_specs
 from app.tools.context import ToolInvocationContext, build_default_tool_context
 from app.tools.contracts import ToolSpec
 from tests.support.local_tools import local_tools
@@ -59,6 +62,8 @@ def test_native_agent_binds_exact_schemas_for_each_context(monkeypatch, settings
         (ToolInvocationContext(permissions=("web:fetch",)), ["web_fetch", "web_pdf_fetch", "simple_calculator"]),
         (ToolInvocationContext(permissions=("database:read",)), ["simple_calculator"] + (["list_sql_tables", "describe_sql_table", "query_sql_readonly"] if sql_enabled else [])),
         (ToolInvocationContext(permissions=("knowledge_base:read", "web:search")), ["search_knowledge_base", "web_search", *kb[1:]]),
+        (ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "web:search", "web:fetch", "database:read", "mcp:github")), ["search_knowledge_base"]),
+        (ToolInvocationContext(tool_mode=ToolMode.FULL, permissions=("knowledge_base:read", "web:search")), ["search_knowledge_base", "web_search", *kb[1:]]),
     ]
     for context, expected in cases:
         stream(agent, context)
@@ -66,6 +71,7 @@ def test_native_agent_binds_exact_schemas_for_each_context(monkeypatch, settings
         assert list(schemas) == expected
         assert schemas == {t.name: t.tool_call_schema.model_json_schema() for t in tools if t.name in expected}
         assert all("runtime" not in schema["properties"] for schema in schemas.values())
+        assert all("tool_mode" not in schema["properties"] for schema in schemas.values())
 
 
 def test_hidden_registered_tool_cannot_execute(monkeypatch, settings_factory):
@@ -115,3 +121,36 @@ def test_missing_runtime_fails_closed(settings_factory):
     with pytest.raises(RuntimeError, match="ToolRuntime"):
         tool.func(runtime=None, value="missing")
     assert calls == []
+
+
+def test_rag_only_filters_even_registered_mcp_tools(monkeypatch, settings_factory):
+    settings = settings_factory()
+    external = StructuredTool.from_function(lambda value: value, name="github_read", description="MCP fixture")
+    model = SchemaModel()
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    agent = build_framework_agent(settings, tools=[*framework_tools.get_local_tools(settings), external])
+    stream(agent, ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "mcp:github")))
+    assert list(model.schemas[-1]) == ["search_knowledge_base"]
+
+
+@pytest.mark.parametrize(("name", "args"), [
+    ("simple_calculator", {"expression": "1 + 1"}),
+    ("web_search", {"query": "test"}),
+])
+def test_rag_only_forged_calls_are_denied_before_handler(monkeypatch, settings_factory, name, args):
+    settings = settings_factory()
+    handler = Mock(side_effect=AssertionError("forbidden handler executed"))
+    specs = [spec.model_copy(update={"handler": handler}) if spec.name == name else spec
+             for spec in get_local_tool_specs(settings)]
+    model = SchemaModel({"name": name, "args": args, "id": "forged-call", "type": "tool_call"})
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    context = ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "web:search"))
+    output = stream(build_framework_agent(settings, tools=local_tools(specs, settings)), context)
+    message = next(m for m in output["messages"] if isinstance(m, ToolMessage))
+    result = json.loads(message.content)
+    assert all(list(schema) == ["search_knowledge_base"] for schema in model.schemas)
+    assert result["error_code"] == "policy_denied"
+    assert result["handler_executed"] is False
+    assert result["governance"]["decision"] == "deny"
+    assert result["runtime"]["attempt_count"] == 0
+    handler.assert_not_called()

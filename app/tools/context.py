@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from app.config import AppSettings, get_settings
+from app.contracts.chat import ToolMode
 
 _PERMISSION_PATTERN = re.compile(
     r"^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*$"
@@ -86,6 +87,7 @@ class ToolInvocationContext:
     effective_question: str = ""
     top_k: int = 0
     decompose_top_k: int = 0
+    tool_mode: ToolMode = ToolMode.FULL
 
     def __post_init__(self) -> None:
         """清理请求字段并冻结集合型数据。"""
@@ -112,6 +114,7 @@ class ToolInvocationContext:
                 "principal_type 必须是 PrincipalType 或合法字符串"
             ) from exc
         object.__setattr__(self, "principal_type", principal_type)
+        object.__setattr__(self, "tool_mode", ToolMode(self.tool_mode))
         object.__setattr__(
             self,
             "permissions",
@@ -127,6 +130,7 @@ def build_default_tool_context(
     effective_question: str = "",
     top_k: int = 0,
     decompose_top_k: int = 0,
+    tool_mode: ToolMode = ToolMode.FULL,
     settings: AppSettings | None = None,
 ) -> ToolInvocationContext:
     """构造无认证架构下权限最小化的服务级只读主体。"""
@@ -141,6 +145,7 @@ def build_default_tool_context(
         effective_question=effective_question,
         top_k=top_k,
         decompose_top_k=decompose_top_k,
+        tool_mode=tool_mode,
     )
 
 

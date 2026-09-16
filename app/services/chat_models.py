@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.contracts.chat import PublicStatus
+from app.contracts.chat import PublicStatus, ToolMode
 
 
 @dataclass(frozen=True)
@@ -19,6 +19,7 @@ class ChatServiceRequest:
     trace_id: str
     request_enter_time: str = ""
     request_enter_perf: float | None = None
+    tool_mode: ToolMode = ToolMode.FULL
 
 
 @dataclass(frozen=True)

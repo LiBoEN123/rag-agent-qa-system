@@ -8,6 +8,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import ConfigDict, Field, SkipValidation, create_model
 
 from app.config import AppSettings, get_settings
+from app.contracts.chat import ToolMode
 from app.tools.audit import ToolAuditSink, get_default_tool_audit_sink
 from app.tools.catalog import get_local_tool_specs
 from app.tools.context import ToolInvocationContext
@@ -115,6 +116,8 @@ def resolve_agent_tools(
     """本地工具全部注册；MCP 继续使用当前请求的独立可见性路径。"""
     resolved_settings = settings or get_settings()
     tools: list[BaseTool] = list(get_local_tools(resolved_settings))
+    if context.tool_mode is ToolMode.RAG_ONLY:
+        return tools
     seen = {tool.name for tool in tools}
     for tool in list_mcp_tools_for_context(context, settings=resolved_settings):
         if tool.name in seen:

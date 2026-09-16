@@ -2,6 +2,7 @@
 
 from pydantic import BaseModel
 
+from app.contracts.chat import ToolMode
 from app.tools.context import PrincipalType, ToolInvocationContext
 from app.tools.contracts import ToolRiskLevel, ToolSpec
 from app.tools.policy import (
@@ -118,3 +119,18 @@ def test_policy_rejects_anonymous_write_context():
         args_fingerprint="sha256:test",
     )
     assert decision.error_code.value == "invalid_invocation_context"
+
+
+def test_rag_only_preserves_knowledge_base_permission_gate():
+    spec = _spec(name="search_knowledge_base", required_permissions=("knowledge_base:read",))
+    for permissions, expected in [
+        ((), ToolPolicyDecisionType.DENY),
+        (("knowledge_base:read",), ToolPolicyDecisionType.ALLOW),
+    ]:
+        decision = ToolPolicyEngine().evaluate(
+            spec=spec, args={"value": 1}, args_fingerprint="sha256:test",
+            context=_context(tool_mode=ToolMode.RAG_ONLY, permissions=permissions),
+        )
+        assert decision.decision is expected
+        if not permissions:
+            assert decision.error_code.value == "permission_denied"

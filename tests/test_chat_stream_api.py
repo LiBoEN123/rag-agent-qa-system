@@ -11,8 +11,9 @@ from httpx import ASGITransport, AsyncClient, Response
 from app.agent.results import create_agent_result
 from app.api.chat import create_chat_router
 from app.api.middleware import trace_and_timing_middleware
+from app.api.schemas import ChatRequest
 from app.api.streaming import ChatStreamSSEEncoder
-from app.contracts.chat import AgentResultStatus
+from app.contracts.chat import AgentResultStatus, ToolMode
 from app.services.chat_models import ChatServiceOutcome, ChatServiceRequest
 from app.services.chat_service import ChatService, get_default_chat_service_dependencies
 from app.services.chat_stream_models import ChatStreamEvent
@@ -183,7 +184,8 @@ def _post(application: FastAPI, path: str, **kwargs) -> Response:
     return asyncio.run(send())
 
 
-def test_stream_route_returns_sse_headers_and_ordered_final():
+@pytest.mark.parametrize("tool_mode", [None, "rag_only", "full"])
+def test_stream_route_returns_sse_headers_and_ordered_final(tool_mode):
     service = FakeStreamingService()
 
     response = _post(
@@ -195,6 +197,7 @@ def test_stream_route_returns_sse_headers_and_ordered_final():
             "top_k": 4,
             "decompose_top_k": 8,
             "session_id": "session-1",
+            **({"tool_mode": tool_mode} if tool_mode is not None else {}),
         },
     )
 
@@ -217,6 +220,7 @@ def test_stream_route_returns_sse_headers_and_ordered_final():
     assert len(service.stream_requests) == 1
     request = service.stream_requests[0]
     assert request.question == "测试问题"
+    assert request.tool_mode is ToolMode(tool_mode or "full")
     assert (request.top_k, request.decompose_top_k, request.session_id) == (4, 8, "session-1")
     assert request.trace_id == "caller-trace"
     assert request.request_enter_time
@@ -237,7 +241,7 @@ def test_empty_question_is_sse_and_schema_error_is_json_422():
         )
     )
     application = _app(service)
-    empty = _post(application, "/chat/stream", json={"question": "   "})
+    empty = _post(application, "/chat/stream", json={"question": "   ", "tool_mode": "rag_only"})
     invalid = _post(application, "/chat/stream", json={"top_k": 5})
 
     assert empty.status_code == 200
@@ -255,6 +259,14 @@ def test_empty_question_is_sse_and_schema_error_is_json_422():
     assert events[-1]["data"]["data"] == {"reason": "completed"}
     assert invalid.status_code == 422
     assert invalid.headers["content-type"].startswith("application/json")
+
+
+@pytest.mark.parametrize("tool_mode", ["invalid", None, True])
+def test_invalid_tool_mode_is_rejected_before_service(tool_mode):
+    service = FakeStreamingService()
+    response = _post(_app(service), "/chat/stream", json={"question": "测试问题", "tool_mode": tool_mode})
+    assert response.status_code == 422
+    assert service.stream_requests == []
 
 
 def test_chat_surface_only_exposes_stream():
@@ -337,16 +349,12 @@ def test_api_disconnect_stops_and_closes_service_generator_without_final_or_done
 
     async def call_and_consume():
         response = await endpoint(
-            type(
-                "Payload",
-                (),
-                {
-                    "question": "测试问题",
-                    "top_k": 4,
-                    "decompose_top_k": 8,
-                    "session_id": "session-1",
-                },
-            )(),
+            ChatRequest(
+                question="测试问题",
+                top_k=4,
+                decompose_top_k=8,
+                session_id="session-1",
+            ),
             Request(),
         )
         chunks = [chunk async for chunk in response.body_iterator]

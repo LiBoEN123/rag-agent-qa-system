@@ -14,6 +14,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID
 
+from app.contracts.chat import ToolMode
 from app.tools.context import (
     PrincipalType,
     ToolInvocationContext,
@@ -135,6 +136,14 @@ class ToolPolicyEngine:
         """返回确定性策略结果，不调用 handler 或修改上下文。"""
         del args  # 参数内容仅通过已经绑定的指纹进入本阶段决策结果。
         risk_level = spec.risk_level
+
+        if context.tool_mode is ToolMode.RAG_ONLY and spec.name != "search_knowledge_base":
+            return self._deny(
+                reason="当前请求仅允许使用 search_knowledge_base",
+                code=ToolErrorCode.POLICY_DENIED,
+                risk_level=risk_level,
+                args_fingerprint=args_fingerprint,
+            )
 
         if not isinstance(context.principal_type, PrincipalType):
             return self._deny(
