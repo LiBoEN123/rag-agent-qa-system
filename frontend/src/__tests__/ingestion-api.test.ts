@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { AxiosAdapter, InternalAxiosRequestConfig } from 'axios'
 import { http, ingestionHttp, setIngestionAdminKey } from '../api/http'
-import { approveCandidate, getCandidate, listCandidates, listIndexRuns, proposeFirecrawl, proposeGitHub, proposeUpload, removeCandidate } from '../api/ingestion'
+import { approveCandidate, deleteCandidate, getCandidate, listCandidates, listIndexRuns, proposeFirecrawl, proposeGitHub, proposeUpload, removeCandidate } from '../api/ingestion'
 
 const originalHttpAdapter = http.defaults.adapter
 const originalIngestionAdapter = ingestionHttp.defaults.adapter
@@ -12,6 +12,21 @@ afterEach(() => {
 })
 
 describe('入库 API 边界', () => {
+  it('删除记录发送单次管理员 DELETE 并接受空 204 响应', async () => {
+    const requests: InternalAxiosRequestConfig[] = []
+    ingestionHttp.defaults.adapter = async (config) => {
+      requests.push(config)
+      return { config, status: 204, statusText: 'No Content', headers: {}, data: '' }
+    }
+    setIngestionAdminKey('delete-test-key')
+    expect(await deleteCandidate('candidate/a?b')).toBeUndefined()
+    expect(requests).toHaveLength(1)
+    expect(requests[0]!.url).toBe('/admin/ingestion/candidates/candidate%2Fa%3Fb')
+    expect(requests[0]!.method).toBe('delete')
+    expect(requests[0]!.headers.get('X-Ingestion-Admin-Key')).toBe('delete-test-key')
+    expect(requests[0]!.data).toBeUndefined()
+  })
+
   it('撤库复用管理员请求边界，按候选编码路径发送单次 POST', async () => {
     const requests: InternalAxiosRequestConfig[] = []
     ingestionHttp.defaults.adapter = async (config) => {

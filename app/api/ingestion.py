@@ -8,7 +8,7 @@ from typing import Annotated, Awaitable, Callable
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, Security, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, SecretStr, StrictStr, field_validator
 
@@ -90,6 +90,7 @@ class CandidateDetailResponse(_StrictAPIModel):
     content_length: int = Field(ge=0)
     preview_truncated: bool
     content_is_untrusted: bool
+    can_delete: bool
     latest_index_result: IngestionIndexRun | None = None
 
 
@@ -173,6 +174,15 @@ def _candidate(service: IngestionService, candidate_id: str) -> IngestionCandida
     if candidate is None:
         raise _error(404, "CANDIDATE_NOT_FOUND", "candidate 不存在")
     return candidate
+
+
+def _source_is_removed(candidate: IngestionCandidate, runs: SQLiteIndexRunRepository) -> bool:
+    """删除资格只由 source 的最新成功操作决定，与候选状态无关。"""
+    try:
+        latest = runs.latest_successful_for_source(candidate.document.source_id)
+    except ValueError:
+        raise _error(500, "CANDIDATE_STORAGE_INVALID", "corpus operation validation 失败") from None
+    return latest is not None and latest.operation is IndexRunOperation.REMOVE
 
 
 # 等待来源提案完成并返回候选摘要，统一转换抓取和输入校验错误。
@@ -336,7 +346,24 @@ def create_ingestion_router(deps: IngestionOperationsDependencies) -> APIRouter:
                 candidate.document.trust_level is TrustLevel.UNTRUSTED_EXTERNAL
             ),
             latest_index_result=deps.index_runs.latest(candidate_id),
+            can_delete=_source_is_removed(candidate, deps.index_runs),
         )
+
+    @router.delete("/candidates/{candidate_id}", status_code=204, response_class=Response)
+    def delete_candidate(candidate_id: str):
+        candidate = _candidate(deps.ingestion_service, candidate_id)
+        if not _source_is_removed(candidate, deps.index_runs):
+            raise _error(
+                409, "CANDIDATE_SOURCE_NOT_REMOVED",
+                "candidate 所属来源尚未移出知识库，不能删除记录",
+            )
+        try:
+            deps.ingestion_service.delete_candidate(candidate_id)
+        except CandidateNotFoundError:
+            raise _error(404, "CANDIDATE_NOT_FOUND", "candidate 不存在") from None
+        except CandidatePersistenceError:
+            raise _error(500, "CANDIDATE_STORAGE_INVALID", "candidate persistence validation 失败") from None
+        return Response(status_code=204)
 
     # 以管理员身份批准候选，记录审批原因并返回更新后的摘要。
     @router.post("/candidates/{candidate_id}/approve", response_model=IngestionCandidateSummary)
@@ -358,9 +385,11 @@ def create_ingestion_router(deps: IngestionOperationsDependencies) -> APIRouter:
             deps.ingestion_service,
         )
 
-    def run_operation(candidate_id: str, operation: IndexRunOperation):
+    def run_operation(candidate: IngestionCandidate, operation: IndexRunOperation):
         """INDEX / REMOVE 共用运行状态和安全错误持久化。"""
-        run = deps.index_runs.create_running(candidate_id, operation=operation)
+        run = deps.index_runs.create_running(
+            candidate.candidate_id, source_id=candidate.document.source_id, operation=operation,
+        )
         try:
             execute = (
                 deps.source_service.index_approved
@@ -368,7 +397,7 @@ def create_ingestion_router(deps: IngestionOperationsDependencies) -> APIRouter:
                 else deps.source_service.remove_indexed
             )
             return deps.index_runs.succeed(
-                run.id, **_counts(execute(candidate_id)),
+                run.id, **_counts(execute(candidate.candidate_id)),
             )
         except SourceIngestionError as exc:
             error = _source_error(exc)
@@ -395,13 +424,13 @@ def create_ingestion_router(deps: IngestionOperationsDependencies) -> APIRouter:
                 409, "CANDIDATE_NOT_APPROVED",
                 "只有 approved candidate 可以 index",
             )
-        return run_operation(candidate_id, IndexRunOperation.INDEX)
+        return run_operation(candidate, IndexRunOperation.INDEX)
 
     @router.post("/candidates/{candidate_id}/remove", response_model=IngestionIndexRun)
     def remove_candidate(candidate_id: str):
         """撤除该候选所属 source 的当前版本，不改变 candidate admission state。"""
-        _candidate(deps.ingestion_service, candidate_id)
-        return run_operation(candidate_id, IndexRunOperation.REMOVE)
+        candidate = _candidate(deps.ingestion_service, candidate_id)
+        return run_operation(candidate, IndexRunOperation.REMOVE)
 
     # 按候选标识和运行状态分页查询索引执行记录。
     @router.get("/index-runs", response_model=list[IngestionIndexRun])

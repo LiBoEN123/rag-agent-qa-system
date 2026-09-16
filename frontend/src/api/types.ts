@@ -96,6 +96,7 @@ export interface CandidateDetailResponse {
   content_length: number
   preview_truncated: boolean
   content_is_untrusted: boolean
+  can_delete: boolean
   latest_index_result: IngestionIndexRun | null
 }
 export interface GitHubProposalRequest {

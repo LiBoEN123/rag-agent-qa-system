@@ -77,6 +77,13 @@ class IngestionService:
         """暴露抽象 repository，便于组合根和测试读取 domain state。"""
         return self._repository
 
+    def delete_candidate(self, candidate_id: str) -> None:
+        """删除存在的候选记录；调用方负责校验来源删除资格。"""
+        if self._repository.get(candidate_id) is None:
+            raise CandidateNotFoundError(candidate_id)
+        if not self._repository.delete(candidate_id):
+            raise CandidateNotFoundError(candidate_id)
+
     def propose(
         self,
         *,

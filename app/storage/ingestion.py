@@ -112,6 +112,15 @@ class SQLiteCandidateRepository:
             record = session.get(_IngestionCandidateRecord, candidate_id)
             return None if record is None else self._load(record)
 
+    def delete(self, candidate_id: str) -> bool:
+        """只删除候选及其审批 JSON，保留 corpus operation 历史。"""
+        with self._sessions.begin() as session:
+            record = session.get(_IngestionCandidateRecord, candidate_id)
+            if record is None:
+                return False
+            session.delete(record)
+            return True
+
     # 在事务中幂等插入候选，并拒绝已有标识对应不同领域状态。
     def save(self, candidate: IngestionCandidate) -> IngestionCandidate:
         with self._sessions.begin() as session:
@@ -147,32 +156,31 @@ class SQLiteCandidateRepository:
     def load_latest_successfully_indexed(self) -> list[IngestionCandidate]:
         """按每个 source 最新成功操作恢复 INDEX；REMOVE 阻止回退到旧版本。"""
         statement = (
-            select(_IngestionCandidateRecord, _IngestionIndexRunRecord.operation)
-            .select_from(_IngestionIndexRunRecord)
-            .outerjoin(
-                _IngestionCandidateRecord,
-                _IngestionCandidateRecord.candidate_id
-                == _IngestionIndexRunRecord.candidate_id,
-            )
+            select(_IngestionIndexRunRecord)
             .where(_IngestionIndexRunRecord.status == IndexRunStatus.SUCCESS.value)
             .order_by(_IngestionIndexRunRecord.id.desc())
         )
         seen: set[str] = set()
         candidates: list[IngestionCandidate] = []
         with self._sessions() as session:
-            for record, operation in session.execute(statement):
-                if record is None:
-                    raise CandidatePersistenceError("成功 corpus operation 对应的 candidate 缺失")
-                candidate = self._load(record)
+            for run in session.scalars(statement):
+                source_id = run.source_id
+                if not source_id or not source_id.strip():
+                    raise CandidatePersistenceError("持久 corpus operation 缺失 source_id")
                 try:
-                    operation = IndexRunOperation(operation)
+                    operation = IndexRunOperation(run.operation)
                 except ValueError:
                     raise CandidatePersistenceError("持久 corpus operation 无效") from None
-                source_id = candidate.document.source_id
                 if source_id in seen:
                     continue
                 seen.add(source_id)
                 if operation is IndexRunOperation.INDEX:
+                    record = session.get(_IngestionCandidateRecord, run.candidate_id)
+                    if record is None:
+                        raise CandidatePersistenceError("成功 INDEX 对应的 candidate 缺失")
+                    candidate = self._load(record)
+                    if candidate.document.source_id != source_id:
+                        raise CandidatePersistenceError("INDEX source_id 与 candidate 不一致")
                     candidates.append(candidate)
         return candidates
 
@@ -221,10 +229,14 @@ class SQLiteIndexRunRepository:
     # 为候选创建运行中的索引记录，并返回数据库生成的运行标识。
     def create_running(
         self, candidate_id: str, *,
+        source_id: str,
         operation: IndexRunOperation = IndexRunOperation.INDEX,
     ) -> IngestionIndexRun:
+        if not isinstance(source_id, str) or not source_id.strip():
+            raise ValueError("新 corpus operation 必须提供非空 source_id")
         record = _IngestionIndexRunRecord(
             candidate_id=candidate_id,
+            source_id=source_id,
             operation=operation.value,
             status=IndexRunStatus.RUNNING.value,
             started_at=_now(),
@@ -269,6 +281,21 @@ class SQLiteIndexRunRepository:
     def latest(self, candidate_id: str) -> IngestionIndexRun | None:
         runs = self.list(candidate_id=candidate_id, limit=1)
         return runs[0] if runs else None
+
+    def latest_successful_for_source(self, source_id: str) -> IngestionIndexRun | None:
+        """按 logical source 返回最新成功操作，忽略失败及运行中操作。"""
+        statement = (
+            select(_IngestionIndexRunRecord)
+            .where(
+                _IngestionIndexRunRecord.source_id == source_id,
+                _IngestionIndexRunRecord.status == IndexRunStatus.SUCCESS.value,
+            )
+            .order_by(_IngestionIndexRunRecord.id.desc())
+            .limit(1)
+        )
+        with self._sessions() as session:
+            record = session.scalar(statement)
+            return None if record is None else self._load(record)
 
     # 按候选和状态筛选索引运行记录，并按运行标识倒序分页返回。
     def list(

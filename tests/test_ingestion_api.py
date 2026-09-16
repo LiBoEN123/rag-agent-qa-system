@@ -16,6 +16,8 @@ from app.api.ingestion import (
     IngestionOperationsDependencies,
 )
 from app.ingestion import (
+    IngestionCandidate,
+    IngestionCandidateStatus,
     IngestionPrincipalType,
     IngestionRequester,
     IngestionService,
@@ -34,6 +36,7 @@ from app.storage.ingestion import (
     SQLiteCandidateRepository,
     SQLiteIndexRunRepository,
 )
+from app.storage.database import _IngestionIndexRunRecord
 
 
 ADMIN_KEY = "phase12-test-admin-key"
@@ -471,6 +474,142 @@ def test_remove_requires_admin_and_retains_candidate_history(settings_factory):
     assert client.get("/admin/ingestion/index-runs?operation=delete", headers=_headers()).status_code == 422
     disabled, _, _ = _client(settings_factory, enabled=False)
     assert disabled.post(f"{path}/remove", headers=_headers()).status_code == 404
+
+
+def _candidate_status(source, candidate_id, status):
+    domain = source.ingestion
+    if status == "approved":
+        return domain.approve(candidate_id, decided_by=REQUESTER)
+    if status == "rejected":
+        return domain.reject(candidate_id, decided_by=REQUESTER, reason="review")
+    candidate = domain.repository.get(candidate_id)
+    if status == "superseded":
+        values = candidate.model_dump()
+        values["status"] = status
+        return domain.repository.replace(IngestionCandidate.model_validate(values))
+    return candidate
+
+
+@pytest.mark.parametrize("status", list(IngestionCandidateStatus))
+@pytest.mark.parametrize("removed", [False, True])
+def test_delete_gate_uses_source_state_for_every_candidate_status(settings_factory, status, removed):
+    client, source, runs = _client(settings_factory)
+    summary = _github(client).json()
+    candidate = _candidate_status(source, summary["candidate_id"], status)
+    path = f"/admin/ingestion/candidates/{candidate.candidate_id}"
+    if removed:
+        assert client.post(f"{path}/remove", headers=_headers()).status_code == 200
+    history = runs.list()
+    assert client.get(path, headers=_headers()).json()["can_delete"] is removed
+    response = client.delete(path, headers=_headers())
+    if removed:
+        assert response.status_code == 204
+        assert response.content == b""
+        assert source.ingestion.repository.get(candidate.candidate_id) is None
+        assert client.get(path, headers=_headers()).status_code == 404
+        assert client.get("/admin/ingestion/candidates", headers=_headers()).json() == []
+    else:
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "CANDIDATE_SOURCE_NOT_REMOVED"
+        assert source.ingestion.repository.get(candidate.candidate_id) == candidate
+    assert runs.list() == history
+    assert source.remove_calls == int(removed)
+    assert source.index_calls == 0
+
+
+def test_delete_requires_auth_and_missing_candidate_is_404(settings_factory):
+    client, source, runs = _client(settings_factory)
+    path = "/admin/ingestion/candidates/missing"
+    for headers in ({}, _headers("wrong")):
+        assert client.delete(path, headers=headers).status_code == 401
+    response = client.delete(path, headers=_headers())
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "CANDIDATE_NOT_FOUND"
+    assert runs.list() == []
+    assert source.index_calls == source.remove_calls == 0
+    disabled, _, _ = _client(settings_factory, enabled=False)
+    assert disabled.delete(path, headers=_headers()).status_code == 404
+
+
+@pytest.mark.parametrize("operations,allowed", [
+    ([("index", "success")], False),
+    ([("remove", "failed")], False),
+    ([("index", "success"), ("remove", "failed")], False),
+    ([("index", "success"), ("remove", "running")], False),
+    ([("index", "success"), ("remove", "success"), ("index", "success")], False),
+    ([("index", "success"), ("remove", "success"), ("remove", "failed")], True),
+    ([("remove", "success"), ("remove", "running")], True),
+    ([("remove", "success"), ("index", "failed")], True),
+    ([("remove", "success"), ("index", "running")], True),
+])
+def test_delete_uses_latest_success_and_rechecks_after_detail(settings_factory, operations, allowed):
+    client, source, runs = _client(settings_factory)
+    summary = _github(client).json()
+    candidate = source.ingestion.repository.get(summary["candidate_id"])
+    path = f"/admin/ingestion/candidates/{candidate.candidate_id}"
+    for operation, status in operations:
+        # 每次 operation 前读取详情，最后一次 INDEX 成功后 DELETE 必须重新判断。
+        assert client.get(path, headers=_headers()).status_code == 200
+        run = runs.create_running(
+            candidate.candidate_id, source_id=candidate.document.source_id,
+            operation=IndexRunOperation(operation),
+        )
+        if status == "success":
+            runs.succeed(run.id)
+        elif status == "failed":
+            runs.fail(run.id, error_code="FAILED")
+    history = runs.list()
+    response = client.delete(path, headers=_headers())
+    assert response.status_code == (204 if allowed else 409)
+    assert runs.list() == history
+    assert source.index_calls == source.remove_calls == 0
+    if not allowed:
+        assert response.json()["error"]["code"] == "CANDIDATE_SOURCE_NOT_REMOVED"
+        assert source.ingestion.repository.get(candidate.candidate_id) == candidate
+
+
+def test_delete_all_versions_then_reproposal_and_reindex(settings_factory):
+    client, source, runs = _client(settings_factory)
+    versions = []
+    for content in ("v1", "v2", "v3"):
+        candidate = source.ingestion.propose(
+            document=build_knowledge_document(
+                source_type="firecrawl", source_uri="https://example.com/versions",
+                title="versions", content=content,
+            ), requester=REQUESTER,
+        )
+        versions.append(candidate)
+    for candidate in versions[:2]:
+        path = f"/admin/ingestion/candidates/{candidate.candidate_id}"
+        assert client.post(f"{path}/approve", headers=_headers(), json={}).status_code == 200
+        assert client.post(f"{path}/index", headers=_headers()).status_code == 200
+    old_path = f"/admin/ingestion/candidates/{versions[0].candidate_id}"
+    assert client.post(f"{old_path}/remove", headers=_headers()).status_code == 200
+    history = runs.list()
+    with runs._sessions() as session:
+        for run in history:
+            assert session.get(_IngestionIndexRunRecord, run.id).source_id == versions[0].document.source_id
+    for candidate in versions:
+        path = f"/admin/ingestion/candidates/{candidate.candidate_id}"
+        assert client.get(path, headers=_headers()).json()["can_delete"] is True
+        assert client.delete(path, headers=_headers()).status_code == 204
+    assert runs.list() == history
+    assert source.ingestion.repository.load_latest_successfully_indexed() == []
+    assert client.get("/admin/ingestion/index-runs", headers=_headers()).json() == [
+        item.model_dump(mode="json") for item in history
+    ]
+    recreated = source.ingestion.propose(document=versions[0].document, requester=REQUESTER)
+    assert recreated.candidate_id == versions[0].candidate_id
+    assert recreated.status is IngestionCandidateStatus.PENDING
+    assert source.ingestion.repository.load_latest_successfully_indexed() == []
+    assert client.get(old_path, headers=_headers()).json()["can_delete"] is True
+    assert client.post(f"{old_path}/approve", headers=_headers(), json={}).status_code == 200
+    assert client.post(f"{old_path}/index", headers=_headers()).status_code == 200
+    assert runs.latest_successful_for_source(recreated.document.source_id).operation is IndexRunOperation.INDEX
+    assert client.get(old_path, headers=_headers()).json()["can_delete"] is False
+    assert client.delete(old_path, headers=_headers()).status_code == 409
+    assert client.post(f"{old_path}/remove", headers=_headers()).status_code == 200
+    assert client.delete(old_path, headers=_headers()).status_code == 204
 
 
 @pytest.mark.parametrize("error,status,code", [

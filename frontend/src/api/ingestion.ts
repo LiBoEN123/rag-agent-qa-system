@@ -47,6 +47,10 @@ export async function removeCandidate(id: string) {
   return (await ingestionHttp.post<IngestionIndexRun>(`${candidatePath(id)}/remove`)).data
 }
 
+export async function deleteCandidate(id: string) {
+  await ingestionHttp.delete(candidatePath(id))
+}
+
 export async function listIndexRuns(params: IndexRunQuery) {
   return (await ingestionHttp.get<IngestionIndexRun[]>(`${base}/index-runs`, { params })).data
 }

@@ -105,7 +105,7 @@ def test_sqlite_reload_and_successful_rebuild_input_keep_complete_structure(tmp_
     pending = service.propose(document=_document(_structure(merged=True)), requester=REQUESTER)
     candidate = service.approve(pending.candidate_id, decided_by=REQUESTER)
     runs = SQLiteIndexRunRepository(path)
-    runs.succeed(runs.create_running(candidate.candidate_id).id, added=1)
+    runs.succeed(runs.create_running(candidate.candidate_id, source_id=candidate.document.source_id).id, added=1)
     clear_storage_engine_cache()
     repository = SQLiteCandidateRepository(path)
     assert repository.get(candidate.candidate_id) == candidate

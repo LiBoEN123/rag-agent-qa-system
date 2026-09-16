@@ -12,7 +12,7 @@ export function candidateDetail(status: IngestionCandidateStatus = 'pending'): C
     requester: { principal_id: 'agent-user', principal_type: 'user', source: 'agent-tool-promotion' },
     approval: { status: status === 'approved' ? 'approved' : 'pending', decided_at: null, decided_by: null, reason: null },
     safe_metadata: { path: 'guide.md' }, content_preview: '<script>untrusted()</script>安全预览',
-    content_length: 3000, preview_truncated: true, content_is_untrusted: true, latest_index_result: null,
+    content_length: 3000, preview_truncated: true, content_is_untrusted: true, can_delete: false, latest_index_result: null,
   }
 }
 

@@ -5,11 +5,12 @@ from functools import lru_cache
 from pathlib import Path
 from threading import Lock
 
-from sqlalchemy import Column, Index, Integer, Table, Text, create_engine
+from sqlalchemy import Column, Index, Integer, Table, Text, create_engine, select
 from sqlalchemy.engine import URL, Engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from app.config import get_settings
+from app.ingestion import IngestionCandidate
 
 
 # 作为应用存储模型的 SQLAlchemy 声明基类，统一持有表元数据。
@@ -69,6 +70,8 @@ class _IngestionIndexRunRecord(Base):
     error_code: Mapped[str | None] = mapped_column(Text)
     error_message: Mapped[str | None] = mapped_column(Text)
     operation: Mapped[str] = mapped_column(Text, server_default="index")
+    # 兼容旧库的 NULL；新 operation 必须由 repository 显式提供来源身份。
+    source_id: Mapped[str | None] = mapped_column(Text)
     __table_args__ = (
         Index("idx_ingestion_index_runs_candidate_id", candidate_id, id.desc()),
         Index("idx_ingestion_index_runs_status_id", status, id.desc()),
@@ -115,7 +118,7 @@ def get_session_factory(db_path: Path | None = None) -> sessionmaker[Session]:
 
 
 def init_db(db_path: Path | None = None) -> None:
-    """保留已有数据建表，并为旧 SQLite 运行记录幂等补充 operation。"""
+    """保留已有数据建表，幂等补充 operation 并回填运行记录的来源身份。"""
     engine = get_engine(db_path)
     with engine.begin() as connection:
         if engine.dialect.name == "sqlite":
@@ -123,14 +126,36 @@ def init_db(db_path: Path | None = None) -> None:
             connection.exec_driver_sql("BEGIN IMMEDIATE")
         Base.metadata.create_all(connection)
         if engine.dialect.name == "sqlite":
-            columns = connection.exec_driver_sql(
+            columns = {row[1] for row in connection.exec_driver_sql(
                 "PRAGMA table_info(ingestion_index_runs)"
-            )
-            if "operation" not in {row[1] for row in columns}:
+            )}
+            if "operation" not in columns:
                 connection.exec_driver_sql(
                     "ALTER TABLE ingestion_index_runs "
                     "ADD COLUMN operation TEXT NOT NULL DEFAULT 'index'"
                 )
+            if "source_id" not in columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE ingestion_index_runs ADD COLUMN source_id TEXT"
+                )
+        with Session(bind=connection) as session:
+            for run in session.scalars(select(_IngestionIndexRunRecord).where(
+                _IngestionIndexRunRecord.source_id.is_(None)
+            )):
+                record = session.get(_IngestionCandidateRecord, run.candidate_id)
+                if record is None:
+                    raise ValueError("历史 corpus operation 缺失 candidate，无法回填 source_id")
+                try:
+                    candidate = IngestionCandidate.model_validate_json(record.candidate_json)
+                except ValueError:
+                    raise ValueError("历史 candidate 未通过 domain contract 校验，无法回填 source_id") from None
+                if (record.candidate_id, record.status, record.source_type) != (
+                    candidate.candidate_id, candidate.status.value,
+                    candidate.document.source_type.value,
+                ):
+                    raise ValueError("历史 candidate 查询字段与 JSON 不一致")
+                run.source_id = candidate.document.source_id
+            session.flush()
 
 
 def clear_storage_engine_cache() -> None:

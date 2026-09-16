@@ -132,6 +132,7 @@ def test_fresh_schema_matches_frozen_raw_sql_and_shared_metadata(tmp_path, legac
     }
     columns = retained_schema["ingestion_index_runs"]["columns"]
     columns.append((len(columns), "operation", "TEXT", 1, "'index'", 0))
+    columns.append((len(columns), "source_id", "TEXT", 0, None, 0))
     assert _schema(path) == retained_schema
     assert set(_schema(path)) == set(Base.metadata.tables) == {
         "sessions", "messages",
@@ -146,9 +147,10 @@ def test_fresh_schema_matches_frozen_raw_sql_and_shared_metadata(tmp_path, legac
 def test_legacy_reads_and_repeated_init_preserve_all_existing_rows_and_schema(legacy_db):
     path, candidate = legacy_db
     before, schema_before = _rows(path), _schema(path)
-    before["ingestion_index_runs"] = [row + ("index",) for row in before["ingestion_index_runs"]]
+    before["ingestion_index_runs"] = [row + ("index", candidate.document.source_id) for row in before["ingestion_index_runs"]]
     columns = schema_before["ingestion_index_runs"]["columns"]
     columns.append((len(columns), "operation", "TEXT", 1, "'index'", 0))
+    columns.append((len(columns), "source_id", "TEXT", 0, None, 0))
     for _ in range(3):
         init_db(path)
     assert get_history_sqlite("s1", db_path=path) == [
@@ -167,6 +169,7 @@ def test_legacy_writes_replace_delete_and_restart_without_migration(legacy_db):
     rows_before, schema_before = _rows(path), _schema(path)
     columns = schema_before["ingestion_index_runs"]["columns"]
     columns.append((len(columns), "operation", "TEXT", 1, "'index'", 0))
+    columns.append((len(columns), "source_id", "TEXT", 0, None, 0))
     init_db(path)
     append_message_sqlite("s1", "user", "追加", path)
     append_message_sqlite("s2", "user", "保留", path)
@@ -176,7 +179,7 @@ def test_legacy_writes_replace_delete_and_restart_without_migration(legacy_db):
     )
     second = candidates.save(_candidate("https://example.com/new"))
     completed = runs.succeed(17, added=1, updated=0, deleted=0, skipped=0)
-    running = runs.create_running(second.candidate_id)
+    running = runs.create_running(second.candidate_id, source_id=second.document.source_id)
     failed = runs.fail(running.id, error_code="SAFE_ERROR")
     assert running.id > 17
     assert get_history_sqlite("s1", limit=1, db_path=path)[0]["content"] == "追加"
@@ -204,7 +207,7 @@ def test_legacy_success_defaults_to_index_and_remains_authoritative(legacy_db):
     assert repository.load_latest_successfully_indexed() == [candidate]
     runs = SQLiteIndexRunRepository(path)
     assert runs.latest(candidate.candidate_id).operation is IndexRunOperation.INDEX
-    remove = runs.create_running(candidate.candidate_id, operation=IndexRunOperation.REMOVE)
+    remove = runs.create_running(candidate.candidate_id, source_id=candidate.document.source_id, operation=IndexRunOperation.REMOVE)
     runs.succeed(remove.id, deleted=1)
     for _ in range(3):
         init_db(path)

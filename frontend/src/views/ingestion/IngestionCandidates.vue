@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { apiErrorMessage } from '../../api/http'
-import { approveCandidate, getCandidate, indexCandidate, listCandidates, rejectCandidate, removeCandidate } from '../../api/ingestion'
+import { approveCandidate, deleteCandidate, getCandidate, indexCandidate, listCandidates, rejectCandidate, removeCandidate } from '../../api/ingestion'
 import type { CandidateDetailResponse, IngestionCandidateStatus, IngestionCandidateSummary, IngestionIndexRun, KnowledgeSourceType } from '../../api/types'
 import IndexRunTable from '../../components/ingestion/IndexRunTable.vue'
 
@@ -162,6 +162,28 @@ async function remove() {
   }
 }
 
+async function deleteRecord() {
+  if (!detail.value?.can_delete || acting.value || detailLoading.value) return
+  const id = detail.value.summary.candidate_id
+  acting.value = true
+  detailError.value = ''
+  success.value = ''
+  try {
+    await ElMessageBox.confirm(
+      '确认永久删除这条知识候选记录？该来源已经移出知识库，本操作只删除候选及审批记录，不会删除已有 INDEX / REMOVE 操作历史。删除后，相同来源内容未来仍可以重新提交。',
+      '删除记录',
+      { confirmButtonText: '删除记录', cancelButtonText: '取消', type: 'warning' },
+    )
+    await deleteCandidate(id)
+    drawerOpen.value = false
+    detail.value = null
+    indexResult.value = null
+    await refresh()
+  } catch (cause) {
+    if (cause !== 'cancel' && cause !== 'close') detailError.value = apiErrorMessage(cause)
+  } finally { acting.value = false }
+}
+
 defineExpose({ refresh, openDetail })
 </script>
 
@@ -239,8 +261,10 @@ defineExpose({ refresh, openDetail })
             <el-button type="danger" data-testid="reject-candidate" :disabled="acting || detailLoading || detail.summary.status !== 'pending'" @click="review('reject')">拒绝</el-button>
             <el-button type="primary" data-testid="index-candidate" :disabled="acting || detailLoading || detail.summary.status !== 'approved'" @click="index">写入知识库</el-button>
             <el-button type="danger" plain data-testid="remove-candidate" :disabled="acting || detailLoading || !canRemove" @click="remove">移出知识库</el-button>
+            <el-button type="danger" plain data-testid="delete-candidate" :disabled="acting || detailLoading || !detail.can_delete" @click="deleteRecord">删除记录</el-button>
           </div>
         </el-form>
+        <p v-if="!detail.can_delete">需要先将该来源移出知识库，才能删除候选记录。</p>
         <p v-if="acting" role="status">正在处理，请稍候…</p>
         <div v-if="indexResult" class="index-counts" data-testid="index-counts">
           <span>新增 added：{{ indexResult.added }}</span><span>更新 updated：{{ indexResult.updated }}</span>

@@ -10,6 +10,7 @@ import pytest
 
 from app.ingestion import (
     ApprovalStatus,
+    CandidateNotFoundError,
     InMemoryCandidateRepository,
     IngestionCandidateStatus,
     IngestionPrincipalType,
@@ -287,6 +288,9 @@ def test_candidate_lifecycle_has_zero_rag_chroma_mcp_web_or_network_calls(
     )
 
     assert approved.status is IngestionCandidateStatus.APPROVED
+    service.delete_candidate(approved.candidate_id)
+    service.delete_candidate(other.candidate_id)
+    assert service.repository.count() == 0
     assert calls == {
         "chroma_writes": 0,
         "rag_rebuilds": 0,
@@ -294,3 +298,13 @@ def test_candidate_lifecycle_has_zero_rag_chroma_mcp_web_or_network_calls(
         "web_calls": 0,
         "network_calls": 0,
     }
+
+
+def test_delete_candidate_missing_and_concurrent_delete(monkeypatch):
+    service = IngestionService()
+    with pytest.raises(CandidateNotFoundError):
+        service.delete_candidate("missing")
+    candidate = service.propose(document=_document(), requester=_requester())
+    monkeypatch.setattr(service.repository, "delete", lambda _id: False)
+    with pytest.raises(CandidateNotFoundError):
+        service.delete_candidate(candidate.candidate_id)

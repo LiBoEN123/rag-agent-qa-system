@@ -13,7 +13,7 @@ const { refreshStatus } = vi.hoisted(() => ({ refreshStatus: vi.fn().mockResolve
 vi.mock('../composables/useBackendStatus', () => ({ useBackendStatus: () => ({ refreshStatus }) }))
 vi.mock('../api/ingestion', () => ({
   listCandidates: vi.fn(), getCandidate: vi.fn(), approveCandidate: vi.fn(), rejectCandidate: vi.fn(),
-  indexCandidate: vi.fn(), removeCandidate: vi.fn(), listIndexRuns: vi.fn(), proposeGitHub: vi.fn(), proposeFirecrawl: vi.fn(), proposeUpload: vi.fn(),
+  indexCandidate: vi.fn(), removeCandidate: vi.fn(), deleteCandidate: vi.fn(), listIndexRuns: vi.fn(), proposeGitHub: vi.fn(), proposeFirecrawl: vi.fn(), proposeUpload: vi.fn(),
 }))
 
 const drawer = defineComponent({ props: ['modelValue'], template: '<section v-if="modelValue"><slot /></section>' })
@@ -61,6 +61,77 @@ afterEach(() => {
 })
 
 describe('知识候选审核', () => {
+  it.each(['pending', 'approved', 'rejected', 'superseded'] as const)('%s 删除按钮仅使用 can_delete，忽略候选最近操作', async (status) => {
+    current = candidateDetail(status)
+    current.latest_index_result = { ...indexRun(), operation: 'remove' }
+    const page = await openCandidate()
+    expect(page.get('[data-testid="delete-candidate"]').attributes('disabled')).toBeDefined()
+    expect(page.text()).toContain('需要先将该来源移出知识库')
+    current.can_delete = true
+    current.latest_index_result = indexRun()
+    await page.findAll('button').find((button) => button.text() === '查看详情')!.trigger('click')
+    await flushPromises()
+    expect(page.get('[data-testid="delete-candidate"]').attributes('disabled')).toBeUndefined()
+    expect(api.deleteCandidate).not.toHaveBeenCalled()
+  })
+
+  it('确认删除成功后关闭详情并刷新列表，不重新读取已删详情或刷新知识库', async () => {
+    current.can_delete = true
+    vi.mocked(api.deleteCandidate).mockImplementation(async () => {
+      vi.mocked(api.listCandidates).mockResolvedValue([])
+    })
+    const page = await openCandidate()
+    await page.get('[data-testid="delete-candidate"]').trigger('click')
+    await flushPromises()
+    expect(ElMessageBox.confirm).toHaveBeenCalledOnce()
+    const message = vi.mocked(ElMessageBox.confirm).mock.calls[0]![0]
+    expect(message).toContain('永久删除')
+    expect(message).toContain('不会删除已有 INDEX / REMOVE 操作历史')
+    expect(api.deleteCandidate).toHaveBeenCalledExactlyOnceWith('cand_example')
+    expect(page.find('[data-testid="delete-candidate"]').exists()).toBe(false)
+    expect(page.text()).not.toContain('测试文档')
+    expect(api.listCandidates).toHaveBeenCalledTimes(2)
+    expect(api.getCandidate).toHaveBeenCalledOnce()
+    expect(api.listIndexRuns).toHaveBeenCalledOnce()
+    expect(refreshStatus).not.toHaveBeenCalled()
+    expect(api.removeCandidate).not.toHaveBeenCalled()
+  })
+
+  it('取消删除不发请求，等待确认期间禁止重复操作', async () => {
+    current.can_delete = true
+    let cancel!: (reason: string) => void
+    vi.mocked(ElMessageBox.confirm).mockReturnValueOnce(new Promise((_, reject) => { cancel = reject }))
+    const page = await openCandidate()
+    await page.get('[data-testid="delete-candidate"]').trigger('click')
+    expect(page.get('[data-testid="delete-candidate"]').attributes('disabled')).toBeDefined()
+    expect(api.deleteCandidate).not.toHaveBeenCalled()
+    cancel('cancel')
+    await flushPromises()
+    expect(api.deleteCandidate).not.toHaveBeenCalled()
+    expect(page.get('[data-testid="delete-candidate"]').attributes('disabled')).toBeUndefined()
+    expect(page.find('[data-testid="candidate-error"]').exists()).toBe(false)
+  })
+
+  it('详情可删但后端返回 409 时保留详情和列表，显示错误且不自动撤库', async () => {
+    current.can_delete = true
+    vi.mocked(api.deleteCandidate).mockRejectedValue(backendError(
+      409, 'CANDIDATE_SOURCE_NOT_REMOVED', 'candidate 所属来源尚未移出知识库，不能删除记录',
+    ))
+    const page = await openCandidate()
+    await page.get('[data-testid="delete-candidate"]').trigger('click')
+    await flushPromises()
+    expect(page.get('[data-testid="candidate-error"]').text()).toContain('CANDIDATE_SOURCE_NOT_REMOVED')
+    expect(page.get('[data-testid="candidate-error"]').text()).toContain('不能删除记录')
+    expect(page.find('[data-testid="delete-candidate"]').exists()).toBe(true)
+    expect(page.text()).toContain('测试文档')
+    expect(api.deleteCandidate).toHaveBeenCalledOnce()
+    expect(api.listCandidates).toHaveBeenCalledOnce()
+    expect(api.getCandidate).toHaveBeenCalledOnce()
+    expect(api.removeCandidate).not.toHaveBeenCalled()
+    expect(api.indexCandidate).not.toHaveBeenCalled()
+    expect(refreshStatus).not.toHaveBeenCalled()
+  })
+
   it('撤库先确认，完成后保留审批并显示 remove 记录和刷新知识库状态', async () => {
     current = candidateDetail('approved')
     vi.mocked(api.removeCandidate).mockImplementation(async () => {

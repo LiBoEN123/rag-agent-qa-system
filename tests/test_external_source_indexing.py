@@ -289,7 +289,7 @@ def persisted_runtime(tmp_path, monkeypatch):
 
 
 def _index_with_run(runtime, candidate):
-    run = runtime.runs.create_running(candidate.candidate_id)
+    run = runtime.runs.create_running(candidate.candidate_id, source_id=candidate.document.source_id)
     try:
         result = runtime.source_service.index_approved(candidate.candidate_id)
     except SourceIngestionError as exc:
@@ -381,6 +381,24 @@ def test_remove_from_old_candidate_removes_current_source_version(persisted_runt
     ok, message = pipeline.rebuild_and_persist_index(str(runtime.local_dir), force_rebuild=True)
     assert ok, message
     assert pipeline.texts == ["local durable content"]
+
+
+def test_force_rebuild_after_deleting_all_removed_candidate_versions(persisted_runtime):
+    runtime = persisted_runtime
+    versions = [_approve(runtime.domain, _github_document(content)) for content in ("deleted v1", "deleted v2")]
+    for candidate in versions:
+        _index_with_run(runtime, candidate)
+    client = _remove_client(runtime)
+    assert client.post(f"/admin/ingestion/candidates/{versions[0].candidate_id}/remove").status_code == 200
+    history = runtime.runs.list()
+    for candidate in versions:
+        assert client.delete(f"/admin/ingestion/candidates/{candidate.candidate_id}").status_code == 204
+    for _ in range(2):
+        ok, message = pipeline.rebuild_and_persist_index(str(runtime.local_dir), force_rebuild=True)
+        assert ok, message
+        assert pipeline.texts == ["local durable content"]
+        assert indexing.create_vector_store(None).get(where={"source_id": versions[0].document.source_id})["ids"] == []
+    assert runtime.runs.list() == history
 
 
 @pytest.mark.parametrize("missing", ["chroma", "record_manager"])
@@ -517,7 +535,7 @@ def test_force_rebuild_restores_latest_successful_source_version(
         with pytest.raises(SourceIngestionError, match="reload"):
             _index_with_run(runtime, v2)
     else:
-        runtime.runs.create_running(v2.candidate_id)
+        runtime.runs.create_running(v2.candidate_id, source_id=v2.document.source_id)
     history = runtime.runs.list()
 
     ok, message = pipeline.rebuild_and_persist_index(
@@ -585,7 +603,7 @@ def test_global_rebuild_validates_successful_candidates_before_reset(
     candidate = runtime.domain.propose(document=document, requester=_requester())
     if damage != "pending":
         candidate = runtime.domain.approve(candidate.candidate_id, decided_by=_requester())
-    runtime.runs.succeed(runtime.runs.create_running(candidate.candidate_id).id, added=1)
+    runtime.runs.succeed(runtime.runs.create_running(candidate.candidate_id, source_id=candidate.document.source_id).id, added=1)
     with get_engine(runtime.settings.sqlite_db_path).begin() as connection:
         if damage == "missing":
             connection.execute(delete(_IngestionCandidateRecord))
@@ -701,7 +719,7 @@ def test_version_migration_rechunks_sqlite_structure_and_preserves_legacy(persis
     result = indexing.sync_documents(
         [old_chunk], runtime.embeddings, namespace=indexing.UPLOAD_RECORD_NAMESPACE, cleanup="incremental",
     )
-    runtime.runs.succeed(runtime.runs.create_running(candidate.candidate_id).id, added=result["num_added"])
+    runtime.runs.succeed(runtime.runs.create_running(candidate.candidate_id, source_id=candidate.document.source_id).id, added=result["num_added"])
     legacy = _approve(runtime.domain, build_knowledge_document(
         source_type="upload", source_uri="upload://local/legacy-docx", title="legacy.docx",
         content="legacy plain evidence", metadata={"file_type": "docx"},
@@ -793,7 +811,7 @@ def test_section_pipeline_migration_rechunks_persisted_candidates_without_acquis
         "source_type": source_type, "source_uri": source_uri, "position": 1,
     })
     result = indexing.sync_documents([old_chunk], runtime.embeddings, namespace=namespace)
-    runtime.runs.succeed(runtime.runs.create_running(candidate.candidate_id).id, added=result["num_added"])
+    runtime.runs.succeed(runtime.runs.create_running(candidate.candidate_id, source_id=candidate.document.source_id).id, added=result["num_added"])
     old_ids = indexing.create_vector_store(None).get(where={"source_id": document.source_id})["ids"]
     expected = indexing.candidate_to_langchain_documents(candidate)
     manifest = rag_store.build_current_manifest(str(runtime.local_dir))

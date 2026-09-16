@@ -14,6 +14,9 @@ class CandidateRepository(Protocol):
     def get(self, candidate_id: str) -> IngestionCandidate | None:
         """按稳定 candidate ID 查询。"""
 
+    def delete(self, candidate_id: str) -> bool:
+        """删除候选；不存在时返回 False。"""
+
     def save(self, candidate: IngestionCandidate) -> IngestionCandidate:
         """保存或幂等返回完全相同的候选。"""
 
@@ -46,6 +49,10 @@ class InMemoryCandidateRepository:
     def get(self, candidate_id: str) -> IngestionCandidate | None:
         with self._lock:
             return self._candidates.get(candidate_id)
+
+    def delete(self, candidate_id: str) -> bool:
+        with self._lock:
+            return self._candidates.pop(candidate_id, None) is not None
 
     # 在锁保护下幂等保存候选，拒绝同一标识对应不同领域状态。
     def save(self, candidate: IngestionCandidate) -> IngestionCandidate:

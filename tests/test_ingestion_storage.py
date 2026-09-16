@@ -16,7 +16,7 @@ from app.ingestion import (
     KnowledgeSourceType,
 )
 from app.sources import FirecrawlPagePayload, FirecrawlPageSourceAdapter
-from app.storage.database import init_db
+from app.storage.database import _IngestionIndexRunRecord, get_session_factory, init_db
 from app.storage.ingestion import (
     CandidatePersistenceError,
     IndexRunOperation,
@@ -154,7 +154,7 @@ def test_sqlalchemy_repository_reads_and_updates_raw_phase12_schema(tmp_path):
 def test_index_runs_persist_success_and_safe_failure_without_content(tmp_path):
     db_path = tmp_path / "app.sqlite3"
     repository = SQLiteIndexRunRepository(db_path)
-    success = repository.create_running("cand_success")
+    success = repository.create_running("cand_success", source_id="src_success")
     completed = repository.succeed(
         success.id,
         added=1,
@@ -162,7 +162,7 @@ def test_index_runs_persist_success_and_safe_failure_without_content(tmp_path):
         deleted=3,
         skipped=4,
     )
-    failure = repository.create_running("cand_failure")
+    failure = repository.create_running("cand_failure", source_id="src_failure")
     failed = repository.fail(
         failure.id,
         error_code="SOURCE_RUNTIME_RELOAD_FAILED",
@@ -176,6 +176,8 @@ def test_index_runs_persist_success_and_safe_failure_without_content(tmp_path):
     assert failed.status is IndexRunStatus.FAILED
     assert restarted.list(status=IndexRunStatus.SUCCESS, limit=1) == [completed]
     assert restarted.list(limit=1, offset=1) == [completed]
+
+    assert "source_id" not in completed.model_dump()
 
     with sqlite3.connect(db_path) as connection:
         columns = {
@@ -203,17 +205,17 @@ def test_latest_successfully_indexed_uses_success_history_without_page_limit(tmp
     approved_only = approve("https://example.com/unindexed", "approved only")
     failed_only = approve("https://example.com/failed", "failed only")
     for candidate in (other, v1, v2):
-        runs.succeed(runs.create_running(candidate.candidate_id).id, added=1)
+        runs.succeed(runs.create_running(candidate.candidate_id, source_id=candidate.document.source_id).id, added=1)
     for _ in range(51):
-        runs.succeed(runs.create_running(v2.candidate_id).id, skipped=1)
+        runs.succeed(runs.create_running(v2.candidate_id, source_id=v2.document.source_id).id, skipped=1)
     for candidate in (failed_v3, failed_only):
-        runs.fail(runs.create_running(candidate.candidate_id).id, error_code="FAILED")
-    runs.create_running(approved_only.candidate_id)
+        runs.fail(runs.create_running(candidate.candidate_id, source_id=candidate.document.source_id).id, error_code="FAILED")
+    runs.create_running(approved_only.candidate_id, source_id=approved_only.document.source_id)
 
     restarted = SQLiteCandidateRepository(db_path)
     assert restarted.load_latest_successfully_indexed() == [v2, other]
     # 最近一次成功重新索引旧 candidate，也应按 run 历史恢复该版本。
-    runs.succeed(runs.create_running(v1.candidate_id).id, added=1)
+    runs.succeed(runs.create_running(v1.candidate_id, source_id=v1.document.source_id).id, added=1)
     assert restarted.load_latest_successfully_indexed() == [v1, other]
 
 
@@ -227,24 +229,24 @@ def test_authoritative_source_uses_latest_successful_operation(tmp_path, remove_
     for content in ("v1", "v2"):
         candidate = _propose(repository, content=content)
         candidate = domain.approve(candidate.candidate_id, decided_by=REQUESTER)
-        runs.succeed(runs.create_running(candidate.candidate_id).id, added=1)
+        runs.succeed(runs.create_running(candidate.candidate_id, source_id=candidate.document.source_id).id, added=1)
         versions.append(candidate)
     # 旧 candidate 发起 REMOVE 也覆盖同 source 的最新版本。
-    removal = runs.create_running(versions[0].candidate_id, operation=IndexRunOperation.REMOVE)
+    removal = runs.create_running(versions[0].candidate_id, source_id=versions[0].document.source_id, operation=IndexRunOperation.REMOVE)
     if remove_status == "success":
         runs.succeed(removal.id, deleted=1)
     elif remove_status == "failed":
         runs.fail(removal.id, error_code="REMOVE_OPERATION_FAILED")
     # 更新的失败或运行中 INDEX 都不能覆盖成功 REMOVE。
-    runs.fail(runs.create_running(versions[1].candidate_id).id, error_code="INDEX_OPERATION_FAILED")
-    runs.create_running(versions[1].candidate_id)
+    runs.fail(runs.create_running(versions[1].candidate_id, source_id=versions[1].document.source_id).id, error_code="INDEX_OPERATION_FAILED")
+    runs.create_running(versions[1].candidate_id, source_id=versions[1].document.source_id)
     restarted = SQLiteCandidateRepository(db_path)
     assert restarted.load_latest_successfully_indexed() == (
         [] if remove_status == "success" else [versions[1]]
     )
     assert [repository.get(item.candidate_id) for item in versions] == versions
     assert SQLiteIndexRunRepository(db_path).list(operation=IndexRunOperation.REMOVE)[0].id == removal.id
-    runs.succeed(runs.create_running(versions[1].candidate_id).id, added=1)
+    runs.succeed(runs.create_running(versions[1].candidate_id, source_id=versions[1].document.source_id).id, added=1)
     assert restarted.load_latest_successfully_indexed() == [versions[1]]
 
 
@@ -253,7 +255,7 @@ def test_unknown_successful_operation_fails_closed(tmp_path):
     repository = SQLiteCandidateRepository(db_path)
     candidate = _propose(repository)
     runs = SQLiteIndexRunRepository(db_path)
-    runs.succeed(runs.create_running(candidate.candidate_id).id, added=1)
+    runs.succeed(runs.create_running(candidate.candidate_id, source_id=candidate.document.source_id).id, added=1)
     with sqlite3.connect(db_path) as connection:
         connection.execute("UPDATE ingestion_index_runs SET operation = 'unknown'")
     with pytest.raises(CandidatePersistenceError, match="operation"):
@@ -266,7 +268,7 @@ def test_successful_candidate_restore_fails_closed_on_damaged_persistence(tmp_pa
     repository = SQLiteCandidateRepository(db_path)
     candidate = _propose(repository)
     runs = SQLiteIndexRunRepository(db_path)
-    runs.succeed(runs.create_running(candidate.candidate_id).id, added=1)
+    runs.succeed(runs.create_running(candidate.candidate_id, source_id=candidate.document.source_id).id, added=1)
     with sqlite3.connect(db_path) as connection:
         if damage == "missing":
             connection.execute("DELETE FROM ingestion_candidates")
@@ -276,6 +278,121 @@ def test_successful_candidate_restore_fails_closed_on_damaged_persistence(tmp_pa
             connection.execute("UPDATE ingestion_candidates SET source_type = 'github'")
 
     with pytest.raises(CandidatePersistenceError):
+        repository.load_latest_successfully_indexed()
+
+
+@pytest.mark.parametrize("repository_type", [InMemoryCandidateRepository, SQLiteCandidateRepository])
+def test_delete_removes_only_candidate_and_allows_same_proposal(tmp_path, repository_type):
+    repository = (repository_type(tmp_path / "app.sqlite3")
+                  if repository_type is SQLiteCandidateRepository else repository_type())
+    candidate = _propose(repository)
+    other = _propose(repository, url="https://example.com/other")
+    assert repository.delete(candidate.candidate_id) is True
+    assert repository.delete(candidate.candidate_id) is False
+    assert repository.get(candidate.candidate_id) is None
+    assert repository.list() == [other]
+    assert repository.count() == 1
+    assert _propose(repository) == candidate
+
+
+@pytest.mark.parametrize("source_id", [None, "", "  ", 123])
+def test_new_run_requires_nonempty_source_id(tmp_path, source_id):
+    runs = SQLiteIndexRunRepository(tmp_path / "app.sqlite3")
+    with pytest.raises(ValueError, match="source_id"):
+        runs.create_running("candidate", source_id=source_id)
+    assert runs.list() == []
+
+
+def test_latest_successful_query_is_scoped_to_source_and_ignores_incomplete_runs(tmp_path):
+    runs = SQLiteIndexRunRepository(tmp_path / "app.sqlite3")
+    indexed = runs.succeed(runs.create_running("v1", source_id="source_a").id)
+    runs.succeed(runs.create_running("other", source_id="source_b", operation=IndexRunOperation.REMOVE).id)
+    runs.fail(runs.create_running("v2", source_id="source_a", operation=IndexRunOperation.REMOVE).id, error_code="FAILED")
+    runs.create_running("v3", source_id="source_a", operation=IndexRunOperation.REMOVE)
+    assert runs.latest_successful_for_source("source_a") == indexed
+    assert runs.latest_successful_for_source("source_b").operation is IndexRunOperation.REMOVE
+    assert runs.latest_successful_for_source("source_missing") is None
+
+
+def test_source_identity_survives_deleted_versions_and_repository_restart(tmp_path):
+    path = tmp_path / "app.sqlite3"
+    repository = SQLiteCandidateRepository(path)
+    runs = SQLiteIndexRunRepository(path)
+    versions = [_propose(repository, content=content) for content in ("v1", "v2", "v3")]
+    source_id = versions[0].document.source_id
+    for candidate in versions[:2]:
+        runs.succeed(runs.create_running(candidate.candidate_id, source_id=source_id).id)
+    remove = runs.succeed(runs.create_running(
+        versions[0].candidate_id, source_id=source_id, operation=IndexRunOperation.REMOVE,
+    ).id)
+    history = runs.list()
+    with get_session_factory(path)() as session:
+        for run in history:
+            assert session.get(_IngestionIndexRunRecord, run.id).source_id == source_id
+    for candidate in versions:
+        assert runs.latest_successful_for_source(source_id) == remove
+        assert repository.delete(candidate.candidate_id)
+    assert SQLiteCandidateRepository(path).load_latest_successfully_indexed() == []
+    restarted_runs = SQLiteIndexRunRepository(path)
+    assert restarted_runs.list() == history
+    assert restarted_runs.latest_successful_for_source(source_id) == remove
+
+
+@pytest.mark.parametrize("operation", list(IndexRunOperation))
+def test_legacy_source_id_backfill_is_idempotent(tmp_path, operation):
+    path = tmp_path / "legacy.sqlite3"
+    repository = SQLiteCandidateRepository(path)
+    candidate = _propose(repository)
+    runs = SQLiteIndexRunRepository(path)
+    for status in IndexRunStatus:
+        run = runs.create_running(candidate.candidate_id, source_id=candidate.document.source_id, operation=operation)
+        if status is IndexRunStatus.SUCCESS:
+            runs.succeed(run.id)
+        elif status is IndexRunStatus.FAILED:
+            runs.fail(run.id, error_code="FAILED")
+    history = runs.list()
+    with sqlite3.connect(path) as connection:
+        connection.execute("ALTER TABLE ingestion_index_runs DROP COLUMN source_id")
+    for _ in range(3):
+        init_db(path)
+    with get_session_factory(path)() as session:
+        for run in history:
+            assert session.get(_IngestionIndexRunRecord, run.id).source_id == candidate.document.source_id
+    assert SQLiteIndexRunRepository(path).list() == history
+    assert repository.get(candidate.candidate_id) == candidate
+
+
+@pytest.mark.parametrize("damage", ["missing", "invalid_json", "mismatched_fields"])
+def test_legacy_backfill_fails_closed_and_does_not_invent_source_id(tmp_path, damage):
+    path = tmp_path / "legacy.sqlite3"
+    repository = SQLiteCandidateRepository(path)
+    candidate = _propose(repository)
+    runs = SQLiteIndexRunRepository(path)
+    runs.create_running(candidate.candidate_id, source_id=candidate.document.source_id)
+    with sqlite3.connect(path) as connection:
+        connection.execute("UPDATE ingestion_index_runs SET source_id = NULL")
+        if damage == "missing":
+            connection.execute("DELETE FROM ingestion_candidates")
+        elif damage == "invalid_json":
+            connection.execute("UPDATE ingestion_candidates SET candidate_json = '{}'")
+        else:
+            connection.execute("UPDATE ingestion_candidates SET source_type = 'github'")
+    with pytest.raises(ValueError):
+        init_db(path)
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT source_id FROM ingestion_index_runs").fetchone() == (None,)
+
+
+@pytest.mark.parametrize("source_id", [None, "", "src_wrong"])
+def test_authoritative_index_fails_closed_on_invalid_source_identity(tmp_path, source_id):
+    path = tmp_path / "app.sqlite3"
+    repository = SQLiteCandidateRepository(path)
+    candidate = _propose(repository)
+    runs = SQLiteIndexRunRepository(path)
+    runs.succeed(runs.create_running(candidate.candidate_id, source_id=candidate.document.source_id).id)
+    with sqlite3.connect(path) as connection:
+        connection.execute("UPDATE ingestion_index_runs SET source_id = ?", (source_id,))
+    with pytest.raises(CandidatePersistenceError, match="source_id"):
         repository.load_latest_successfully_indexed()
 
 
