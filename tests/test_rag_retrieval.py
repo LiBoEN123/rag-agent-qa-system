@@ -11,7 +11,7 @@ from app.rag import retrieval
 from app.rag.policy import should_refuse
 from app.ingestion import IngestionRequester, IngestionService, build_knowledge_document
 from app.rag import indexing, store
-from tests.support.structured_document import admission_structure, registration_structure
+from tests.support.structured_document import admission_structure, imut_admission_structure, registration_structure
 
 
 def test_table_semantics_reach_real_chroma_bm25_retrieval(tmp_path, monkeypatch):
@@ -48,6 +48,9 @@ def test_table_semantics_reach_real_chroma_bm25_retrieval(tmp_path, monkeypatch)
     assert hit["position"] == 1
 
 
+@pytest.mark.parametrize("structure_factory, physics_row_offset", [
+    (admission_structure, 0), (imut_admission_structure, 1),
+])
 @pytest.mark.parametrize("query, section, expected_row, evidence", [
     ("内蒙古本科批物理类安全工程最低分是多少？", "内蒙古本科批物理类", 7,
      ("专业名称：安全工程", "最低分：501")),
@@ -57,11 +60,13 @@ def test_table_semantics_reach_real_chroma_bm25_retrieval(tmp_path, monkeypatch)
      ("专业名称：环境设计", "平均分：477.87")),
 ])
 def test_admission_section_semantics_reach_real_chroma_bm25(
-    tmp_path, monkeypatch, query, section, expected_row, evidence,
+    tmp_path, monkeypatch, query, section, expected_row, evidence, structure_factory, physics_row_offset,
 ):
+    if expected_row >= 7:
+        expected_row += physics_row_offset  # 实抓表保留了艺术类末尾的总计行。
     document = build_knowledge_document(
         source_type="local_file", source_uri=str(tmp_path / "admission.pdf"), title="录取分数统计",
-        content="", structured_content=admission_structure(), metadata={"file_type": "pdf"},
+        content="", structured_content=structure_factory(), metadata={"file_type": "pdf"},
     )
     candidate = IngestionService().propose(document=document, requester=IngestionRequester(
         principal_id="section-smoke", principal_type="system", source="pytest",

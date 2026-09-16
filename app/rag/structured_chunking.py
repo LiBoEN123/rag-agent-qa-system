@@ -1,6 +1,8 @@
 """把已校验的 ParsedDocument 按 reading order 转为检索 chunks，不访问源文件。"""
 
+from collections import Counter
 from collections.abc import Iterator
+from unicodedata import normalize
 
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -18,6 +20,23 @@ def _unique_row_cells(row: list[TableCell | None]) -> list[TableCell]:
 def _is_full_width_row(cells: list[TableCell], column_count: int) -> bool:
     return (len(cells) == 1 and cells[0].column_index == 0
             and cells[0].column_span == column_count)
+
+
+def _row_signature(
+    row: list[TableCell | None], row_index: int,
+) -> tuple[tuple[int, int, str], ...] | None:
+    """按列序记录 unique anchors（含空值），排除 rowspan 及继承的 grid 投影。"""
+    cells = {
+        (cell.row_index, cell.column_index): cell
+        for cell in row if cell is not None
+    }.values()
+    if any(cell.row_index != row_index or cell.row_span != 1 for cell in cells):
+        return None
+    signature = tuple(
+        (cell.column_index, cell.column_span, " ".join(normalize("NFKC", cell.text).split()))
+        for cell in cells
+    )
+    return signature if sum(bool(text) for _, _, text in signature) >= 2 else None
 
 
 def _build_header_labels(grid: list[list[TableCell | None]], start: int, end: int) -> list[str]:
@@ -49,8 +68,8 @@ def _table_view(table: TableBlock) -> Iterator[
 ]:
     """扫描结构状态；section/header 变化时交出旧行组，保留原 spans 投影。
 
-    非空行全部标记 header 才构成表头带；混合行的 row header 仍作为值。
-    header 标记优先保留多级表头；单列表没有横向合并信号，仍走普通数据路径。
+    Docling header 标记优先；缺失时仅接纳有 section/data 证据的 exact 重复签名。
+    混合行的 row header 仍作为值；单列表没有横向合并信号，仍走普通数据路径。
     """
     grid: list[list[TableCell | None]] = [
         [None] * table.column_count for _ in range(table.row_count)
@@ -65,6 +84,19 @@ def _table_view(table: TableBlock) -> Iterator[
         table.column_count > 1 and not headers[row] and _is_full_width_row(cells, table.column_count)
         for row, cells in enumerate(unique)
     ]
+    signatures = [_row_signature(cells, row) for row, cells in enumerate(grid)]
+    repeated = {signature for signature, count in Counter(signatures).items()
+                if signature is not None and count >= 2}
+    # 至少一个 occurrence 必须紧接独立全宽行，并紧邻正常 data。
+    # 重复候选本身不能充当后续 data 证据，避免纯重复行带互相证明。
+    reliable = {
+        signature for row, signature in enumerate(signatures)
+        if signature in repeated and 0 < row < table.row_count - 1
+        and contextual[row - 1] and unique[row - 1][0].row_index == row - 1
+        and not headers[row + 1] and signatures[row + 1] is not None
+        and signatures[row + 1] not in repeated
+    }
+    headers = [header or signature in reliable for header, signature in zip(headers, signatures)]
     # 从后向前记录连续 header band 终点，lookahead 不反复扫描长表头。
     header_ends = list(range(table.row_count + 1))
     for row in reversed(range(table.row_count)):

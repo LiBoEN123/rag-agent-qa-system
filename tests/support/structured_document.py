@@ -52,6 +52,36 @@ def admission_structure() -> ParsedDocument:
     ),))
 
 
+def imut_admission_structure() -> ParsedDocument:
+    """冻结 1741.htm 实抓 Docling b9 前 11 行；保留总计行及缺失的 header flags。
+
+    2026-09-16 经 ExternalKnowledgeSourceService 抓取，原表 610×5。
+    仅将 block_id/order 归零；row indices、文本、spans 和 flags 与原输出一致。
+    """
+    rows = (
+        ("内蒙古工业大学2026年分省录取分数统计",),
+        ("内蒙古本科提前B段艺术类",),
+        ("专业名称", "最高分", "最低分", "平均分", "备注"),
+        ("服装与服饰设计", "501", "465", "470", "投档成绩"),
+        ("环境设计", "487", "475", "477.87", "投档成绩"),
+        ("总计", "501", "465", "475.4", "投档成绩"),
+        ("内蒙古本科批物理类",),
+        ("专业名称", "最高分", "最低分", "平均分", "备注"),
+        ("安全工程", "527", "501", "508.32", "物理类"),
+        ("材料成型及控制工程", "549", "509", "517.98", "物理类"),
+        ("材料成型及控制工程", "503", "480", "487.75", "民族班"),
+    )
+    return ParsedDocument(blocks=(TableBlock(
+        block_id="b0", order=0, row_count=len(rows), column_count=5,
+        cells=tuple(
+            TableCell(text=text, row_index=row, column_index=column,
+                      column_span=5 if len(values) == 1 else 1, is_header=False)
+            for row, values in enumerate(rows)
+            for column, text in enumerate(values)
+        ),
+    ),))
+
+
 def registration_structure() -> ParsedDocument:
     """已持久化合同形态的中文表格，供 chunking 与真实索引/检索测试共用。"""
     values = [

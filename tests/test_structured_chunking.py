@@ -7,7 +7,9 @@ from app.ingestion import IngestionRequester, IngestionService, build_knowledge_
 from app.ingestion.document_blocks import ParsedDocument, TableBlock, TableCell, TextBlock
 from app.rag import indexing
 from app.rag.structured_chunking import chunk_structured_document
-from tests.support.structured_document import ADMISSION_ROWS, admission_structure, registration_structure
+from tests.support.structured_document import (
+    ADMISSION_ROWS, admission_structure, imut_admission_structure, registration_structure,
+)
 
 
 def _candidate(structure, *, file_type="pdf", source_type="local_file"):
@@ -371,3 +373,144 @@ def test_full_width_header_and_single_column_table_preserve_existing_projection(
     )))
     assert single.page_content == "[表格]\n表头：材料\n材料：证件。\n[/表格]"
     assert (single.metadata["row_start"], single.metadata["row_end"]) == (1, 1)
+
+
+@pytest.mark.parametrize("chunk_size", [160, 10000])
+def test_real_header_signature_fallback_reaches_candidate_chunks_without_mutating_structure(chunk_size):
+    candidate = _candidate(imut_admission_structure(), source_type="firecrawl", file_type="html")
+    original = candidate.model_dump_json()
+    assert all(not cell.is_header for cell in candidate.document.structured_content.blocks[0].cells)
+    chunks = indexing.candidate_to_langchain_documents(candidate, chunk_size=chunk_size, chunk_overlap=0)
+    assert {chunk.metadata["section_title"] for chunk in chunks} == {
+        "内蒙古本科提前B段艺术类", "内蒙古本科批物理类",
+    }
+    for chunk in chunks:
+        assert "上下文：内蒙古工业大学2026年分省录取分数统计" in chunk.page_content
+        assert "表头：专业名称；最高分；最低分；平均分；备注" in chunk.page_content
+        assert "专业名称：专业名称" not in chunk.page_content
+        assert chunk.metadata["source_type"] == "firecrawl"
+    art = next(chunk for chunk in chunks if "专业名称：服装与服饰设计" in chunk.page_content)
+    assert art.metadata["section_title"] == "内蒙古本科提前B段艺术类"
+    assert art.metadata["section_index"] == 1
+    physics = next(chunk for chunk in chunks if "专业名称：安全工程" in chunk.page_content)
+    assert physics.metadata["section_title"] == "内蒙古本科批物理类"
+    assert physics.metadata["section_index"] == 2
+    assert "分区：内蒙古本科批物理类" in physics.page_content
+    assert "专业名称：安全工程；最高分：527；最低分：501；平均分：508.32；备注：物理类。" in physics.page_content
+    text = "\n".join(chunk.page_content for chunk in chunks)
+    assert text.count("专业名称：材料成型及控制工程；") == 2
+    assert "最高分：549；最低分：509；平均分：517.98；备注：物理类。" in text
+    assert "最高分：503；最低分：480；平均分：487.75；备注：民族班。" in text
+    assert [row for chunk in chunks for row in range(chunk.metadata["row_start"], chunk.metadata["row_end"] + 1)] == [
+        3, 4, 5, 8, 9, 10,
+    ]
+    assert candidate.model_dump_json() == original
+
+
+def _neutral_repeated_table():
+    cells = []
+    for start, section, value in ((0, "Group A", "alpha"), (3, "Group B", "beta")):
+        cells.extend((
+            TableCell(text=section, row_index=start, column_index=0, column_span=3),
+            TableCell(text="Item", row_index=start + 1, column_index=0, column_span=2),
+            TableCell(text="Value", row_index=start + 1, column_index=2),
+            TableCell(text=value, row_index=start + 2, column_index=0, column_span=2),
+            TableCell(text="10", row_index=start + 2, column_index=2),
+        ))
+    return TableBlock(block_id="b0", order=0, row_count=6, column_count=3, cells=tuple(cells))
+
+
+def test_fallback_is_generic_normalized_exact_and_uses_colspan_anchors_in_column_order():
+    table = _neutral_repeated_table()
+    cells = tuple(cell.model_copy(update={"text": "  Ｉｔｅｍ\n name  " if cell.row_index == 1 else "Item name"})
+                  if cell.column_index == 0 and cell.row_index in (1, 4) else cell
+                  for cell in reversed(table.cells))
+    structure = ParsedDocument(blocks=(table.model_copy(update={"cells": cells}),))
+    original = structure.model_dump_json()
+    chunks = chunk_structured_document(
+        structure, splitter=RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=0), chunk_size=600,
+    )
+    assert [chunk.metadata["section_title"] for chunk in chunks] == ["Group A", "Group B"]
+    assert [chunk.metadata["row_start"] for chunk in chunks] == [2, 5]
+    assert "Item name：beta；Value：10。" in chunks[1].page_content
+    assert structure.model_dump_json() == original
+
+
+@pytest.mark.parametrize("missing_evidence", [
+    "context", "second_occurrence", "data", "two_nonempty_cells", "same_columns", "same_text", "multi_column",
+])
+def test_repeated_rows_without_structural_evidence_remain_data(missing_evidence):
+    table = _neutral_repeated_table()
+    cells = list(table.cells)
+    if missing_evidence == "context":
+        cells = [cell for cell in cells if cell.row_index not in (0, 3)]
+    elif missing_evidence == "second_occurrence":
+        cells = [cell for cell in cells if cell.row_index != 4]
+    elif missing_evidence == "data":
+        cells = [cell for cell in cells if cell.row_index not in (2, 5)]
+    elif missing_evidence == "two_nonempty_cells":
+        cells = [cell.model_copy(update={"text": ""}) if cell.row_index in (1, 4) and cell.column_index == 2
+                 else cell for cell in cells]
+    elif missing_evidence == "same_columns":
+        cells = [cell.model_copy(update={"column_span": 1}) if cell.row_index == 4 and cell.column_index == 0
+                 else cell.model_copy(update={"column_index": 1, "column_span": 2}) if cell.row_index == 4
+                 else cell for cell in cells]
+    elif missing_evidence == "same_text":
+        cells = [cell.model_copy(update={"text": "Items"}) if cell.row_index == 4 and cell.column_index == 0
+                 else cell for cell in cells]
+    else:
+        cells = [cell for cell in cells if cell.row_index not in (1, 4)] + [
+            TableCell(text="Item", row_index=row, column_index=0, column_span=3) for row in (1, 4)
+        ]
+    chunks = _chunks(table.model_copy(update={"cells": tuple(cells)}), chunk_size=1)
+    assert all("section_title" not in chunk.metadata for chunk in chunks)
+    text = "\n".join(chunk.page_content for chunk in chunks)
+    assert "表头：列1；列2；列3" in text
+    assert "Item" in text
+    if missing_evidence == "context":
+        # 两行完全相同的普通数据必须保留两次。
+        assert text.count("列1 / 列2：Item；列3：Value。") == 2
+
+
+@pytest.mark.parametrize("inherited_context", [False, True])
+def test_fallback_rejects_rowspan_inherited_headers_or_context(inherited_context):
+    if inherited_context:
+        table = _neutral_repeated_table()
+        positions = {0: 0, 1: 2, 2: 3, 3: 4, 4: 6, 5: 7}
+        cells = tuple(cell.model_copy(update={"row_index": positions[cell.row_index], "row_span": 2})
+                      if cell.row_index in (0, 3) else
+                      cell.model_copy(update={"row_index": positions[cell.row_index]}) for cell in table.cells)
+        table = table.model_copy(update={"cells": cells, "row_count": 8})
+    else:
+        table = TableBlock(block_id="b0", order=0, row_count=4, column_count=2, cells=(
+            TableCell(text="Group", row_index=0, column_index=0, column_span=2),
+            TableCell(text="Item", row_index=1, column_index=0, row_span=2),
+            TableCell(text="Value", row_index=1, column_index=1, row_span=2),
+            TableCell(text="alpha", row_index=3, column_index=0),
+            TableCell(text="10", row_index=3, column_index=1),
+        ))
+    assert all("section_title" not in chunk.metadata for chunk in _chunks(table))
+
+
+def test_fallback_requires_repetition_within_same_table_and_real_data_after_header():
+    table = _neutral_repeated_table()
+    # 每张表只有一个表头；不能跨 TableBlock 累计签名。
+    first = table.model_copy(update={"row_count": 3, "cells": table.cells[:5]})
+    structure = ParsedDocument(blocks=(first, first.model_copy(update={"block_id": "b1", "order": 1})))
+    chunks = indexing.candidate_to_langchain_documents(_candidate(structure))
+    assert all("section_title" not in chunk.metadata for chunk in chunks)
+    # 没有 data 的连续重复行不能互相当成后续 data 的证据。
+    cells = table.cells[:3] + tuple(cell.model_copy(update={"row_index": 2}) for cell in table.cells[1:3])
+    assert all("section_title" not in chunk.metadata for chunk in _chunks(
+        first.model_copy(update={"cells": cells}),
+    ))
+
+
+def test_fallback_header_refresh_without_new_context_keeps_first_section():
+    table = imut_admission_structure().blocks[0]
+    table = table.model_copy(update={"cells": tuple(cell for cell in table.cells if cell.row_index != 6)})
+    chunks = _chunks(table, chunk_size=10000)
+    assert len(chunks) == 2
+    assert all(chunk.metadata["section_title"] == "内蒙古本科提前B段艺术类" for chunk in chunks)
+    assert [(chunk.metadata["row_start"], chunk.metadata["row_end"]) for chunk in chunks] == [(3, 5), (8, 10)]
+    assert all("专业名称：专业名称" not in chunk.page_content for chunk in chunks)
