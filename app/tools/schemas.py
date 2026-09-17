@@ -6,6 +6,7 @@
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
+from langchain_core.documents import Document
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -14,6 +15,8 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+from app.tools.evidence import validate_evidence_documents
 
 _WEB_FETCH_URL_MAX_CHARS = 2048
 
@@ -86,20 +89,17 @@ class SearchKnowledgeBaseOutput(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    query: str = Field(..., min_length=1)
     count: int = Field(..., ge=0)
-    chunks: list[dict[str, Any]]
-    top_chunk_ids: list[int | str | None]
-    top_scores: list[float]
+    evidence: list[Document]
+
+    _validate_evidence = field_validator("evidence")(validate_evidence_documents)
 
     @model_validator(mode="after")
     def validate_evidence_counts(self) -> "SearchKnowledgeBaseOutput":
         """确保公开证据列表与显式数量保持一致。"""
-        if self.count != len(self.chunks):
-            raise ValueError("count 必须等于 chunks 数量")
-        if len(self.top_chunk_ids) != self.count:
-            raise ValueError("top_chunk_ids 数量必须等于 count")
-        if len(self.top_scores) != self.count:
-            raise ValueError("top_scores 数量必须等于 count")
+        if self.count != len(self.evidence):
+            raise ValueError("count 必须等于 evidence 数量")
         return self
 
 
@@ -139,8 +139,10 @@ class GetChunkTextOutput(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    chunk_id: int | str
-    chunk: dict[str, Any]
+    count: Literal[1]
+    evidence: list[Document] = Field(..., min_length=1, max_length=1)
+
+    _validate_evidence = field_validator("evidence")(validate_evidence_documents)
 
 
 class WebSearchArgs(BaseModel):
@@ -265,12 +267,14 @@ class WebFetchOutput(BaseModel):
     published_date: str = Field(default="", max_length=100)
     language: str = Field(default="", max_length=50)
 
-    content: str = Field(..., max_length=20000)
+    evidence: list[Document] = Field(..., min_length=1, max_length=1)
     content_length: int = Field(..., ge=0, le=20000)
     truncated: bool
 
     extractor: Literal["trafilatura"] = "trafilatura"
     content_is_untrusted: Literal[True] = True
+
+    _validate_evidence = field_validator("evidence")(validate_evidence_documents)
 
     @field_validator("requested_url", "final_url")
     @classmethod
@@ -281,8 +285,11 @@ class WebFetchOutput(BaseModel):
     @model_validator(mode="after")
     def validate_content_length(self) -> "WebFetchOutput":
         """确保显式长度与实际返回正文严格一致。"""
-        if self.content_length != len(self.content):
-            raise ValueError("content_length 必须等于 len(content)")
+        if self.content_length != len(self.evidence[0].page_content):
+            raise ValueError("content_length 必须等于 len(evidence[0].page_content)")
+        metadata = self.evidence[0].metadata
+        if metadata["source_type"] != "web_page" or metadata["source_uri"] != self.final_url:
+            raise ValueError("网页 evidence 来源必须与 final_url 一致")
         return self
 
 
@@ -366,12 +373,14 @@ class WebPdfFetchOutput(BaseModel):
     pages_read: int = Field(..., ge=1, le=20)
     page_numbers: list[int] = Field(..., min_length=1, max_length=20)
 
-    content: str = Field(..., min_length=1, max_length=30000)
+    evidence: list[Document] = Field(..., min_length=1, max_length=1)
     content_length: int = Field(..., ge=1, le=30000)
     truncated: bool
 
     extractor: Literal["pypdf"] = "pypdf"
     content_is_untrusted: Literal[True] = True
+
+    _validate_evidence = field_validator("evidence")(validate_evidence_documents)
 
     @field_validator("requested_url", "final_url")
     @classmethod
@@ -382,8 +391,13 @@ class WebPdfFetchOutput(BaseModel):
     @model_validator(mode="after")
     def validate_page_and_content_contract(self) -> "WebPdfFetchOutput":
         """校验页码、显式计数与实际返回正文的一致性。"""
-        if self.content_length != len(self.content):
-            raise ValueError("content_length 必须等于 len(content)")
+        if self.content_length != len(self.evidence[0].page_content):
+            raise ValueError("content_length 必须等于 len(evidence[0].page_content)")
+        metadata = self.evidence[0].metadata
+        if metadata["source_type"] != "web_pdf" or metadata["source_uri"] != self.final_url:
+            raise ValueError("PDF evidence 来源必须与 final_url 一致")
+        if metadata.get("page_numbers") != self.page_numbers:
+            raise ValueError("PDF evidence page_numbers 必须与实际返回页码一致")
         if self.pages_read != len(self.page_numbers):
             raise ValueError("pages_read 必须等于 page_numbers 数量")
         if self.page_numbers != sorted(set(self.page_numbers)):

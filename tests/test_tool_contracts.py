@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 import pytest
+from langchain_core.documents import Document
 from pydantic import BaseModel, Field
 
 from app.agent.framework_tools import build_local_tool, local_tool_contract
@@ -23,24 +24,55 @@ from app.tools.schemas import SearchKnowledgeBaseOutput
 
 def test_knowledge_output_contains_only_retrieval_evidence():
     schema = SearchKnowledgeBaseOutput.model_json_schema()
-    assert set(schema["properties"]) == {"count", "chunks", "top_chunk_ids", "top_scores"}
+    assert set(schema["properties"]) == {"query", "count", "evidence"}
     assert "RAGResult" not in json.dumps(schema)
 
 
-@pytest.mark.parametrize("field", ["rag_result", "answer", "references"])
+@pytest.mark.parametrize("field", ["rag_result", "answer", "references", "chunks", "top_chunk_ids", "top_scores"])
 def test_knowledge_output_rejects_answer_contract(field):
     with pytest.raises(ValueError):
         SearchKnowledgeBaseOutput.model_validate({
-            "count": 0, "chunks": [], "top_chunk_ids": [], "top_scores": [], field: {},
+            "query": "test", "count": 0, "evidence": [], field: {},
         })
 
 
-@pytest.mark.parametrize("field,value", [("count", 1), ("top_chunk_ids", ["a"]), ("top_scores", [0.8])])
-def test_knowledge_output_keeps_count_consistency(field, value):
+def test_knowledge_output_keeps_count_consistency():
     with pytest.raises(ValueError):
         SearchKnowledgeBaseOutput.model_validate({
-            "count": 0, "chunks": [], "top_chunk_ids": [], "top_scores": [], field: value,
+            "query": "test", "count": 1, "evidence": [],
         })
+
+
+@pytest.mark.parametrize("field,value", [
+    ("id", None), ("id", "  "), ("page_content", ""), ("page_content", " \n"),
+    ("source_type", None), ("source_type", " "), ("source_uri", None),
+    ("source_uri", " "), ("content_is_untrusted", False),
+    ("content_is_untrusted", 1), ("content_is_untrusted", "true"),
+])
+def test_evidence_rejects_missing_identity_body_or_trust_metadata(field, value):
+    document = Document(id="test", page_content="正文", metadata={
+        "source_type": "knowledge_base", "source_uri": "test://1",
+        "content_is_untrusted": True,
+    }).model_dump(mode="json")
+    target = document if field in {"id", "page_content"} else document["metadata"]
+    target[field] = value
+    with pytest.raises(ValueError, match=field):
+        SearchKnowledgeBaseOutput.model_validate({
+            "query": "test", "count": 1, "evidence": [document],
+        })
+
+
+def test_document_uses_native_pydantic_json_transport():
+    document = Document(id="test", page_content="原始正文", metadata={
+        "source_type": "knowledge_base", "source_uri": "test://1",
+        "content_is_untrusted": True,
+    })
+    output = SearchKnowledgeBaseOutput.model_validate({
+        "query": "test", "count": 1, "evidence": [document],
+    })
+    assert isinstance(output.evidence[0], Document)
+    dumped = output.model_dump(mode="json")
+    assert json.loads(json.dumps(dumped))["evidence"] == [document.model_dump(mode="json")]
 
 
 class EchoArgs(BaseModel):

@@ -106,7 +106,7 @@ def _evidence(model, round_index, call_id):
     assert payload["ok"] is True
     assert payload["runtime"]["attempt_count"] == 1
     assert payload["governance"]["decision"] == "allow"
-    assert set(payload["output"]) == {"count", "chunks", "top_chunk_ids", "top_scores"}
+    assert set(payload["output"]) == {"query", "count", "evidence"}
     return payload["output"]
 
 
@@ -125,9 +125,16 @@ async def test_search_returns_reranked_evidence_to_next_model(monkeypatch, setti
     assert len(model.received_messages) == 2
     evidence = _evidence(model, 1, "search-a")
     assert evidence["count"] == 1
-    assert evidence["top_chunk_ids"] == ["b"]
-    assert evidence["top_scores"] == [0.8123]  # hybrid score，不是 rerank score
-    assert evidence["chunks"][0]["rerank_score"] == 0.9
+    assert evidence["query"] == "奖学金 申请时间"
+    document = evidence["evidence"][0]
+    assert document["id"] and document["type"] == "Document"
+    assert document["page_content"] == "奖学金申请于九月开始。"
+    assert document["metadata"]["chunk_id"] == "b"
+    assert document["metadata"]["hybrid_score"] == 0.81234
+    assert document["metadata"]["rerank_score"] == 0.9
+    assert document["metadata"]["source_type"] == "knowledge_base"
+    assert document["metadata"]["source_uri"]
+    assert document["metadata"]["content_is_untrusted"] is True
     result = output["result"]
     assert result["answer"] == "奖学金申请于九月开始。"
     assert result["references"] == []
@@ -139,6 +146,9 @@ async def test_search_returns_reranked_evidence_to_next_model(monkeypatch, setti
     assert trace["hits"] == [{"chunk_id": "b", "rerank": 0.9, "score": 0.81234,
                               "bm25": 4.0, "vector": 0.6, "file_name": "policy.md"}]
     assert [e.event_type.value for e in audit] == ["requested", "started", "succeeded"]
+    assert audit[-1].sanitized_output_summary == {
+        "count": 1, "top_chunk_ids": ["b"], "top_scores": [0.8123],
+    }
 
 
 @pytest.mark.asyncio
@@ -152,7 +162,7 @@ async def test_zero_results_are_successful_evidence(monkeypatch, settings_factor
 
     assert len(model.received_messages) == 2
     assert _evidence(model, 1, "search-a") == {
-        "count": 0, "chunks": [], "top_chunk_ids": [], "top_scores": [],
+        "query": "奖学金 申请时间", "count": 0, "evidence": [],
     }
     cross_encoder.predict.assert_not_called()
     assert output["result"]["answer"] == final

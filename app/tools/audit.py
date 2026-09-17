@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from app.config import AppSettings, get_settings
+from app.rag.scoring import safe_float
 from app.tools.contracts import ToolAuditOutputMode, ToolSpec
 from app.common.redaction import (
     DEFAULT_SENSITIVE_KEYS,
@@ -169,14 +170,14 @@ def sanitize_tool_input(
     )
 
 
-def _limited_sequence(value: Any, *, limit: int = 10) -> list[Any]:
-    """返回只含标量的有限序列摘要。"""
-    if not isinstance(value, (list, tuple)):
+def retrieval_evidence_metadata(output: dict[str, Any]) -> list[dict[str, Any]]:
+    """只读取已序列化 evidence 的前十项 metadata，供审计与公开 trace 派生。"""
+    evidence = output.get("evidence")
+    if not isinstance(evidence, list):
         return []
     return [
-        item if item is None or isinstance(item, (str, int, float, bool))
-        else f"<{type(item).__name__}>"
-        for item in value[:limit]
+        item["metadata"] if isinstance(item.get("metadata"), dict) else {}
+        for item in evidence[:10] if isinstance(item, dict)
     ]
 
 
@@ -209,12 +210,11 @@ def summarize_tool_output(
         return {"type": type(value).__name__}
 
     if spec.name == "search_knowledge_base":
+        metadata = retrieval_evidence_metadata(value)
         summary = {
             "count": value.get("count", 0),
-            "top_chunk_ids": _limited_sequence(
-                value.get("top_chunk_ids"),
-            ),
-            "top_scores": _limited_sequence(value.get("top_scores")),
+            "top_chunk_ids": [item.get("chunk_id") for item in metadata],
+            "top_scores": [round(safe_float(item.get("hybrid_score")), 4) for item in metadata],
         }
         return redact_sensitive_data(
             summary,

@@ -123,9 +123,12 @@ def _knowledge_output():
     knowledge = {
         "ok": True, "status": "success",
         "output": {
+            "query": "测试",
             "count": 2,
-            "chunks": [{"chunk_id": "a", "text": "候选一"}, {"chunk_id": "b", "text": "候选二"}],
-            "top_chunk_ids": ["a", "b"], "top_scores": [0.9, 0.8],
+            "evidence": [
+                {"page_content": "候选一", "metadata": {"chunk_id": "a", "hybrid_score": 0.9}},
+                {"page_content": "候选二", "metadata": {"chunk_id": "b", "hybrid_score": 0.8}},
+            ],
         },
     }
     return {
@@ -484,7 +487,7 @@ def test_tool_result_summary_uses_last_three_public_tool_summaries(summaries):
 def test_knowledge_summary_uses_public_final_chunk_count():
     output = _knowledge_output()
     output["governance_events"][1]["result"]["output"].update(
-        count=2, chunks=[{"chunk_id": "one-visible-hit"}],
+        count=2, evidence=[{"metadata": {"chunk_id": "one-visible-hit"}}],
     )
     result = build_framework_agent_result(_invocation(), output)
     tool_trace = next(step for step in result["tool_trace"] if step["step"] == "tool_call")

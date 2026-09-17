@@ -115,7 +115,7 @@ class ChatWebSearchModel(ChatAgentModel):
         output = payload["output"]
         return AIMessage(
             content=(
-                f"{output['title']}：{output['content']} "
+                f"{output['title']}：{output['evidence'][0]['page_content']} "
                 f"来源：{output['final_url']}"
             )
         )
@@ -748,7 +748,7 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
     assert pdf_message.tool_call_id == "chat-pdf-fetch-call"
     pdf_output = json.loads(pdf_message.content)["output"]
     assert pdf_output["page_numbers"] == [1, 2]
-    assert "[Page 1]" in pdf_output["content"]
+    assert "[Page 1]" in pdf_output["evidence"][0]["page_content"]
     assert "Governed Web PDF Fixture" in outcome.result["answer"]
     assert model.selected_url in outcome.result["answer"]
     assert session_writes[1][0:2] == ("session-chat-pdf", "assistant")

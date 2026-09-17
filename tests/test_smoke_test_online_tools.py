@@ -1,5 +1,7 @@
 """Offline command tests for the governed Online Tool smoke CLI."""
 
+import json
+
 import pytest
 
 from app.tools.context import PrincipalType, ToolInvocationContext
@@ -150,3 +152,12 @@ def test_runtime_failure_result_returns_one(monkeypatch):
     args = smoke.build_parser().parse_args(["search", "--query", "news"])
 
     assert smoke.run_command(args, registry=registry) == 1
+
+
+@pytest.mark.parametrize("command", ["fetch", "pdf"])
+def test_body_preview_reads_document_evidence(command, capsys):
+    smoke._print_result(command, {
+        "ok": True, "status": "success",
+        "output": {"evidence": [{"page_content": "正文" * 500}]},
+    }, 1)
+    assert json.loads(capsys.readouterr().out)["content_preview"] == ("正文" * 500)[:500]

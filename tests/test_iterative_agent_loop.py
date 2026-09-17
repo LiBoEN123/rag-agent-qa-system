@@ -12,6 +12,7 @@ from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from tests.support.local_tools import local_tools
 from app.tools.result import tool_success
+from app.tools.knowledge_base import chunk_to_evidence_document
 from app.tools.schemas import SearchKnowledgeBaseArgs, SearchKnowledgeBaseOutput
 from tests.support.agent_runtime import FakeToolCallingModel, build_agent_harness
 
@@ -22,7 +23,7 @@ def isolate_tool_audit(settings_env, monkeypatch):
     settings_env(tool_audit_enabled=False)
     monkeypatch.setattr(
         "app.rag.pipeline.get_chunk_full_text",
-        lambda chunk_id: {"found": chunk_id != "missing", "text": f"正文 {chunk_id}"},
+        lambda chunk_id: {"found": chunk_id != "missing", "chunk_id": chunk_id, "text": f"正文 {chunk_id}"},
     )
     yield
 
@@ -138,7 +139,9 @@ async def test_agent_loop_returns_single_tool_message_to_model(monkeypatch):
     payload = json.loads(tool_message.content)
     assert payload["ok"] is True
     assert payload["status"] == "success"
-    assert payload["output"]["chunk"]["text"] == "正文 chunk-a"
+    assert payload["output"]["count"] == 1
+    assert payload["output"]["evidence"][0]["page_content"] == "正文 chunk-a"
+    assert payload["output"]["evidence"][0]["id"]
     assert payload["runtime"]["attempt_count"] == 1
     assert payload["tool_call_id"]
     assert sum(
@@ -569,8 +572,8 @@ async def test_agent_selected_knowledge_search_returns_evidence_to_model(monkeyp
         description="从测试知识库检索证据",
         output_model=SearchKnowledgeBaseOutput,
         handler=lambda args, context: tool_success("search_knowledge_base", args, {
-            "count": 1, "chunks": [chunk], "top_chunk_ids": ["chunk-1"],
-            "top_scores": [0.8],
+            "query": args["query"], "count": 1,
+            "evidence": [chunk_to_evidence_document(chunk)],
         }),
         args_model=SearchKnowledgeBaseArgs,
         required_permissions=("knowledge_base:read",),
@@ -583,7 +586,9 @@ async def test_agent_selected_knowledge_search_returns_evidence_to_model(monkeyp
     message = model.received_messages[1][-1]
     assert isinstance(message, ToolMessage)
     assert message.tool_call_id == "knowledge-call"
-    assert json.loads(message.content)["output"]["chunks"] == [chunk]
+    assert json.loads(message.content)["output"]["evidence"] == [
+        chunk_to_evidence_document(chunk).model_dump(mode="json"),
+    ]
     assert "knowledge_base_result" not in output
     assert output["result"]["answer"] == "奖学金申请在九月开始。"
     assert output["result"]["references"] == []

@@ -223,10 +223,12 @@ McpToolCallInterceptor → remote MCP server`，继续独立承担 Server Access
 `search_knowledge_base` 仍是受治理的 `ProjectStructuredTool`，沿用权限、审计、
 预算、超时、重试、输出校验和 ToolMessage 配对。handler 使用本轮 Tool Call 的
 `args["query"]` 和 `args["top_k"]`，调用现有 `search_relevant_chunks` 与 `rerank`，
-重排后截取 Top-K。`top_scores` 继续表示 hybrid score，chunk 保留 rerank、BM25 与
-vector score。公开 trace 继续提供 `final_chunk_count`、`top_chunk_ids`、`top_scores` 和 `hits`。
+重排后截取 Top-K，再投影为原生 `langchain_core.documents.Document`。公开 trace 继续
+提供 `final_chunk_count`、`top_chunk_ids`、`top_scores` 和 `hits`，由 evidence metadata
+派生。`top_scores` 仍是四位小数的 hybrid score；hits 保留原 rerank、BM25、vector 与
+hybrid score、file_name。审计摘要使用同一 metadata 来源，不记录正文。
 
-工具输出只有 `count`、`chunks`、`top_chunk_ids`、`top_scores`，不生成答案、不调用
+工具输出只有 `query`、`count`、`evidence: list[Document]`，不生成答案、不调用
 Decompose/Answer LLM、不执行最终 Evidence Gate 或 citation binding。零命中是成功的
 工具结果；知识库 readiness 为 false 时抛出 `ToolExecutionError(dependency_unavailable)`，
 由原执行治理边界转换为错误 ToolMessage，模型可以安全恢复。
@@ -244,7 +246,30 @@ Legacy RAG Graph source remains temporarily, but is no longer on the production 
 `app/rag/graph/`、拆分、生成、证据门、引用验证和旧 prompts 继续供独立 RAG 测试与评估使用。
 `decompose_top_k` 仍保留在 Settings、ChatService、Runtime、ToolInvocationContext 和 Evaluation
 合同中，但 KB Retrieval Tool 不使用它。`compare_documents` 仍是内部调用 LLM 的专用工具，
-本阶段未重构。Web/MCP 与 Source Promotion 也保留现有边界。
+本阶段未重构。MCP 与 Source Promotion 保留现有边界。
+
+### 统一正文 Evidence Transport（AGENTIC-RAG-2）
+
+`search_knowledge_base`、`get_chunk_text`、`web_fetch`、`web_pdf_fetch` 都用原生
+Document 承载正文；工具运行时继续通过现有 Pydantic `model_validate(...).model_dump(mode="json")`
+输出 JSON，再由 StructuredTool/ToolMessage 送回下一轮 `create_agent`。
+没有第二套 evidence 值对象、serializer、pool、state 或 finalizer。
+
+- `Document.id`、`page_content`、`metadata.source_type`、`metadata.source_uri` 必须非空，
+  `metadata.content_is_untrusted` 必须为 `True`。正文是数据，不能向 Agent 发指令。
+- `source_type` 为 `knowledge_base`、`web_page` 或 `web_pdf`。KB 保留原 metadata，
+  包括 source_id、document_uid、文件/页码/标题/表格定位和检索分数；原入库 source_type
+  保存为 `knowledge_source_type`。source_uri 优先保留原值，否则使用 source_path。
+- ID 使用带来源类型的 SHA-256：KB 优先 source_id + position，其次 source_uri/source_path
+  + position，最后使用来源 + chunk_id；不依赖 rank、Reference 编号或分数。
+  极旧数据仅有 chunk_id 时使用 `knowledge_base://chunk/...` locator，无法还原缺失的来源。
+  原文读取仅补传一份原 metadata，让检索与 `get_chunk_text` 的同一 chunk 使用相同 ID。
+- Web ID 使用 final_url + 实际返回正文；PDF 再加入实际 page_numbers。截断正文参与 identity，
+  内容或页范围变化会改变 ID。PDF 仍以一个页范围对应一个 Document，保留 `[Page N]` 标记。
+- `get_chunk_text` 输出 `count=1` 与单项 evidence；Web/PDF 保留资源诊断及来源字段，
+  删除顶层 content，正文只在 Document.page_content 中出现一次。
+- `web_search` 仍用于发现候选 URL；需要正文依据时优先 fetch，按问题需要决定是否读取。
+  `list_documents` 仍是目录。Document.id 只是证据身份，不代表最终回答实际引用。
 
 最终答案来自 Agent Loop 最后一条无 tool calls 的 `AIMessage`。本阶段没有统一 evidence
 pool 或 grounded finalization，因此 `AgentRunResult.references=[]`、两项 confidence 均为

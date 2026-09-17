@@ -1,4 +1,5 @@
 import json
+from copy import deepcopy
 
 from pydantic import RootModel
 
@@ -8,6 +9,7 @@ from pydantic import ValidationError
 from app.tools.context import ToolInvocationContext
 from app.tools.catalog import ToolSpec
 from app.tools.result import tool_success
+from app.tools.knowledge_base import chunk_to_evidence_document
 from tests.support.local_tools import invoke_local_tool
 from app.tools.schemas import (
     SearchKnowledgeBaseArgs,
@@ -96,10 +98,9 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
     knowledge = specs_by_name["search_knowledge_base"]
     knowledge_schema = knowledge["output_schema"]
     assert set(knowledge_schema["properties"]) == {
+        "query",
         "count",
-        "chunks",
-        "top_chunk_ids",
-        "top_scores",
+        "evidence",
     }
     assert set(knowledge_schema["required"]) == set(
         knowledge_schema["properties"]
@@ -164,10 +165,15 @@ def test_invoke_local_tool_runs_search_and_rerank(monkeypatch, tool_registry):
     assert result["ok"] is True and result["status"] == "success"
     assert calls == [("学习年限", 5)]
     assert result["tool_input"] == {"query": "学习年限", "top_k": 5}
-    assert result["output"] == {
-        "count": 2, "chunks": [{**chunk, "rerank_score": 0.9} for chunk in candidates],
-        "top_chunk_ids": ["a", "b"], "top_scores": [0.8765, 0.0],
-    }
+    output = result["output"]
+    assert set(output) == {"query", "count", "evidence"}
+    assert output["query"] == "学习年限"
+    assert output["count"] == len(output["evidence"]) == 2
+    assert [doc["page_content"] for doc in output["evidence"]] == ["候选 A", "候选 B"]
+    metadata = [doc["metadata"] for doc in output["evidence"]]
+    assert [item["chunk_id"] for item in metadata] == ["a", "b"]
+    assert [item["hybrid_score"] for item in metadata] == [0.87654, "invalid-score"]
+    assert all(item["rerank_score"] == 0.9 for item in metadata)
 
 
 def test_search_knowledge_base_applies_tool_top_k_after_rerank(monkeypatch, tool_registry):
@@ -190,7 +196,8 @@ def test_search_knowledge_base_applies_tool_top_k_after_rerank(monkeypatch, tool
 
     assert result["ok"] is True
     assert result["output"] == {
-        "count": 1, "chunks": [chunks[1]], "top_chunk_ids": ["b"], "top_scores": [0.8],
+        "query": "政策", "count": 1,
+        "evidence": [chunk_to_evidence_document(chunks[1]).model_dump(mode="json")],
     }
 
 
@@ -206,9 +213,8 @@ def test_search_knowledge_base_rejects_inconsistent_output_counts(tool_registry)
                 args,
                 {
                     "count": 1,
-                    "chunks": [],
-                    "top_chunk_ids": [],
-                    "top_scores": [],
+                    "query": args["query"],
+                    "evidence": [],
                 },
             )})
     )
@@ -272,10 +278,94 @@ def test_get_chunk_text_keeps_integer_and_string_ids(
     assert result["ok"] is True
     assert received == [expected]
     assert result["tool_input"] == {"chunk_id": expected}
-    assert result["output"] == {
-        "chunk_id": expected,
-        "chunk": {"found": True, "chunk_id": expected, "text": "测试正文"},
+    assert result["output"]["count"] == 1
+    document = result["output"]["evidence"][0]
+    assert document["id"]
+    assert document["page_content"] == "测试正文"
+    assert document["metadata"]["chunk_id"] == expected
+    assert document["metadata"]["source_uri"].startswith("knowledge_base://chunk/")
+
+
+@pytest.mark.parametrize("source_id", ["source-policy", None])
+def test_retrieval_and_real_chunk_lookup_share_identity_and_provenance(
+    monkeypatch, tool_registry, source_id,
+):
+    from app.rag import pipeline
+
+    metadata = {
+        "chunk_id": 0, "source_path": "data/policy.pdf", "position": 2,
+        "file_name": "policy.pdf", "file_type": "pdf", "page_number": 3,
+        "document_uid": "document-policy", "title_path": "政策 > 申请",
+        "block_id": "b9", "table_id": "t1", "row_start": 4, "row_end": 6,
+        "source_type": "local_file",
     }
+    if source_id:
+        metadata.update(source_id=source_id, source_uri="file:///data/policy.pdf")
+    chunk = {"text": "完整申请要求", "metadata": metadata}
+    original = deepcopy(chunk)
+    monkeypatch.setattr(pipeline, "chunks", [chunk])
+    monkeypatch.setattr(pipeline, "RAG_READY", True)
+    monkeypatch.setattr(pipeline, "search_relevant_chunks", lambda query, top_k: [chunk])
+    scores = {"bm25_score": 1.2, "vector_score": 0.4, "hybrid_score": 0.72, "rerank_score": 0.9}
+    monkeypatch.setattr(pipeline, "rerank", lambda chunks, query: [{**chunk, **scores}])
+
+    search = invoke_local_tool(tool_registry, "search_knowledge_base", {"query": "申请", "top_k": 1})
+    lookup = invoke_local_tool(tool_registry, "get_chunk_text", {"chunk_id": "0"})
+    assert search["ok"] is lookup["ok"] is True
+    retrieved = search["output"]["evidence"][0]
+    fetched = lookup["output"]["evidence"][0]
+    assert retrieved["id"] == fetched["id"]
+    assert retrieved["page_content"] == fetched["page_content"] == chunk["text"]
+    for document in (retrieved, fetched):
+        assert document["metadata"]["source_type"] == "knowledge_base"
+        assert document["metadata"]["knowledge_source_type"] == "local_file"
+        assert document["metadata"]["content_is_untrusted"] is True
+        assert document["metadata"]["source_uri"] == metadata.get("source_uri", metadata["source_path"])
+        for key, value in metadata.items():
+            if key != "source_type":
+                assert document["metadata"][key] == value
+    for key, value in scores.items():
+        assert retrieved["metadata"][key] == value
+    assert chunk == original  # 只投影，不修改原索引。
+
+
+def test_kb_identity_ignores_rank_scores_and_runtime_chunk_id():
+    chunk = {
+        "text": "原文", "chunk_id": 0, "reference_id": "Reference 1",
+        "metadata": {"source_id": "source-a", "position": 2, "source_path": "data/a.md"},
+    }
+    first = chunk_to_evidence_document(chunk)
+    assert first.id == chunk_to_evidence_document(chunk).id
+    assert first.id == chunk_to_evidence_document({
+        **chunk, "chunk_id": 999, "reference_id": "Reference 9", "rerank_score": 0.1,
+    }).id
+    for changed in ({"source_id": "source-b"}, {"position": 3}):
+        assert first.id != chunk_to_evidence_document({
+            **chunk, "metadata": {**chunk["metadata"], **changed},
+        }).id
+    assert "reference_id" not in first.metadata
+    assert "snippet" not in first.metadata
+
+
+def test_kb_chunk_id_fallback_is_deterministic_and_source_scoped():
+    chunk = {"chunk_id": 0, "text": "原文"}
+    first = chunk_to_evidence_document(chunk)
+    assert first.id == chunk_to_evidence_document({**chunk, "chunk_id": "0"}).id
+    assert first.id != chunk_to_evidence_document({**chunk, "chunk_id": 1}).id
+    assert chunk_to_evidence_document({**chunk, "source_path": "a.md"}).id != (
+        chunk_to_evidence_document({**chunk, "source_path": "b.md"}).id
+    )
+    with pytest.raises(ValueError, match="locator"):
+        chunk_to_evidence_document({"text": "无来源"})
+
+
+def test_kb_source_uri_prefers_original_metadata():
+    document = chunk_to_evidence_document({
+        "chunk_id": "a", "text": "原文", "source_uri": "https://example.com/projected",
+        "metadata": {"source_uri": "https://example.com/original", "source_path": "cache/a.md"},
+    })
+    assert document.metadata["source_uri"] == "https://example.com/original"
+    assert document.metadata["source_path"] == "cache/a.md"
 
 
 def test_list_documents_output_model_accepts_current_preview_shape(

@@ -23,6 +23,10 @@ app.api
 `app.ingestion` 定义的 repository contract，但 domain 不反向依赖 storage。
 `app.contracts | app.config | app.common` 是三个彼此独立的基础模块。
 
+工具正文证据直接使用 `langchain_core.documents.Document`。`app.tools.evidence` 只负责
+稳定 ID、构造与必填 metadata 校验；KB/Web/PDF 在各自工具中适配，Pydantic 输出校验和
+原生 ToolMessage 负责 JSON transport。它不持有 Agent state，也不负责最终引用绑定。
+
 PDF/DOCX 的稳定结构值对象位于 `app.ingestion.document_blocks`，由
 `KnowledgeDocument.structured_content` 持有并随 candidate JSON 持久化；
 Docling 仅由 `app.rag.parsing` infrastructure 适配，Local/Upload 共用此入口。

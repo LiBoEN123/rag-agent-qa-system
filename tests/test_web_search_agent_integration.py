@@ -86,7 +86,7 @@ class SearchFetchModel(RecordingModel):
         self.fetch_output = payload["output"]
         return AIMessage(
             content=(
-                f"{self.fetch_output['title']}：{self.fetch_output['content']} "
+                f"{self.fetch_output['title']}：{self.fetch_output['evidence'][0]['page_content']} "
                 f"来源：{self.fetch_output['final_url']}"
             )
         )
@@ -579,8 +579,8 @@ async def test_agent_searches_then_reads_pdf_through_project_tool(monkeypatch):
     assert pdf_message.tool_call_id == "pdf-fetch-call"
     pdf_payload = json.loads(pdf_message.content)
     assert pdf_payload["output"]["page_numbers"] == [1, 2]
-    assert "[Page 1]" in pdf_payload["output"]["content"]
-    assert "[Page 2]" in pdf_payload["output"]["content"]
+    assert "[Page 1]" in pdf_payload["output"]["evidence"][0]["page_content"]
+    assert "[Page 2]" in pdf_payload["output"]["evidence"][0]["page_content"]
     assert "Governed Web PDF Fixture" in output["result"]["answer"]
     assert model.selected_url in output["result"]["answer"]
     assert "[1, 2]" in output["result"]["answer"]

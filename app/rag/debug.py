@@ -44,6 +44,7 @@ def get_chunk_full_text(chunks, chunk_id: int | str):
                 "chunk_id": item["metadata"].get("chunk_id"),
                 "source_path": item["metadata"].get("source_path"),
                 "position": item["metadata"].get("position"),
+                "metadata": dict(item["metadata"]),
                 "text": item.get("text")
             }
 

@@ -11,6 +11,7 @@ from pypdf.errors import PyPdfError
 
 from app.config import AppSettings, get_settings
 from app.tools.context import ToolInvocationContext
+from app.tools.evidence import build_evidence_document
 from app.tools.errors import ToolErrorCode, ToolExecutionError
 from app.tools.result import tool_success
 from app.tools.web_download import (
@@ -196,12 +197,15 @@ def web_pdf_fetch(
         "start_page": args["start_page"],
         "pages_read": len(page_numbers),
         "page_numbers": page_numbers,
-        "content": content,
         "content_length": len(content),
         "truncated": truncated,
         "extractor": "pypdf",
         "content_is_untrusted": True,
     }
+    output["evidence"] = [build_evidence_document(
+        page_content=content, source_type="web_pdf", source_uri=resource.final_url,
+        identity=(resource.final_url, page_numbers, content), metadata=output,
+    )]
     return tool_success("web_pdf_fetch", args, output)
 
 

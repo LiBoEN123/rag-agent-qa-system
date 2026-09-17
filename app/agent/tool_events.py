@@ -3,9 +3,14 @@
 from collections.abc import Mapping
 from typing import Any
 
-from app.tools.audit import sanitize_tool_input, summarize_tool_output
+from app.tools.audit import (
+    retrieval_evidence_metadata,
+    sanitize_tool_input,
+    summarize_tool_output,
+)
 from app.common.redaction import redact_sensitive_data
 from app.config import get_settings
+from app.rag.scoring import safe_float
 from app.tools.catalog import get_local_tool_specs
 
 
@@ -104,32 +109,24 @@ def build_tool_trace(
     }
 
     if tool_name == "search_knowledge_base":
+        metadata = retrieval_evidence_metadata(output)
         trace.update(
             {
                 "final_chunk_count": output.get("count", 0),
-                "top_chunk_ids": list(output.get("top_chunk_ids", []))[:10]
-                if isinstance(output.get("top_chunk_ids"), (list, tuple))
-                else [],
-                "top_scores": list(output.get("top_scores", []))[:10]
-                if isinstance(output.get("top_scores"), (list, tuple))
-                else [],
+                "top_chunk_ids": [item.get("chunk_id") for item in metadata],
+                "top_scores": [round(safe_float(item.get("hybrid_score")), 4) for item in metadata],
             }
         )
         hits = []
-        for chunk in output.get("chunks", [])[:10]:
-            if not isinstance(chunk, dict):
-                continue
-            metadata = chunk.get("metadata") or {}
-            if not isinstance(metadata, dict):
-                metadata = {}
+        for item in metadata:
             hits.append(
                 {
-                    "chunk_id": chunk.get("chunk_id") or metadata.get("chunk_id"),
-                    "rerank": chunk.get("rerank_score"),
-                    "score": chunk.get("hybrid_score"),
-                    "bm25": chunk.get("bm25_score"),
-                    "vector": chunk.get("vector_score"),
-                    "file_name": chunk.get("file_name") or metadata.get("file_name"),
+                    "chunk_id": item.get("chunk_id"),
+                    "rerank": item.get("rerank_score"),
+                    "score": item.get("hybrid_score"),
+                    "bm25": item.get("bm25_score"),
+                    "vector": item.get("vector_score"),
+                    "file_name": item.get("file_name"),
                 }
             )
         trace["hits"] = hits

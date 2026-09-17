@@ -10,6 +10,7 @@ from trafilatura import extract
 
 from app.config import get_settings
 from app.tools.context import ToolInvocationContext
+from app.tools.evidence import build_evidence_document
 from app.tools.errors import ToolErrorCode, ToolExecutionError
 from app.tools.result import tool_success
 from app.tools.web_download import (
@@ -139,12 +140,15 @@ def web_fetch(args: dict[str, Any], context: ToolInvocationContext) -> dict[str,
         "author": author,
         "published_date": published_date,
         "language": language,
-        "content": content,
         "content_length": len(content),
         "truncated": truncated,
         "extractor": "trafilatura",
         "content_is_untrusted": True,
     }
+    output["evidence"] = [build_evidence_document(
+        page_content=content, source_type="web_page", source_uri=page.final_url,
+        identity=(page.final_url, content), metadata=output,
+    )]
     return tool_success("web_fetch", args, output)
 
 

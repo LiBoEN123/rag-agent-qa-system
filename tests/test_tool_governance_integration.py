@@ -35,7 +35,7 @@ def test_public_tool_trace_redacts_args_and_summarizes_chunk_output():
         result={
             "status": "success",
             "ok": True,
-            "output": {"chunk": {"text": chunk_text, "token": "raw-token"}},
+            "output": {"count": 1, "evidence": [{"page_content": chunk_text, "metadata": {"token": "raw-token"}}]},
             "governance": {"decision": "allow", "risk_level": "read_only"},
             "runtime": {"attempt_count": 1},
         },
@@ -65,10 +65,9 @@ def test_knowledge_tool_trace_projects_public_final_evidence():
         },
     ]
     output = {
+        "query": "对比两个政策",
         "count": 2,
-        "chunks": chunks,
-        "top_chunk_ids": ["final-b", "final-c"],
-        "top_scores": [0.82, 0.73],
+        "evidence": [{"metadata": chunk} for chunk in chunks],
     }
     trace = build_tool_trace(
         step_id=1,
@@ -242,35 +241,36 @@ def test_public_nonlocal_tool_trace_preserves_existing_redaction_boundary():
     assert "raw-" not in json.dumps(trace)
 
 
-def test_knowledge_tool_trace_caps_redacts_and_keeps_metadata_score_fallbacks():
-    chunks = [
+def test_knowledge_tool_trace_caps_redacts_and_derives_metadata_scores():
+    evidence = [
         {
-            "metadata": {"chunk_id": f"chunk-{index}", "file_name": "token=raw-token"},
-            "text": "private full chunk", "rerank_score": 0.9, "hybrid_score": 0.8,
-            "bm25_score": 0.7, "vector_score": 0.6,
+            "metadata": {
+                "chunk_id": f"chunk-{index}", "file_name": "token=raw-token",
+                "rerank_score": 0.9, "hybrid_score": 0.8,
+                "bm25_score": 0.7, "vector_score": 0.6,
+            },
+            "page_content": "private full chunk",
         }
         for index in range(12)
     ]
-    chunks[1].update(chunk_id="explicit-id", file_name="explicit.md")
-    chunks[2]["metadata"] = "invalid metadata"
-    chunks[3] = "invalid chunk"
+    evidence[1]["metadata"].update(chunk_id=0, file_name="explicit.md", hybrid_score="invalid-score")
+    evidence[2]["metadata"] = "invalid metadata"
+    evidence[3] = "invalid document"
     trace = build_tool_trace(
         step_id=1, tool_name="search_knowledge_base", tool_args={}, cost_ms=1,
         result={"ok": True, "output": {
-            "count": 12, "chunks": chunks,
-            "top_chunk_ids": tuple(f"chunk-{index}" for index in range(12)),
-            "top_scores": [0.8] * 12,
+            "count": 12, "evidence": evidence,
         }},
     )
     assert trace["final_chunk_count"] == 12
-    assert trace["top_chunk_ids"] == [f"chunk-{index}" for index in range(10)]
-    assert trace["top_scores"] == [0.8] * 10
+    assert trace["top_chunk_ids"] == ["chunk-0", 0, None, *[f"chunk-{index}" for index in range(4, 10)]]
+    assert trace["top_scores"] == [0.8, 0.0, 0.0, *[0.8] * 6]
     assert len(trace["hits"]) == 9
     assert trace["hits"][0] == {
         "chunk_id": "chunk-0", "file_name": "token=***REDACTED***",
         "rerank": 0.9, "score": 0.8, "bm25": 0.7, "vector": 0.6,
     }
-    assert trace["hits"][1]["chunk_id"] == "explicit-id"
+    assert trace["hits"][1]["chunk_id"] == 0
     assert trace["hits"][1]["file_name"] == "explicit.md"
     assert trace["hits"][2]["chunk_id"] is None
     assert trace["hits"][2]["file_name"] is None
