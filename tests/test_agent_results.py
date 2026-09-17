@@ -635,7 +635,7 @@ def test_agent_clarification_preserves_real_tool_summary():
     assert result["tool_result_summary"] == "知识库检索完成，召回 2 个 chunk"
 
 
-@pytest.mark.parametrize("name", ["web_search", "list_documents", "compare_documents", "mcp_read"])
+@pytest.mark.parametrize("name", ["web_search", "list_documents", "mcp_read"])
 def test_non_evidence_tool_outputs_cannot_be_promoted_to_references(name):
     output = _knowledge_output()
     payload = json.loads(output["messages"][0].content)

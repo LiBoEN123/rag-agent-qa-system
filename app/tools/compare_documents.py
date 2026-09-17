@@ -1,13 +1,11 @@
-"""双文档对比工具。
-
-筛选两份文档的相关证据，调用模型生成差异说明并验证引用支撑情况。
-"""
+"""在两份指定知识库文档中检索证据，由 Agent 完成比较。"""
 
 from typing import Any
 
-from app.llm.factory import get_compare_model
-from app.llm.gateway import ModelGateway
-from app.llm.schemas import CompareDocumentsLLMOutput
+from langchain_core.documents import Document
+
+from app.tools.errors import ToolErrorCode, ToolExecutionError
+from app.tools.knowledge_base import chunk_to_evidence_document
 from app.tools.result import tool_error, tool_success
 
 
@@ -42,19 +40,6 @@ def _get_compare_chunk_file_name(chunk: dict) -> str:
         or metadata.get("source_path")
         or ""
     )
-
-
-def _get_compare_chunk_id(chunk: dict):
-    """从 chunk 顶层或 metadata 中提取 chunk_id。"""
-    metadata = chunk.get("metadata") or {}
-    if not isinstance(metadata, dict):
-        metadata = {}
-    return chunk.get("chunk_id") or metadata.get("chunk_id")
-
-
-def _get_compare_chunk_text(chunk: dict) -> str:
-    """从不同 chunk 字段中提取可用于证据打分的文本。"""
-    return str(chunk.get("text") or chunk.get("snippet") or chunk.get("content") or "")
 
 
 def _doc_name_matches(file_name: str, doc_name: str, *, exact: bool) -> bool:
@@ -98,116 +83,30 @@ def _filter_chunks_by_document(chunks: list[dict], doc_name: str) -> list[dict]:
     ]
 
 
-def _score_chunk_for_query(query: str, chunk_text: str) -> float:
-    """基于问题关键词和 chunk 关键词重合度计算轻量相关性分数。"""
-    from app.rag.citations import extract_reference_keywords
-
-    query_keywords = extract_reference_keywords(query)
-    chunk_keywords = extract_reference_keywords(chunk_text)
-    return len(query_keywords & chunk_keywords) / max(len(query_keywords), 1)
-
-
 def _select_compare_evidence(
     chunks: list[dict],
     doc_name: str,
     query: str,
     top_k: int,
-) -> tuple[list[dict], int]:
-    """在单个文档内选择与对比主题最相关的 evidence 片段。"""
-    doc_chunks = _filter_chunks_by_document(chunks, doc_name)
-    scored = []
-    for index, chunk in enumerate(doc_chunks):
-        text = _get_compare_chunk_text(chunk)
-        if not text.strip():
-            continue
-        score = _score_chunk_for_query(query, text)
-        if score > 0:
-            scored.append((score, index, chunk, text))
-    scored.sort(key=lambda item: (-item[0], item[1]))
-    evidence = [
-        {
-            "chunk_id": _get_compare_chunk_id(chunk),
-            "file_name": _get_compare_chunk_file_name(chunk),
-            "score": round(score, 4),
-            "snippet": text[:500],
-        }
-        for score, _, chunk, text in scored[:top_k]
-    ]
-    return evidence, len(doc_chunks)
+    side: str,
+) -> list[Document]:
+    """复制已过滤的候选，复用重排与 KB identity，仅为返回视图添加分组。"""
+    from app.rag.pipeline import rerank
+
+    candidates = [{**chunk, "metadata": dict(chunk.get("metadata") or {})} for chunk in chunks]
+    evidence = []
+    for chunk in rerank(candidates, query)[:top_k]:
+        document = chunk_to_evidence_document(chunk)
+        evidence.append(document.model_copy(update={"metadata": {
+            **document.metadata,
+            "comparison_side": side,
+            "comparison_document": doc_name,
+        }}))
+    return evidence
 
 
-def _format_compare_evidence_for_llm(label: str, evidence: list[dict]) -> str:
-    """把 evidence 列表整理成适合 LLM 阅读的紧凑文本。"""
-    blocks = []
-    for index, item in enumerate(evidence, start=1):
-        blocks.append(
-            "\n".join([
-                f"{label}_evidence_{index}:",
-                f"chunk_id: {item.get('chunk_id')}",
-                f"file_name: {item.get('file_name')}",
-                f"score: {item.get('score')}",
-                f"snippet: {item.get('snippet')}",
-            ])
-        )
-    return "\n\n".join(blocks)
-
-
-def _call_compare_documents_llm(
-    query: str,
-    doc_a: str,
-    doc_b: str,
-    doc_a_evidence: list[dict],
-    doc_b_evidence: list[dict],
-    trace_id: str = "",
-) -> CompareDocumentsLLMOutput:
-    """调用 LLM 根据两份文档 evidence 生成差异总结。"""
-    system_prompt = (
-        "你是制度类文档差异对比助手。"
-        "你只能依据用户提供的 evidence 对比两份文档中同一问题的规定，"
-        "不要引入外部知识，不要判断哪份文件更新或优先级更高。"
-        "不要仅因为措辞不同就判定存在差异。"
-        "必须返回严格 JSON，不要输出 Markdown。"
-    )
-    user_prompt = f"""
-对比主题：
-{query}
-
-doc_a：
-{doc_a}
-
-doc_b：
-{doc_b}
-
-doc_a evidence：
-{_format_compare_evidence_for_llm("doc_a", doc_a_evidence)}
-
-doc_b evidence：
-{_format_compare_evidence_for_llm("doc_b", doc_b_evidence)}
-
-请返回严格 JSON，字段如下：
-{{
-  "comparison": "说明两份文档关于该主题的相同点和差异点；如果证据不足也要说明不足",
-  "conflict_detected": true 或 false,
-  "summary": "一句话摘要"
-}}
-""".strip()
-
-    gateway = ModelGateway(
-        role="compare_documents",
-        langchain_model=get_compare_model(),
-    )
-    return gateway.invoke_structured(
-        [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        CompareDocumentsLLMOutput,
-        trace_id=trace_id,
-    )
-
-
-def compare_documents_tool(args: dict, trace_id: str = "") -> dict:
-    """对比两个知识库文档中关于同一问题的相关证据差异。"""
+def compare_documents_tool(args: dict) -> dict:
+    """分别返回两份指定文档的 Top-K Document evidence，不生成比较结论。"""
     tool_name = "compare_documents"
     try:
         query = args["query"]
@@ -222,69 +121,36 @@ def compare_documents_tool(args: dict, trace_id: str = "") -> dict:
 
         from app.rag import pipeline
 
+        if not pipeline.get_rag_status()["ready"]:
+            raise ToolExecutionError(
+                "知识库尚未准备完成",
+                code=ToolErrorCode.DEPENDENCY_UNAVAILABLE,
+                retryable=False,
+            )
         current_chunks = pipeline.chunks
-        if not isinstance(current_chunks, list):
-            return tool_error(tool_name, tool_input, "当前知识库 chunks 不可用")
-
-        doc_a_evidence, doc_a_chunk_count = _select_compare_evidence(
-            current_chunks,
-            doc_a,
-            query,
-            top_k,
-        )
-        doc_b_evidence, doc_b_chunk_count = _select_compare_evidence(
-            current_chunks,
-            doc_b,
-            query,
-            top_k,
-        )
-        if doc_a_chunk_count == 0:
+        doc_a_chunks = _filter_chunks_by_document(current_chunks, doc_a)
+        doc_b_chunks = _filter_chunks_by_document(current_chunks, doc_b)
+        if not doc_a_chunks:
             return tool_error(tool_name, tool_input, "doc_a 未找到匹配文档 chunk")
-        if doc_b_chunk_count == 0:
+        if not doc_b_chunks:
             return tool_error(tool_name, tool_input, "doc_b 未找到匹配文档 chunk")
-        if not doc_a_evidence:
-            return tool_error(tool_name, tool_input, "doc_a 未找到相关证据 chunk")
-        if not doc_b_evidence:
-            return tool_error(tool_name, tool_input, "doc_b 未找到相关证据 chunk")
 
-        try:
-            llm_result = _call_compare_documents_llm(
-                query=query,
-                doc_a=doc_a,
-                doc_b=doc_b,
-                doc_a_evidence=doc_a_evidence,
-                doc_b_evidence=doc_b_evidence,
-                trace_id=trace_id,
-            )
-            comparison = llm_result.comparison
-            summary = llm_result.summary
-            llm_conflict = llm_result.conflict_detected
-        except Exception as e:
-            return tool_error(
-                tool_name,
-                tool_input,
-                f"LLM 对比生成失败：{str(e)[:200]}"
-            )
-
-        conflict_detected = llm_conflict
-
+        evidence_a = _select_compare_evidence(doc_a_chunks, doc_a, query, top_k, "doc_a")
+        evidence_b = _select_compare_evidence(doc_b_chunks, doc_b, query, top_k, "doc_b")
         return tool_success(
-            tool_name=tool_name,
-            tool_input=tool_input,
-            output={
+            tool_name,
+            tool_input,
+            {
                 "query": query,
                 "doc_a": doc_a,
                 "doc_b": doc_b,
-                "doc_a_evidence": doc_a_evidence,
-                "doc_b_evidence": doc_b_evidence,
-                "comparison": comparison,
-                "conflict_detected": conflict_detected,
-                "summary": summary,
-            }
+                "doc_a_count": len(evidence_a),
+                "doc_b_count": len(evidence_b),
+                "count": len(evidence_a) + len(evidence_b),
+                "evidence": evidence_a + evidence_b,
+            },
         )
-    except Exception as e:
-        return tool_error(
-            tool_name=tool_name,
-            tool_input=args if isinstance(args, dict) else {},
-            error=str(e)
-        )
+    except ToolExecutionError:
+        raise
+    except Exception as exc:
+        return tool_error(tool_name, args if isinstance(args, dict) else {}, str(exc))

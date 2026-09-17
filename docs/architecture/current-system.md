@@ -246,12 +246,13 @@ Middleware 通过原生 `Command` 写入配对 ToolMessage 与治理事件，成
 Legacy RAG Graph source remains temporarily, but is no longer on the production Agent KB path.
 `app/rag/graph/`、拆分、生成、证据门、引用验证和旧 prompts 继续供独立 RAG 测试与评估使用。
 `decompose_top_k` 仍保留在 Settings、ChatService、Runtime、ToolInvocationContext 和 Evaluation
-合同中，但 KB Retrieval Tool 不使用它。`compare_documents` 仍是内部调用 LLM 的专用工具，
-本阶段未重构。MCP 与 Source Promotion 保留现有边界。
+合同中，但 KB Retrieval Tool 与 `compare_documents` 不使用它。
+MCP 与 Source Promotion 保留现有边界。
 
 ### 统一正文 Evidence Transport（AGENTIC-RAG-2）
 
-`search_knowledge_base`、`get_chunk_text`、`web_fetch`、`web_pdf_fetch` 都用原生
+`search_knowledge_base`、`get_chunk_text`、`web_fetch`、`web_pdf_fetch`，以及
+AGENTIC-RAG-4 接入的 `compare_documents`，都用原生
 Document 承载正文；工具运行时继续通过现有 Pydantic `model_validate(...).model_dump(mode="json")`
 输出 JSON，再由 StructuredTool/ToolMessage 送回下一轮 `create_agent`。
 没有第二套 evidence 值对象、serializer、pool、state 或 finalizer。
@@ -278,15 +279,15 @@ Document 承载正文；工具运行时继续通过现有 Pydantic `model_valida
 执行 Pydantic 校验、错误反馈与重试。最终合同包含 `outcome`、`answer`、`evidence_ids`、
 `clarification_question`。终止治理优先；缺失或非法 `structured_response` 返回 `MODEL_ERROR`。
 
-Result Builder 从本次成功的四类正文工具 ToolMessage 恢复并验证原生 Document。
+Result Builder 从本次成功的五类正文工具 ToolMessage 恢复并验证原生 Document。
 `answer` 已有 Document 时必须引用，所有引用 ID 必须存在于本次历史中，否则 fail closed。
 只按声明顺序投影实际引用的 Document，使用真实 Document.id；召回数量不等于引用数量。
 KB 保留文件、chunk、位置与分数；Web/PDF 以 URL、标题和起始页兼容公开引用字段。
-snippet 复用有限预览。无 Document 的目录、比较、MCP 操作仍允许无引用回答。
+snippet 复用有限预览。无 Document 的目录、普通 MCP 操作仍允许无引用回答。
 
 `no_evidence` 恢复 `NO_RELEVANT_INFO`，`clarify` 映射 `NEED_CLARIFICATION`；两者引用为空。
 两项 confidence 保持 `0.0`。未引入 evidence pool、语义 Judge 或 legacy citation heuristic。
-`compare_documents` 仍为 LLM-backed specialized tool；MCP 尚未统一为 Document evidence。
+MCP 尚未统一为 Document evidence。
 
 LangChain 1.3.14 原生工具限流会计入合成响应。`ProjectToolCallLimitMiddleware` 仅在委托
 原生计数前过滤该调用；框架原本就不把它送入业务 ToolNode。合成响应不产生业务 audit、
@@ -296,6 +297,29 @@ schema 校验本身不增加调用。ChatService 继续单独合并实际 Query 
 SSE 在最终校验成功后，为 answer/no_evidence 发送一次完整 `answer_delta`，随后发送最终
 结果；不发送普通模型文本或 schema args，避免错误引用答案提前泄漏。这里接受失去逐 token
 答案展示的权衡，进度与业务工具事件继续实时输出。Router 短路和澄清公开策略保持原样。
+
+### 双文档证据检索（AGENTIC-RAG-4）
+
+`compare_documents` 保留名称标准化、扩展名兼容、精确优先和包含匹配，分别选出
+doc_a / doc_b 的候选。先复制 candidate dict 与 metadata，再对两组分别调用现有
+`pipeline.rerank` / CrossEncoder，各取 Top-K，经 `chunk_to_evidence_document` 转换。
+不调用内部 LLM，不使用 legacy citation keyword scorer，不修改共享 `pipeline.chunks`。
+
+输出只有 `query`、`doc_a`、`doc_b`、`doc_a_count`、`doc_b_count`、`count`、`evidence`；
+count 同时等于 evidence 长度与两侧数量之和。顺序为 doc_a Top-K 后接 doc_b Top-K。
+Document 返回视图追加 `comparison_side`（doc_a / doc_b）与 `comparison_document`
+（对应传入名称），不改变 KB evidence identity。同一 chunk 经 search/get_chunk/compare
+获得相同 Document.id。审计只记录文档名、数量及最多十条 chunk ID/重排分数，不记录正文。
+
+KB 未就绪通过标准 `ToolExecutionError(dependency_unavailable)` 返回错误 ToolMessage；
+缺少指定文档仍为工具错误。存在文档时不按词面重合度拒绝候选，相关性由 CrossEncoder
+排序，再由唯一 Agent 判断证据是否足够；适用对象、条件、时间、否定和例外须保留。
+
+Compare 的成功 ToolMessage 直接进入统一 evidence collector，Agent 自行比较并通过
+既有 ToolStrategy 声明实际使用的 Document.id。缺失或未知引用由相同 grounding 规则
+拒绝；没有 compare 专属 Result Builder 分支，也没有专属 SSE 事件。
+Compare Model 工厂、缓存、内部输出 schema 已删除；ModelGateway 继续供 Query Rewrite、
+legacy RAG 与 evaluation 使用。最终合同、confidence 与 SSE 单次校验后 delta 保持原样。
 
 ## 状态与结果
 

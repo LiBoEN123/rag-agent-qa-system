@@ -123,7 +123,6 @@ assert all(
         factory.get_answer_model,
         factory.get_query_rewrite_model,
         factory.get_decompose_model,
-        factory.get_compare_model,
         factory.get_judge_model,
     )
 )

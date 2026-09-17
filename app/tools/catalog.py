@@ -57,7 +57,7 @@ def _handle_compare_documents(
     context: ToolInvocationContext,
 ) -> dict:
     """适配文档对比工具的参数格式。"""
-    return compare_documents_tool(args, trace_id=context.trace_id)
+    return compare_documents_tool(args)
 
 
 @lru_cache(maxsize=4)
@@ -159,8 +159,10 @@ def get_local_tool_specs(settings: AppSettings) -> tuple[ToolSpec, ...]:
             name="compare_documents",
             version="1.0.0",
             description=(
-                "用于比较两个已知知识库文档对同一主题的规定；传入主题、两个"
-                "文档名和候选数量，返回双方证据与差异摘要。不用于未知文档的泛检索。"
+                "在两个已知知识库文档中分别选择与 query 最相关的 Document evidence；"
+                "工具本身不生成比较结论。Agent 必须读取两组 evidence 后自行判断"
+                "相同点、差异或证据不足。metadata.comparison_side 为 doc_a 或 doc_b，"
+                "comparison_document 为对应的传入文档名。不用于未知文档的泛检索。"
             ),
             output_model=CompareDocumentsOutput,
             handler=_handle_compare_documents,

@@ -46,13 +46,3 @@ class QueryDecomposeOutput(BaseModel):
     need_decompose: bool = False
     sub_queries: list[QueryDecomposeItem] = Field(default_factory=list)
     reason: str = ""
-
-
-class CompareDocumentsLLMOutput(BaseModel):
-    """双文档对比模型的内部业务输出，不包含 Runtime 结果外层协议。"""
-
-    model_config = ConfigDict(strict=True, str_strip_whitespace=True)
-
-    comparison: str = Field(min_length=1)
-    conflict_detected: bool
-    summary: str = Field(min_length=1)

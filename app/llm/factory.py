@@ -112,22 +112,6 @@ def get_decompose_model() -> Any | None:
     )
 
 
-@lru_cache(maxsize=1)
-def get_compare_model() -> Any | None:
-    """返回文档对比模型，并保留其独立推理参数。"""
-    settings = get_settings()
-    return _create_model(
-        role="compare",
-        api_key=secret_value(settings.llm_api_key),
-        api_url=settings.llm_api_url,
-        model_name=settings.model_name,
-        temperature=0.0,
-        max_tokens=min(settings.llm_max_tokens, 1024),
-        timeout=settings.llm_timeout,
-        max_retries=settings.llm_max_retries,
-    )
-
-
 @lru_cache(maxsize=8)
 def get_judge_model(
     *,
@@ -168,5 +152,4 @@ def clear_model_factory_cache() -> None:
     get_answer_model.cache_clear()
     get_query_rewrite_model.cache_clear()
     get_decompose_model.cache_clear()
-    get_compare_model.cache_clear()
     get_judge_model.cache_clear()

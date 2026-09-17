@@ -222,18 +222,17 @@ def summarize_tool_output(
             **audit_redaction_limits(settings),
         )
     if spec.name == "compare_documents":
-        evidence_a = value.get("doc_a_evidence")
-        evidence_b = value.get("doc_b_evidence")
+        metadata = retrieval_evidence_metadata(value)
         summary = {
             "doc_a": value.get("doc_a", ""),
             "doc_b": value.get("doc_b", ""),
-            "doc_a_evidence_count": (
-                len(evidence_a) if isinstance(evidence_a, list) else 0
-            ),
-            "doc_b_evidence_count": (
-                len(evidence_b) if isinstance(evidence_b, list) else 0
-            ),
-            "conflict_detected": bool(value.get("conflict_detected", False)),
+            "doc_a_count": value.get("doc_a_count", 0),
+            "doc_b_count": value.get("doc_b_count", 0),
+            "count": value.get("count", 0),
+            "top_chunk_ids": [item.get("chunk_id") for item in metadata],
+            "top_rerank_scores": [
+                round(safe_float(item.get("rerank_score")), 4) for item in metadata
+            ],
         }
         return redact_sensitive_data(
             summary,

@@ -104,18 +104,28 @@ class SearchKnowledgeBaseOutput(BaseModel):
 
 
 class CompareDocumentsOutput(BaseModel):
-    """双文档对比工具的稳定输出。"""
+    """双文档证据检索的稳定输出，按 doc_a、doc_b 顺序分组。"""
 
     model_config = ConfigDict(extra="forbid")
 
     query: str
     doc_a: str
     doc_b: str
-    doc_a_evidence: list[dict[str, Any]]
-    doc_b_evidence: list[dict[str, Any]]
-    comparison: str
-    conflict_detected: bool
-    summary: str
+    doc_a_count: int = Field(..., ge=0)
+    doc_b_count: int = Field(..., ge=0)
+    count: int = Field(..., ge=0)
+    evidence: list[Document]
+
+    _validate_evidence = field_validator("evidence")(validate_evidence_documents)
+
+    @model_validator(mode="after")
+    def validate_evidence_counts(self) -> "CompareDocumentsOutput":
+        """确保总数同时匹配证据列表和两份文档的数量。"""
+        if self.count != len(self.evidence):
+            raise ValueError("count 必须等于 evidence 数量")
+        if self.count != self.doc_a_count + self.doc_b_count:
+            raise ValueError("count 必须等于 doc_a_count + doc_b_count")
+        return self
 
 
 class ListDocumentsOutput(BaseModel):

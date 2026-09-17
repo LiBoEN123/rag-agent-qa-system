@@ -132,8 +132,9 @@ Middleware 不再写 `knowledge_base_result` 或因 KB 成功提前结束；现�
 仍有效。项目没有新增 evidence State、Parent Graph 或私有 Agent Loop。
 
 Legacy RAG Graph source remains temporarily, but is no longer on the production Agent KB path.
-旧拆分、Evidence Gate、生成和引用验证仅保留在独立 RAG 路径；`compare_documents` 仍是
-LLM-backed specialized tool，本阶段不做迁移。
+旧拆分、Evidence Gate、生成和引用验证仅保留在独立 RAG 路径。AGENTIC-RAG-4 中
+`compare_documents` 已改为双文档证据检索：名称过滤、复制候选、现有 CrossEncoder 重排，
+返回原生 Document；唯一 Agent 比较并声明引用 ID，工具内部不再调用 LLM。
 
 `web_search`、`web_fetch`、`web_pdf_fetch` 与 MCP 是普通 ToolMessage
 路径，不进入本地 RAG，也不生成本地 references。MCP adapter `StructuredTool` 不

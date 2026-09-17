@@ -42,6 +42,7 @@ class FinalAgentResponse(BaseModel):
 
 _EVIDENCE_TOOLS = frozenset({
     "search_knowledge_base", "get_chunk_text", "web_fetch", "web_pdf_fetch",
+    "compare_documents",
 })
 
 

@@ -25,7 +25,7 @@ def summarize_tool_result(tool_name: str, tool_result: dict[str, Any]) -> str:
         return str(summary)
 
     summaries = {
-        "compare_documents": "文档对比工具执行完成",
+        "compare_documents": "双文档证据检索完成",
         "list_documents": "文档列表工具执行完成",
         "get_chunk_text": "chunk 原文工具执行完成",
     }

@@ -19,7 +19,7 @@ from app.tools.catalog import (
     ToolRiskLevel as RegistryToolRiskLevel,
 )
 from app.tools.catalog import ToolSpec as RegistryToolSpec
-from app.tools.schemas import SearchKnowledgeBaseOutput
+from app.tools.schemas import CompareDocumentsOutput, SearchKnowledgeBaseOutput
 
 
 def test_knowledge_output_contains_only_retrieval_evidence():
@@ -49,7 +49,8 @@ def test_knowledge_output_keeps_count_consistency():
     ("source_uri", " "), ("content_is_untrusted", False),
     ("content_is_untrusted", 1), ("content_is_untrusted", "true"),
 ])
-def test_evidence_rejects_missing_identity_body_or_trust_metadata(field, value):
+@pytest.mark.parametrize("output_model", [SearchKnowledgeBaseOutput, CompareDocumentsOutput])
+def test_evidence_rejects_missing_identity_body_or_trust_metadata(field, value, output_model):
     document = Document(id="test", page_content="正文", metadata={
         "source_type": "knowledge_base", "source_uri": "test://1",
         "content_is_untrusted": True,
@@ -57,8 +58,10 @@ def test_evidence_rejects_missing_identity_body_or_trust_metadata(field, value):
     target = document if field in {"id", "page_content"} else document["metadata"]
     target[field] = value
     with pytest.raises(ValueError, match=field):
-        SearchKnowledgeBaseOutput.model_validate({
+        output_model.model_validate({
             "query": "test", "count": 1, "evidence": [document],
+            **({"doc_a": "a", "doc_b": "b", "doc_a_count": 1, "doc_b_count": 0}
+               if output_model is CompareDocumentsOutput else {}),
         })
 
 

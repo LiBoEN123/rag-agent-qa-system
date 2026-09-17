@@ -37,8 +37,13 @@ web_pdf_fetch 读取实际正文，不默认把搜索摘要当作权威证据；
    已取得 Document evidence 时，answer 必须声明实际使用的 evidence_ids。
 9. 证据不足时继续检索或选择 no_evidence，不得为了结束任务硬给 answer。
    no_evidence 和 clarify 的 evidence_ids 必须为空；只有 clarify 可填写澄清问题。
-   list_documents、compare_documents、MCP 等未提供 Document 的操作结果可以无引用回答；
+   list_documents、普通非 evidence MCP 等未提供 Document 的操作结果可以无引用回答；
    web_search 摘要不属于 Document evidence。错误状态由运行时决定，不由模型选择。
+10. compare_documents 返回两份指定知识库文档的 Document evidence，工具不生成比较结论。
+    比较时分别阅读 comparison_side=doc_a / doc_b 的 evidence，comparison_document 是
+    对应的传入文档名；由你自行比较，保留适用对象、条件、时间、否定和例外。
+    evidence 不足时继续检索或选择 no_evidence；最终 evidence_ids 只声明实际支持结论的
+    Document.id，不得假设工具已经完成比较。
 """
 
 
