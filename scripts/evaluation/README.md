@@ -85,12 +85,12 @@ Combined、Agent-only 和 RAG-only 都可能需要：
 
 - 可以构造当前 `AppSettings`；
 - 回答模型已经配置并可以连接；
-- Query Rewrite 或 Decompose 启用时，相应模型可以连接；
+- Query Rewrite 启用时相应模型可以连接；只有 legacy standalone RAG baseline 还需要 Decompose 模型；
 - 知识库源文件、索引 Manifest 和 Chroma 持久化目录存在；
 - Embedding 与 Rerank 模型缓存可用。
 
 默认 Core 不开放 Web Search、Web Fetch 或 Web PDF Fetch，但调用配置的回答模型、
-Query Rewrite 模型和 Decompose 模型仍可能需要访问模型服务。模型服务网络失败不等于
+Query Rewrite 模型仍可能需要访问模型服务；运行 legacy standalone RAG 时，Decompose 模型也可能需要访问服务。模型服务网络失败不等于
 RAG 索引失败，也不能计入质量分。
 
 ## 三、推荐启动流程
@@ -158,9 +158,7 @@ ChatService、Agent 工具选择、状态映射、多轮或工具序列出现问
 python scripts/run_evaluation_baseline.py \
   --agent-only \
   --agent-cases data/eval/agent_eval_cases_v2.json \
-  --output-dir outputs/evaluation_baseline_v2/agent-core-<short-sha> \
-  --top-k 5 \
-  --decompose-top-k 5
+  --output-dir outputs/evaluation_baseline_v2/agent-core-<short-sha>
 ```
 
 首次引入新 Runner 时，可以按 `RAG-only -> Agent-only -> Combined` 的顺序验证三层
@@ -180,9 +178,7 @@ Core suite 只给 Agent `knowledge_base:read` 权限。Online suite 才额外开
 python scripts/run_evaluation_baseline.py \
   --agent-only \
   --include-online \
-  --output-dir outputs/evaluation_baseline_v2/agent-online-<short-sha> \
-  --top-k 5 \
-  --decompose-top-k 5
+  --output-dir outputs/evaluation_baseline_v2/agent-online-<short-sha>
 ```
 
 注意：
@@ -266,8 +262,8 @@ Judge 是辅助语义判断，不替代以下确定性检查：
 | `--rag-eval-file` | RAG 数据集路径 | 默认使用 `data/eval/rag_eval_questions_v2_semantic_fixed.json` |
 | `--output-dir` | 完整输出目录 | 正式运行使用全新目录；非空目录会被拒绝 |
 | `--run-name` | Manifest 中的 run ID | 未提供时使用输出目录名或 UTC 时间 |
-| `--top-k` | 单查询最终排序数量和 evaluator 的 `Recall@k` | 比较运行时必须保持一致 |
-| `--decompose-top-k` | 多查询合并后的目标数量 | 比较运行时必须保持一致；当前分支限制见下文 |
+| `--top-k` | 仅 legacy RAG：单查询最终排序数量和 evaluator 的 `Recall@k` | 不控制 Agent Evaluation |
+| `--decompose-top-k` | 仅 legacy RAG：多查询合并后的目标数量 | 不控制 Agent Evaluation |
 | `--agent-only` | 跳过独立 RAG 题集 | Agent 的知识库工具仍可使用 RAG |
 | `--rag-only` | 跳过 Agent case | 不受 `--include-online` 影响 |
 | `--include-online` | 在 Core Agent 之外增加 Online Agent case | 只在显式联网运行中使用 |
@@ -352,6 +348,12 @@ python scripts/compare_evaluation_runs.py \
 ## 九、参数与证据口径
 
 ### 1. 独立 RAG 参数合同
+
+Agent Evaluation 通过生产 ChatServiceRequest 执行，不接收请求级 `top_k/decompose_top_k`；
+每轮检索数量由 Agent Tool Call 决定。所有 Decompose Settings 仅供 legacy standalone RAG。
+Manifest 的 `agent` 不再记录拆解或召回数量；这些参数归属 `rag`。Prompt 文件哈希分别放在
+`prompts.agent` 和 `prompts.legacy_rag`（各有 `files/combined_sha256`）；共享的 `app/prompts.py`
+仍按整文件计算，两组都会感知其变化，不把文件哈希误称为单个 prompt 的哈希。
 
 `run_rag_baseline -> run_predictions -> run_rag_once_with_result ->
 run_rag_subgraph` 会显式传递 `top_k` 和 `decompose_top_k`。Prediction v2 逐题记录

@@ -42,8 +42,6 @@ def test_context_normalizes_and_freezes_request_fields():
         "source",
         "idempotency_key",
         "effective_question",
-        "top_k",
-        "decompose_top_k",
         "tool_mode",
     }
     assert context.tool_mode is ToolMode.FULL

@@ -111,15 +111,12 @@ def test_chat_uses_rewritten_question_for_follow_up():
                     "action": "agent",
                     "tool_result_summary": "测试",
                     "router_llm_used": False,
-                    "decompose_llm_used": False,
                     "answer_llm_used": False,
                     "llm_call_count": 0,
-                    "timings": {},
                     "tool_trace": [
                         {
                             "step": "llm_usage",
                             "router_llm_used": False,
-                            "decompose_llm_used": False,
                             "answer_llm_used": False,
                             "llm_call_count": 0,
                         }
@@ -137,7 +134,6 @@ def test_chat_uses_rewritten_question_for_follow_up():
         ChatRequest(
             session_id=session_id,
             question="普通本科四年制专业最长学习年限是多少？",
-            top_k=5,
         ),
     )
     second_response = ask_stream(
@@ -145,7 +141,6 @@ def test_chat_uses_rewritten_question_for_follow_up():
         ChatRequest(
             session_id=session_id,
             question="那休学创业呢？",
-            top_k=5,
         ),
     )
 

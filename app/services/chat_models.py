@@ -13,8 +13,6 @@ class ChatServiceRequest:
     """一次聊天业务调用所需的框架无关输入。"""
 
     question: str
-    top_k: int | None
-    decompose_top_k: int | None
     session_id: str
     trace_id: str
     request_enter_time: str = ""
@@ -47,8 +45,6 @@ class ChatRequestContext:
     effective_question: str
     metrics: dict[str, Any]
     bad_case: dict[str, Any]
-    final_top_k: int = 0
-    decompose_top_k: int = 0
     rewrite_trace: dict[str, Any] = field(default_factory=dict)
     session_should_store: bool = False
     session_assistant_content: str = ""

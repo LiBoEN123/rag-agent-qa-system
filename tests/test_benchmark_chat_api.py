@@ -91,6 +91,7 @@ def test_send_request_records_final_and_stops_timing_at_done(monkeypatch):
             assert request.headers["X-Trace-Id"].startswith("benchmark-")
             assert request.url.path == "/chat/stream"
             assert request.headers["Accept"] == "text/event-stream"
+            assert json.loads(request.content) == {"question": _case()["question"]}
             return httpx.Response(
                 200, stream=DelayedDone(), headers={"Content-Type": "text/event-stream"}
             )
@@ -102,7 +103,6 @@ def test_send_request_records_final_and_stops_timing_at_done(monkeypatch):
                 case=_case(),
                 concurrency=1,
                 round_index=2,
-                top_k=5,
             )
 
     row = asyncio.run(scenario())
@@ -160,7 +160,6 @@ def test_send_request_normalizes_http_and_payload_errors(response, error_type):
                 case=_case(),
                 concurrency=2,
                 round_index=1,
-                top_k=5,
             )
 
     row = asyncio.run(scenario())
@@ -183,7 +182,6 @@ def test_send_request_normalizes_timeout():
                 case=_case(),
                 concurrency=1,
                 round_index=1,
-                top_k=5,
             )
 
     row = asyncio.run(scenario())
@@ -222,7 +220,6 @@ def test_concurrency_one_and_multiple_levels_are_bounded(monkeypatch):
             cases=[_case("a"), _case("b")],
             concurrency=level,
             repeats=2,
-            top_k=5,
         )
 
     serial_rows, _ = asyncio.run(run(1))

@@ -52,7 +52,7 @@ def test_minimal_agent_smoke(tool, settings_factory, monkeypatch, tmp_path):
             "tool_output_keys": ["count", "documents"] if tool else [],
         },
     })
-    row = agent.execute_agent_case(case, settings=settings, top_k=1, decompose_top_k=1)
+    row = agent.execute_agent_case(case, settings=settings, )
     assert row["passed"] and row["actual_tools"] == ([tool] if tool else [])
     assert row["tool_output_schema_pass"]
     report.write_jsonl(tmp_path / "per_case.jsonl", [row])

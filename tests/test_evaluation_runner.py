@@ -75,8 +75,6 @@ def test_core_agent_builds_when_environment_enables_mcp(
         invocation = prepare_agent_runtime_invocation(
             original_question="请列出知识库文档",
             effective_question="请列出知识库文档",
-            top_k=5,
-            decompose_top_k=10,
             trace_id="evaluation-mcp-disabled",
             session_id="evaluation-mcp-disabled",
             tool_context=ToolInvocationContext(
@@ -453,14 +451,10 @@ def test_in_memory_multi_turn_uses_chat_service_history_and_isolation(
     first = agent_evaluation.execute_agent_case(
         dataset.cases[0],
         settings=settings,
-        top_k=5,
-        decompose_top_k=10,
     )
     second = agent_evaluation.execute_agent_case(
         dataset.cases[0],
         settings=settings,
-        top_k=5,
-        decompose_top_k=10,
     )
 
     assert first["passed"] is True
@@ -516,6 +510,7 @@ def test_runner_writes_expected_output_structure(
     settings = _settings(tmp_path)
     output = tmp_path / "run"
     rag_call = {}
+    agent_call = {}
 
     @contextmanager
     def no_scope(_settings):
@@ -555,7 +550,7 @@ def test_runner_writes_expected_output_structure(
     monkeypatch.setattr(
         runner,
         "run_agent_baseline",
-        lambda *args, **kwargs: ([], agent_summary),
+        lambda *args, **kwargs: (agent_call.update(kwargs) or [], agent_summary),
     )
     def fake_rag_baseline(**kwargs):
         rag_call.update(kwargs)
@@ -621,6 +616,8 @@ def test_runner_writes_expected_output_structure(
     assert "LLM Judge skipped" in report
     assert rag_call["top_k"] == 3
     assert rag_call["decompose_top_k"] == 7
+    assert "top_k" not in agent_call
+    assert "decompose_top_k" not in agent_call
 
 
 def test_dirty_worktree_requires_explicit_allow_dirty(

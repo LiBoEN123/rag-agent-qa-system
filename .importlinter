@@ -106,3 +106,17 @@ source_modules =
 forbidden_modules =
     pydantic_settings
 allow_indirect_imports = True
+
+[importlinter:contract:production-agent-does-not-depend-on-legacy-rag]
+name = Production Agent does not depend on Legacy RAG Workflow
+type = forbidden
+source_modules =
+    app.api
+    app.services
+    app.agent
+    app.tools
+forbidden_modules =
+    app.rag.graph
+    app.rag.decomposition
+    app.rag.generation
+    app.rag.citations

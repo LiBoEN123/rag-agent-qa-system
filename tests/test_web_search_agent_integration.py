@@ -276,8 +276,6 @@ async def _invoke(model, context):
         {
             "original_question": "查一下 LangGraph 最近有什么变化",
             "effective_question": "查一下 LangGraph 最近有什么变化",
-            "top_k": 5,
-            "decompose_top_k": 10,
             "decision": {"action": "agent", "router_llm_used": False},
             "trace_id": context.trace_id,
             "session_id": context.session_id,

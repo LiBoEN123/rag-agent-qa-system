@@ -22,8 +22,6 @@ def _build_service_request(
     """把聊天 HTTP 上下文适配为服务请求。"""
     return ChatServiceRequest(
         question=req.question,
-        top_k=req.top_k,
-        decompose_top_k=req.decompose_top_k,
         session_id=req.session_id or "",
         tool_mode=req.tool_mode,
         trace_id=trace_id,

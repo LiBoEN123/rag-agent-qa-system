@@ -77,14 +77,14 @@ function applyEvent(message: ChatMessage, event: ChatStreamEvent): void {
 export function useChat() {
   onScopeDispose(cancel)
 
-  async function send(question: string, topK: number, decomposeTopK: number, toolMode: ToolMode = 'rag_only'): Promise<void> {
+  async function send(question: string, toolMode: ToolMode = 'rag_only'): Promise<void> {
     if (!question.trim() || sending.value) return
     const controller = new AbortController()
     const message = reactive<ChatMessage>({ id: crypto.randomUUID(), role: 'assistant', content: '', state: 'pending', steps: [] })
     messages.value.push({ id: crypto.randomUUID(), role: 'user', content: question.trim(), state: 'completed', steps: [] }, message)
     active = { controller, message }
     sending.value = true
-    const request = { question: question.trim(), top_k: topK, decompose_top_k: decomposeTopK, session_id: sessionId.value, tool_mode: toolMode }
+    const request = { question: question.trim(), session_id: sessionId.value, tool_mode: toolMode }
     try {
       await streamChat(request, controller.signal, (event) => {
         if (!controller.signal.aborted) applyEvent(message, event)

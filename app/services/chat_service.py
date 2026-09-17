@@ -215,8 +215,6 @@ class ChatService:
                     write_bad_cases=self._deps.write_bad_cases,
                     original_question=context.original_question,
                     effective_question=context.effective_question,
-                    top_k=context.final_top_k,
-                    decompose_top_k=context.decompose_top_k,
                     trace_id=context.request.trace_id,
                     session_id=context.session_id or None,
                     bad_case=context.bad_case,
@@ -429,16 +427,7 @@ class ChatService:
         *,
         settings: AppSettings,
     ) -> None:
-        """解析 Runtime 参数，并完成 history/query rewrite 请求准备。"""
-        request = context.request
-        context.final_top_k = (
-            request.top_k if request.top_k is not None else settings.top_k
-        )
-        context.decompose_top_k = (
-            request.decompose_top_k
-            if request.decompose_top_k is not None
-            else settings.decompose_top_k
-        )
+        """完成 history/query rewrite 请求准备。"""
         try:
             history = self._deps.get_history(context.session_id)
         except Exception as exc:

@@ -5,8 +5,6 @@ import { useChat } from '../composables/useChat'
 
 const { messages, sending, send, cancel } = useChat()
 const question = ref('')
-const topK = ref(5)
-const decomposeTopK = ref(5)
 const extendedTools = ref(false)
 const conversation = ref<HTMLElement>()
 
@@ -14,7 +12,7 @@ async function submit(): Promise<void> {
   if (!question.value.trim() || sending.value) return
   const text = question.value
   question.value = ''
-  await send(text, topK.value, decomposeTopK.value, extendedTools.value ? 'full' : 'rag_only')
+  await send(text, extendedTools.value ? 'full' : 'rag_only')
 }
 
 watch(() => messages.value.at(-1)?.content, async () => {
@@ -34,9 +32,9 @@ const traceFields = [
   'final_chunk_count', 'top_chunk_ids', 'top_scores', 'hits',
   'iteration_index', 'model_has_tool_calls', 'model_cost_ms', 'requested_tool_call_count', 'available_tool_names',
   'route_decision', 'decision_type', 'router_source', 'router_confidence', 'router_fallback_reason', 'route_cost_ms',
-  'router_llm_used', 'decompose_llm_used', 'answer_llm_used', 'llm_call_count',
+  'router_llm_used', 'answer_llm_used', 'llm_call_count',
   'original_question', 'rewritten_question', 'history_used', 'rewritten', 'need_check', 'need_rewrite', 'rewrite_llm_used',
-  'mode', 'answer_len', 'reference_count', 'retrieval_confidence', 'answer_confidence', 'timings', 'rag_llm_call_count',
+  'mode', 'answer_len', 'reference_count', 'retrieval_confidence', 'answer_confidence',
 ]
 function text(value: unknown): string {
   if (value === undefined || value === null || value === '') return '—'
@@ -49,8 +47,6 @@ function text(value: unknown): string {
     <h1 class="page-heading">智能问答</h1>
     <p class="page-subtitle">结合知识库与受治理工具回答问题，查看引用和执行过程。</p>
     <el-form inline class="chat-options" :disabled="sending" label-position="left">
-      <el-form-item label="召回条数"><el-input-number v-model="topK" :min="1" :max="10" size="small" aria-label="召回条数" /></el-form-item>
-      <el-form-item label="拆分后召回条数"><el-input-number v-model="decomposeTopK" :min="1" :max="10" size="small" aria-label="拆分后召回条数" /></el-form-item>
       <el-form-item label="扩展工具">
         <el-tooltip content="关闭：仅使用本地知识库 RAG；开启：允许 Agent 按权限使用 Web、SQL、MCP 等扩展工具">
           <el-switch v-model="extendedTools" inactive-text="仅 RAG" active-text="开启" aria-label="扩展工具" />

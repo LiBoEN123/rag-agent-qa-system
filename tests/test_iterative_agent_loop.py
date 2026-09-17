@@ -7,6 +7,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agent import framework_agent, framework_tools
 from app.agent.runtime import prepare_agent_runtime_invocation
+from app.agent.final_response import collect_evidence_from_messages
 from app.config import get_settings
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
@@ -15,6 +16,14 @@ from app.tools.result import tool_success
 from app.tools.knowledge_base import chunk_to_evidence_document
 from app.tools.schemas import SearchKnowledgeBaseArgs, SearchKnowledgeBaseOutput
 from tests.support.agent_runtime import FakeToolCallingModel, build_agent_harness
+
+
+def _grounded_answer(text):
+    """显式声明此 fixture 实际收到的证据，通过框架结构化输出结束。"""
+    return lambda model, messages: model.final_response(
+        outcome="answer", answer=text,
+        evidence_ids=list(collect_evidence_from_messages(messages)),
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -48,8 +57,6 @@ async def _invoke_graph(
         {
             "original_question": "请读取 chunk-a",
             "effective_question": "请读取 chunk-a",
-            "top_k": 5,
-            "decompose_top_k": 10,
             "trace_id": "trace-loop",
             "session_id": "session-loop",
         },
@@ -69,8 +76,6 @@ def test_initialize_agent_loop_state_uses_effective_question():
     invocation = prepare_agent_runtime_invocation(
         original_question="它什么时候开始？",
         effective_question="奖学金申请什么时候开始？",
-        top_k=5,
-        decompose_top_k=10,
         trace_id="trace-loop-init",
         session_id="session-loop-init",
     )
@@ -82,8 +87,8 @@ def test_initialize_agent_loop_state_uses_effective_question():
 
 @pytest.mark.asyncio
 async def test_agent_loop_answers_without_calling_tools(monkeypatch):
-    """模型首轮无 tool_calls 时直接经 Composer 与 Finalize 返回。"""
-    model = FakeToolCallingModel([AIMessage(content="直接回答")])
+    """模型首轮以 structured response 结束，不执行业务工具。"""
+    model = FakeToolCallingModel([_grounded_answer("直接回答")])
 
     output = await _invoke_graph(
         monkeypatch,
@@ -117,7 +122,7 @@ async def test_agent_loop_returns_single_tool_message_to_model(monkeypatch):
                     }
                 ],
             ),
-            AIMessage(content="片段读取完成。"),
+            _grounded_answer("片段读取完成。"),
         ]
     )
 
@@ -178,7 +183,7 @@ async def test_agent_loop_runs_two_sequential_tool_calls(monkeypatch):
                     }
                 ],
             ),
-            AIMessage(content="两个片段读取完成。"),
+            _grounded_answer("两个片段读取完成。"),
         ]
     )
 
@@ -231,7 +236,7 @@ async def test_agent_loop_executes_all_tool_calls_from_one_message(monkeypatch):
                     },
                 ],
             ),
-            AIMessage(content="两个片段读取完成。"),
+            _grounded_answer("两个片段读取完成。"),
         ]
     )
 
@@ -289,7 +294,7 @@ async def test_agent_loop_allows_model_to_correct_failed_tool_arguments(monkeypa
                     }
                 ],
             ),
-            AIMessage(content="修正后片段读取完成。"),
+            _grounded_answer("修正后片段读取完成。"),
         ]
     )
 
@@ -429,7 +434,7 @@ async def test_agent_loop_stops_after_forged_hidden_tool_permission_denial(monke
                     }
                 ],
             ),
-            AIMessage(content="hidden tool handled"),
+            _grounded_answer("hidden tool handled"),
         ]
     )
     denied_context = ToolInvocationContext(
@@ -474,7 +479,7 @@ async def test_agent_loop_preserves_runtime_context_and_audit_chain(monkeypatch)
                     }
                 ],
             ),
-            AIMessage(content="片段读取完成。"),
+            _grounded_answer("片段读取完成。"),
         ]
     )
     context = ToolInvocationContext(
@@ -564,7 +569,7 @@ async def test_agent_selected_knowledge_search_returns_evidence_to_model(monkeyp
             "args": {"query": "奖学金申请", "top_k": 5},
             "id": "knowledge-call", "type": "tool_call",
         }]),
-        AIMessage(content="奖学金申请在九月开始。"),
+        _grounded_answer("奖学金申请在九月开始。"),
     ])
     chunk = {"chunk_id": "chunk-1", "text": "奖学金申请在九月开始。"}
     spec = ToolSpec(
@@ -591,6 +596,6 @@ async def test_agent_selected_knowledge_search_returns_evidence_to_model(monkeyp
     ]
     assert "knowledge_base_result" not in output
     assert output["result"]["answer"] == "奖学金申请在九月开始。"
-    assert output["result"]["references"] == []
+    assert [ref["reference_id"] for ref in output["result"]["references"]] == [chunk_to_evidence_document(chunk).id]
     assert output["result"]["llm_call_count"] == 2
     assert output["result"]["tool_trace"][-2]["mode"] == "agent_loop"

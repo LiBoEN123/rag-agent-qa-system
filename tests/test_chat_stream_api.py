@@ -7,6 +7,7 @@ from dataclasses import replace
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response
+from pydantic import ValidationError
 
 from app.agent.results import create_agent_result
 from app.api.chat import create_chat_router
@@ -184,6 +185,29 @@ def _post(application: FastAPI, path: str, **kwargs) -> Response:
     return asyncio.run(send())
 
 
+def test_chat_request_schema_exposes_only_task_and_session_controls():
+    request = ChatRequest(question="奖学金申请需要什么材料？")
+    assert request.tool_mode is ToolMode.FULL
+    schema = ChatRequest.model_json_schema()
+    assert set(schema["properties"]) == {"question", "session_id", "tool_mode"}
+    assert schema["additionalProperties"] is False
+
+
+@pytest.mark.parametrize("field", ["top_k", "decompose_top_k", "unknown_option"])
+def test_chat_request_rejects_unknown_fields_before_streaming(field):
+    payload = {"question": "奖学金申请需要什么材料？", field: 10}
+    with pytest.raises(ValidationError) as exc:
+        ChatRequest.model_validate(payload)
+    assert exc.value.errors()[0]["type"] == "extra_forbidden"
+    service = FakeStreamingService()
+    response = _post(_app(service), "/chat/stream", json=payload)
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json()["detail"][0]["loc"] == ["body", field]
+    assert response.json()["detail"][0]["type"] == "extra_forbidden"
+    assert service.stream_requests == []
+
+
 @pytest.mark.parametrize("tool_mode", [None, "rag_only", "full"])
 def test_stream_route_returns_sse_headers_and_ordered_final(tool_mode):
     service = FakeStreamingService()
@@ -194,8 +218,6 @@ def test_stream_route_returns_sse_headers_and_ordered_final(tool_mode):
         headers={"X-Trace-Id": "caller-trace"},
         json={
             "question": "测试问题",
-            "top_k": 4,
-            "decompose_top_k": 8,
             "session_id": "session-1",
             **({"tool_mode": tool_mode} if tool_mode is not None else {}),
         },
@@ -221,7 +243,7 @@ def test_stream_route_returns_sse_headers_and_ordered_final(tool_mode):
     request = service.stream_requests[0]
     assert request.question == "测试问题"
     assert request.tool_mode is ToolMode(tool_mode or "full")
-    assert (request.top_k, request.decompose_top_k, request.session_id) == (4, 8, "session-1")
+    assert request.session_id == "session-1"
     assert request.trace_id == "caller-trace"
     assert request.request_enter_time
     assert request.request_enter_perf > 0
@@ -351,8 +373,6 @@ def test_api_disconnect_stops_and_closes_service_generator_without_final_or_done
         response = await endpoint(
             ChatRequest(
                 question="测试问题",
-                top_k=4,
-                decompose_top_k=8,
                 session_id="session-1",
             ),
             Request(),
@@ -365,8 +385,6 @@ def test_api_disconnect_stops_and_closes_service_generator_without_final_or_done
     assert service.stream_requests == [
         ChatServiceRequest(
             question="测试问题",
-            top_k=4,
-            decompose_top_k=8,
             session_id="session-1",
             trace_id="trace-disconnect",
             request_enter_time="2026-08-02T12:00:00.000",

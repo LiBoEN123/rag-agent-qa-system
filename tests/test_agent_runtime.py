@@ -25,7 +25,6 @@ def test_upsert_llm_usage_trace_is_pure_and_idempotent():
         {
             "step": "llm_usage",
             "router_llm_used": False,
-            "decompose_llm_used": False,
             "answer_llm_used": False,
             "llm_call_count": 0,
         },
@@ -35,13 +34,11 @@ def test_upsert_llm_usage_trace_is_pure_and_idempotent():
 
     updated = upsert_llm_usage_trace(
         trace,
-        decompose_llm_used=True,
         answer_llm_used=True,
         llm_call_count=2,
     )
     repeated = upsert_llm_usage_trace(
         updated,
-        decompose_llm_used=True,
         answer_llm_used=True,
         llm_call_count=2,
     )
@@ -78,8 +75,6 @@ def test_runtime_short_circuit_uses_one_trace_snapshot():
     invocation = prepare_agent_runtime_invocation(
         original_question="你是谁？",
         effective_question="你是谁？",
-        top_k=5,
-        decompose_top_k=10,
         trace_id="trace-finalize",
         session_id="session-finalize",
     )
@@ -104,13 +99,12 @@ def test_rag_only_reuses_local_cache_without_mcp_discovery(monkeypatch, settings
     context = ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "mcp:github"))
     invocation = prepare_agent_runtime_invocation(
         original_question="查询本科生学习年限", effective_question="查询本科生学习年限",
-        top_k=4, decompose_top_k=8, trace_id="mode-test", session_id="session-mode",
+        trace_id="mode-test", session_id="session-mode",
         tool_context=context, settings=settings,
     )
     assert invocation.agent is cached
     assert invocation.tool_context.tool_mode is ToolMode.RAG_ONLY
     assert invocation.tool_context.permissions == context.permissions
-    assert (invocation.tool_context.top_k, invocation.tool_context.decompose_top_k) == (4, 8)
     assert framework_tools.resolve_agent_tools(context, settings) == list(framework_tools.get_local_tools(settings))
     discovery.assert_not_called()
     full_context = ToolInvocationContext(permissions=context.permissions)
@@ -124,7 +118,7 @@ def test_rag_only_preserves_router_short_circuits(monkeypatch, question, action)
     compile_agent = Mock(side_effect=AssertionError("short circuit must not build agent"))
     monkeypatch.setattr(runtime, "get_compiled_agent_runtime", compile_agent)
     invocation = prepare_agent_runtime_invocation(
-        original_question=question, effective_question=question, top_k=5, decompose_top_k=5,
+        original_question=question, effective_question=question,
         trace_id="router-mode", session_id=None,
         tool_context=ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY),
     )

@@ -9,8 +9,6 @@ export type ToolMode = 'rag_only' | 'full'
 export interface ChatRequest {
   question: string
   tool_mode: ToolMode
-  top_k?: number | null
-  decompose_top_k?: number | null
   session_id?: string | null
 }
 export interface ChatReference {
@@ -37,7 +35,6 @@ export interface ChatData {
   tool_result_summary: string
   tool_trace: Record<string, unknown>[]
   router_llm_used: boolean
-  decompose_llm_used: boolean
   answer_llm_used: boolean
   llm_call_count: number
 }

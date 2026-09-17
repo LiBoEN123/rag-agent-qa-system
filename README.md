@@ -62,7 +62,7 @@ Phase 6B 的 Model private marker 是已接受设计，不是待迁移 TODO。�
 | 文档切分 | 普通文本按段落和标点递归切分；Markdown 按标题层级切分并保留标题路径 |
 | 混合检索 | jieba + BM25 关键词召回，SentenceTransformer Embedding 语义召回 |
 | 重排 | CrossEncoder reranker 对候选 chunk 重新排序 |
-| 问题拆分 | 可选 Query Decompose，复杂问题可拆成子问题后多路召回并合并证据 |
+| 多轮检索 | Agent 阅读 ToolMessage 后决定下一轮 query/top_k；独立 Query Decompose 仅用于 legacy RAG 评估 |
 | 多轮追问 | `session_id` 通过 SQLite 维持最近会话历史，对短追问、指代问题做 Query Rewrite |
 | 答案生成 | 调用 OpenAI-compatible Chat Completions，要求模型返回 JSON |
 | 引用绑定 | 将 `Reference N` 映射回真实文件、`chunk_id`、`snippet` 和分数 |
@@ -117,7 +117,7 @@ Legacy RAG Graph、拆分与旧引用 heuristic 继续保留在独立诊断/测�
 
 - 配置通过 `.env` 管理，`.env.example` 提供默认模板，回答/Agent 模型、追问改写模型、拆分模型和评测 Judge 均使用 OpenAI-compatible Chat Completions 配置。
 - 应用内部模型调用统一由 LangChain `ChatOpenAI(base_url=...)` 访问 OpenAI-compatible 服务，各角色原有模型环境变量仍然有效。
-- Answer、Query Rewrite、Query Decompose 与 Compare Documents 的 JSON 业务输出统一由 Pydantic Schema 定义，并经 `ModelGateway` 使用原生 Structured Output；供应商明确不支持时仅由 Gateway 执行文本 JSON fallback 和校验。
+- 生产 Agent 使用 `ToolStrategy(FinalAgentResponse)` 与 evidence ID 校验；Query Rewrite 及 legacy standalone RAG 的 Answer/Decompose 使用 `ModelGateway` 的结构化输出。`compare_documents` 返回 Document evidence，由 Agent 生成比较结论。
 - `requirements.txt` 保留顶层依赖声明，`requirements.lock` 固定 Python 3.12 验证过的版本；Docker 和 CI 均使用 lock 文件安装依赖。
 - `.importlinter` 使用 Import Linter 2.13 固化应用包的单向依赖、顶层无环、基础层、HTTP 框架和 Settings 框架边界；CI 在 Ruff 后执行全量 `lint-imports`。
 - 支持 embedding / rerank 模型本地缓存，默认缓存目录为 `./.cache/huggingface/hub`，也可通过 `MODEL_CACHE_DIR`、`HF_HOME` 等环境变量调整。
@@ -391,8 +391,8 @@ Tool Runtime 与 Agent Runtime 缓存；生产服务通常直接重启进程。�
 | `CHROMA_PERSIST_DIR` | ChromaDB 本地持久化目录，示例：`./data/chroma` |
 | `CHROMA_COLLECTION_NAME` | 保留的旧 ChromaDB collection，默认 `mini_rag_chunks` |
 | `CHROMA_INDEX_COLLECTION_NAME` | LangChain 增量索引 collection，默认 `mini_rag_chunks_v2` |
-| `TOP_K` | `/chat/stream` 和 `/search` 默认召回条数 |
-| `DECOMPOSE_TOP_K` | 多子问题召回合并后的候选上限 |
+| `TOP_K` | `/search` 与 legacy standalone RAG 默认召回条数；不控制 Agent Chat 的 Tool Call |
+| `DECOMPOSE_TOP_K` | 仅 legacy standalone RAG evaluation：多子问题召回合并后的候选上限 |
 | `CHUNK_SIZE` | chunk 最大长度 |
 | `CHUNK_OVERLAP` | 相邻 chunk 重叠长度 |
 | `EMBEDDING_MODEL_NAME` | SentenceTransformer embedding 模型 |
@@ -451,12 +451,12 @@ Tool Runtime 与 Agent Runtime 缓存；生产服务通常直接重启进程。�
 | `QUERY_REWRITE_TIMEOUT` | 追问改写模型请求超时秒数 |
 | `QUERY_REWRITE_MAX_TOKENS` | 追问改写模型最大输出 token |
 | `QUERY_REWRITE_TEMPERATURE` | 追问改写模型温度 |
-| `ENABLE_QUERY_DECOMPOSE` | 是否启用问题拆分，默认 `true` |
-| `DECOMPOSE_API_KEY` | 问题拆分模型 API Key |
-| `DECOMPOSE_MODEL_NAME` | 问题拆分模型名称 |
-| `DECOMPOSE_API_URL` | 问题拆分模型接口地址 |
-| `DECOMPOSE_TIMEOUT` | 问题拆分模型请求超时秒数 |
-| `DECOMPOSE_MAX_TOKENS` | 问题拆分模型最大输出 token |
+| `ENABLE_QUERY_DECOMPOSE` | 仅 legacy standalone RAG evaluation：是否启用问题拆分，默认 `true` |
+| `DECOMPOSE_API_KEY` | 仅 legacy RAG：问题拆分模型 API Key |
+| `DECOMPOSE_MODEL_NAME` | 仅 legacy RAG：问题拆分模型名称 |
+| `DECOMPOSE_API_URL` | 仅 legacy RAG：问题拆分模型接口地址 |
+| `DECOMPOSE_TIMEOUT` | 仅 legacy RAG：问题拆分模型请求超时秒数 |
+| `DECOMPOSE_MAX_TOKENS` | 仅 legacy RAG：问题拆分模型最大输出 token |
 | `VECTOR_THRESHOLD` | 召回证据不足时拒答的向量分数阈值 |
 | `AUTO_REBUILD_ON_STARTUP` | 是否启动时强制重建索引 |
 
@@ -547,7 +547,7 @@ DECOMPOSE_API_URL=http://127.0.0.1:11434/v1/chat/completions
 curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
   -H "Content-Type: application/json" \
   -H "Accept: text/event-stream" \
-  -d '{"question":"缓考应该如何办理？","top_k":5}'
+  -d '{"question":"缓考应该如何办理？"}'
 ```
 
 通过 Schema 校验的问题返回 `HTTP 200 text/event-stream`，正常事件边界为
@@ -577,11 +577,12 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
 | `data.tool_result_summary` | 工具或 RAG 路径摘要 |
 | `data.tool_trace` | Query Rewrite、路由、工具调用、检索命中、最终状态等过程信息 |
 | `data.router_llm_used` | 兼容字段；确定性 Router 不调用模型，因此固定为 `false` |
-| `data.decompose_llm_used` | 本次请求是否调用问题拆分 LLM |
 | `data.answer_llm_used` | 本次请求是否调用最终回答 LLM |
 | `data.llm_call_count` | 本次请求累计 LLM 调用次数 |
 
 ### 多轮追问与 Query Rewrite
+
+`/chat/stream` 只接受 `question`、`session_id`、`tool_mode`；未知字段由 Pydantic `extra="forbid"` 拒绝并返回 HTTP 422。旧 `top_k`、`decompose_top_k` 已退役。Agent 每轮通过工具 schema 自主选择 query/top_k，`search_knowledge_base.top_k` 和 `compare_documents.top_k` 范围仍为 1–10。`TOP_K` 与所有 Decompose 配置不参与生产 Chat 的检索控制。
 
 `/chat/stream` 的 `session_id` 是可选字段。为空时系统按单轮问题处理；非空时系统会读取该会话最近 6 条 user/assistant 消息，并在问题像短追问或包含“这个、那个、它、上面、刚才”等指代词时尝试改写成独立问题。
 
@@ -606,8 +607,7 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
 
 ```json
 {
-  "question": "1 + 2 * 3 等于多少？",
-  "top_k": 5
+  "question": "1 + 2 * 3 等于多少？"
 }
 ```
 
@@ -629,7 +629,7 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
 GET /metrics-summary?limit=20
 ```
 
-用于查看最近请求的状态分布、成功数、拒答数、错误数、平均延迟、平均 LLM 调用次数，以及 Router / Decompose / Answer LLM 的使用次数。
+用于查看最近请求的状态分布、成功数、拒答数、错误数、平均延迟、平均 LLM 调用次数，以及 Router / Answer LLM 的使用次数。
 
 ## Agent 路由与工具
 
@@ -730,6 +730,8 @@ python scripts/run_evaluation_baseline.py \
   --top-k 5 \
   --decompose-top-k 5
 ```
+
+这两个召回参数仅控制 legacy standalone RAG baseline，不传入 Agent Evaluation。
 
 每次运行会生成 commit/数据/索引/模型/Prompt/工具合同 manifest、请求/有效 RAG
 参数证据、Agent/RAG 指标、覆盖矩阵、多原因失败报告和 Markdown 摘要。RAG 报告

@@ -52,10 +52,8 @@ class AgentRunResult(BaseModel):
     tool_result_summary: str
     tool_trace: list[dict[str, Any]]
     router_llm_used: Literal[False]
-    decompose_llm_used: bool
     answer_llm_used: bool
     llm_call_count: int = Field(ge=0)
-    timings: dict[str, Any]
 
 
 class AgentResultInvocation(Protocol):
@@ -118,7 +116,6 @@ def build_decide_trace(
 def upsert_llm_usage_trace(
     tool_trace: list[dict[str, Any]],
     *,
-    decompose_llm_used: bool,
     answer_llm_used: bool,
     llm_call_count: int,
 ) -> list[dict[str, Any]]:
@@ -126,7 +123,6 @@ def upsert_llm_usage_trace(
     usage_trace = {
         "step": "llm_usage",
         "router_llm_used": False,
-        "decompose_llm_used": bool(decompose_llm_used),
         "answer_llm_used": bool(answer_llm_used),
         "llm_call_count": max(0, int(llm_call_count or 0)),
     }
@@ -232,15 +228,12 @@ def build_short_circuit_result(
         tool_result_summary=summary,
         tool_trace=upsert_llm_usage_trace(
             tool_trace,
-            decompose_llm_used=False,
             answer_llm_used=False,
             llm_call_count=0,
         ),
         router_llm_used=False,
-        decompose_llm_used=False,
         answer_llm_used=False,
         llm_call_count=0,
-        timings={},
     )
     return _finalize_agent_result(result)
 
@@ -331,15 +324,12 @@ def build_framework_agent_result(
         ),
         tool_trace=upsert_llm_usage_trace(
             tool_trace,
-            decompose_llm_used=False,
             answer_llm_used=answer_llm_used,
             llm_call_count=llm_call_count,
         ),
         router_llm_used=False,
-        decompose_llm_used=False,
         answer_llm_used=answer_llm_used,
         llm_call_count=llm_call_count,
-        timings={},
     )
     return _finalize_agent_result(result)
 
@@ -357,10 +347,8 @@ def create_agent_result(
     action: str = "",
     tool_result_summary: str = "",
     tool_trace: list[dict[str, Any]] | None = None,
-    decompose_llm_used: bool = False,
     answer_llm_used: bool = False,
     llm_call_count: int = 0,
-    timings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """为服务级特殊分支构造同一完整、经过校验的结果字典。"""
     result = AgentRunResult(
@@ -376,10 +364,8 @@ def create_agent_result(
         tool_result_summary=tool_result_summary,
         tool_trace=list(tool_trace or []),
         router_llm_used=False,
-        decompose_llm_used=decompose_llm_used,
         answer_llm_used=answer_llm_used,
         llm_call_count=llm_call_count,
-        timings=dict(timings or {}),
     )
     return result.model_dump(mode="json")
 

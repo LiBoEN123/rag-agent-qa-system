@@ -9,7 +9,7 @@ const chatResponse: ChatResponse = {
     question: '测试问题', answer: '最终结果', status: 'ok', references: [], tool_trace: [],
     clarification_question: '', reason: '回答完成', action: 'direct_answer', need_clarification: false,
     retrieval_confidence: 0, answer_confidence: 1, tool_result_summary: '', llm_call_count: 0,
-    router_llm_used: false, decompose_llm_used: false, answer_llm_used: false,
+    router_llm_used: false, answer_llm_used: false,
   },
 }
 const final = {

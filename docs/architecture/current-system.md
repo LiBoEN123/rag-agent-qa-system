@@ -245,8 +245,20 @@ Middleware 通过原生 `Command` 写入配对 ToolMessage 与治理事件，成
 
 Legacy RAG Graph source remains temporarily, but is no longer on the production Agent KB path.
 `app/rag/graph/`、拆分、生成、证据门、引用验证和旧 prompts 继续供独立 RAG 测试与评估使用。
-`decompose_top_k` 仍保留在 Settings、ChatService、Runtime、ToolInvocationContext 和 Evaluation
-合同中，但 KB Retrieval Tool 与 `compare_documents` 不使用它。
+生产请求为 `ChatRequest → ChatService → create_agent → per-call query/top_k → StructuredTool`。
+ChatRequest、ChatServiceRequest、Runtime、ToolInvocationContext 均不再携带召回数量；
+旧 Chat 请求字段由 Pydantic `extra="forbid"` 拒绝。`search_knowledge_base.top_k` 与
+`compare_documents.top_k` 范围仍为 1–10，每轮可以不同；`/search` 用独立 SearchRequest 保留显式 top_k。
+
+`AppSettings.top_k` 服务诊断检索及 legacy RAG 默认值；`decompose_top_k` 和独立
+Decompose 模型配置仅服务 legacy standalone RAG evaluation。Agent Evaluation 使用生产
+ChatServiceRequest；Runner 的 `--top-k/--decompose-top-k` 只传给 legacy RAG。
+Import Linter 的 `production-agent-does-not-depend-on-legacy-rag` 禁止 API、Services、
+Agent、Tools 直接或间接导入 legacy Graph/Decomposition/Generation/Citations。
+
+生产 AgentRunResult 已移除 `decompose_llm_used` 和固定空的 `timings`；Chat metrics 不再
+初始化 legacy RAG 的补零耗时。有效耗时仍来自 route_cost_ms、agent_cost_ms、Tool trace
+和 Model governance events；answer_llm_used 与 llm_call_count 保留。
 MCP 与 Source Promotion 保留现有边界。
 
 ### 统一正文 Evidence Transport（AGENTIC-RAG-2）

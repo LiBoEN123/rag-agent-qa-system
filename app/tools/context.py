@@ -83,10 +83,8 @@ class ToolInvocationContext:
     source: str = ""
     idempotency_key: str = ""
 
-    # 保留请求与 legacy RAG 参数；检索工具以本轮 Tool Call 的 query/top_k 为准。
+    # 保留请求问题上下文；工具的检索参数通过本轮 StructuredTool args 传入。
     effective_question: str = ""
-    top_k: int = 0
-    decompose_top_k: int = 0
     tool_mode: ToolMode = ToolMode.FULL
 
     def __post_init__(self) -> None:
@@ -128,8 +126,6 @@ def build_default_tool_context(
     session_id: str = "",
     source: str = "direct_dispatch",
     effective_question: str = "",
-    top_k: int = 0,
-    decompose_top_k: int = 0,
     tool_mode: ToolMode = ToolMode.FULL,
     settings: AppSettings | None = None,
 ) -> ToolInvocationContext:
@@ -143,8 +139,6 @@ def build_default_tool_context(
         permissions=resolved.tool_default_permissions,
         source=source,
         effective_question=effective_question,
-        top_k=top_k,
-        decompose_top_k=decompose_top_k,
         tool_mode=tool_mode,
     )
 

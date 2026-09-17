@@ -1283,8 +1283,6 @@ def execute_agent_case(
     case: AgentEvaluationCase,
     *,
     settings: AppSettings,
-    top_k: int,
-    decompose_top_k: int,
     tool_catalog: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """通过真实 ChatService 执行一个完全隔离的 Agent case。"""
@@ -1343,8 +1341,6 @@ def execute_agent_case(
                 async for event in service.stream(
                     ChatServiceRequest(
                         question=question,
-                        top_k=top_k,
-                        decompose_top_k=decompose_top_k,
                         session_id=session_id,
                         trace_id=trace_id,
                     )
@@ -1391,8 +1387,6 @@ def run_agent_baseline(
     *,
     settings: AppSettings,
     include_online: bool,
-    top_k: int,
-    decompose_top_k: int,
     rag_already_initialized: bool,
     force_rebuild: bool,
     include_mcp: bool = False,
@@ -1422,8 +1416,6 @@ def run_agent_baseline(
         execute_agent_case(
             case,
             settings=settings,
-            top_k=top_k,
-            decompose_top_k=decompose_top_k,
             tool_catalog=tool_catalog,
         )
         for case in selected

@@ -1,12 +1,12 @@
 # `/chat/stream` SSE 接口
 
 `POST /chat/stream` 是唯一聊天 HTTP 入口。Vue 通过 `ChatService.stream()` 调用
-`stream_agent()`，继续使用 Query Rewrite、直接 `create_agent`、Agent/Tool/RAG Runtime、
+`stream_agent()`，继续使用 Query Rewrite、直接 `create_agent`、Agent/Tool Runtime、
 `AgentRunResult`、`ChatStatusPolicy`、Session 和 telemetry。
 
 ## HTTP 语义
 
-请求体仍是现有 `ChatRequest`：
+`ChatRequest` 只接受 `question`、`session_id`、`tool_mode`（默认 `full`）：
 
 ```bash
 curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
@@ -15,12 +15,12 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
   -H "X-Trace-Id: demo-stream-001" \
   -d '{
     "question": "缓考应该如何办理？",
-    "top_k": 5,
-    "decompose_top_k": 10,
     "session_id": "demo_session_001"
   }'
 ```
 
+- 旧 `top_k`、`decompose_top_k` 及其他未知字段由 `extra="forbid"` 拒绝，返回 HTTP 422，不会静默忽略。
+- 每次检索的 query/top_k 由 Agent 通过工具 schema 选择；`/search` 仍接受诊断 top_k。
 - Schema 校验失败：FastAPI 在建流前返回 `HTTP 422 application/json`。
 - 通过 Schema 校验的请求（包括空问题）：返回 `HTTP 200 text/event-stream`。
 - 问题去除空白后为空：发送 `start → final → done(completed)`；
@@ -32,6 +32,8 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
 响应头始终提供 `X-Trace-Id`。响应头建立时业务尚未完成，不提供
 `X-Total-Cost-Ms`，真实总耗时位于
 `final.data.total_cost_ms`。
+
+生产响应已移除 `decompose_llm_used`；保留 `answer_llm_used`、`llm_call_count` 和固定 false 的 `router_llm_used`。Chat metrics 保留 route/agent 总耗时及工具、模型 trace，不再发布 legacy RAG 的补零 timing 字段。
 
 ## 事件信封与顺序
 

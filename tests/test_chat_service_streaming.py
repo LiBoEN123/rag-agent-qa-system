@@ -59,8 +59,6 @@ def _result(
 def _request(**overrides):
     values = {
         "question": "测试问题",
-        "top_k": 4,
-        "decompose_top_k": 8,
         "session_id": "session-1",
         "trace_id": "trace-1",
         "request_enter_time": "2026-08-02T10:00:00.000",
@@ -112,7 +110,6 @@ def _build_service(
 
     dependencies = ChatServiceDependencies(
         settings_provider=lambda: SimpleNamespace(
-            top_k=5, decompose_top_k=10,
             tool_default_principal_id="test",
             tool_default_permissions=("knowledge_base:read",),
         ),
@@ -202,16 +199,12 @@ def test_direct_answer_streams_ordered_deltas_final_and_done_once(monkeypatch):
         for key in (
             "original_question",
             "effective_question",
-            "top_k",
-            "decompose_top_k",
             "trace_id",
             "session_id",
         )
     } == {
         "original_question": "测试问题",
         "effective_question": "测试问题",
-        "top_k": 4,
-        "decompose_top_k": 8,
         "trace_id": "trace-1",
         "session_id": "session-1",
     }
@@ -389,19 +382,16 @@ def test_final_merges_rewrite_metrics_once_without_mutating_runtime(
         answer="一致回答",
         answer_confidence=0.8,
         retrieval_confidence=0.7,
-        decompose_llm_used=True,
         answer_llm_used=True,
         llm_call_count=2,
         tool_trace=[
             {
                 "step": "llm_usage",
                 "router_llm_used": False,
-                "decompose_llm_used": True,
                 "answer_llm_used": True,
                 "llm_call_count": 2,
             }
         ],
-        timings={"llm_cost_ms": 7},
     )
     if has_rewrite_trace:
         result["tool_trace"].insert(
@@ -428,9 +418,7 @@ def test_final_merges_rewrite_metrics_once_without_mutating_runtime(
     assert len(calls["metrics"]) == 1
     metrics = calls["metrics"][0]
     assert metrics["llm_call_count"] == expected_count
-    assert metrics["decompose_llm_used"] is True
     assert metrics["answer_llm_used"] is True
-    assert metrics["llm_cost_ms"] == 7
     assert calls["messages"] == []
     assert result == original
 

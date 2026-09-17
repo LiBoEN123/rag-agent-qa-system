@@ -15,28 +15,14 @@ from tests.support.local_tools import local_tools
 from tests.support.local_tools import visible_tools
 from app.tools.result import tool_success
 from tests.support.local_tools import invoke_local_tool
-from tests.support.agent_runtime import build_agent_harness
+from app.agent.final_response import FinalAgentResponse
+from tests.support.agent_runtime import FakeToolCallingModel, build_agent_harness
 
 
 class TextArgs(BaseModel):
     text: str
 
 
-class VisibilityModel:
-    """按序返回消息，并记录框架真实绑定的工具。"""
-
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self.bound_tool_names: list[str] = []
-        self.received_messages: list[list] = []
-
-    def bind_tools(self, tools):
-        self.bound_tool_names = [tool.name for tool in tools]
-        return self
-
-    async def ainvoke(self, messages):
-        self.received_messages.append(list(messages))
-        return self.responses.pop(0)
 def _spec(
     name: str,
     calls: list,
@@ -83,8 +69,6 @@ async def _invoke_graph(monkeypatch, registry, model, context):
         {
             "original_question": "验证权限感知工具可见性",
             "effective_question": "验证权限感知工具可见性",
-            "top_k": 5,
-            "decompose_top_k": 10,
             "decision": {"action": "agent", "router_llm_used": False},
             "trace_id": context.trace_id,
             "session_id": context.session_id,
@@ -218,13 +202,13 @@ async def test_agent_binds_visible_tools_and_executes_authorized_tool(monkeypatc
     registry.append(
         _spec("private_tool", calls, required_permissions=("documents:read",))
     )
-    model = VisibilityModel(
+    model = FakeToolCallingModel(
         [
             AIMessage(
                 content="",
                 tool_calls=[_call("private_tool", "allowed", "private-call")],
             ),
-            AIMessage(content="authorized tool complete"),
+            FinalAgentResponse(outcome="answer", answer="authorized tool complete"),
         ]
     )
     context = ToolInvocationContext(
@@ -234,7 +218,7 @@ async def test_agent_binds_visible_tools_and_executes_authorized_tool(monkeypatc
         source="visibility_test",
     )
     output = await _invoke_graph(monkeypatch, registry, model, context)
-    assert model.bound_tool_names == ["public_tool", "private_tool"]
+    assert model.bound_tool_names == ["public_tool", "private_tool", model.structured_tool_name]
     assert len(calls) == 1
     execution_context = calls[0][2]
     assert execution_context.trace_id == context.trace_id
@@ -258,13 +242,13 @@ async def test_forged_hidden_tool_is_denied_by_execution_policy(monkeypatch):
             description=secret_description,
         )
     )
-    model = VisibilityModel(
+    model = FakeToolCallingModel(
         [
             AIMessage(
                 content="",
                 tool_calls=[_call("private_tool", "forged", "hidden-call")],
             ),
-            AIMessage(content="hidden tool handled safely"),
+            FinalAgentResponse(outcome="answer", answer="hidden tool handled safely"),
         ]
     )
     context = ToolInvocationContext(trace_id="trace-hidden")
@@ -272,7 +256,7 @@ async def test_forged_hidden_tool_is_denied_by_execution_policy(monkeypatch):
     output = await _invoke_graph(monkeypatch, registry, model, context)
     message = next(m for m in output["messages"] if isinstance(m, ToolMessage))
     payload = json.loads(message.content)
-    assert model.bound_tool_names == ["public_tool"]
+    assert model.bound_tool_names == ["public_tool", model.structured_tool_name]
     assert isinstance(message, ToolMessage)
     assert payload["error_code"] == "permission_denied"
     assert payload["governance"]["missing_permissions"] == ["documents:read"]

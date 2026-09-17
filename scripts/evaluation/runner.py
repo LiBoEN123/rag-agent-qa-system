@@ -227,7 +227,7 @@ def run_rag_baseline(
     use_llm_judge: bool,
     judge_model: str | None,
 ) -> dict[str, Any]:
-    """复用 predictions 与语义 evaluator 的 Python 函数。"""
+    """运行 legacy standalone RAG 预测与评估，召回参数仅作用于该路径。"""
     from scripts.evaluation.rag_evaluator import run_rag_evaluation
     from scripts.evaluation.rag_predictions import run_predictions
 
@@ -386,8 +386,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--run-name", default=None)
-    parser.add_argument("--top-k", type=int, default=5)
-    parser.add_argument("--decompose-top-k", type=int, default=None)
+    parser.add_argument(
+        "--top-k", type=int, default=5,
+        help="仅控制 legacy standalone RAG baseline，不控制 Agent Evaluation",
+    )
+    parser.add_argument(
+        "--decompose-top-k", type=int, default=None,
+        help="仅控制 legacy standalone RAG 多查询召回，不控制 Agent Evaluation",
+    )
     parser.add_argument("--validate-only", action="store_true")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--agent-only", action="store_true")
@@ -520,8 +526,6 @@ def main(argv: list[str] | None = None) -> int:
                     include_online=args.include_online,
                     include_mcp=args.include_mcp,
                     include_mixed=args.include_mixed,
-                    top_k=args.top_k,
-                    decompose_top_k=decompose_top_k,
                     rag_already_initialized=rag_result is not None,
                     force_rebuild=(
                         args.force_rebuild and rag_result is None

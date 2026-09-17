@@ -190,7 +190,7 @@ def test_search_knowledge_base_applies_tool_top_k_after_rerank(monkeypatch, tool
         registry=tool_registry, tool_name="search_knowledge_base",
         tool_args={"query": "政策", "top_k": 1},
         context=ToolInvocationContext(
-            permissions=("knowledge_base:read",), effective_question="原问题", top_k=9,
+            permissions=("knowledge_base:read",), effective_question="原问题",
         ),
     )
 

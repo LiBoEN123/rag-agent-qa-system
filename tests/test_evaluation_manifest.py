@@ -85,6 +85,12 @@ def test_build_manifest_records_commit_dirty_hashes_and_safe_whitelist(
     assert manifest["code"]["git_dirty"] is True
     assert manifest["data"]["agent_cases_sha256"]
     assert manifest["agent"]["tool_contract_sha256"] == "contract-hash"
+    assert not {"top_k", "decompose_top_k", "decompose_enabled", "decompose_model"} & manifest["agent"].keys()
+    assert manifest["rag"]["decompose_enabled"] == settings.enable_query_decompose
+    assert manifest["rag"]["decompose_model"] == settings.decompose_model_name
+    assert set(manifest["prompts"]["agent"]["files"]) == set(evaluation_manifest.AGENT_PROMPT_INPUT_FILES)
+    assert set(manifest["prompts"]["legacy_rag"]["files"]) == set(evaluation_manifest.LEGACY_RAG_PROMPT_INPUT_FILES)
+    assert not any(path.startswith("app/rag/") for path in manifest["prompts"]["agent"]["files"])
     assert manifest["mcp"] == {
         "production_enabled": True,
         "evaluation_enabled": False,

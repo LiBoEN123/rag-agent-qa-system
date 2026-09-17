@@ -151,8 +151,6 @@ def test_direct_route_streams_without_building_agent(monkeypatch, question, stat
                 write_bad_cases=lambda record: None,
                 original_question=question,
                 effective_question=question,
-                top_k=5,
-                decompose_top_k=10,
                 trace_id="trace-direct-stream",
                 session_id=None,
                 bad_case=None,
@@ -197,8 +195,6 @@ def test_stream_executes_create_agent_and_returns_authoritative_result(
                 write_bad_cases=lambda record: None,
                 original_question="它是什么？",
                 effective_question="请回答测试问题",
-                top_k=5,
-                decompose_top_k=10,
                 trace_id="trace-agent-stream",
                 session_id=None,
                 bad_case=None,
@@ -248,8 +244,6 @@ def test_stream_projects_native_command_tool_completion(monkeypatch):
                 write_bad_cases=lambda record: None,
                 original_question="请列出知识库文档",
                 effective_question="请列出知识库文档",
-                top_k=5,
-                decompose_top_k=10,
                 trace_id="trace-tool-stream",
                 session_id=None,
                 bad_case=None,
@@ -289,8 +283,6 @@ def test_stream_runtime_converts_exception_to_internal_result(monkeypatch):
                 write_bad_cases=lambda record: bad_cases.append(dict(record)),
                 original_question="测试",
                 effective_question="测试",
-                top_k=5,
-                decompose_top_k=10,
                 trace_id="trace-error-stream",
                 session_id=None,
                 bad_case=None,
@@ -303,28 +295,6 @@ def test_stream_runtime_converts_exception_to_internal_result(monkeypatch):
     assert events[0].data["result"]["status"] == "INTERNAL_ERROR"
     assert "private detail" not in repr(events[0].data["result"])
     assert bad_cases[0]["note"] == "private detail"
-
-
-@pytest.mark.parametrize(
-    ("top_k", "decompose_top_k"),
-    [(0, 10), (11, 10), (5, 0), (5, 21), (True, 10), (5.5, 10)],
-)
-@pytest.mark.asyncio
-async def test_stream_rejects_invalid_counts_before_routing(monkeypatch, top_k, decompose_top_k):
-    def forbidden_route(question):
-        raise AssertionError("invalid counts must not reach routing")
-
-    monkeypatch.setattr(agent_runtime, "route_agent_action", forbidden_route)
-    bad_cases = []
-    events = [event async for event in stream_agent(
-        write_bad_cases=lambda record: bad_cases.append(dict(record)),
-        original_question="测试", effective_question="测试",
-        top_k=top_k, decompose_top_k=decompose_top_k,
-        trace_id="invalid-counts", session_id=None, bad_case=None,
-    )]
-    assert [event.event for event in events] == ["result"]
-    assert events[0].data["result"]["status"] == "INTERNAL_ERROR"
-    assert "must be" in bad_cases[0]["note"]
 
 
 @pytest.mark.asyncio
@@ -341,7 +311,7 @@ async def test_stream_withholds_model_text_until_grounding_passes(monkeypatch, i
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     events = [event async for event in stream_agent(
         write_bad_cases=None, original_question="测试事实问题", effective_question="测试事实问题",
-        top_k=5, decompose_top_k=10, trace_id="grounding-stream", session_id=None, bad_case=None,
+        trace_id="grounding-stream", session_id=None, bad_case=None,
     )]
     result = events[-1].data["result"]
     assert result["status"] == ("MODEL_ERROR" if invalid_id else "OK")

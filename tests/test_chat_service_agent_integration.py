@@ -276,8 +276,6 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
             service,
             ChatServiceRequest(
                 question="请走完整 Agent 工具主路径",
-                top_k=5,
-                decompose_top_k=10,
                 session_id="session-chat-integration",
                 trace_id="trace-chat-integration",
                 request_enter_time="2026-07-20T09:59:59.000",
@@ -348,7 +346,7 @@ def test_chat_service_returns_kb_evidence_to_agent_with_request_tool_mode(monkey
     settings = settings_env(tool_default_permissions=("knowledge_base:read", "web:search"))
     model = FakeToolCallingModel([
         AIMessage(content="", tool_calls=[{
-            "name": "search_knowledge_base", "args": {"query": "学习年限", "top_k": 3},
+            "name": "search_knowledge_base", "args": {"query": "学习年限", "top_k": 8},
             "id": "kb-mode-call", "type": "tool_call",
         }]),
         FinalAgentResponse(outcome="no_evidence", answer="无法根据当前证据确定学习年限。"),
@@ -373,7 +371,7 @@ def test_chat_service_returns_kb_evidence_to_agent_with_request_tool_mode(monkey
         perf_counter=IncrementingClock(),
     ))
     outcome = collect_outcome(service, ChatServiceRequest(
-        question="学习年限是多少？", top_k=4, decompose_top_k=8,
+        question="学习年限是多少？",
         session_id="kb-mode-session", trace_id="kb-mode-trace", tool_mode=tool_mode,
     ))
     assert outcome.result["status"] == "NO_RELEVANT_INFO"
@@ -386,7 +384,7 @@ def test_chat_service_returns_kb_evidence_to_agent_with_request_tool_mode(monkey
     message = model.received_messages[1][-1]
     assert isinstance(message, ToolMessage) and message.tool_call_id == "kb-mode-call"
     assert json.loads(message.content)["output"]["count"] == 0
-    search.assert_called_once_with("学习年限", top_k=3)
+    search.assert_called_once_with("学习年限", top_k=8)
     rerank.assert_called_once_with([], "学习年限")
     rag.assert_not_called()
     if tool_mode is ToolMode.RAG_ONLY:
@@ -523,8 +521,6 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
             ChatService(dependencies),
             ChatServiceRequest(
                 question="今天有哪些重要的 Python 新闻？",
-                top_k=5,
-                decompose_top_k=10,
                 session_id="session-chat-web",
                 trace_id="trace-chat-web",
                 request_enter_time="2026-07-22T09:59:59.000",
@@ -720,8 +716,6 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
             ChatService(dependencies),
             ChatServiceRequest(
                 question="读取搜索到的公开 PDF",
-                top_k=5,
-                decompose_top_k=10,
                 session_id="session-chat-pdf",
                 trace_id="trace-chat-pdf",
                 request_enter_time="2026-07-23T09:59:59.000",

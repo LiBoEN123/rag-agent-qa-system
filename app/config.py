@@ -104,7 +104,9 @@ class AppSettings(BaseSettings):
     chroma_persist_dir: Path = BASE_DIR / "data" / "chroma"
     chroma_collection_name: str = "mini_rag_chunks"
     chroma_index_collection_name: str = "mini_rag_chunks_v2"
+    # 诊断检索和 legacy standalone RAG 默认值；不控制 Agent Tool Call。
     top_k: int = Field(default=5, ge=1, le=10)
+    # 仅供 legacy standalone RAG evaluation 的多查询召回。
     decompose_top_k: int = Field(default=10, ge=1, le=20)
     chunk_size: int = 600
     chunk_overlap: int = 120
@@ -146,7 +148,7 @@ class AppSettings(BaseSettings):
     query_rewrite_max_tokens: int = 256
     query_rewrite_temperature: float = 0.0
 
-    # 查询分解
+    # Legacy standalone RAG evaluation 查询分解，不参与生产 create_agent Chat。
     enable_query_decompose: bool = True
     decompose_api_key: SecretStr | None = None
     decompose_model_name: str = "qwen2.5:7b"

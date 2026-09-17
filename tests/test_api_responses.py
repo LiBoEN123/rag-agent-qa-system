@@ -15,7 +15,6 @@ def test_response_adapter_clamps_confidence_and_trusts_result_usage(llm_call_cou
     result = create_agent_result(
         status=AgentResultStatus.OK,
         answer="回答",
-        decompose_llm_used=True,
         answer_llm_used=True,
         llm_call_count=llm_call_count,
         tool_trace=[
@@ -26,7 +25,6 @@ def test_response_adapter_clamps_confidence_and_trusts_result_usage(llm_call_cou
             {
                 "step": "llm_usage",
                 "router_llm_used": True,
-                "decompose_llm_used": False,
                 "answer_llm_used": False,
                 "llm_call_count": 2,
             },
@@ -51,7 +49,7 @@ def test_response_adapter_clamps_confidence_and_trusts_result_usage(llm_call_cou
     assert payload["data"]["retrieval_confidence"] == 1.0
     assert payload["data"]["answer_confidence"] == 0.0
     assert payload["data"]["router_llm_used"] is False
-    assert payload["data"]["decompose_llm_used"] is True
+    assert "decompose_llm_used" not in payload["data"]
     assert payload["data"]["answer_llm_used"] is True
     assert payload["data"]["llm_call_count"] == llm_call_count
     assert payload["data"]["tool_trace"] == original["tool_trace"]

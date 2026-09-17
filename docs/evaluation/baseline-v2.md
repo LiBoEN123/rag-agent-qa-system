@@ -199,13 +199,14 @@ temperature、top-k 相同；Agent dataset hash、Agent budgets、Tool contract 
 - Agent/RAG 数据路径及 SHA-256、case/suite/category 数量；
 - 索引 manifest 路径及 SHA-256、索引来源、文档/chunk 数量、embedding、
   rerank、chunk size 和 overlap；
-- 回答、Query Rewrite、Decompose 模型名和开关、温度、token、top-k 和 Agent
-  预算；
+- `agent`：回答、Query Rewrite 模型名和开关、温度、token、Agent 预算；
+- `rag`：仅 legacy standalone RAG 的 Decompose 模型、开关和召回数量；
 - Prediction Schema 版本、`max_context_chars`、请求/有效的 `top_k` 与
-  `decompose_top_k`，以及生产 Context 选择源文件和 SHA-256；
+  `decompose_top_k`，以及 legacy RAG Context 选择源文件和 SHA-256；
 - 当前七个工具名、完整 Tool contract hash；
-- Prompt、Query Rewrite、Decompose、Generation、Compare 和工具描述所在源文件
-  的 SHA-256；
+- `prompts.agent`：Agent Prompt、Query Rewrite、工具描述源文件的 SHA-256；
+  `prompts.legacy_rag`：legacy Prompt、Decompose、Generation 源文件的 SHA-256。
+  共享 `app/prompts.py` 按整文件计算，两组均包含它；
 - Judge 是否启用、模型和缓存来源。
 
 Manifest 使用显式白名单，禁止完整 `settings.model_dump()`。递归安全检查拒绝

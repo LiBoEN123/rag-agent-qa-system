@@ -69,7 +69,6 @@ async def _invoke(monkeypatch, model, settings_factory, **settings_overrides):
     output = [state async for state in build_agent_harness(settings).astream({
         "original_question": "它何时开始？",
         "effective_question": "奖学金申请条件与开始时间是什么？",
-        "top_k": 7, "decompose_top_k": 10,
         "trace_id": context.trace_id, "session_id": context.session_id,
     }, context=context)][-1]
     assert "knowledge_base_result" not in output
@@ -82,7 +81,7 @@ async def _invoke(monkeypatch, model, settings_factory, **settings_overrides):
         "奖学金申请条件与开始时间是什么？"
     ]
     assert all(c.effective_question == "奖学金申请条件与开始时间是什么？" for c in contexts)
-    assert all(c.top_k == 7 and c.decompose_top_k == 10 for c in contexts)
+    assert all(not hasattr(c, "top_k") and not hasattr(c, "decompose_top_k") for c in contexts)
     assert all(c.permissions == context.permissions for c in contexts)
     assert {e.trace_id for e in audit_events} == {context.trace_id}
     assert {e.session_id for e in audit_events} == {context.session_id}
@@ -154,7 +153,8 @@ async def test_search_returns_reranked_evidence_to_next_model(monkeypatch, setti
     assert result["answer"] == "奖学金申请于九月开始。"
     assert [ref["reference_id"] for ref in result["references"]] == [document["id"]]
     assert result["retrieval_confidence"] == result["answer_confidence"] == 0.0
-    assert result["llm_call_count"] == 2 and result["decompose_llm_used"] is False
+    assert result["llm_call_count"] == 2
+    assert "decompose_llm_used" not in result
     trace = next(s for s in result["tool_trace"] if s["step"] == "tool_call")
     assert trace["final_chunk_count"] == 1
     assert trace["top_chunk_ids"] == ["b"] and trace["top_scores"] == [0.8123]
@@ -164,6 +164,29 @@ async def test_search_returns_reranked_evidence_to_next_model(monkeypatch, setti
     assert audit[-1].sanitized_output_summary == {
         "count": 1, "top_chunk_ids": ["b"], "top_scores": [0.8123],
     }
+
+
+@pytest.mark.asyncio
+async def test_agent_tool_top_k_eight_limits_real_handler_evidence(monkeypatch, settings_factory, retrieval):
+    search, cross_encoder = retrieval
+    search.side_effect = None
+    search.return_value = [
+        {"chunk_id": str(i), "text": f"申请材料 {i}", "file_name": "policy.md"}
+        for i in range(10)
+    ]
+    cross_encoder.predict.return_value = list(range(10))
+    model = FakeToolCallingModel([
+        _search("奖学金 申请材料", top_k=8),
+        _grounded_answer("需要提交申请材料。", indexes=[0]),
+    ])
+    output, args_seen, _ = await _invoke(monkeypatch, model, settings_factory)
+
+    search.assert_called_once_with("奖学金 申请材料", top_k=8)
+    assert args_seen == [{"query": "奖学金 申请材料", "top_k": 8}]
+    evidence = _evidence(model, 1, "search-a")
+    assert evidence["count"] == len(evidence["evidence"]) == 8
+    assert [d["metadata"]["chunk_id"] for d in evidence["evidence"]] == [str(i) for i in range(9, 1, -1)]
+    assert output["result"]["status"] == "OK"
 
 
 @pytest.mark.asyncio
@@ -217,7 +240,7 @@ async def test_agent_can_change_query_and_retrieve_again(monkeypatch, settings_f
     cross_encoder.predict.side_effect = [[0.9], [0.8]]
     final = "申请于九月开始，需要提交成绩单。"
     model = FakeToolCallingModel([
-        _search(), _search("奖学金 申请材料 成绩单", top_k=2, call_id="search-b"),
+        _search(top_k=3), _search("奖学金 申请材料 成绩单", top_k=7, call_id="search-b"),
         _grounded_answer(final),
     ])
     output, args_seen, audit = await _invoke(monkeypatch, model, settings_factory)
@@ -225,7 +248,7 @@ async def test_agent_can_change_query_and_retrieve_again(monkeypatch, settings_f
     assert len(model.received_messages) == 3
     assert search.call_count == cross_encoder.predict.call_count == 2
     assert [(c.args[0], c.kwargs["top_k"]) for c in search.call_args_list] == [
-        ("奖学金 申请时间", 1), ("奖学金 申请材料 成绩单", 2),
+        ("奖学金 申请时间", 3), ("奖学金 申请材料 成绩单", 7),
     ]
     assert args_seen[0]["query"] != args_seen[1]["query"]
     assert _evidence(model, 1, "search-a")["count"] == 1

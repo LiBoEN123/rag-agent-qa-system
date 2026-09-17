@@ -39,10 +39,8 @@ def _valid_payload(**updates):
         "tool_result_summary": "工具摘要",
         "tool_trace": [{"step": "llm_usage"}],
         "router_llm_used": False,
-        "decompose_llm_used": False,
         "answer_llm_used": True,
         "llm_call_count": 1,
-        "timings": {"llm_cost_ms": 3},
     }
     payload.update(updates)
     return payload
@@ -71,7 +69,7 @@ def test_agent_run_result_accepts_complete_results(
 
     assert dumped["status"] == status.value
     assert isinstance(dumped["status"], str)
-    assert dumped["timings"] == {"llm_cost_ms": 3}
+    assert "timings" not in dumped
 
 
 @pytest.mark.parametrize(
@@ -79,6 +77,8 @@ def test_agent_run_result_accepts_complete_results(
     [
         {"status": "UNKNOWN"},
         {"unexpected": "field"},
+        {"decompose_llm_used": False},
+        {"timings": {}},
         {"retrieval_confidence": -0.1},
         {"answer_confidence": 1.1},
         {"llm_call_count": -1},
@@ -94,7 +94,7 @@ def test_agent_run_result_rejects_invalid_payload(updates):
 
 def test_agent_run_result_requires_every_runtime_field():
     payload = _valid_payload()
-    payload.pop("timings")
+    payload.pop("llm_call_count")
 
     with pytest.raises(ValidationError):
         AgentRunResult.model_validate(payload)
@@ -108,7 +108,7 @@ def test_internal_error_result_has_the_complete_contract_and_is_sanitized():
 
     assert set(result) == set(AgentRunResult.model_fields)
     assert result["status"] == "INTERNAL_ERROR"
-    assert result["timings"] == {}
+    assert "timings" not in result
     assert "secret" not in str(result)
     assert AgentRunResult.model_validate(result).model_dump(mode="json") == result
 
@@ -155,17 +155,15 @@ def _knowledge_output():
     }
 
 
-def _validate_usage(result, *, decompose=False, answer=False, count=0):
+def _validate_usage(result, *, answer=False, count=0):
     assert AgentRunResult.model_validate(result).model_dump(mode="json") == result
     assert result["router_llm_used"] is False
-    assert result["decompose_llm_used"] is decompose
     assert result["answer_llm_used"] is answer
     assert result["llm_call_count"] == count
     assert [step for step in result["tool_trace"] if step["step"] == "llm_usage"] == [
         {
             "step": "llm_usage",
             "router_llm_used": False,
-            "decompose_llm_used": decompose,
             "answer_llm_used": answer,
             "llm_call_count": count,
         }
@@ -249,7 +247,7 @@ def test_short_circuit_direct_answer_keeps_capability_text_and_trace(settings_en
     assert result["need_clarification"] is False
     assert result["clarification_question"] == ""
     assert result["retrieval_confidence"] == result["answer_confidence"] == 0.0
-    assert result["timings"] == {}
+    assert "timings" not in result
     assert result["tool_result_summary"] == "未调用工具，直接回答"
     assert [step["step"] for step in result["tool_trace"]] == [
         "decide",
@@ -293,7 +291,7 @@ def test_kb_evidence_projects_only_declared_structured_reference(settings_env):
     assert reference["snippet"] == "候选二"
     ChatReferences.model_validate(reference)
     assert result["retrieval_confidence"] == result["answer_confidence"] == 0.0
-    assert result["timings"] == {}
+    assert "timings" not in result
     assert result["tool_result_summary"] == "知识库检索完成，召回 2 个 chunk"
     assert [step["step"] for step in result["tool_trace"]] == [
         "decide", "agent_iteration", "tool_call", "agent_iteration",
@@ -378,7 +376,7 @@ def test_framework_structured_answer_and_governance_trace_are_preserved(
     assert result["status"] == "OK"
     assert result["answer"] == "第一段\n第二段"
     assert result["reason"] == "Agent model produced structured answer"
-    assert result["references"] == [] and result["timings"] == {}
+    assert result["references"] == []
     assert result["tool_result_summary"] == "工具摘要"
     tool_calls = [step for step in result["tool_trace"] if step["step"] == "tool_call"]
     assert len(tool_calls) == 1

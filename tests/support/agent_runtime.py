@@ -23,11 +23,13 @@ class FakeToolCallingModel:
     def __init__(self, responses):
         self.responses = list(responses)
         self.bound_tool_names: list[str] = []
+        self.bound_tools: list = []
         self.binding_kwargs: dict[str, Any] = {}
         self.structured_tool_name = ""
         self.received_messages: list[list] = []
 
     def bind_tools(self, tools, **kwargs):
+        self.bound_tools = list(tools)
         self.bound_tool_names = [tool.name for tool in tools]
         self.binding_kwargs = dict(kwargs)
         self.structured_tool_name = next(
@@ -74,13 +76,6 @@ class AgentRuntimeHarness:
         context: ToolInvocationContext | None,
     ):
         return prepare_agent_runtime_invocation(
-            top_k=int(input_value.get("top_k", self.settings.top_k)),
-            decompose_top_k=int(
-                input_value.get(
-                    "decompose_top_k",
-                    self.settings.decompose_top_k,
-                )
-            ),
             trace_id=str(input_value.get("trace_id") or ""),
             session_id=input_value.get("session_id"),
             original_question=str(input_value.get("original_question") or ""),
@@ -144,8 +139,6 @@ class AgentRuntimeHarness:
             {
                 "original_question": "测试 Agent Runtime",
                 "effective_question": "测试 Agent Runtime",
-                "top_k": self.settings.top_k,
-                "decompose_top_k": self.settings.decompose_top_k,
             },
             None,
         )

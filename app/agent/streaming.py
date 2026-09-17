@@ -220,8 +220,6 @@ async def _close_async_iterator(iterator: object) -> None:
 async def stream_agent(
     *,
     write_bad_cases: Callable[[dict[str, Any]], None] | None,
-    top_k: int,
-    decompose_top_k: int,
     trace_id: str,
     session_id: str | None,
     bad_case: dict[str, Any] | None,
@@ -236,8 +234,6 @@ async def stream_agent(
     agent_stream_completed = False
     try:
         invocation = prepare_agent_runtime_invocation(
-            top_k=top_k,
-            decompose_top_k=decompose_top_k,
             trace_id=trace_id,
             session_id=session_id,
             original_question=resolved_original,
