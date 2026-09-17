@@ -39,9 +39,9 @@ create_agent
 → existing CrossEncoder rerank → Top-K chunks
 → 配对 ToolMessage（候选 evidence）
 → create_agent 下一轮 Model
-  ├─ 证据足够：最终 AIMessage → Agent Result builder
+  ├─ 证据足够：ToolStrategy → structured_response → ID 校验 → references
   ├─ 证据不足：修改 query 后再次检索
-  └─ 无法确定：明确说明当前证据不足
+  └─ 无法确定：no_evidence → NO_RELEVANT_INFO；问题有歧义 → clarify
 ```
 
 ## Architecture Freeze（2026-08-21）
@@ -54,8 +54,9 @@ AGENTIC-RAG-1（2026-09-16）更新为 retrieval → ToolMessage → Agent。
 
 - FastAPI/API 只负责组合、协议转换、HTTP/SSE 与生命周期。
 - ChatService 拥有 Query Rewrite、session、Agent 调用、状态策略和 telemetry 编排。
-- JSON 形态的业务模型输出由 `app.llm.schemas` 定义，并统一经过 `ModelGateway` 的原生
-  Structured Output 或受控文本 fallback；业务模块不自行解析模型 JSON。
+- Agent 最终合同由 `app.agent.final_response.FinalAgentResponse` 定义，经 LangChain
+  `ToolStrategy` 校验和重试，权威输出为 `structured_response`；不解析普通模型文本。
+  其他专用模型输出继续使用 `app.llm.schemas` / `ModelGateway`。
 - `runtime.py` 以普通 Python 准备请求和 Router；`stream_agent` 唯一执行 `create_agent.astream`。
 - LangChain `create_agent` 是唯一 Agent Loop；项目不再包裹 Parent Agent Graph。
 - Project Governance Middleware 拥有模型事件消费、Tool Hook、预算和 fail-closed 语义。
@@ -271,12 +272,30 @@ Document 承载正文；工具运行时继续通过现有 Pydantic `model_valida
 - `web_search` 仍用于发现候选 URL；需要正文依据时优先 fetch，按问题需要决定是否读取。
   `list_documents` 仍是目录。Document.id 只是证据身份，不代表最终回答实际引用。
 
-最终答案来自 Agent Loop 最后一条无 tool calls 的 `AIMessage`。本阶段没有统一 evidence
-pool 或 grounded finalization，因此 `AgentRunResult.references=[]`、两项 confidence 均为
-`0.0`，不把召回 chunks 冒充为最终采用的引用。模型的证据不足说明仍是普通完成的回答
-（`OK`），不会推断为旧 RAG 的 `NO_RELEVANT_INFO`；机器可判定的 grounded 状态留待后续阶段。
-LLM usage 沿用真实成功 Agent Model 调用的计数，KB 工具不增加调用；ChatService 继续单独合并
-实际 Query Rewrite 使用。Legacy RAG 的拆分与回答计数不再进入 Agent Result。
+### 最终结构化回答与引用绑定（AGENTIC-RAG-3）
+
+唯一 Agent 使用 `create_agent(response_format=ToolStrategy(FinalAgentResponse))`，由框架
+执行 Pydantic 校验、错误反馈与重试。最终合同包含 `outcome`、`answer`、`evidence_ids`、
+`clarification_question`。终止治理优先；缺失或非法 `structured_response` 返回 `MODEL_ERROR`。
+
+Result Builder 从本次成功的四类正文工具 ToolMessage 恢复并验证原生 Document。
+`answer` 已有 Document 时必须引用，所有引用 ID 必须存在于本次历史中，否则 fail closed。
+只按声明顺序投影实际引用的 Document，使用真实 Document.id；召回数量不等于引用数量。
+KB 保留文件、chunk、位置与分数；Web/PDF 以 URL、标题和起始页兼容公开引用字段。
+snippet 复用有限预览。无 Document 的目录、比较、MCP 操作仍允许无引用回答。
+
+`no_evidence` 恢复 `NO_RELEVANT_INFO`，`clarify` 映射 `NEED_CLARIFICATION`；两者引用为空。
+两项 confidence 保持 `0.0`。未引入 evidence pool、语义 Judge 或 legacy citation heuristic。
+`compare_documents` 仍为 LLM-backed specialized tool；MCP 尚未统一为 Document evidence。
+
+LangChain 1.3.14 原生工具限流会计入合成响应。`ProjectToolCallLimitMiddleware` 仅在委托
+原生计数前过滤该调用；框架原本就不把它送入业务 ToolNode。合成响应不产生业务 audit、
+tool trace 或 SSE tool event。LLM usage 计入实际 Agent Model 调用（包括失败及真实 retry），
+schema 校验本身不增加调用。ChatService 继续单独合并实际 Query Rewrite 使用。
+
+SSE 在最终校验成功后，为 answer/no_evidence 发送一次完整 `answer_delta`，随后发送最终
+结果；不发送普通模型文本或 schema args，避免错误引用答案提前泄漏。这里接受失去逐 token
+答案展示的权衡，进度与业务工具事件继续实时输出。Router 短路和澄清公开策略保持原样。
 
 ## 状态与结果
 

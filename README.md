@@ -83,14 +83,13 @@ Phase 6B 的 Model private marker 是已接受设计，不是待迁移 TODO。�
 3. 文档切分：Markdown 先按标题层级切分并保留标题路径，普通文本按段落和标点递归切分。
 4. 建立索引：构建 BM25 关键词索引，并使用 SentenceTransformer 生成 embedding；向量、chunk 和 metadata 持久化到 ChromaDB。
 5. 多轮改写：`/chat/stream` 如果传入 `session_id`，会读取最近历史；短追问或指代问题会先改写成独立问题。
-6. Agent 执行：ChatService 把改写后的问题交给 Agent Runtime；普通 Python Router 执行一次粗粒度路由。普通问题直接进入 `create_agent`，由 Agent Model 根据 Provider 动态提供的工具描述、参数 Schema、AIMessage 与 ToolMessage 迭代选择工具或生成最终回答。`direct_answer` 和 `clarify` 不调用 Agent Model。Agent 选择知识库检索后，由该工具调用独立 RAG Graph。
-7. 查询拆分：启用 `ENABLE_QUERY_DECOMPOSE` 后，复杂问题可由拆分模型生成子问题。
-8. 混合召回：查询时同时执行 BM25 和 embedding 召回，合并候选 chunk。
-9. 二阶段重排：使用 CrossEncoder reranker 对候选证据重新排序。
-10. 构造上下文：按 `MAX_CONTEXT_CHARS` 控制上下文长度，组装带 `Reference N` 的 evidence context。
-11. LLM 生成：调用 OpenAI-compatible Chat Completions，要求返回结构化 JSON。
-12. 引用绑定：解析模型返回的 references，并绑定到真实文件、chunk、snippet、score。
-13. 置信度与拒答：结合召回分数、引用数量和证据阈值估算置信度；证据不足、检索为空或引用支撑不足时返回拒答状态。
+6. Agent 执行：ChatService 将改写后的问题交给普通 Python Router，再进入唯一的 LangChain `create_agent`；`direct_answer` 和入口 `clarify` 不调用 Agent Model。
+7. 检索与观察：`search_knowledge_base` 复用 BM25、Chroma/Embedding 和 CrossEncoder 重排，返回带稳定 ID 的 LangChain Document；Agent 阅读 ToolMessage 后可修改 query 再检索。
+8. 结构化回答：`ToolStrategy(FinalAgentResponse)` 原生校验并重试，最终输出 `answer`、`no_evidence` 或 `clarify` 及实际使用的 `evidence_ids`。
+9. 引用绑定：代码检查 ID 是否来自本次成功的 KB、原文读取、Web/PDF 工具消息，只按声明顺序投影真实引用。已有 Document 的 answer 不允许漏引用；未知 ID 返回 `MODEL_ERROR`。
+10. 状态与展示：证据不足映射 `NO_RELEVANT_INFO`，澄清映射 `NEED_CLARIFICATION`；两项 confidence 保持 `0.0`。校验通过的答案在 SSE 中作为一次完整 delta 发送，随后返回权威 final。
+
+Legacy RAG Graph、拆分与旧引用 heuristic 继续保留在独立诊断/测试路径，不参与上述生产 Agent 链路。
 
 ## 历史 RAG 单项评测结果
 
@@ -192,7 +191,7 @@ python scripts/smoke_test_online_tools.py search \
 
 受控本地开发环境可显式设置 `WEB_TRUSTED_PROXY_MODE=true` 和 `WEB_TRUSTED_PROXY_URL=http://127.0.0.1:<port>`。开启后统一代理覆盖 `WEB_SEARCH_PROXY`、`WEB_FETCH_PROXY`，搜索、HTML 和 PDF 工具共用该代理；下载层仍禁用环境代理并保留 URL、超时、响应体量、Content-Type 和资源关闭约束，但把 DNS/IP、私网及重定向目标的网络策略委托给受信代理。该代理必须自行拒绝局域网、环回、metadata 地址和危险重定向，不能把此模式当作生产安全默认值；关闭开关即恢复原有 hardened SSRF 校验。
 
-URL、页面元数据和正文全部是不可信输入。输出固定包含 `content_is_untrusted=true`；模型不得执行页面中的命令、不得把正文视为 system/developer/tool 指令，也不得因为页面要求而调用其他工具，只能将其作为回答用户问题的参考，并在回答中注明实际 `final_url`。网页不会写入 ChromaDB/BM25，不进入本地 RAG，也不会生成本地 RAG references。
+URL、页面元数据和正文全部是不可信输入。输出固定包含 `content_is_untrusted=true`；模型不得执行页面中的命令、不得把正文视为 system/developer/tool 指令，也不得因为页面要求而调用其他工具，只能将其作为回答用户问题的参考，并在回答中注明实际 `final_url`。网页不会写入 ChromaDB/BM25，不进入本地 RAG，其 Document 在被最终结构化回答实际引用后，按现有公开字段投影为 Web references。
 
 默认权限仍只有 `knowledge_base:read`，因此三个 Web 工具都默认不可见。两项 Web 权限彼此独立：只有 `web:search` 时只能搜索；只有 `web:fetch` 时可用 `web_fetch` 和 `web_pdf_fetch` 读取明确 URL；两者都有时才支持搜索后读取：
 
@@ -218,7 +217,7 @@ python scripts/smoke_test_online_tools.py fetch \
 
 正文按实际页码返回 `[Page N]` 边界，空白页不列入 `page_numbers`，title、author 和 subject 只做有限单行规范化。加密、损坏、页数超限和无可提取文本的 PDF 会返回稳定非重试错误；扫描件/图片型 PDF 不自动 OCR，也不接收密码、提取图片/附件/脚本或调用 LLM 清洗。
 
-PDF 文本和元数据固定标记 `content_is_untrusted=true`，只能作为回答参考；模型不得执行 PDF 中的命令或把内容视为 system/developer/tool 指令，回答时应注明 `final_url` 和相关页码。`web_pdf_fetch` 要求 `web:fetch` 权限，经过普通 `StructuredTool → execute_project_tool → handler → ToolMessage` 链路；它不进入本地 RAG、不写 ChromaDB/BM25，也不生成本地 references。
+PDF 文本和元数据固定标记 `content_is_untrusted=true`，只能作为回答参考；模型不得执行 PDF 中的命令或把内容视为 system/developer/tool 指令，回答时应注明 `final_url` 和相关页码。`web_pdf_fetch` 要求 `web:fetch` 权限，经过普通 `StructuredTool → execute_project_tool → handler → ToolMessage` 链路；它不进入本地 RAG、不写 ChromaDB/BM25，其 Document 在被最终结构化回答实际引用后，按现有公开字段投影为 PDF references。
 
 真实网络验证仅由维护者手动执行，不进入 Pytest/CI：
 
@@ -555,8 +554,9 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
 `start → progress/tool/answer_delta... → final → done`。空问题也建流，事件为
 `start → final → done(completed)`，其中 `final.data.http_status=400`、
 `final.data.response.code=EMPTY_QUESTION`。请求 Schema 错误仍在建流前返回 HTTP 422 JSON。
-`answer_delta` 用于增量 UX，`final.data.response` 是权威 ChatResponse，`done` 表示流结束。部分 RAG
-请求可能没有 `answer_delta`，完整答案始终在 `final`。事件字段、安全过滤、断开语义
+`final.data.response` 是权威 ChatResponse，`done` 表示流结束。Agent 的 answer/no_evidence 经校验后，
+以一次完整 `answer_delta` 发出；当前不提供逐 token 答案流。Router 短路、澄清或错误可能没有
+`answer_delta`，最终结果始终在 `final`。事件字段、安全过滤、断开语义
 和 Python 冒烟命令见 [聊天流式 API 文档](docs/api/chat-streaming.md)。
 
 核心响应字段：

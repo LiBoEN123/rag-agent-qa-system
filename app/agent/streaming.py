@@ -10,6 +10,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
+from app.agent.final_response import FinalAgentResponse
 from app.agent.results import (
     build_agent_runtime_error_result,
     build_framework_agent_result,
@@ -19,13 +20,13 @@ from app.agent.runtime import (
     prepare_agent_runtime_invocation,
 )
 from app.common.logging import get_logger
+from app.contracts.chat import AgentResultStatus
 from app.tools.context import ToolInvocationContext
 
 
 logger = get_logger("chat_service")
 
 _TOOL_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,99}$")
-_SAFE_TEXT_BLOCK_TYPES = frozenset({"text", "text_delta"})
 _STREAM_MODES = ("updates", "messages", "values")
 
 
@@ -62,25 +63,6 @@ def _namespace_is_agent(namespace: tuple[str, ...]) -> bool:
         part.split(":", 1)[0] == "framework_agent"
         for part in namespace
     )
-
-
-def _safe_message_text(content: object) -> tuple[str, bool]:
-    """提取普通文本并返回 block 是否全部通过类型白名单。"""
-    if isinstance(content, str):
-        return content, True
-    if not isinstance(content, list):
-        return "", False
-    parts: list[str] = []
-    for block in content:
-        if not isinstance(block, Mapping):
-            return "", False
-        if block.get("type") not in _SAFE_TEXT_BLOCK_TYPES:
-            return "", False
-        text = block.get("text")
-        if not isinstance(text, str):
-            return "", False
-        parts.append(text)
-    return "".join(parts), True
 
 
 def _tool_calls_from_message(message: AIMessage) -> list[Mapping[str, Any]]:
@@ -127,6 +109,8 @@ def _project_message_part(
     calls = _tool_calls_from_message(message)
     projected: list[AgentRuntimeStreamEvent] = []
     for call in calls:
+        if call.get("name") == FinalAgentResponse.__name__:
+            continue
         tool_name = _safe_tool_name(call.get("name"))
         if not tool_name:
             continue
@@ -143,27 +127,7 @@ def _project_message_part(
             )
         )
 
-    text, safe_content = _safe_message_text(message.content)
-    if isinstance(message, AIMessageChunk):
-        projected.append(
-            AgentRuntimeStreamEvent(
-                event="_message_chunk",
-                data={
-                    "message_id": message_id,
-                    "text": text,
-                    "tainted": bool(calls) or not safe_content,
-                    "is_last": message.chunk_position == "last",
-                },
-            )
-        )
-    elif text and safe_content and not calls:
-        projected.append(
-            AgentRuntimeStreamEvent(
-                event="answer_delta",
-                data={"text": text},
-                key=f"answer:{message_id}",
-            )
-        )
+    # 普通模型文本和 schema args 均不是权威答案；待最终 grounding 校验后发送。
     return projected
 
 
@@ -304,8 +268,6 @@ async def stream_agent(
         )
         final_state: Mapping[str, Any] | None = None
         seen_event_keys: set[str] = set()
-        message_buffers: dict[str, list[str]] = {}
-        tainted_message_ids: set[str] = set()
 
         async for part in agent_stream:
             if isinstance(part, Mapping) and part.get("type") == "values":
@@ -314,24 +276,6 @@ async def stream_agent(
                     final_state = value
                 continue
             for event in project_agent_stream_part(part):
-                if event.event == "_message_chunk":
-                    message_id = str(event.data.get("message_id") or "")
-                    if event.data.get("tainted"):
-                        tainted_message_ids.add(message_id)
-                    text = event.data.get("text")
-                    if isinstance(text, str) and text:
-                        message_buffers.setdefault(message_id, []).append(text)
-                    if event.data.get("is_last"):
-                        buffered = message_buffers.pop(message_id, [])
-                        if message_id not in tainted_message_ids:
-                            for index, delta in enumerate(buffered):
-                                yield AgentRuntimeStreamEvent(
-                                    event="answer_delta",
-                                    data={"text": delta},
-                                    key=f"answer:{message_id}:{index}",
-                                )
-                        tainted_message_ids.discard(message_id)
-                    continue
                 if event.key and event.key in seen_event_keys:
                     continue
                 if event.key:
@@ -356,6 +300,12 @@ async def stream_agent(
         if final_state is None:
             raise RuntimeError("create_agent stream did not produce final state")
         result = build_framework_agent_result(invocation, final_state)
+        if result["status"] in {AgentResultStatus.OK, AgentResultStatus.NO_RELEVANT_INFO}:
+            yield AgentRuntimeStreamEvent(
+                event="answer_delta",
+                data={"text": result["answer"]},
+                key="answer:final",
+            )
         logger.info(
             "[trace_id=%s] [agent] runtime_end status=%s streaming=true",
             trace_id,

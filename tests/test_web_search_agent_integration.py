@@ -12,7 +12,9 @@ from app.agent import framework_agent
 from app.rag import graph as rag_graph
 from app.tools.context import ToolInvocationContext
 from app.tools.catalog import get_local_tool_specs
-from tests.support.agent_runtime import build_agent_harness
+from tests.support.agent_runtime import FakeToolCallingModel, build_agent_harness
+from app.agent.final_response import FinalAgentResponse
+from app.api.schemas import ChatReferences
 
 
 web_search_module = import_module("app.tools.web_search")
@@ -32,24 +34,7 @@ ARTICLE_HTML = """
 """
 
 
-class RecordingModel:
-    """按序返回消息，并记录每轮真实动态工具绑定。"""
-
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self.bound_tool_names: list[str] = []
-        self.received_messages: list[list] = []
-
-    def bind_tools(self, tools):
-        self.bound_tool_names = [tool.name for tool in tools]
-        return self
-
-    async def ainvoke(self, messages):
-        self.received_messages.append(list(messages))
-        return self.responses.pop(0)
-
-
-class SearchFetchModel(RecordingModel):
+class SearchFetchModel(FakeToolCallingModel):
     """依据上一轮真实 ToolMessage 依次搜索、抓取并生成回答。"""
 
     def __init__(self):
@@ -58,8 +43,8 @@ class SearchFetchModel(RecordingModel):
         self.fetch_output = {}
         self.bound_tool_history: list[list[str]] = []
 
-    def bind_tools(self, tools):
-        self.bound_tool_names = [tool.name for tool in tools]
+    def bind_tools(self, tools, **kwargs):
+        super().bind_tools(tools, **kwargs)
         self.bound_tool_history.append(list(self.bound_tool_names))
         return self
 
@@ -84,15 +69,16 @@ class SearchFetchModel(RecordingModel):
                 ],
             )
         self.fetch_output = payload["output"]
-        return AIMessage(
-            content=(
+        return self.final_response(
+            outcome="answer", evidence_ids=[self.fetch_output["evidence"][0]["id"]],
+            answer=(
                 f"{self.fetch_output['title']}：{self.fetch_output['evidence'][0]['page_content']} "
                 f"来源：{self.fetch_output['final_url']}"
             )
         )
 
 
-class SearchPdfModel(RecordingModel):
+class SearchPdfModel(FakeToolCallingModel):
     """依据 ToolMessage 执行 web_search → web_pdf_fetch → final。"""
 
     def __init__(self):
@@ -101,8 +87,8 @@ class SearchPdfModel(RecordingModel):
         self.pdf_output = {}
         self.bound_tool_history: list[list[str]] = []
 
-    def bind_tools(self, tools):
-        self.bound_tool_names = [tool.name for tool in tools]
+    def bind_tools(self, tools, **kwargs):
+        super().bind_tools(tools, **kwargs)
         self.bound_tool_history.append(list(self.bound_tool_names))
         return self
 
@@ -135,8 +121,9 @@ class SearchPdfModel(RecordingModel):
                 ],
             )
         self.pdf_output = payload["output"]
-        return AIMessage(
-            content=(
+        return self.final_response(
+            outcome="answer", evidence_ids=[self.pdf_output["evidence"][0]["id"]],
+            answer=(
                 f"{self.pdf_output['title']}，相关页码 "
                 f"{self.pdf_output['page_numbers']}，来源："
                 f"{self.pdf_output['final_url']}"
@@ -144,7 +131,7 @@ class SearchPdfModel(RecordingModel):
         )
 
 
-class FetchThenPdfModel(RecordingModel):
+class FetchThenPdfModel(FakeToolCallingModel):
     """观察 web_fetch 类型错误后改用 web_pdf_fetch。"""
 
     def __init__(self):
@@ -190,8 +177,9 @@ class FetchThenPdfModel(RecordingModel):
                 ],
             )
         self.pdf_output = payload["output"]
-        return AIMessage(
-            content=(
+        return self.final_response(
+            outcome="answer", evidence_ids=[self.pdf_output["evidence"][0]["id"]],
+            answer=(
                 f"已改用 PDF 工具：{self.pdf_output['title']} "
                 f"{self.pdf_output['final_url']} pages "
                 f"{self.pdf_output['page_numbers']}"
@@ -334,12 +322,12 @@ async def test_consecutive_requests_keep_web_visibility_isolated_and_execute_gra
             AssertionError(f"web_search must not enter RAG: {args!r} {kwargs!r}")
         ),
     )
-    hidden_model = RecordingModel([AIMessage(content="无需外部搜索。")])
-    visible_model = RecordingModel(
+    hidden_model = FakeToolCallingModel([FinalAgentResponse(outcome="answer", answer="无需外部搜索。")])
+    visible_model = FakeToolCallingModel(
         [
             AIMessage(content="", tool_calls=[_tool_call("web-call-graph")]),
-            AIMessage(
-                content=(
+            FinalAgentResponse(
+                outcome="answer", answer=(
                     "LangGraph 有新版本；来源：LangGraph 1.2 released "
                     "https://example.com/langgraph-1-2"
                 )
@@ -425,10 +413,10 @@ async def test_forged_hidden_web_search_is_denied_without_ddgs_or_runtime(
             raise AssertionError(f"hidden web_search reached DDGS: {kwargs}")
 
     monkeypatch.setattr(web_search_module, "DDGS", ForbiddenDDGS)
-    model = RecordingModel(
+    model = FakeToolCallingModel(
         [
             AIMessage(content="", tool_calls=[_tool_call("forged-web-call")]),
-            AIMessage(content="隐藏工具调用已安全处理。"),
+            FinalAgentResponse(outcome="answer", answer="隐藏工具调用已安全处理。"),
         ]
     )
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
@@ -511,7 +499,11 @@ async def test_agent_searches_then_fetches_through_registry_runtime(monkeypatch)
     assert fetch_payload["output"]["content_is_untrusted"] is True
     assert "LangGraph 1.2 release details" in output["result"]["answer"]
     assert model.selected_url in output["result"]["answer"]
-    assert output["result"]["references"] == []
+    reference, = output["result"]["references"]
+    ChatReferences.model_validate(reference)
+    evidence_output = model.fetch_output
+    assert reference["reference_id"] == evidence_output["evidence"][0]["id"]
+    assert reference["source_path"] == evidence_output["final_url"]
     assert "knowledge_base_result" not in output
     assert [
         item["tool_name"]
@@ -584,7 +576,11 @@ async def test_agent_searches_then_reads_pdf_through_project_tool(monkeypatch):
     assert "Governed Web PDF Fixture" in output["result"]["answer"]
     assert model.selected_url in output["result"]["answer"]
     assert "[1, 2]" in output["result"]["answer"]
-    assert output["result"]["references"] == []
+    reference, = output["result"]["references"]
+    ChatReferences.model_validate(reference)
+    evidence_output = model.pdf_output
+    assert reference["reference_id"] == evidence_output["evidence"][0]["id"]
+    assert reference["source_path"] == evidence_output["final_url"]
     assert "knowledge_base_result" not in output
     assert [
         item["tool_name"]
@@ -635,7 +631,11 @@ async def test_agent_recovers_from_web_fetch_pdf_content_type_error(monkeypatch)
     assert model.first_error["error_code"] == "invalid_result"
     assert model.pdf_output["page_numbers"] == [1, 2]
     assert "Governed Web PDF Fixture" in output["result"]["answer"]
-    assert output["result"]["references"] == []
+    reference, = output["result"]["references"]
+    ChatReferences.model_validate(reference)
+    evidence_output = model.pdf_output
+    assert reference["reference_id"] == evidence_output["evidence"][0]["id"]
+    assert reference["source_path"] == evidence_output["final_url"]
     assert "knowledge_base_result" not in output
     assert [
         (item["tool_name"], item["tool_status"])
@@ -655,7 +655,7 @@ async def test_forged_hidden_web_fetch_is_denied_without_http_manager(monkeypatc
             raise AssertionError(f"hidden web_fetch reached Manager: {config}")
 
     monkeypatch.setattr(web_download_module, "Manager", ForbiddenManager)
-    model = RecordingModel(
+    model = FakeToolCallingModel(
         [
             AIMessage(
                 content="",
@@ -671,7 +671,7 @@ async def test_forged_hidden_web_fetch_is_denied_without_http_manager(monkeypatc
                     }
                 ],
             ),
-            AIMessage(content="隐藏正文工具调用已安全处理。"),
+            FinalAgentResponse(outcome="answer", answer="隐藏正文工具调用已安全处理。"),
         ]
     )
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
@@ -709,7 +709,7 @@ async def test_forged_hidden_web_pdf_fetch_is_denied_without_dependencies(
         "PdfReader",
         forbidden_reader,
     )
-    model = RecordingModel(
+    model = FakeToolCallingModel(
         [
             AIMessage(
                 content="",
@@ -727,7 +727,7 @@ async def test_forged_hidden_web_pdf_fetch_is_denied_without_dependencies(
                     }
                 ],
             ),
-            AIMessage(content="隐藏 PDF 工具调用已安全处理。"),
+            FinalAgentResponse(outcome="answer", answer="隐藏 PDF 工具调用已安全处理。"),
         ]
     )
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)

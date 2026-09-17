@@ -3,9 +3,13 @@
 from collections.abc import Callable, Mapping
 from typing import Any, Literal, Protocol
 
-from langchain_core.messages import AIMessage
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.agent.final_response import (
+    FinalAgentResponse,
+    collect_evidence_from_messages,
+    document_to_reference,
+)
 from app.agent.guardrails import AgentStopReason
 from app.agent.router import RouteDecision
 from app.agent.tool_events import normalize_governance_events
@@ -63,13 +67,10 @@ class AgentResultInvocation(Protocol):
 
 def summarize_tool_trace_for_result(
     *,
-    status: AgentResultStatus,
     reason: str,
     tool_trace: list[dict[str, Any]],
 ) -> str:
     """从唯一公开 trace 中提取计入工具调用的结果摘要。"""
-    if status is AgentResultStatus.NEED_CLARIFICATION:
-        return "未调用工具，问题需要澄清"
     summaries = []
     for trace in tool_trace:
         # step_id 仅属于 counted call；handler_executed 会排除已计数的失败。
@@ -143,30 +144,6 @@ def upsert_llm_usage_trace(
     if not usage_written:
         updated.append(usage_trace)
     return updated
-
-
-def _normalize_ai_content(content: object) -> str:
-    """把模型支持的文本内容形式归一化为字符串。"""
-    if isinstance(content, str):
-        return content.strip()
-    if not isinstance(content, list):
-        return str(content or "").strip()
-    parts = [
-        item if isinstance(item, str) else item.get("text", "")
-        for item in content
-        if isinstance(item, (str, dict))
-    ]
-    return "\n".join(str(part).strip() for part in parts if str(part).strip())
-
-
-def _last_final_ai(messages: object) -> AIMessage | None:
-    """查找最近一条不再请求工具的最终模型消息。"""
-    if not isinstance(messages, list):
-        return None
-    for message in reversed(messages):
-        if isinstance(message, AIMessage) and not message.tool_calls:
-            return message
-    return None
 
 
 def _stop_result(reason: str) -> tuple[AgentResultStatus, str]:
@@ -288,22 +265,48 @@ def build_framework_agent_result(
         *event_trace,
     ]
     answer_llm_used = successful_models > 0
+    references = []
+    clarification_question = ""
     stop_reason = str(framework_output.get("stop_reason") or "")
     if stop_reason and stop_reason != AgentStopReason.COMPLETED.value:
         status, answer = _stop_result(stop_reason)
         reason = stop_reason
         mode = "error"
     else:
-        message = _last_final_ai(framework_output.get("messages"))
-        answer = _normalize_ai_content(message.content if message else "")
-        status = AgentResultStatus.OK if answer else AgentResultStatus.MODEL_ERROR
-        reason = (
-            "Agent model produced final answer"
-            if answer
-            else "Agent model returned empty final answer"
-        )
-        mode = "agent_loop" if answer else "error"
-        answer = answer or "模型未生成可用的最终回答。"
+        final = framework_output.get("structured_response")
+        status = AgentResultStatus.MODEL_ERROR
+        answer = "模型未生成可用的最终回答。"
+        reason = "Agent structured response is missing or invalid"
+        mode = "error"
+        try:
+            # 只接受框架已解析的 Pydantic 对象；不解析模型文本或未验证的 dict。
+            if not isinstance(final, FinalAgentResponse):
+                raise ValueError(reason)
+            final = FinalAgentResponse.model_validate(final)
+            evidence = collect_evidence_from_messages(framework_output.get("messages"))
+            if any(evidence_id not in evidence for evidence_id in final.evidence_ids):
+                reason = "Agent structured response referenced unavailable evidence"
+                raise ValueError(reason)
+            if final.outcome == "answer" and evidence and not final.evidence_ids:
+                reason = "Agent structured answer did not cite available evidence"
+                raise ValueError(reason)
+        except (ValueError, TypeError):
+            pass
+        else:
+            mode = "agent_loop"
+            if final.outcome == "answer":
+                status = AgentResultStatus.OK
+                answer = final.answer
+                reason = "Agent model produced structured answer"
+                references = [document_to_reference(evidence[key]) for key in final.evidence_ids]
+            elif final.outcome == "no_evidence":
+                status = AgentResultStatus.NO_RELEVANT_INFO
+                answer = final.answer or "我无法根据当前取得的证据确定答案。"
+                reason = "Agent reported insufficient evidence"
+            else:
+                status = AgentResultStatus.NEED_CLARIFICATION
+                answer = clarification_question = final.clarification_question
+                reason = "Agent requested clarification"
     compose_trace = {
         "step": "compose_final_answer",
         "mode": mode,
@@ -312,21 +315,19 @@ def build_framework_agent_result(
         "reason": reason,
     }
     tool_trace.append(compose_trace)
-    llm_call_count = successful_models
+    llm_call_count = sum(item.get("kind") == "model" for item in events)
     result = AgentRunResult(
         status=status,
         answer=answer,
-        references=[],
+        references=references,
         retrieval_confidence=0.0,
         answer_confidence=0.0,
         need_clarification=status is AgentResultStatus.NEED_CLARIFICATION,
-        clarification_question=(
-            answer if status is AgentResultStatus.NEED_CLARIFICATION else ""
-        ),
+        clarification_question=clarification_question,
         reason=reason,
         action=str(invocation.decision.get("action") or ""),
         tool_result_summary=summarize_tool_trace_for_result(
-            status=status, reason=reason, tool_trace=tool_trace,
+            reason=reason, tool_trace=tool_trace,
         ),
         tool_trace=upsert_llm_usage_trace(
             tool_trace,

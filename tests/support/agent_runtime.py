@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
+from langchain_core.messages import AIMessage
+
+from app.agent.final_response import FinalAgentResponse
 from app.agent.results import (
     build_framework_agent_result,
     build_short_circuit_result,
@@ -20,17 +23,37 @@ class FakeToolCallingModel:
     def __init__(self, responses):
         self.responses = list(responses)
         self.bound_tool_names: list[str] = []
+        self.binding_kwargs: dict[str, Any] = {}
+        self.structured_tool_name = ""
         self.received_messages: list[list] = []
 
-    def bind_tools(self, tools):
+    def bind_tools(self, tools, **kwargs):
         self.bound_tool_names = [tool.name for tool in tools]
+        self.binding_kwargs = dict(kwargs)
+        self.structured_tool_name = next(
+            (tool.name for tool in tools
+             if tool.args_schema == FinalAgentResponse.model_json_schema()),
+            "",
+        )
         return self
+
+    def final_response(self, **fields):
+        """使用本轮真实绑定的 schema/name；允许测试故意提交非法字段触发框架 retry。"""
+        assert self.structured_tool_name
+        return AIMessage(content="", tool_calls=[{
+            "name": self.structured_tool_name, "args": fields,
+            "id": f"final-{len(self.received_messages)}", "type": "tool_call",
+        }])
 
     async def ainvoke(self, messages):
         self.received_messages.append(list(messages))
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
+        if isinstance(response, FinalAgentResponse):
+            return self.final_response(**response.model_dump())
+        if callable(response):
+            return response(self, messages)
         return response
 
 

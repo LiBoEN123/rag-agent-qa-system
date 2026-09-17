@@ -55,7 +55,7 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
 | `start` | `session_id_present` | 第一条业务事件；只说明是否存在 session ID |
 | `progress` | `stage`、`status` | 高层阶段；stage 为 `query_rewrite/routing/agent/rag/finalizing` |
 | `tool` | `tool_name`、`phase`、`status`、完成时的 `cost_ms` | 安全工具开始/完成状态 |
-| `answer_delta` | `text` | 已确认属于直接回答的普通文本增量 |
+| `answer_delta` | `text` | 通过 structured-response 与 evidence-ID 校验的完整答案文本 |
 | `final` | `http_status`、完整 `response`、`total_cost_ms` | 唯一权威业务结果 |
 | `error` | 固定 `STREAM_ERROR` 和通用消息 | 仅表示 SSE 协议自身无法继续 |
 | `done` | `reason=completed/error` | 正常可发送结束事件 |
@@ -67,10 +67,11 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
 ## 安全投影
 
 `updates` 只投影工具名、状态和耗时；`values` 只在 Runtime 内捕获最终状态，不向 SSE
-序列化。`messages` 只接受 `create_agent` 模型节点中的
-`AIMessage`/`AIMessageChunk`
-普通字符串或显式 text block。一次模型调用的 chunk 会先缓冲，确认没有 tool call
-且不属于 RAG 命名空间后才作为原始增量释放。
+序列化。`messages` 中的 `AIMessage`/`AIMessageChunk` 仅用于业务工具开始事件，
+普通模型文本和 ToolStrategy 合成调用均不直接发送。最终 `structured_response` 通过
+Result Builder 的 evidence-ID 校验后，answer/no_evidence 在 result 前发送一次完整
+`answer_delta`，与 `final.data.response.answer` 一致。当前不提供逐 token 答案流；
+治理失败、未知引用或缺少结构化响应不会提前泄漏候选答案。
 
 增量事件不会公开 reasoning/thinking、tool call JSON、工具参数、`ToolMessage` 正文、
 原始工具结果、RAG JSON、网页/PDF/chunk 正文、系统 Prompt、provider/usage

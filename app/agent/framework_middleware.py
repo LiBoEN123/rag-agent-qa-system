@@ -6,11 +6,12 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware import AgentMiddleware, ToolCallLimitMiddleware
 from langchain.agents.middleware.types import ToolCallRequest, hook_config
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command
 
+from app.agent.final_response import FinalAgentResponse
 from app.agent.guardrails import (
     AgentStopReason,
     build_tool_governance_event,
@@ -60,6 +61,25 @@ def _has_tool_call_limit_message(messages: list[object]) -> bool:
         ):
             return True
     return False
+
+
+class ProjectToolCallLimitMiddleware(ToolCallLimitMiddleware):
+    """1.3.14 原生限流会计入合成响应；仅过滤其计数输入，复用原生限流。"""
+
+    def after_model(self, state, runtime):
+        messages = list(state.get("messages", []))
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
+            if isinstance(message, AIMessage):
+                messages[index] = message.model_copy(update={"tool_calls": [
+                    call for call in message.tool_calls
+                    if call["name"] != FinalAgentResponse.__name__
+                ]})
+                break
+        update = super().after_model({**state, "messages": messages}, runtime)
+        if update and update.get("messages"):
+            update["stop_reason"] = AgentStopReason.MAX_TOOL_CALLS.value
+        return update
 
 
 def parse_tool_result(
@@ -305,7 +325,10 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
         }
         if raw_event.get("ok") is False:
             updates["stop_reason"] = "agent_model_call_failed"
-        elif not ai_message.tool_calls:
+        elif not ai_message.tool_calls or (
+            state.get("structured_response") is not None
+            and not raw_event.get("has_tool_calls")
+        ):
             updates["stop_reason"] = AgentStopReason.COMPLETED.value
         return updates
 

@@ -6,6 +6,8 @@ import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
 from app.agent import framework_agent
+from app.agent.final_response import FinalAgentResponse
+from tests.support.agent_runtime import FakeToolCallingModel
 from app.agent import runtime as agent_runtime
 from app.agent import streaming as agent_streaming
 from app.agent.runtime import reset_agent_runtime
@@ -43,9 +45,7 @@ def test_projector_filters_reasoning_tool_messages_rag_and_raw_tool_data():
         chunk_position="last",
     )
 
-    assert project_agent_stream_part(_message_part(reasoning))[-1].data[
-        "tainted"
-    ] is True
+    assert project_agent_stream_part(_message_part(reasoning)) == []
     assert project_agent_stream_part(_message_part(tool_message)) == []
     assert project_agent_stream_part(
         _message_part(rag_chunk, namespace=("rag_subgraph:task",))
@@ -169,56 +169,13 @@ def test_direct_route_streams_without_building_agent(monkeypatch, question, stat
     assert result["llm_call_count"] == 0
 
 
-class AsyncAnswerModel:
-    def __init__(self, failure=False):
-        self.failure = failure
-        self.received_messages = []
-
-    def bind_tools(self, tools, **kwargs):
-        del tools, kwargs
-        return self
-
-    async def ainvoke(self, messages):
-        self.received_messages.append(list(messages))
-        if self.failure:
-            raise RuntimeError("provider secret")
-        return AIMessage(content="异步完整回答")
-
-
-class AsyncToolAnswerModel:
-    """先调用文档列表，再通过异步模型返回最终回答。"""
-
-    def __init__(self):
-        self.calls = 0
-
-    def bind_tools(self, tools, **kwargs):
-        del kwargs
-        assert "list_documents" in {tool.name for tool in tools}
-        return self
-
-    async def ainvoke(self, messages):
-        self.calls += 1
-        if self.calls == 1:
-            return AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "list_documents",
-                        "args": {},
-                        "id": "stream-list-call",
-                        "type": "tool_call",
-                    }
-                ],
-            )
-        assert isinstance(messages[-1], ToolMessage)
-        return AIMessage(content="文档列表读取完成。")
-
-
 @pytest.mark.parametrize("failure", [False, True])
 def test_stream_executes_create_agent_and_returns_authoritative_result(
     monkeypatch, failure,
 ):
-    model = AsyncAnswerModel(failure)
+    model = FakeToolCallingModel([
+        RuntimeError("provider secret") if failure else FinalAgentResponse(outcome="answer", answer="异步完整回答"),
+    ])
     questions = []
     route = agent_runtime.route_agent_action
 
@@ -262,12 +219,22 @@ def test_stream_executes_create_agent_and_returns_authoritative_result(
         assert "provider secret" not in repr(events)
     else:
         assert result["answer"] == "异步完整回答"
+        assert [event.data["text"] for event in events if event.event == "answer_delta"] == [result["answer"]]
+        assert all(event.event != "tool" for event in events)
+        assert events[-2].event == "answer_delta" and events[-1].event == "result"
+        assert model.structured_tool_name not in repr(events)
+        assert "evidence_ids" not in repr(events)
 
 
 def test_stream_projects_native_command_tool_completion(monkeypatch):
     """原生 Command tools update 仍产生一次开始和一次完成事件。"""
     monkeypatch.setattr("app.rag.pipeline.preview_docs", lambda: [])
-    model = AsyncToolAnswerModel()
+    model = FakeToolCallingModel([
+        AIMessage(content="", tool_calls=[{
+            "name": "list_documents", "args": {}, "id": "stream-list-call",
+        }]),
+        FinalAgentResponse(outcome="answer", answer="文档列表读取完成。"),
+    ])
     monkeypatch.setattr(
         framework_agent,
         "get_answer_model",
@@ -358,3 +325,42 @@ async def test_stream_rejects_invalid_counts_before_routing(monkeypatch, top_k, 
     assert [event.event for event in events] == ["result"]
     assert events[0].data["result"]["status"] == "INTERNAL_ERROR"
     assert "must be" in bad_cases[0]["note"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_id", [False, True])
+async def test_stream_withholds_model_text_until_grounding_passes(monkeypatch, invalid_id):
+    def respond(model, messages):
+        message = model.final_response(
+            outcome="answer", answer="最终回答",
+            evidence_ids=["knowledge_base:fake"] if invalid_id else [],
+        )
+        return message.model_copy(update={"content": "未经校验的模型文本"})
+
+    model = FakeToolCallingModel([respond])
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    events = [event async for event in stream_agent(
+        write_bad_cases=None, original_question="测试事实问题", effective_question="测试事实问题",
+        top_k=5, decompose_top_k=10, trace_id="grounding-stream", session_id=None, bad_case=None,
+    )]
+    result = events[-1].data["result"]
+    assert result["status"] == ("MODEL_ERROR" if invalid_id else "OK")
+    assert [event.data["text"] for event in events if event.event == "answer_delta"] == (
+        [] if invalid_id else [result["answer"]]
+    )
+    assert "未经校验的模型文本" not in repr(events)
+    assert model.structured_tool_name not in repr(events)
+    assert "knowledge_base:fake" not in repr(events)
+    assert "evidence_ids" not in repr(events)
+
+
+def test_plain_text_and_tool_schema_chunks_are_never_answer_deltas():
+    assert project_agent_stream_part(_message_part(AIMessageChunk(
+        content="尚未校验的回答", id="text", chunk_position="last",
+    ))) == []
+    assert project_agent_stream_part(_message_part(AIMessageChunk(
+        content="", id="schema", chunk_position="last", tool_call_chunks=[{
+            "name": FinalAgentResponse.__name__, "args": '{"answer":"private"}',
+            "id": "final", "index": 0,
+        }],
+    ))) == []

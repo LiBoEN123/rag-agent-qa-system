@@ -7,17 +7,19 @@ from typing import Annotated, Any
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
     ModelCallLimitMiddleware,
-    ToolCallLimitMiddleware,
     ToolErrorMiddleware,
     ToolRetryMiddleware,
 )
 from langchain.agents.middleware.types import AgentState as LangChainAgentState
+from langchain.agents.structured_output import ToolStrategy
 from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
 from typing_extensions import NotRequired
 
+from app.agent.final_response import FinalAgentResponse
 from app.agent.framework_middleware import (
     _MODEL_GOVERNANCE_KEY,
+    ProjectToolCallLimitMiddleware,
     ProjectToolExecutionMiddleware,
     ProjectToolGovernanceMiddleware,
 )
@@ -64,7 +66,9 @@ class _DeferredAgentModel:
         bound = self._model().bind_tools(tools, **clean_kwargs)
         return _GovernedBoundModel(
             bound,
-            available_tool_names=[tool.name for tool in tools],
+            available_tool_names=[
+                tool.name for tool in tools if tool.name != FinalAgentResponse.__name__
+            ],
         )
 
     def bind(self, **kwargs):
@@ -88,12 +92,16 @@ class _GovernedBoundModel:
     def _success(self, output: Any, started: int) -> Any:
         if not isinstance(output, AIMessage):
             return output
+        business_calls = [
+            call for call in output.tool_calls
+            if call["name"] != FinalAgentResponse.__name__
+        ]
         event = {
             "kind": "model",
             "ok": True,
             "cost_ms": max(0, _now_ms() - started),
-            "has_tool_calls": bool(output.tool_calls),
-            "requested_tool_call_count": len(output.tool_calls),
+            "has_tool_calls": bool(business_calls),
+            "requested_tool_call_count": len(business_calls),
             "available_tool_names": self._available_tool_names,
         }
         return output.model_copy(
@@ -178,6 +186,7 @@ def build_framework_agent(
         _DeferredAgentModel(),
         tools=resolved_tools,
         system_prompt=AGENT_SYSTEM_PROMPT,
+        response_format=ToolStrategy(FinalAgentResponse, handle_errors=True),
         middleware=[
             ProjectToolVisibilityMiddleware(),
             resolved_governance,
@@ -186,7 +195,7 @@ def build_framework_agent(
                 run_limit=resolved.agent_max_iterations,
                 exit_behavior="end",
             ),
-            ToolCallLimitMiddleware(
+            ProjectToolCallLimitMiddleware(
                 run_limit=resolved.agent_max_tool_calls,
                 exit_behavior="continue",
             ),

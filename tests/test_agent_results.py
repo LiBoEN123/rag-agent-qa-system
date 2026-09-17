@@ -9,6 +9,11 @@ from pydantic import ValidationError
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agent.guardrails import AgentStopReason
+from app.agent.final_response import FinalAgentResponse
+from app.tools.knowledge_base import chunk_to_evidence_document
+from app.tools.result import tool_success
+from app.api.schemas import ChatReferences
+from app.tools.evidence import build_evidence_document
 
 from app.agent.results import (
     AgentRunResult,
@@ -120,17 +125,15 @@ def _invocation(action="agent", **decision):
 
 
 def _knowledge_output():
-    knowledge = {
-        "ok": True, "status": "success",
-        "output": {
-            "query": "测试",
-            "count": 2,
-            "evidence": [
-                {"page_content": "候选一", "metadata": {"chunk_id": "a", "hybrid_score": 0.9}},
-                {"page_content": "候选二", "metadata": {"chunk_id": "b", "hybrid_score": 0.8}},
-            ],
-        },
-    }
+    documents = [chunk_to_evidence_document({
+        "chunk_id": key, "text": text, "file_name": "policy.md",
+        "source_path": "policy.md", "position": position, "hybrid_score": score,
+    }).model_dump(mode="json") for key, text, position, score in (
+        ("a", "候选一", 1, 0.9), ("b", "候选二", 2, 0.8),
+    )]
+    knowledge = tool_success("search_knowledge_base", {}, {
+        "query": "测试", "count": 2, "evidence": documents,
+    })
     return {
         "governance_events": [
             {"kind": "model", "ok": True, "has_tool_calls": True},
@@ -142,7 +145,13 @@ def _knowledge_output():
             {"kind": "model", "ok": True, "has_tool_calls": False},
         ],
         "stop_reason": "completed",
-        "messages": [AIMessage(content="最终模型回答")],
+        "messages": [
+            ToolMessage(content=json.dumps(knowledge), name="search_knowledge_base", tool_call_id="kb"),
+            AIMessage(content="普通模型文本不是最终回答"),
+        ],
+        "structured_response": FinalAgentResponse(
+            outcome="answer", answer="最终模型回答", evidence_ids=[documents[1]["id"]],
+        ),
     }
 
 
@@ -267,7 +276,7 @@ def test_unsupported_short_circuit_action_fails_closed(action):
     _validate_usage(result)
 
 
-def test_kb_evidence_uses_final_ai_answer_without_fabricating_grounding(settings_env):
+def test_kb_evidence_projects_only_declared_structured_reference(settings_env):
     settings = settings_env()
     output = _knowledge_output()
     original = deepcopy(output)
@@ -278,7 +287,11 @@ def test_kb_evidence_uses_final_ai_answer_without_fabricating_grounding(settings
     assert not settings.sqlite_db_path.exists()
     assert result["status"] == "OK"
     assert result["answer"] == "最终模型回答"
-    assert result["references"] == []
+    reference, = result["references"]
+    assert reference["reference_id"] == output["structured_response"].evidence_ids[0]
+    assert reference["chunk_id"] == "b"
+    assert reference["snippet"] == "候选二"
+    ChatReferences.model_validate(reference)
     assert result["retrieval_confidence"] == result["answer_confidence"] == 0.0
     assert result["timings"] == {}
     assert result["tool_result_summary"] == "知识库检索完成，召回 2 个 chunk"
@@ -302,7 +315,7 @@ def test_kb_tool_does_not_add_llm_calls(model_calls):
 
     result = build_framework_agent_result(_invocation(), output)
 
-    _validate_usage(result, answer=model_calls > 0, count=model_calls)
+    _validate_usage(result, answer=model_calls > 0, count=model_calls + 1)
 
 
 @pytest.mark.parametrize("stop_reason", ["max_iterations_reached", "fatal_tool_error"])
@@ -319,7 +332,7 @@ def test_successful_kb_evidence_cannot_override_terminal_guardrail(stop_reason):
 
 
 @pytest.mark.parametrize("stop_reason", ["", "completed"])
-def test_framework_final_ai_content_and_governance_trace_are_preserved(
+def test_framework_structured_answer_and_governance_trace_are_preserved(
     stop_reason, settings_env,
 ):
     settings = settings_env()
@@ -343,6 +356,7 @@ def test_framework_final_ai_content_and_governance_trace_are_preserved(
             ToolMessage(content="工具输出", tool_call_id="call-1"),
         ],
         "stop_reason": stop_reason,
+        "structured_response": FinalAgentResponse(outcome="answer", answer="第一段\n第二段"),
         "governance_events": [
             {"kind": "model", "ok": True},
             {
@@ -363,7 +377,7 @@ def test_framework_final_ai_content_and_governance_trace_are_preserved(
     assert output == original
     assert result["status"] == "OK"
     assert result["answer"] == "第一段\n第二段"
-    assert result["reason"] == "Agent model produced final answer"
+    assert result["reason"] == "Agent model produced structured answer"
     assert result["references"] == [] and result["timings"] == {}
     assert result["tool_result_summary"] == "工具摘要"
     tool_calls = [step for step in result["tool_trace"] if step["step"] == "tool_call"]
@@ -376,7 +390,7 @@ def test_framework_final_ai_content_and_governance_trace_are_preserved(
         "mode": "agent_loop",
         "status": "ok",
         "answer_len": 7,
-        "reason": "Agent model produced final answer",
+        "reason": "Agent model produced structured answer",
     }
     _validate_usage(result, answer=True, count=1)
 
@@ -402,7 +416,7 @@ def test_framework_missing_or_empty_final_answer_fails_closed(messages):
 
     assert result["status"] == "MODEL_ERROR"
     assert result["answer"] == "模型未生成可用的最终回答。"
-    assert result["reason"] == "Agent model returned empty final answer"
+    assert result["reason"] == "Agent structured response is missing or invalid"
     assert result["tool_trace"][-2]["mode"] == "error"
     _validate_usage(result)
 
@@ -422,6 +436,7 @@ def test_tool_stop_reasons_take_priority_over_final_ai_answer(stop_reason):
         {
             "stop_reason": stop_reason,
             "messages": [AIMessage(content="忽略此回答")],
+            "structured_response": FinalAgentResponse(outcome="answer", answer="忽略结构化回答"),
         },
     )
 
@@ -555,3 +570,153 @@ def test_tool_result_summary_reuses_redacted_public_summary():
     )
     assert "raw-token" not in json.dumps(result)
     assert "raw-password" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("fields", [
+    {"outcome": "answer", "answer": " "},
+    {"outcome": "answer", "answer": "正文", "clarification_question": "问题"},
+    {"outcome": "answer", "answer": "正文", "evidence_ids": ["a", "a"]},
+    {"outcome": "no_evidence", "evidence_ids": ["a"]},
+    {"outcome": "no_evidence", "clarification_question": "问题"},
+    {"outcome": "clarify", "clarification_question": " "},
+    {"outcome": "clarify", "clarification_question": "问题", "evidence_ids": ["a"]},
+    {"outcome": "tool_error"}, {"outcome": "model_error"}, {"outcome": "internal_error"},
+])
+def test_final_response_schema_rejects_invalid_static_contract(fields):
+    with pytest.raises(ValidationError):
+        FinalAgentResponse(**fields)
+
+
+@pytest.mark.parametrize("evidence_ids", [[], ["knowledge_base:fake"]])
+def test_evidence_answer_requires_real_cited_ids(evidence_ids):
+    output = _knowledge_output()
+    output["structured_response"] = FinalAgentResponse(
+        outcome="answer", answer="UNSUPPORTED PRIVATE ANSWER", evidence_ids=evidence_ids,
+    )
+    result = build_framework_agent_result(_invocation(), output)
+    assert result["status"] == "MODEL_ERROR"
+    assert result["references"] == []
+    assert "UNSUPPORTED PRIVATE ANSWER" not in json.dumps(result)
+    assert "候选" not in result["reason"]
+
+
+@pytest.mark.parametrize("value", [None, {}, {"outcome": "answer", "answer": "unparsed"},
+                                       FinalAgentResponse.model_construct(outcome="answer", answer="")])
+def test_unparsed_or_invalid_structured_response_never_falls_back_to_ai(value):
+    result = build_framework_agent_result(_invocation(), {
+        "structured_response": value, "messages": [AIMessage(content="不得回退的普通答案")],
+    })
+    assert result["status"] == "MODEL_ERROR"
+    assert "不得回退" not in result["answer"]
+
+
+@pytest.mark.parametrize("answer", ["", "已有资料不足以确定。"])
+def test_no_evidence_uses_existing_status_and_fallback(answer):
+    output = _knowledge_output()
+    output["structured_response"] = FinalAgentResponse(outcome="no_evidence", answer=answer)
+    result = build_framework_agent_result(_invocation(), output)
+    assert result["status"] == "NO_RELEVANT_INFO"
+    assert result["answer"] == (answer or "我无法根据当前取得的证据确定答案。")
+    assert result["references"] == []
+    assert result["need_clarification"] is False
+    assert result["clarification_question"] == ""
+
+
+def test_agent_clarification_preserves_real_tool_summary():
+    output = _knowledge_output()
+    output["structured_response"] = FinalAgentResponse(
+        outcome="clarify", clarification_question="请确认申请年份。",
+    )
+    result = build_framework_agent_result(_invocation(), output)
+    assert result["status"] == "NEED_CLARIFICATION"
+    assert result["need_clarification"] is True
+    assert result["clarification_question"] == "请确认申请年份。"
+    assert result["references"] == []
+    assert result["tool_result_summary"] == "知识库检索完成，召回 2 个 chunk"
+
+
+@pytest.mark.parametrize("name", ["web_search", "list_documents", "compare_documents", "mcp_read"])
+def test_non_evidence_tool_outputs_cannot_be_promoted_to_references(name):
+    output = _knowledge_output()
+    payload = json.loads(output["messages"][0].content)
+    payload["tool_name"] = name
+    output["messages"] = [ToolMessage(content=json.dumps(payload), name=name, tool_call_id="x")]
+    result = build_framework_agent_result(_invocation(), output)
+    assert result["status"] == "MODEL_ERROR"
+    assert result["references"] == []
+    output["structured_response"] = FinalAgentResponse(outcome="answer", answer="操作已完成")
+    assert build_framework_agent_result(_invocation(), output)["status"] == "OK"
+
+
+@pytest.mark.parametrize("damage", ["failed_message", "failed_result", "invalid_json", "invalid_document", "wrong_tool"])
+def test_failed_or_invalid_evidence_cannot_ground_answer(damage):
+    output = _knowledge_output()
+    message = output["messages"][0]
+    payload = json.loads(message.content)
+    if damage == "failed_message":
+        message.status = "error"
+    elif damage == "failed_result":
+        payload["ok"] = False
+    elif damage == "invalid_document":
+        payload["output"]["evidence"][1]["metadata"].pop("content_is_untrusted")
+    elif damage == "wrong_tool":
+        payload["tool_name"] = "web_search"
+    message.content = "not json" if damage == "invalid_json" else json.dumps(payload)
+    result = build_framework_agent_result(_invocation(), output)
+    assert result["status"] == "MODEL_ERROR"
+    assert result["references"] == []
+
+
+def test_web_pdf_references_keep_declared_order_and_existing_api_contract():
+    documents = [build_evidence_document(
+        page_content="正文 " * 200, source_type=source_type, source_uri=uri,
+        identity=(uri,), metadata=metadata,
+    ) for source_type, uri, metadata in [
+        ("web_page", "https://example.com/page", {"title": "网页"}),
+        ("web_pdf", "https://example.com/file.pdf", {"start_page": 3}),
+    ]]
+    messages = [ToolMessage(
+        content=json.dumps(tool_success(name, {}, {"evidence": [doc.model_dump()]})),
+        name=name, tool_call_id=name,
+    ) for name, doc in zip(["web_fetch", "web_pdf_fetch"], documents)]
+    output = {
+        "messages": [*messages, messages[0]],
+        "structured_response": FinalAgentResponse(
+            outcome="answer", answer="参考网页及 PDF。",
+            evidence_ids=[documents[1].id, documents[0].id],
+        ),
+    }
+    result = build_framework_agent_result(_invocation(), output)
+    assert result["status"] == "OK"
+    pdf, page = [ChatReferences.model_validate(ref) for ref in result["references"]]
+    assert pdf.reference_id == pdf.chunk_id == documents[1].id
+    assert pdf.source_path == pdf.file_name == "https://example.com/file.pdf"
+    assert pdf.position == 3
+    assert page.reference_id == page.chunk_id == documents[0].id
+    assert page.file_name == "网页" and page.position is None
+    assert len(page.snippet) == len(pdf.snippet) == 300
+    assert page.score == page.rerank_score == pdf.score == pdf.rerank_score == 0.0
+
+
+@pytest.mark.parametrize("chunk_id", [0, None])
+def test_get_chunk_text_reference_preserves_locator_and_safe_scores(chunk_id):
+    document = chunk_to_evidence_document({
+        "chunk_id": chunk_id, "text": "原文", "source_id": "source-1", "position": 3,
+        "hybrid_score": "invalid", "rerank_score": "nan",
+    })
+    result = build_framework_agent_result(_invocation(), {
+        "messages": [ToolMessage(
+            name="get_chunk_text", tool_call_id="chunk",
+            content=json.dumps(tool_success("get_chunk_text", {}, {"evidence": [document.model_dump()]})),
+        )],
+        "structured_response": FinalAgentResponse(
+            outcome="answer", answer="原文回答", evidence_ids=[document.id],
+        ),
+    })
+    assert result["status"] == "OK"
+    reference, = [ChatReferences.model_validate(ref) for ref in result["references"]]
+    assert reference.reference_id == document.id
+    assert reference.chunk_id == (document.id if chunk_id is None else 0)
+    assert reference.source_path == document.metadata["source_uri"]
+    assert reference.position == 3
+    assert reference.score == reference.rerank_score == 0.0

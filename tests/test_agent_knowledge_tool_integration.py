@@ -8,6 +8,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from app.agent import framework_agent, framework_tools
+from app.agent.final_response import FinalAgentResponse
 from app.rag import pipeline
 from app.tools.catalog import get_local_tool_specs
 from app.tools.context import ToolInvocationContext
@@ -42,8 +43,8 @@ def retrieval(monkeypatch):
     forbidden.assert_not_called()
 
 
-async def _invoke(monkeypatch, model, settings_factory):
-    settings = settings_factory()
+async def _invoke(monkeypatch, model, settings_factory, **settings_overrides):
+    settings = settings_factory(**settings_overrides)
     contexts, args_seen, audit_events = [], [], []
 
     def handler(args, context):
@@ -96,6 +97,20 @@ def _search(query="奖学金 申请时间", top_k=1, call_id="search-a"):
     }])
 
 
+def _grounded_answer(answer, *, indexes=None):
+    def respond(model, messages):
+        ids = list(dict.fromkeys(
+            document["id"]
+            for message in messages if isinstance(message, ToolMessage) and message.name == "search_knowledge_base"
+            for document in json.loads(message.content)["output"]["evidence"]
+        ))
+        return model.final_response(
+            outcome="answer", answer=answer,
+            evidence_ids=ids if indexes is None else [ids[i] for i in indexes],
+        )
+    return respond
+
+
 def _evidence(model, round_index, call_id):
     message = model.received_messages[round_index][-1]
     assert isinstance(message, ToolMessage)
@@ -113,7 +128,7 @@ def _evidence(model, round_index, call_id):
 @pytest.mark.asyncio
 async def test_search_returns_reranked_evidence_to_next_model(monkeypatch, settings_factory, retrieval):
     search, cross_encoder = retrieval
-    model = FakeToolCallingModel([_search(), AIMessage(content="奖学金申请于九月开始。")])
+    model = FakeToolCallingModel([_search(), _grounded_answer("奖学金申请于九月开始。")])
     output, args_seen, audit = await _invoke(monkeypatch, model, settings_factory)
 
     search.assert_called_once_with("奖学金 申请时间", top_k=1)
@@ -137,7 +152,7 @@ async def test_search_returns_reranked_evidence_to_next_model(monkeypatch, setti
     assert document["metadata"]["content_is_untrusted"] is True
     result = output["result"]
     assert result["answer"] == "奖学金申请于九月开始。"
-    assert result["references"] == []
+    assert [ref["reference_id"] for ref in result["references"]] == [document["id"]]
     assert result["retrieval_confidence"] == result["answer_confidence"] == 0.0
     assert result["llm_call_count"] == 2 and result["decompose_llm_used"] is False
     trace = next(s for s in result["tool_trace"] if s["step"] == "tool_call")
@@ -157,7 +172,7 @@ async def test_zero_results_are_successful_evidence(monkeypatch, settings_factor
     search.side_effect = None
     search.return_value = []
     final = "无法根据当前证据确定奖学金申请时间。"
-    model = FakeToolCallingModel([_search(), AIMessage(content=final)])
+    model = FakeToolCallingModel([_search(), FinalAgentResponse(outcome="no_evidence", answer=final)])
     output, _, _ = await _invoke(monkeypatch, model, settings_factory)
 
     assert len(model.received_messages) == 2
@@ -166,7 +181,8 @@ async def test_zero_results_are_successful_evidence(monkeypatch, settings_factor
     }
     cross_encoder.predict.assert_not_called()
     assert output["result"]["answer"] == final
-    assert output["result"]["status"] == "OK"  # 普通最终 AIMessage，不伪造 RAG 状态
+    assert output["result"]["status"] == "NO_RELEVANT_INFO"
+    assert output["result"]["references"] == []
     assert output["result"]["tool_result_summary"] == "知识库检索完成，召回 0 个 chunk"
 
 
@@ -174,7 +190,7 @@ async def test_zero_results_are_successful_evidence(monkeypatch, settings_factor
 async def test_unavailable_kb_returns_error_and_agent_recovers(monkeypatch, settings_factory, retrieval):
     search, cross_encoder = retrieval
     monkeypatch.setattr(pipeline, "RAG_READY", False)
-    model = FakeToolCallingModel([_search(), AIMessage(content="知识库暂时不可用，请稍后重试。")])
+    model = FakeToolCallingModel([_search(), FinalAgentResponse(outcome="answer", answer="知识库暂时不可用，请稍后重试。")])
     output, _, audit = await _invoke(monkeypatch, model, settings_factory)
 
     assert len(model.received_messages) == 2
@@ -194,10 +210,15 @@ async def test_unavailable_kb_returns_error_and_agent_recovers(monkeypatch, sett
 @pytest.mark.asyncio
 async def test_agent_can_change_query_and_retrieve_again(monkeypatch, settings_factory, retrieval):
     search, cross_encoder = retrieval
+    search.side_effect = [
+        [{"chunk_id": "b", "text": "奖学金申请于九月开始。", "file_name": "policy.md"}],
+        [{"chunk_id": "a", "text": "申请人需要提交成绩单。", "file_name": "policy.md"}],
+    ]
+    cross_encoder.predict.side_effect = [[0.9], [0.8]]
     final = "申请于九月开始，需要提交成绩单。"
     model = FakeToolCallingModel([
         _search(), _search("奖学金 申请材料 成绩单", top_k=2, call_id="search-b"),
-        AIMessage(content=final),
+        _grounded_answer(final),
     ])
     output, args_seen, audit = await _invoke(monkeypatch, model, settings_factory)
 
@@ -208,12 +229,66 @@ async def test_agent_can_change_query_and_retrieve_again(monkeypatch, settings_f
     ]
     assert args_seen[0]["query"] != args_seen[1]["query"]
     assert _evidence(model, 1, "search-a")["count"] == 1
-    assert _evidence(model, 2, "search-b")["count"] == 2
+    assert _evidence(model, 2, "search-b")["count"] == 1
     assert [m.tool_call_id for m in model.received_messages[2] if isinstance(m, ToolMessage)] == [
         "search-a", "search-b",
     ]
-    assert [m.type for m in output["messages"]] == ["human", "ai", "tool", "ai", "tool", "ai"]
-    assert output["messages"][-1].content == output["result"]["answer"] == final
+    assert [m.type for m in output["messages"]] == ["human", "ai", "tool", "ai", "tool", "ai", "tool"]
+    assert output["structured_response"].answer == output["result"]["answer"] == final
+    assert len(output["result"]["references"]) == 2
+    assert [ref["chunk_id"] for ref in output["result"]["references"]] == ["b", "a"]
     assert output["result"]["llm_call_count"] == 3
     assert output["stop_reason"] == "completed"
     assert sum(e.event_type.value == "succeeded" for e in audit) == 2
+
+
+@pytest.mark.asyncio
+async def test_only_second_retrieved_document_is_referenced(monkeypatch, settings_factory, retrieval):
+    model = FakeToolCallingModel([
+        _search(top_k=2), _grounded_answer("需要提交成绩单。", indexes=[1]),
+    ])
+    output, _, audit = await _invoke(monkeypatch, model, settings_factory, agent_max_tool_calls=1)
+    documents = _evidence(model, 1, "search-a")["evidence"]
+    assert output["result"]["status"] == "OK"
+    assert [ref["reference_id"] for ref in output["result"]["references"]] == [documents[1]["id"]]
+    assert len(documents) == 2
+    assert {event.tool_name for event in audit} == {"search_knowledge_base"}
+    assert [step["tool_name"] for step in output["result"]["tool_trace"] if step["step"] == "tool_call"] == [
+        "search_knowledge_base",
+    ]
+    iterations = [step for step in output["result"]["tool_trace"] if step["step"] == "agent_iteration"]
+    assert [step["requested_tool_call_count"] for step in iterations] == [1, 0]
+    assert all(model.structured_tool_name not in step["available_tool_names"] for step in iterations)
+
+
+@pytest.mark.asyncio
+async def test_native_schema_retry_does_not_execute_or_audit_synthetic_tool(
+    monkeypatch, settings_factory, retrieval,
+):
+    model = FakeToolCallingModel([
+        _search(),
+        lambda model, messages: model.final_response(outcome="answer", answer=""),
+        _grounded_answer("申请于九月开始。"),
+    ])
+    output, _, audit = await _invoke(monkeypatch, model, settings_factory, agent_max_tool_calls=1)
+    assert output["result"]["status"] == "OK"
+    assert output["result"]["llm_call_count"] == len(model.received_messages) == 3
+    retry = model.received_messages[2][-1]
+    assert isinstance(retry, ToolMessage) and retry.name == model.structured_tool_name
+    assert "validation" in retry.content.lower()
+    assert len(audit) == 3
+    assert {event.tool_name for event in audit} == {"search_knowledge_base"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ids", [[], ["knowledge_base:fake"]])
+async def test_real_agent_rejects_ungrounded_structured_answer(
+    monkeypatch, settings_factory, retrieval, ids,
+):
+    model = FakeToolCallingModel([
+        _search(), FinalAgentResponse(outcome="answer", answer="UNSUPPORTED", evidence_ids=ids),
+    ])
+    output, _, _ = await _invoke(monkeypatch, model, settings_factory)
+    assert output["result"]["status"] == "MODEL_ERROR"
+    assert output["result"]["references"] == []
+    assert "UNSUPPORTED" not in str(output["result"])
