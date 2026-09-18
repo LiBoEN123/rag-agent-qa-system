@@ -1,7 +1,6 @@
 """统一 Evaluation Runner 与多轮内存 session 测试。"""
 
 from contextlib import contextmanager
-import json
 from pathlib import Path
 
 import pytest
@@ -345,6 +344,9 @@ def test_capture_tool_output_keys_never_keeps_values(monkeypatch):
             "status": "success",
             "ok": True,
             "output_keys": ["count", "private_value"],
+            "tool_call_id": "",
+            "has_evidence": False,
+            "kb_chunk_ids": [],
         }
     ]
     assert "must-not-persist" not in repr(records)
@@ -490,6 +492,8 @@ def _fake_manifest(run_id: str):
             "rag_eval_sha256": "b",
         },
         "rag": {
+            "prediction_schema_version": 3,
+            "retrieval_metric_k": 3,
             "index_source": "fake",
             "document_count": 1,
             "chunk_count": 1,
@@ -558,13 +562,6 @@ def test_runner_writes_expected_output_structure(
             "rows": [],
             "summary": {"overall": {"prediction_coverage": 1.0}},
             "judge_enabled": False,
-            "prediction_metadata": {
-                "prediction_schema_version": 2,
-                "effective_top_k": kwargs["top_k"],
-                "effective_decompose_top_k": kwargs[
-                    "decompose_top_k"
-                ],
-            },
         }
 
     monkeypatch.setattr(
@@ -590,10 +587,8 @@ def test_runner_writes_expected_output_structure(
             str(FIXTURE),
             "--output-dir",
             str(output),
-            "--top-k",
+            "--retrieval-k",
             "3",
-            "--decompose-top-k",
-            "7",
         ]
     )
 
@@ -614,8 +609,9 @@ def test_runner_writes_expected_output_structure(
     }
     report = (output / "baseline_report.md").read_text(encoding="utf-8")
     assert "LLM Judge skipped" in report
-    assert rag_call["top_k"] == 3
-    assert rag_call["decompose_top_k"] == 7
+    assert "Raw scores are not strictly comparable" in report
+    assert "Context metrics: unavailable / not applicable" in report
+    assert rag_call["retrieval_k"] == 3
     assert "top_k" not in agent_call
     assert "decompose_top_k" not in agent_call
 
@@ -647,51 +643,3 @@ def test_dirty_worktree_requires_explicit_allow_dirty(
         )
 
     assert exc.value.code == 2
-
-
-def test_unified_rag_predictions_fail_fast_on_model_error(
-    tmp_path,
-    monkeypatch,
-):
-    from scripts.evaluation import rag_predictions
-
-    eval_file = tmp_path / "rag.json"
-    eval_file.write_text(
-        json.dumps([{"qid": "q1", "question": "问题"}]),
-        encoding="utf-8",
-    )
-    output = tmp_path / "predictions.csv"
-    monkeypatch.setattr(
-        rag_predictions,
-        "initialize_rag_for_predictions",
-        lambda force_rebuild=False: None,
-    )
-    monkeypatch.setattr(
-        rag_predictions,
-        "run_rag_once_with_result",
-        lambda question, top_k, decompose_top_k: (
-            {
-                "status": "MODEL_ERROR",
-                "answer": "",
-            },
-            rag_predictions.RagPredictionTrace(
-                final_chunk_ids=(),
-                context_chunk_ids=(),
-                reference_chunk_ids=(),
-                context_char_count=0,
-                top_k=top_k,
-                decompose_top_k=decompose_top_k,
-                decompose_llm_used=False,
-                status="MODEL_ERROR",
-            ),
-        ),
-    )
-
-    with pytest.raises(RuntimeError, match="qid=q1"):
-        rag_predictions.run_predictions(
-            eval_file=eval_file,
-            out_file=output,
-            fail_on_model_error=True,
-        )
-
-    assert not output.exists()

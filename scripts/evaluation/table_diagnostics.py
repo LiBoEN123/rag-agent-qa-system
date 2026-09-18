@@ -1,7 +1,7 @@
-"""表格评估的少量胶水：复用生产检索、上下文选择和现有 evidence scorer。
+"""表格评估的少量胶水：复用生产检索、重排、诊断分数门及现有 evidence scorer。
 
 调用前由评估方加载隔离索引。本模块不初始化、不写索引、不调用回答模型。
-单查询诊断的 final/context 与完整 RAG（可能分解问题）的 trace 分别保存。
+单查询诊断选择不代表 Agent 的 ToolMessage 上下文。
 """
 
 from copy import deepcopy
@@ -39,10 +39,8 @@ def relation_chunk_ids(question: dict, chunks: list[dict]) -> list[int]:
 
 
 def diagnose_questions(questions: list[dict], *, top_k: int = 5) -> list[dict[str, Any]]:
-    """只运行生产 retrieve/rerank/gate/context，并复用 scorer 计算固定 K 指标。"""
-    from app.config import get_settings
+    """只运行生产 retrieve/rerank/diagnostic gate，并复用 scorer 计算固定 K 指标。"""
     from app.rag import pipeline
-    from app.rag.generation import build_context_with_selection
     from app.rag.policy import should_refuse
 
     index = chunks_to_index(pipeline.chunks, source="current-chroma")
@@ -56,7 +54,7 @@ def diagnose_questions(questions: list[dict], *, top_k: int = 5) -> list[dict[st
         reranked = pipeline.rerank(deepcopy(retrieved), question["question"])
         final = reranked[:top_k]
         gate_passed = bool(final) and not should_refuse(final)
-        context, selected = build_context_with_selection(final) if gate_passed else ("", [])
+        selected = final if gate_passed else []
 
         def ids(items):
             return [int(item["chunk_id"]) for item in items]
@@ -90,16 +88,14 @@ def diagnose_questions(questions: list[dict], *, top_k: int = 5) -> list[dict[st
             "retrieve_top5": brief(retrieved[:5]), "rerank_top5": brief(final),
             "retrieve_candidate_ids": ids(retrieved), "candidate_count": len(retrieved),
             "rerank_all_ids": ids(reranked), "final_chunk_ids": ids(final),
-            "context_chunk_ids": ids(selected), "context_char_count": len(context),
-            "max_context_chars": get_settings().max_context_chars,
+            "diagnostic_selected_chunk_ids": ids(selected),
             "evidence_gate_passed": gate_passed,
             "retrieval_metrics": metrics(retrieved), "rerank_metrics": metrics(reranked),
             "correct_chunk_retrieved": relation_hit(retrieved),
             "correct_chunk_retrieved_top5": relation_hit(retrieved[:5]),
             "correct_chunk_reranked": relation_hit(reranked),
             "correct_chunk_entered_final_chunks": relation_hit(final),
-            "correct_chunk_entered_context": relation_hit(selected),
-            "relation_integrity": relation_hit(selected),
+            "relation_chunk_survives_diagnostic_selection": relation_hit(selected),
         })
         print(f"Diagnosed {question['qid']}", flush=True)
     return results

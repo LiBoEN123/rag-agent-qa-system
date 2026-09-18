@@ -8,8 +8,8 @@
 
 系统不存在 Parent Agent Graph。确定性 Router 位于 `create_agent` 之外，由 Agent
 Runtime 以普通 Python 调用；正常 agent 请求直接进入 LangChain `create_agent` 返回的
-CompiledStateGraph。AGENTIC-RAG-1 将知识库工具收缩为检索与重排；Legacy RAG Graph
-源码暂时保留供独立测试和诊断使用，已不在生产 Agent KB 路径上。
+CompiledStateGraph。生产与 RAG Evaluation 共用这一执行路径；知识库工具仅返回证据，
+独立 RAG Graph、拆分模型、旧生成及引用工作流已删除。
 
 ```text
 FastAPI application
@@ -64,7 +64,7 @@ AGENTIC-RAG-1（2026-09-16）更新为 retrieval → ToolMessage → Agent。
   Context 过滤模型可见集合。
 - `execute_project_tool` 是唯一本地工具执行治理边界。
 - MCP Bridge / Interceptor 独立治理远端 MCP；MCP 不进入本地 ToolRuntime。
-- KB 工具只复用检索与重排，成功后回到唯一 Agent Loop；Legacy RAG Graph 暂时保留。
+- KB 工具只复用检索与重排，成功后回到唯一 Agent Loop；RAG Evaluation 复用同一个 ChatService。
 - Framework State 只保存框架运行所需状态；`AgentRunResult` 是 Runtime 输出边界。
 - `ChatStatusPolicy` 唯一决定业务目标 HTTP 状态、公开状态与 metrics 状态，结果通过 SSE final 公开。
 
@@ -169,7 +169,7 @@ LLM 计数与 tool trace 语义。本地同步工具由框架调度，MCP 由异
 7. `get_chunk_text`
 
 模型可见性由 LangChain Model Middleware 根据请求 `tool_mode` 与权限过滤；
-`rag_only` 只允许 `search_knowledge_base`，`full` 按权限开放剩余工具。
+`rag_only` 允许 `search_knowledge_base`、`compare_documents`、`get_chunk_text`，`full` 按权限开放剩余工具。
 本地工具的执行期治理始终经过：
 
 ```text
@@ -219,7 +219,7 @@ McpToolCallInterceptor → remote MCP server`，继续独立承担 Server Access
 超时、审计、序列化和 fail-closed。完整配置见
 [受治理的 MCP Client 工具源](../tools/mcp-client.md)。
 
-## 知识库 Retrieval Tool 与 Legacy RAG Graph
+## 知识库工具与 Agentic RAG 评估
 
 `search_knowledge_base` 仍是受治理的 `ProjectStructuredTool`，沿用权限、审计、
 预算、超时、重试、输出校验和 ToolMessage 配对。handler 使用本轮 Tool Call 的
@@ -243,18 +243,16 @@ Middleware 通过原生 `Command` 写入配对 ToolMessage 与治理事件，成
 都是不可信数据，不能作为指令执行。Query Rewrite 仍在 ChatService 中进行对话指代消解；
 `effective_question` 提供给 Agent，不覆盖 Agent 主动选择的 retrieval query。
 
-Legacy RAG Graph source remains temporarily, but is no longer on the production Agent KB path.
-`app/rag/graph/`、拆分、生成、证据门、引用验证和旧 prompts 继续供独立 RAG 测试与评估使用。
 生产请求为 `ChatRequest → ChatService → create_agent → per-call query/top_k → StructuredTool`。
 ChatRequest、ChatServiceRequest、Runtime、ToolInvocationContext 均不再携带召回数量；
 旧 Chat 请求字段由 Pydantic `extra="forbid"` 拒绝。`search_knowledge_base.top_k` 与
 `compare_documents.top_k` 范围仍为 1–10，每轮可以不同；`/search` 用独立 SearchRequest 保留显式 top_k。
 
-`AppSettings.top_k` 服务诊断检索及 legacy RAG 默认值；`decompose_top_k` 和独立
-Decompose 模型配置仅服务 legacy standalone RAG evaluation。Agent Evaluation 使用生产
-ChatServiceRequest；Runner 的 `--top-k/--decompose-top-k` 只传给 legacy RAG。
-Import Linter 的 `production-agent-does-not-depend-on-legacy-rag` 禁止 API、Services、
-Agent、Tools 直接或间接导入 legacy Graph/Decomposition/Generation/Citations。
+`AppSettings.top_k` 只服务诊断检索。RAG Evaluation 使用生产 ChatServiceRequest，
+每题为 RAG_ONLY、knowledge_base:read、空 session。v3 prediction 从真实工具输出捕获
+有序去重 chunk ID，从 grounded references 投影最终引用；Runner 的 `--retrieval-k` 只用于评分。
+独立拆分模型、旧 context 配置与 multi-query helper 已删除；Agent 仍可多轮检索。
+已不存在的旧模块不再需要临时 Import Linter 隔离 contract，其余边界继续生效。
 
 生产 AgentRunResult 已移除 `decompose_llm_used` 和固定空的 `timings`；Chat metrics 不再
 初始化 legacy RAG 的补零耗时。有效耗时仍来自 route_cost_ms、agent_cost_ms、Tool trace
@@ -330,8 +328,7 @@ KB 未就绪通过标准 `ToolExecutionError(dependency_unavailable)` 返回错�
 Compare 的成功 ToolMessage 直接进入统一 evidence collector，Agent 自行比较并通过
 既有 ToolStrategy 声明实际使用的 Document.id。缺失或未知引用由相同 grounding 规则
 拒绝；没有 compare 专属 Result Builder 分支，也没有专属 SSE 事件。
-Compare Model 工厂、缓存、内部输出 schema 已删除；ModelGateway 继续供 Query Rewrite、
-legacy RAG 与 evaluation 使用。最终合同、confidence 与 SSE 单次校验后 delta 保持原样。
+Compare Model 工厂、缓存、内部输出 schema 已删除；ModelGateway 继续供 Query Rewrite 与 evaluation Judge 使用。最终合同、confidence 与 SSE 单次校验后 delta 保持原样。
 
 ## 状态与结果
 
@@ -386,8 +383,7 @@ api → services → agent → tools → rag → llm
 ```
 
 `app.api` 是唯一 HTTP 组合层；services 不依赖 API，FastAPI/Starlette 不进入低层，
-`pydantic-settings` 只由 `app.config` 直接导入。生产代码中没有 `app.graph` 包；独立
-RAG Graph 属于 `app.rag`。额外 forbidden contract 明确禁止
+`pydantic-settings` 只由 `app.config` 直接导入。生产代码中没有 `app.graph` 或独立 RAG Graph。额外 forbidden contract 明确禁止
 `app.agent.framework_middleware → app.agent.runtime`。详细规则见
 [模块依赖边界](module-boundaries.md)。
 

@@ -9,7 +9,6 @@ from langchain_core.messages import AIMessage, ToolMessage
 
 from app.config import get_settings
 from app.agent import framework_agent
-from app.rag import graph as rag_graph
 from app.tools.context import ToolInvocationContext
 from app.tools.catalog import get_local_tool_specs
 from tests.support.agent_runtime import FakeToolCallingModel, build_agent_harness
@@ -313,13 +312,6 @@ async def test_consecutive_requests_keep_web_visibility_isolated_and_execute_gra
             ]
 
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
-    monkeypatch.setattr(
-        rag_graph,
-        "run_rag_subgraph",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError(f"web_search must not enter RAG: {args!r} {kwargs!r}")
-        ),
-    )
     hidden_model = FakeToolCallingModel([FinalAgentResponse(outcome="answer", answer="无需外部搜索。")])
     visible_model = FakeToolCallingModel(
         [
@@ -458,13 +450,6 @@ async def test_agent_searches_then_fetches_through_registry_runtime(monkeypatch)
     FakeFetchManager.sessions = []
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     monkeypatch.setattr(web_download_module, "Manager", FakeFetchManager)
-    monkeypatch.setattr(
-        rag_graph,
-        "run_rag_subgraph",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError(f"web tools must not enter RAG: {args!r} {kwargs!r}")
-        ),
-    )
     model = SearchFetchModel()
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     output = await _invoke(
@@ -536,13 +521,6 @@ async def test_agent_searches_then_reads_pdf_through_project_tool(monkeypatch):
     FakePdfManager.sessions = []
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     monkeypatch.setattr(web_download_module, "Manager", FakePdfManager)
-    monkeypatch.setattr(
-        rag_graph,
-        "run_rag_subgraph",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError(f"web PDF must not enter RAG: {args!r} {kwargs!r}")
-        ),
-    )
     model = SearchPdfModel()
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     output = await _invoke(
@@ -601,13 +579,6 @@ async def test_agent_recovers_from_web_fetch_pdf_content_type_error(monkeypatch)
     """模型读取错误 ToolMessage 后在同一框架循环中改用 PDF 工具。"""
     FakePdfManager.sessions = []
     monkeypatch.setattr(web_download_module, "Manager", FakePdfManager)
-    monkeypatch.setattr(
-        rag_graph,
-        "run_rag_subgraph",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError(f"web PDF recovery must not enter RAG: {args} {kwargs}")
-        ),
-    )
     model = FetchThenPdfModel()
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     output = await _invoke(

@@ -14,6 +14,11 @@ class ToolMode(StrEnum):
     FULL = "full"
 
 
+RAG_EVIDENCE_TOOL_NAMES = frozenset({
+    "search_knowledge_base", "compare_documents", "get_chunk_text",
+})
+
+
 class AgentResultStatus(StrEnum):
     """Agent Runtime 对外提供给聊天应用服务的稳定结果状态。"""
 

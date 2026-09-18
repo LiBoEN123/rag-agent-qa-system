@@ -23,7 +23,7 @@ Model Governance 边界见 [ADR 0006](docs/adr/0006-framework-native-agent-runti
 - Agent 循环防护：工具错误总数、连续相同调用、连续相同错误和模型/工具累计耗时均有独立预算；终止错误对同批后续调用 fail-closed，并补齐关联 ToolMessage。
 - 多轮追问改写：同一 `session_id` 下通过 SQLite 保留最近会话历史，短追问和指代问题会先改写成独立检索问题。
 - 工具调用：支持知识库检索、公开网页搜索与受治理的正文提取、文档工具，以及默认关闭的 Streamable HTTP MCP Client 工具源。
-- 引用绑定和拒答机制：模型输出的 `Reference N` 会绑定回真实文件与 chunk；证据不足或引用支撑不足时拒答。
+- 引用绑定和拒答机制：模型声明的 evidence ID 经 grounding 校验后投影为真实引用；未知 ID 失败关闭。
 - 流式聊天：唯一公开入口 `POST /chat/stream`，响应 `Content-Type: text/event-stream`，提供 progress、tool、安全答案增量和权威 final SSE 事件。
 - 可观测性：每次聊天请求记录 `trace_id`、阶段耗时、状态、工具调用、引用数量和 LLM 调用次数。
 - bad case 日志：对模型格式异常、引用异常、工具异常、索引未就绪等失败样例做结构化记录。
@@ -41,14 +41,14 @@ FastAPI / Chat Router
 → Project Governance Middleware
 → 缓存的 Local StructuredTool + 请求级可见性 Middleware
 → Local ToolRuntime 或独立 MCP Bridge
-→ Tool Handler；知识库工具可调用独立 RAG Graph
+→ Tool Handler → Document evidence → ToolMessage → 下一轮 Agent
 → Framework State → AgentRunResult
 → ChatStatusPolicy → HTTP JSON / SSE
 ```
 
 本地工具固定经过 `StructuredTool → execute_project_tool → ToolSpec.handler`；MCP
 保持 adapter/bridge/interceptor 边界，不进入本地 ToolRuntime。LangGraph 只存在于
-`create_agent` 内部循环和独立 RAG Graph，不存在项目 Parent Agent Graph。
+`create_agent` 内部循环；RAG Evaluation 复用同一个 ChatService，不存在第二个回答工作流。
 
 Phase 6B 的 Model private marker 是已接受设计，不是待迁移 TODO。详细当前事实、稳定边界
 与禁止无证据重构的规则见[当前系统架构](docs/architecture/current-system.md)；历史原因只在
@@ -62,10 +62,10 @@ Phase 6B 的 Model private marker 是已接受设计，不是待迁移 TODO。�
 | 文档切分 | 普通文本按段落和标点递归切分；Markdown 按标题层级切分并保留标题路径 |
 | 混合检索 | jieba + BM25 关键词召回，SentenceTransformer Embedding 语义召回 |
 | 重排 | CrossEncoder reranker 对候选 chunk 重新排序 |
-| 多轮检索 | Agent 阅读 ToolMessage 后决定下一轮 query/top_k；独立 Query Decompose 仅用于 legacy RAG 评估 |
+| 多轮检索 | Agent 阅读 ToolMessage 后决定下一轮 query/top_k，生产与评估共用同一 Agent |
 | 多轮追问 | `session_id` 通过 SQLite 维持最近会话历史，对短追问、指代问题做 Query Rewrite |
 | 答案生成 | 调用 OpenAI-compatible Chat Completions，要求模型返回 JSON |
-| 引用绑定 | 将 `Reference N` 映射回真实文件、`chunk_id`、`snippet` 和分数 |
+| 引用绑定 | 将实际声明的 Document.id 校验并映射回文件、`chunk_id`、`snippet` 和分数 |
 | Agent Runtime | 直接执行唯一的 LangChain `create_agent` CompiledStateGraph；框架负责模型—工具循环、参数校验、ToolMessage 和模型/工具调用上限 |
 | Agent 路由 | `app.agent.runtime` 是唯一 Router 调用者；正常请求输出 `agent`，`direct_answer` / `clarify` 在普通 Python 中安全短路 |
 | 工具发现 | 不可变本地 ToolSpec/StructuredTool catalog 按配置缓存；LangChain Model Middleware 按请求权限过滤模型可见工具。可选 MCP Provider 继续过滤启动期 discovery cache |
@@ -89,7 +89,7 @@ Phase 6B 的 Model private marker 是已接受设计，不是待迁移 TODO。�
 9. 引用绑定：代码检查 ID 是否来自本次成功的 KB、原文读取、Web/PDF 工具消息，只按声明顺序投影真实引用。已有 Document 的 answer 不允许漏引用；未知 ID 返回 `MODEL_ERROR`。
 10. 状态与展示：证据不足映射 `NO_RELEVANT_INFO`，澄清映射 `NEED_CLARIFICATION`；两项 confidence 保持 `0.0`。校验通过的答案在 SSE 中作为一次完整 delta 发送，随后返回权威 final。
 
-Legacy RAG Graph、拆分与旧引用 heuristic 继续保留在独立诊断/测试路径，不参与上述生产 Agent 链路。
+旧 Graph、独立拆分模型、context builder 与引用 heuristic 已删除。Agent 根据观察动态检索多个子问题；诊断检索分数门独立保留。
 
 ## 历史 RAG 单项评测结果
 
@@ -117,7 +117,7 @@ Legacy RAG Graph、拆分与旧引用 heuristic 继续保留在独立诊断/测�
 
 - 配置通过 `.env` 管理，`.env.example` 提供默认模板，回答/Agent 模型、追问改写模型、拆分模型和评测 Judge 均使用 OpenAI-compatible Chat Completions 配置。
 - 应用内部模型调用统一由 LangChain `ChatOpenAI(base_url=...)` 访问 OpenAI-compatible 服务，各角色原有模型环境变量仍然有效。
-- 生产 Agent 使用 `ToolStrategy(FinalAgentResponse)` 与 evidence ID 校验；Query Rewrite 及 legacy standalone RAG 的 Answer/Decompose 使用 `ModelGateway` 的结构化输出。`compare_documents` 返回 Document evidence，由 Agent 生成比较结论。
+- 生产 Agent 使用 `ToolStrategy(FinalAgentResponse)` 与 evidence ID 校验；Query Rewrite 和 Evaluation Judge 继续使用 `ModelGateway`。`compare_documents` 返回 Document evidence，由 Agent 生成比较结论。
 - `requirements.txt` 保留顶层依赖声明，`requirements.lock` 固定 Python 3.12 验证过的版本；Docker 和 CI 均使用 lock 文件安装依赖。
 - `.importlinter` 使用 Import Linter 2.13 固化应用包的单向依赖、顶层无环、基础层、HTTP 框架和 Settings 框架边界；CI 在 Ruff 后执行全量 `lint-imports`。
 - 支持 embedding / rerank 模型本地缓存，默认缓存目录为 `./.cache/huggingface/hub`，也可通过 `MODEL_CACHE_DIR`、`HF_HOME` 等环境变量调整。
@@ -129,7 +129,7 @@ Legacy RAG Graph、拆分与旧引用 heuristic 继续保留在独立诊断/测�
 - metrics 记录 Query Rewrite、路由、Agent、检索、问题拆分、重排、上下文构造、LLM 调用、结构化结果规范化等阶段耗时和 LLM 调用次数。
 - bad case 日志用于定位失败样例，包括模型结构化输出校验失败、引用异常、工具异常、内部异常和索引未就绪。
 
-模型客户端、`create_agent` Agent Loop 和独立 RAG Graph 彼此分层；本次 Agent Runtime 瘦身不改变 RAG 检索、Rerank、ChromaDB 数据结构和引用机制。
+模型客户端、唯一 `create_agent` Agent Loop 和 KB 检索工具彼此分层；RAG Evaluation 复用生产链，检索、Rerank、ChromaDB 和 grounding 合同保持。
 
 ## MCP Client 工具源
 
@@ -163,7 +163,7 @@ MCP Tool 保持 adapter `StructuredTool`，不会反向转换成 `ToolSpec`；
 
 ## Web Search
 
-`web_search` 使用开源 `ddgs` 的公共 Python API 搜索公开互联网中的当前或外部信息，只返回有限的 `title`、`url` 和 `snippet`。它与 `search_knowledge_base` 的边界不同：后者读取本地受控知识库并调用独立 RAG Graph；Web Search 是普通 Agent 工具，结果形成 ToolMessage 后回到 Agent Model，不进入 RAG Graph。
+`web_search` 使用开源 `ddgs` 的公共 Python API 搜索公开互联网中的当前或外部信息，只返回有限的 `title`、`url` 和 `snippet`。它与 `search_knowledge_base` 的边界不同：后者读取受控知识库并返回 Document evidence；二者都通过 ToolMessage 回到唯一 Agent。
 
 Web Search 默认关闭可见性。要让默认 `/chat/stream` 服务主体看到它，必须显式配置：
 
@@ -391,14 +391,12 @@ Tool Runtime 与 Agent Runtime 缓存；生产服务通常直接重启进程。�
 | `CHROMA_PERSIST_DIR` | ChromaDB 本地持久化目录，示例：`./data/chroma` |
 | `CHROMA_COLLECTION_NAME` | 保留的旧 ChromaDB collection，默认 `mini_rag_chunks` |
 | `CHROMA_INDEX_COLLECTION_NAME` | LangChain 增量索引 collection，默认 `mini_rag_chunks_v2` |
-| `TOP_K` | `/search` 与 legacy standalone RAG 默认召回条数；不控制 Agent Chat 的 Tool Call |
-| `DECOMPOSE_TOP_K` | 仅 legacy standalone RAG evaluation：多子问题召回合并后的候选上限 |
+| `TOP_K` | `/search` 默认召回条数；不控制 Agent Chat 的 Tool Call |
 | `CHUNK_SIZE` | chunk 最大长度 |
 | `CHUNK_OVERLAP` | 相邻 chunk 重叠长度 |
 | `EMBEDDING_MODEL_NAME` | SentenceTransformer embedding 模型 |
 | `RERANK_MODEL_NAME` | CrossEncoder rerank 模型 |
 | `MODEL_CACHE_DIR` | embedding/rerank 模型权重本地缓存目录 |
-| `MAX_CONTEXT_CHARS` | 拼给回答模型的最大上下文长度 |
 | `LLM_API_KEY` | 回答模型 API Key；兼容旧变量 `DEEPSEEK_API_KEY` |
 | `MODEL_NAME` | 回答模型名称 |
 | `LLM_API_URL` | OpenAI-compatible Chat Completions 地址 |
@@ -451,12 +449,6 @@ Tool Runtime 与 Agent Runtime 缓存；生产服务通常直接重启进程。�
 | `QUERY_REWRITE_TIMEOUT` | 追问改写模型请求超时秒数 |
 | `QUERY_REWRITE_MAX_TOKENS` | 追问改写模型最大输出 token |
 | `QUERY_REWRITE_TEMPERATURE` | 追问改写模型温度 |
-| `ENABLE_QUERY_DECOMPOSE` | 仅 legacy standalone RAG evaluation：是否启用问题拆分，默认 `true` |
-| `DECOMPOSE_API_KEY` | 仅 legacy RAG：问题拆分模型 API Key |
-| `DECOMPOSE_MODEL_NAME` | 仅 legacy RAG：问题拆分模型名称 |
-| `DECOMPOSE_API_URL` | 仅 legacy RAG：问题拆分模型接口地址 |
-| `DECOMPOSE_TIMEOUT` | 仅 legacy RAG：问题拆分模型请求超时秒数 |
-| `DECOMPOSE_MAX_TOKENS` | 仅 legacy RAG：问题拆分模型最大输出 token |
 | `VECTOR_THRESHOLD` | 召回证据不足时拒答的向量分数阈值 |
 | `AUTO_REBUILD_ON_STARTUP` | 是否启动时强制重建索引 |
 
@@ -471,14 +463,12 @@ CHROMA_INDEX_COLLECTION_NAME=mini_rag_chunks_v2
 AUTO_REBUILD_ON_STARTUP=false
 
 TOP_K=5
-DECOMPOSE_TOP_K=10
 CHUNK_SIZE=600
 CHUNK_OVERLAP=120
 
 EMBEDDING_MODEL_NAME=Qwen/Qwen3-Embedding-0.6B
 RERANK_MODEL_NAME=BAAI/bge-reranker-v2-m3
 MODEL_CACHE_DIR=./.cache/huggingface/hub
-MAX_CONTEXT_CHARS=4000
 
 LLM_API_KEY=your-api-key
 MODEL_NAME=deepseek-chat
@@ -502,11 +492,6 @@ QUERY_REWRITE_MODEL_NAME=deepseek-chat
 QUERY_REWRITE_API_URL=https://api.deepseek.com/v1/chat/completions
 QUERY_REWRITE_MAX_TOKENS=256
 
-ENABLE_QUERY_DECOMPOSE=true
-DECOMPOSE_API_KEY=your-api-key
-DECOMPOSE_MODEL_NAME=qwen-plus
-DECOMPOSE_API_URL=https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
-DECOMPOSE_MAX_TOKENS=512
 
 USE_LLM_JUDGE=false
 VECTOR_THRESHOLD=0.1
@@ -523,9 +508,6 @@ QUERY_REWRITE_API_KEY=ollama
 QUERY_REWRITE_MODEL_NAME=qwen2.5:7b
 QUERY_REWRITE_API_URL=http://127.0.0.1:11434/v1/chat/completions
 
-DECOMPOSE_API_KEY=ollama
-DECOMPOSE_MODEL_NAME=qwen2.5:7b
-DECOMPOSE_API_URL=http://127.0.0.1:11434/v1/chat/completions
 ```
 
 ## API 示例
@@ -582,7 +564,7 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
 
 ### 多轮追问与 Query Rewrite
 
-`/chat/stream` 只接受 `question`、`session_id`、`tool_mode`；未知字段由 Pydantic `extra="forbid"` 拒绝并返回 HTTP 422。旧 `top_k`、`decompose_top_k` 已退役。Agent 每轮通过工具 schema 自主选择 query/top_k，`search_knowledge_base.top_k` 和 `compare_documents.top_k` 范围仍为 1–10。`TOP_K` 与所有 Decompose 配置不参与生产 Chat 的检索控制。
+`/chat/stream` 只接受 `question`、`session_id`、`tool_mode`；未知字段由 Pydantic `extra="forbid"` 拒绝并返回 HTTP 422。旧 `top_k`、`decompose_top_k` 已退役。Agent 每轮通过工具 schema 自主选择 query/top_k，`search_knowledge_base.top_k` 和 `compare_documents.top_k` 范围仍为 1–10。`TOP_K` 只用于诊断搜索；独立 Decompose 配置已删除。
 
 `/chat/stream` 的 `session_id` 是可选字段。为空时系统按单轮问题处理；非空时系统会读取该会话最近 6 条 user/assistant 消息，并在问题像短追问或包含“这个、那个、它、上面、刚才”等指代词时尝试改写成独立问题。
 
@@ -727,16 +709,14 @@ python scripts/run_evaluation_baseline.py \
   --agent-cases data/eval/agent_eval_cases_v2.json \
   --rag-eval-file data/eval/rag_eval_questions_v2_semantic_fixed.json \
   --output-dir outputs/evaluation_baseline_v2/initial-core \
-  --top-k 5 \
-  --decompose-top-k 5
+  --retrieval-k 5
 ```
 
-这两个召回参数仅控制 legacy standalone RAG baseline，不传入 Agent Evaluation。
+`retrieval-k` 只控制 RAG 指标的评分 cutoff，不传入 Agent Tool Call。
 
-每次运行会生成 commit/数据/索引/模型/Prompt/工具合同 manifest、请求/有效 RAG
-参数证据、Agent/RAG 指标、覆盖矩阵、多原因失败报告和 Markdown 摘要。RAG 报告
-分别展示 Final-ranked Recall@k、Prompt Context Recall 和 Final Reference Recall；
-后两者是诊断指标，不改变 v2 Final Score。工作区不干净时默认拒绝正式
+每次运行会生成 commit/数据/索引/模型/Prompt/工具合同 manifest、Prediction v3 与评分 cutoff、Agent/RAG 指标、覆盖矩阵、多原因失败报告和 Markdown 摘要。RAG 报告
+分别展示 Observed Evidence Recall@k 和 Grounded Reference Recall；
+Context 指标对 v3 不适用，Final Score 原有权重保持。工作区不干净时默认拒绝正式
 运行；实验运行必须显式使用 `--allow-dirty` 并会被标记。两轮结果可比较：
 
 ```bash
@@ -830,20 +810,15 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   │   ├── runtime.py           # 请求准备、Router 与 Agent 缓存
 │   │   └── streaming.py         # 直接 astream 与安全 Agent 事件投影
 │   ├── rag/
-│   │   ├── __init__.py          # RAG 公共门面和依赖注入
+│   │   ├── __init__.py          # RAG 包说明
 │   │   ├── pipeline.py          # 索引状态、生命周期与检索门面
-│   │   ├── graph/               # LangGraph RAG 子图状态、节点、条件、构建和运行入口
 │   │   ├── ingest.py            # Local 文档读取与清洗
 │   │   ├── indexing.py          # approved candidate 切分与 LangChain 增量索引
 │   │   ├── retrieval.py         # 混合召回与重排
-│   │   ├── decomposition.py     # 复杂问题识别、拆分调用和解析
-│   │   ├── policy.py            # 证据拒答与澄清策略
+│   │   ├── policy.py            # 诊断检索分数门
 │   │   ├── scoring.py           # 分数安全转换
-│   │   ├── results.py           # RAG 结果与门控 trace
-│   │   ├── generation.py        # 模型调用、解析和引用绑定
 │   │   ├── store.py             # 索引缓存、manifest、模型加载
 │   │   ├── chroma.py            # ChromaDB 持久化
-│   │   ├── citations.py         # 引用可靠性检查
 │   │   └── debug.py             # 文档和 chunk 调试查询
 │   ├── tools/
 │   │   ├── __init__.py          # 包说明；业务从具体职责模块导入
@@ -969,3 +944,13 @@ docker run --rm -p 8000:8000 --env-file .env \
 - Agent 已通过唯一的 `create_agent` 路径支持 Registry-driven 多轮工具观察、同轮多个工具调用和参数修正，并具备错误次数、重复调用/错误、总耗时和同批 fail-closed 防护。
 - 当前尚未实现 RAG JSON token streaming、Interrupt/Resume、SQL/MCP 写工具、写工具的跨请求人工审批恢复或多 Agent；MCP 第一版也不支持 Server、stdio、OAuth、Resources 或 Prompts。
 - retrieval_confidence 和 answer_confidence 是启发式估计，不等同于严格概率。
+
+### Agentic RAG 评估合同（v3）
+
+RAG 预测经 `ChatService.stream → stream_agent → create_agent` 执行，使用 `RAG_ONLY` 与
+`knowledge_base:read`，开放检索、比较、chunk 原文三种 KB 证据工具。每题空 session；
+Agent 自主决定每轮 query/top_k。`retrieved_chunk_ids` 是按观察顺序去重的全部 KB 证据，
+`reference_chunk_ids` 是最终通过 grounding 的引用。`--retrieval-k` 仅是评分 cutoff。
+Context 指标对 v3 不适用；Judge 与评分权重保留。
+Prediction Schema v3 is a new baseline generation contract.
+Raw scores are not strictly comparable to historical v2 workflow scores.

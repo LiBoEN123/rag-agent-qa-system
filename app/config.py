@@ -104,13 +104,10 @@ class AppSettings(BaseSettings):
     chroma_persist_dir: Path = BASE_DIR / "data" / "chroma"
     chroma_collection_name: str = "mini_rag_chunks"
     chroma_index_collection_name: str = "mini_rag_chunks_v2"
-    # 诊断检索和 legacy standalone RAG 默认值；不控制 Agent Tool Call。
+    # 诊断检索默认值；不控制 Agent Tool Call。
     top_k: int = Field(default=5, ge=1, le=10)
-    # 仅供 legacy standalone RAG evaluation 的多查询召回。
-    decompose_top_k: int = Field(default=10, ge=1, le=20)
     chunk_size: int = 600
     chunk_overlap: int = 120
-    max_context_chars: int = 2500
     vector_threshold: float = 0.35
     auto_rebuild_on_startup: bool = False
 
@@ -148,13 +145,6 @@ class AppSettings(BaseSettings):
     query_rewrite_max_tokens: int = 256
     query_rewrite_temperature: float = 0.0
 
-    # Legacy standalone RAG evaluation 查询分解，不参与生产 create_agent Chat。
-    enable_query_decompose: bool = True
-    decompose_api_key: SecretStr | None = None
-    decompose_model_name: str = "qwen2.5:7b"
-    decompose_api_url: str = "http://localhost:11434/v1/chat/completions"
-    decompose_timeout: int = 15
-    decompose_max_tokens: int = 512
 
     # 结果评判
     use_llm_judge: bool = False
@@ -327,7 +317,6 @@ class AppSettings(BaseSettings):
     @field_validator(
         "llm_api_key",
         "query_rewrite_api_key",
-        "decompose_api_key",
         "judge_api_key",
         "ingestion_admin_api_key",
         mode="before",
@@ -344,10 +333,8 @@ class AppSettings(BaseSettings):
 
     @field_validator(
         "top_k",
-        "decompose_top_k",
         "chunk_size",
         "chunk_overlap",
-        "max_context_chars",
         "vector_threshold",
         "temperature",
         "llm_max_tokens",
@@ -356,8 +343,6 @@ class AppSettings(BaseSettings):
         "query_rewrite_timeout",
         "query_rewrite_max_tokens",
         "query_rewrite_temperature",
-        "decompose_timeout",
-        "decompose_max_tokens",
         "judge_timeout",
         "judge_max_retries",
         "judge_max_tokens",

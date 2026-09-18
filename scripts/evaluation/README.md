@@ -85,12 +85,12 @@ Combined、Agent-only 和 RAG-only 都可能需要：
 
 - 可以构造当前 `AppSettings`；
 - 回答模型已经配置并可以连接；
-- Query Rewrite 启用时相应模型可以连接；只有 legacy standalone RAG baseline 还需要 Decompose 模型；
+- Query Rewrite 启用时相应模型可以连接；
 - 知识库源文件、索引 Manifest 和 Chroma 持久化目录存在；
 - Embedding 与 Rerank 模型缓存可用。
 
 默认 Core 不开放 Web Search、Web Fetch 或 Web PDF Fetch，但调用配置的回答模型、
-Query Rewrite 模型仍可能需要访问模型服务；运行 legacy standalone RAG 时，Decompose 模型也可能需要访问服务。模型服务网络失败不等于
+Query Rewrite 模型仍可能需要访问模型服务。模型服务网络失败不等于
 RAG 索引失败，也不能计入质量分。
 
 ## 三、推荐启动流程
@@ -121,8 +121,7 @@ python scripts/run_evaluation_baseline.py \
   --agent-cases data/eval/agent_eval_cases_v2.json \
   --rag-eval-file data/eval/rag_eval_questions_v2_semantic_fixed.json \
   --output-dir outputs/evaluation_baseline_v2/core-<short-sha> \
-  --top-k 5 \
-  --decompose-top-k 5
+  --retrieval-k 5
 ```
 
 Combined 的执行顺序是：
@@ -148,8 +147,7 @@ python scripts/run_evaluation_baseline.py \
   --rag-only \
   --rag-eval-file data/eval/rag_eval_questions_v2_semantic_fixed.json \
   --output-dir outputs/evaluation_baseline_v2/rag-only-<short-sha> \
-  --top-k 5 \
-  --decompose-top-k 5
+  --retrieval-k 5
 ```
 
 ChatService、Agent 工具选择、状态映射、多轮或工具序列出现问题时：
@@ -239,8 +237,7 @@ python scripts/run_evaluation_baseline.py \
   --use-llm-judge \
   --judge-model deepseek-chat \
   --output-dir outputs/evaluation_baseline_v2/rag-judge-<short-sha> \
-  --top-k 5 \
-  --decompose-top-k 5
+  --retrieval-k 5
 ```
 
 也可以在 Combined 中启用，但建议首次先用 RAG-only 验证 Judge 配置、成本、错误处理和
@@ -262,8 +259,7 @@ Judge 是辅助语义判断，不替代以下确定性检查：
 | `--rag-eval-file` | RAG 数据集路径 | 默认使用 `data/eval/rag_eval_questions_v2_semantic_fixed.json` |
 | `--output-dir` | 完整输出目录 | 正式运行使用全新目录；非空目录会被拒绝 |
 | `--run-name` | Manifest 中的 run ID | 未提供时使用输出目录名或 UTC 时间 |
-| `--top-k` | 仅 legacy RAG：单查询最终排序数量和 evaluator 的 `Recall@k` | 不控制 Agent Evaluation |
-| `--decompose-top-k` | 仅 legacy RAG：多查询合并后的目标数量 | 不控制 Agent Evaluation |
+| `--retrieval-k` | Agent 有序去重观察证据的评分 cutoff | 不控制每轮工具 top_k |
 | `--agent-only` | 跳过独立 RAG 题集 | Agent 的知识库工具仍可使用 RAG |
 | `--rag-only` | 跳过 Agent case | 不受 `--include-online` 影响 |
 | `--include-online` | 在 Core Agent 之外增加 Online Agent case | 只在显式联网运行中使用 |
@@ -347,36 +343,34 @@ python scripts/compare_evaluation_runs.py \
 
 ## 九、参数与证据口径
 
-### 1. 独立 RAG 参数合同
+### 1. Agentic RAG 预测合同
 
-Agent Evaluation 通过生产 ChatServiceRequest 执行，不接收请求级 `top_k/decompose_top_k`；
-每轮检索数量由 Agent Tool Call 决定。所有 Decompose Settings 仅供 legacy standalone RAG。
-Manifest 的 `agent` 不再记录拆解或召回数量；这些参数归属 `rag`。Prompt 文件哈希分别放在
-`prompts.agent` 和 `prompts.legacy_rag`（各有 `files/combined_sha256`）；共享的 `app/prompts.py`
-仍按整文件计算，两组都会感知其变化，不把文件哈希误称为单个 prompt 的哈希。
+Agent 与 RAG Evaluation 共用 `run_evaluation_chat_turn → ChatService.stream → stream_agent → create_agent`。
+每题 RAG 预测使用空 session、`RAG_ONLY` 与唯一权限 `knowledge_base:read`。
+模型可见且可执行的 KB 证据工具为 `search_knowledge_base`、`compare_documents`、`get_chunk_text`；
+Web、MCP 和文档列表不参与该 baseline。每轮 query/top_k 由 Agent 自主决定。
 
-`run_rag_baseline -> run_predictions -> run_rag_once_with_result ->
-run_rag_subgraph` 会显式传递 `top_k` 和 `decompose_top_k`。Prediction v2 逐题记录
-两个有效值；Runner 汇总后验证它们必须与 CLI 请求值相同，否则中止运行。
-Manifest 同时记录 `requested_*` 和 `effective_*`，不再把 Settings 回退值当作 CLI
-执行证据。
+Prediction v3 字段为版本、qid、question、answer、status、retrieved/reference chunk IDs 与数量，
+以及 retrieval/tool/LLM call count。retrieval_call_count 计成功返回 evidence 字段的 KB 工具调用，
+包括成功但 evidence 为空的检索；tool_call_count 取生产工具 trace，LLM count 取正式结果。
 
-### 2. Final、Context 与 Reference
+`retrieved_chunk_ids` 从真实工具输出的 KB Document metadata 提取，按工具观察顺序稳定去重；
+`reference_chunk_ids` 只从最终通过 grounding 的 references 投影，允许是观察证据的子集。
+缺少有效 chunk_id 或不在当前评测索引时生成失败；模型、工具和内部错误也使正式预测失败。
+NO_RELEVANT_INFO 与 NEED_CLARIFICATION 正常参与行为评分。
 
-Prediction v2 和报告明确区分：
+### 2. 评分 cutoff 与历史兼容
 
-```text
-final_chunk_ids[:k]  -> Retrieval Recall@k
-context_chunk_ids    -> Prompt Context Recall
-reference_chunk_ids  -> Final Reference Recall
-```
+`--retrieval-k` 只对完整有序观察证据的前 K 项计算 retrieval metrics，绝不传给检索工具。
+Manifest 记录 `prediction_schema_version=3`、`retrieval_metric_k`、索引与模型信息，
+Prompt hash 仅保留 `prompts.agent`。不再保留 requested/effective retrieval 参数。
 
-`context_chunk_ids` 由生产 `app/rag/generation.py` 的同一 Context 选择函数返回，受
-`max_context_chars` 约束；不解析 Prompt 字符串，也不保存完整 Context 或 chunk 正文。
-`retrieved_chunk_ids` 暂时保留为 `final_chunk_ids` 的弃用兼容别名。旧 v1 prediction
-仍可计算 Retrieval 指标，但 Context/Reference 指标显示为 unavailable，而不是零。
+v3 没有独立 context 阶段，context 指标显示 unavailable / not applicable，不计为零。
+历史 v1/v2 CSV 可以继续纯数据判分；其 context 语义不用于当前 Agent。
+Reference 指标、Judge/cache 和 Final Score 原权重保留。
 
-Context 和 Reference 指标当前只用于诊断，不参与 Evaluation Baseline v2 Final Score。
+Prediction Schema v3 is a new baseline generation contract.
+Raw scores are not strictly comparable to historical v2 workflow scores.
 
 ## 十、仍存在的限制
 
@@ -389,7 +383,7 @@ Core Agent 只开放本地知识库权限。天气、股票等 Core case 只能�
 ### 2. Judge 关闭时语义答案质量不完整
 
 不启用 `--use-llm-judge` 时，关键点覆盖和语义 forbidden 判断不可用；确定性
-Retrieval/Context/Reference 指标不能替代完整答案质量判断。
+Retrieval/Reference 指标不能替代完整答案质量判断。
 
 ### 3. Online 结果不适合作为稳定 CI 门禁
 
@@ -413,7 +407,7 @@ Runner 不覆盖已有结果。保留原目录作为证据，为重试使用新�
 
 ### `APIConnectionError` 或模型调用失败
 
-先区分回答、Rewrite、Decompose 或 Judge 模型服务。索引已经成功加载时，模型网络错误
+先区分Agent、Rewrite 或 Judge 模型服务。索引已经成功加载时，模型网络错误
 不是检索质量失败，也不应通过伪造结果、自动换模型或降低 Gold 处理。
 
 ### 索引缺失或无效

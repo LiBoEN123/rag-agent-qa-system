@@ -32,15 +32,7 @@ def retrieval(monkeypatch):
     monkeypatch.setattr(pipeline, "RAG_READY", True)
     monkeypatch.setattr(pipeline, "search_relevant_chunks", search)
     monkeypatch.setattr(pipeline, "rerank_model", cross_encoder)
-    forbidden = Mock(side_effect=AssertionError("KB retrieval must not call legacy RAG/LLM"))
-    for path in (
-        "app.rag.graph.run_rag_subgraph",
-        "app.rag.decomposition.decompose_query_with_llm",
-        "app.rag.generation.get_answer_model",
-    ):
-        monkeypatch.setattr(path, forbidden)
     yield search, cross_encoder
-    forbidden.assert_not_called()
 
 
 async def _invoke(monkeypatch, model, settings_factory, **settings_overrides):

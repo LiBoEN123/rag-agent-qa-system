@@ -1,5 +1,6 @@
 """工具策略与参数指纹测试。"""
 
+import pytest
 from pydantic import BaseModel
 
 from app.contracts.chat import ToolMode
@@ -121,8 +122,9 @@ def test_policy_rejects_anonymous_write_context():
     assert decision.error_code.value == "invalid_invocation_context"
 
 
-def test_rag_only_preserves_knowledge_base_permission_gate():
-    spec = _spec(name="search_knowledge_base", required_permissions=("knowledge_base:read",))
+@pytest.mark.parametrize("name", ["search_knowledge_base", "compare_documents", "get_chunk_text"])
+def test_rag_only_preserves_knowledge_base_permission_gate(name):
+    spec = _spec(name=name, required_permissions=("knowledge_base:read",))
     for permissions, expected in [
         ((), ToolPolicyDecisionType.DENY),
         (("knowledge_base:read",), ToolPolicyDecisionType.ALLOW),

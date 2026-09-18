@@ -121,18 +121,18 @@ args["query"] / args["top_k"]
 → ToolMessage evidence → create_agent 下一轮 Model
 ```
 
-输出只有 `count/chunks/top_chunk_ids/top_scores`，其中 `top_scores` 仍是 hybrid score；
+输出为 `query/count/evidence`（LangChain Document JSON）；
 chunk 内的 rerank、BM25、vector 分数和公开 retrieval trace 保留。成功零命中仍返回
 ToolMessage，由 Agent 决定改 query 或说明证据不足；readiness 为 false 的 KB 经现有
 `ToolExecutionError(dependency_unavailable)` / Tool Runtime 返回错误消息，不阻断安全恢复。
 
-Query Rewrite 仍负责多轮指代消解；Context 的 `effective_question` 和请求级 `top_k`
-不再覆盖本轮 Tool Call 参数。`decompose_top_k` 等 legacy 合同暂时保留，但检索工具不使用。
+Query Rewrite 仍负责多轮指代消解；Context 的 `effective_question` 不覆盖工具 query。
+Chat 已删除请求级召回参数；Agent 按每轮 Tool Call 决定 query/top_k。
 Middleware 不再写 `knowledge_base_result` 或因 KB 成功提前结束；现有 terminal guardrails
 仍有效。项目没有新增 evidence State、Parent Graph 或私有 Agent Loop。
 
-Legacy RAG Graph source remains temporarily, but is no longer on the production Agent KB path.
-旧拆分、Evidence Gate、生成和引用验证仅保留在独立 RAG 路径。AGENTIC-RAG-4 中
+RAG Evaluation 共用生产 ChatService 与 create_agent。旧 Graph、独立拆分模型、
+旧生成和引用验证已删除；诊断检索分数门仍保留。AGENTIC-RAG-4 中
 `compare_documents` 已改为双文档证据检索：名称过滤、复制候选、现有 CrossEncoder 重排，
 返回原生 Document；唯一 Agent 比较并声明引用 ID，工具内部不再调用 LLM。
 
@@ -214,7 +214,7 @@ Agent trace 通过 `AgentRunResult.tool_trace` 返回，不再单独持久化到
 | `app/tools/catalog.py` | 不可变 ToolSpec catalog、重名检查、配置缓存与名称导出 |
 | `app/tools/runtime.py` | 执行期权限、策略、审计、超时、重试、脱敏和输出校验 |
 | `app/tools/knowledge_base.py` | 混合召回、重排与候选 evidence 输出 |
-| `app/rag/graph/` | 保留的 Legacy RAG 状态、节点、条件和独立入口 |
+| `scripts/evaluation/rag_predictions.py` | 生产 ChatService 的 v3 预测适配，记录有序观察与 grounded 引用 |
 | `app/services/chat_service.py` | Query Rewrite、Runtime、状态策略、session 与 telemetry 编排 |
 
 ## 常见问题定位

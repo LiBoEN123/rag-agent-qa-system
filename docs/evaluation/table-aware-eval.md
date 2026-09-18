@@ -1,5 +1,11 @@
 # TABLE-AWARE-EVAL RESULT
 
+> 当前入口说明（AGENTIC-RAG-6）：以下是历史验收记录，数值和旧命令保留原样。
+> 当前 `table_diagnostics.diagnose_questions` 仅执行 retrieve → rerank → 诊断分数门，
+> 输出 `diagnostic_selected_chunk_ids` 和 `relation_chunk_survives_diagnostic_selection`。
+> relation 表示完整关系 chunk 是否通过最终诊断选择，不代表 Agent context。
+> 当前完整 RAG 评估使用 ChatService 与 Prediction v3；历史 v2 分数不可严格直接比较。
+
 本节保留修复前的评估记录；后续引用完整性修复及复验见文末
 [RAG-CITATION-INTEGRITY-1 RESULT](#rag-citation-integrity-1-result)。
 

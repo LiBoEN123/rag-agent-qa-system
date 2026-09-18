@@ -1,7 +1,7 @@
 """聊天 SSE 接口的手动冒烟客户端。
 
 用途：向已启动的 ``/chat/stream`` 发起一次 POST，并检查事件顺序与 final。
-输入：服务地址、问题、可选 session ID、召回参数和超时。
+输入：服务地址、问题、可选 session ID 和超时。
 输出：事件类型、sequence 与不含正文/凭据/工具原始结果的安全摘要。
 边界：只供人工运行；测试和 CI 不会调用真实服务、模型、RAG 或网络。
 """
@@ -33,13 +33,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--question", required=True, help="测试问题")
     parser.add_argument("--session-id", default="", help="可选会话 ID")
-    parser.add_argument("--top-k", type=int, default=None, help="可选召回条数")
-    parser.add_argument(
-        "--decompose-top-k",
-        type=int,
-        default=None,
-        help="可选问题拆分召回条数",
-    )
     parser.add_argument(
         "--timeout",
         type=float,
@@ -110,10 +103,6 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
     payload: dict[str, Any] = {"question": args.question}
     if args.session_id:
         payload["session_id"] = args.session_id
-    if args.top_k is not None:
-        payload["top_k"] = args.top_k
-    if args.decompose_top_k is not None:
-        payload["decompose_top_k"] = args.decompose_top_k
     return payload
 
 

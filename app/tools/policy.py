@@ -14,7 +14,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID
 
-from app.contracts.chat import ToolMode
+from app.contracts.chat import RAG_EVIDENCE_TOOL_NAMES, ToolMode
 from app.tools.context import (
     PrincipalType,
     ToolInvocationContext,
@@ -137,9 +137,9 @@ class ToolPolicyEngine:
         del args  # 参数内容仅通过已经绑定的指纹进入本阶段决策结果。
         risk_level = spec.risk_level
 
-        if context.tool_mode is ToolMode.RAG_ONLY and spec.name != "search_knowledge_base":
+        if context.tool_mode is ToolMode.RAG_ONLY and spec.name not in RAG_EVIDENCE_TOOL_NAMES:
             return self._deny(
-                reason="当前请求仅允许使用 search_knowledge_base",
+                reason="当前请求仅允许使用知识库证据工具",
                 code=ToolErrorCode.POLICY_DENIED,
                 risk_level=risk_level,
                 args_fingerprint=args_fingerprint,

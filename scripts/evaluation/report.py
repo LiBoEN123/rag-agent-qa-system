@@ -156,7 +156,7 @@ def classify_rag_failures(
             reasons.append("rag_context_gold_miss")
         if row.get(
             "gold_present_in_context_but_not_referenced"
-        ) is True:
+        ) is True or row.get("gold_observed_but_not_referenced") is True:
             reasons.append("rag_reference_gold_miss")
         if (
             row.get("key_point_judge_used")
@@ -385,44 +385,67 @@ def build_markdown_report(
             lines.append(
                 "- LLM Judge skipped: `--use-llm-judge` 未启用"
             )
-        lines.extend(
-            [
+        if manifest.get("rag", {}).get("prediction_schema_version", 1) >= 3:
+            lines.extend([
                 "",
-                "## RAG Evidence Funnel",
+                "Prediction Schema v3 is a new baseline generation contract.",
+                "Raw scores are not strictly comparable to historical v2 workflow scores.",
                 "",
-                "Final-ranked evidence → Prompt context evidence → "
-                "Final cited evidence",
-                "",
-                "| Evidence stage | Gold hit | Gold recall | Doc hit | "
-                "Average chunks | Lost cases |",
-                "| --- | ---: | ---: | ---: | ---: | ---: |",
-                "| Final-ranked Recall@k | "
-                f"{_format_rate(overall.get('gold_chunk_hit_at_k'))} | "
+                "| Evidence | Gold hit | Gold recall | Doc hit | Average chunks |",
+                "| --- | ---: | ---: | ---: | ---: |",
+                f"| Observed KB evidence @K | {_format_rate(overall.get('gold_chunk_hit_at_k'))} | "
                 f"{_format_rate(overall.get('gold_chunk_recall_at_k'))} | "
                 f"{_format_rate(overall.get('doc_hit_at_k'))} | "
-                f"{_format_number(overall.get('avg_final_chunk_count'))} | "
-                "n/a |",
-                "| Prompt context | "
-                f"{_format_rate(overall.get('context_gold_chunk_hit'))} | "
-                f"{_format_rate(overall.get('context_gold_chunk_recall'))} | "
-                f"{_format_rate(overall.get('context_doc_hit'))} | "
-                f"{_format_number(overall.get('avg_context_chunk_count'))} | "
-                f"{_format_number(overall.get('gold_lost_by_context_count'))} |",
-                "| Final cited | "
-                f"{_format_rate(overall.get('reference_gold_chunk_hit'))} | "
+                f"{_format_number(overall.get('avg_retrieved_chunk_count'))} |",
+                f"| Grounded references | {_format_rate(overall.get('reference_gold_chunk_hit'))} | "
                 f"{_format_rate(overall.get('reference_gold_chunk_recall'))} | "
                 f"{_format_rate(overall.get('reference_doc_hit'))} | "
-                f"{_format_number(overall.get('avg_reference_chunk_count'))} | "
-                f"{_format_number(overall.get('gold_lost_by_reference_count'))} |",
+                f"{_format_number(overall.get('avg_reference_chunk_count'))} |",
                 "",
-                "- Retrieval Recall@k 只评价最终排序 chunks 的前 k 个，"
-                "不等于 Prompt Context Recall。",
-                "- Prompt Context Recall 评价字符预算后进入回答上下文的 chunks，"
-                "不等于最终 Reference Recall。",
-                "- Context 与 Reference 指标是诊断指标，"
-                "不参与 Evaluation Baseline v2 Final Score。",
-            ]
-        )
+                "- retrieved_chunk_ids：成功 KB 工具输出按观察顺序稳定去重；平均数量为完整观察数量。",
+                "- retrieval-k 仅对观察到的前 K 项评分，不控制 Agent 工具 top_k。",
+                "- Context metrics: unavailable / not applicable；不计为零。",
+                "- Final Score 权重不变；Reference 指标仅用于诊断。",
+            ])
+        else:
+            lines.extend(
+                [
+                    "",
+                    "## RAG Evidence Funnel",
+                    "",
+                    "Final-ranked evidence → Prompt context evidence → "
+                    "Final cited evidence",
+                    "",
+                    "| Evidence stage | Gold hit | Gold recall | Doc hit | "
+                    "Average chunks | Lost cases |",
+                    "| --- | ---: | ---: | ---: | ---: | ---: |",
+                    "| Final-ranked Recall@k | "
+                    f"{_format_rate(overall.get('gold_chunk_hit_at_k'))} | "
+                    f"{_format_rate(overall.get('gold_chunk_recall_at_k'))} | "
+                    f"{_format_rate(overall.get('doc_hit_at_k'))} | "
+                    f"{_format_number(overall.get('avg_final_chunk_count'))} | "
+                    "n/a |",
+                    "| Prompt context | "
+                    f"{_format_rate(overall.get('context_gold_chunk_hit'))} | "
+                    f"{_format_rate(overall.get('context_gold_chunk_recall'))} | "
+                    f"{_format_rate(overall.get('context_doc_hit'))} | "
+                    f"{_format_number(overall.get('avg_context_chunk_count'))} | "
+                    f"{_format_number(overall.get('gold_lost_by_context_count'))} |",
+                    "| Final cited | "
+                    f"{_format_rate(overall.get('reference_gold_chunk_hit'))} | "
+                    f"{_format_rate(overall.get('reference_gold_chunk_recall'))} | "
+                    f"{_format_rate(overall.get('reference_doc_hit'))} | "
+                    f"{_format_number(overall.get('avg_reference_chunk_count'))} | "
+                    f"{_format_number(overall.get('gold_lost_by_reference_count'))} |",
+                    "",
+                    "- Retrieval Recall@k 只评价最终排序 chunks 的前 k 个，"
+                    "不等于 Prompt Context Recall。",
+                    "- Prompt Context Recall 评价字符预算后进入回答上下文的 chunks，"
+                    "不等于最终 Reference Recall。",
+                    "- Context 与 Reference 指标是诊断指标，"
+                    "不参与 Evaluation Baseline v2 Final Score。",
+                ]
+            )
     else:
         lines.append(f"- skipped: {rag.get('reason', '') if rag else 'not run'}")
     lines.extend(

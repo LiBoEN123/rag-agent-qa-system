@@ -71,19 +71,30 @@ def test_minimal_rag_smoke_judge_disabled(monkeypatch, tmp_path):
     monkeypatch.setattr(judge, "call_judge_json", deny)
     monkeypatch.setattr(rag_predictions, "initialize_rag_for_predictions", lambda **kwargs: None)
     chunk = {"chunk_id": 1, "text": "评测规则", "metadata": {"source_file": "rules.md"}}
-    monkeypatch.setattr(rag_predictions, "retrieve", lambda *args: [chunk])
-    monkeypatch.setattr(rag_predictions, "run_rag_subgraph", lambda **kwargs: {
-        "answer": "评测规则", "status": "OK", "final_chunks": [chunk],
-        "references": [{"chunk_id": 1}],
+    from app.services.chat_models import ChatServiceOutcome
+    from app.rag import pipeline
+    monkeypatch.setattr(pipeline, "chunks", [chunk])
+    def chat_turn(*args, **kwargs):
+        from app.agent import framework_tools
+        from types import SimpleNamespace
+        framework_tools.execute_project_tool(spec=SimpleNamespace(name="search_knowledge_base"), tool_args={})
+        return ChatServiceOutcome(http_status=200, code=200, message="ok", question="规则是什么", result={
+            "answer": "评测规则", "status": "OK", "references": [{"chunk_id": 1}],
+            "tool_trace": [{"step": "tool_call", "tool_call_id": "a"}], "llm_call_count": 2,
+        })
+    monkeypatch.setattr("app.agent.framework_tools.execute_project_tool", lambda **kwargs: {
+        "tool_call_id": "a", "ok": True, "output": {"evidence": [
+            {"metadata": {"source_type": "knowledge_base", "chunk_id": 1}},
+        ]},
     })
-    monkeypatch.setattr(rag_predictions, "build_context_with_selection", lambda chunks: ("评测规则", chunks))
+    monkeypatch.setattr(rag_predictions, "run_evaluation_chat_turn", chat_turn)
     eval_file, pred_file, chunks_file = [tmp_path / n for n in ("eval.json", "predictions.csv", "chunks.json")]
     eval_file.write_text(json.dumps([{
         "qid": "q1", "question": "规则是什么", "expected_behavior": "answer",
         "gold_key_points": ["评测规则"], "gold_chunk_ids": [1], "gold_doc_ids": ["rules.md"],
     }]))
     chunks_file.write_text(json.dumps([chunk]))
-    rag_predictions.run_predictions(eval_file=eval_file, out_file=pred_file, top_k=1, decompose_top_k=1)
+    rag_predictions.run_predictions(eval_file=eval_file, out_file=pred_file)
     result = rag_evaluator.run_rag_evaluation(
         eval_file=eval_file, pred_file=pred_file, out_dir=tmp_path / "rag", k=1,
         chunks_file=chunks_file, index_source="chunks-file", use_llm_judge=False,

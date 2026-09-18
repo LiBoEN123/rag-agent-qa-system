@@ -320,8 +320,7 @@ def inspect_runtime(
         ),
         _check(
             "knowledge_tool_is_retrieval_only",
-            "run_rag_subgraph" not in knowledge_source
-            and "search_relevant_chunks(query, top_k=top_k)" in knowledge_source
+            "search_relevant_chunks(query, top_k=top_k)" in knowledge_source
             and "rerank(candidates, query)[:top_k]" in knowledge_source,
             "knowledge base tool reuses hybrid retrieval and rerank",
         ),

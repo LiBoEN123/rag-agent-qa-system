@@ -16,7 +16,6 @@ from app.agent import framework_agent, framework_tools
 from app.agent import runtime as agent_runtime
 from app.agent.runtime import reset_agent_runtime
 from app.contracts.chat import ToolMode
-from app.rag import graph as rag_graph
 from app.rag import pipeline as rag_pipeline
 from app.services.chat_service import (
     ChatService,
@@ -353,11 +352,9 @@ def test_chat_service_returns_kb_evidence_to_agent_with_request_tool_mode(monkey
     ])
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     search, rerank = Mock(return_value=[]), Mock(return_value=[])
-    rag = Mock(side_effect=AssertionError("Agent KB path must not call legacy RAG"))
     monkeypatch.setattr(rag_pipeline, "RAG_READY", True)
     monkeypatch.setattr(rag_pipeline, "search_relevant_chunks", search)
     monkeypatch.setattr(rag_pipeline, "rerank", rerank)
-    monkeypatch.setattr(rag_graph, "run_rag_subgraph", rag)
     service = ChatService(ChatServiceDependencies(
         settings_provider=lambda: settings,
         get_history=lambda session: [],
@@ -386,9 +383,8 @@ def test_chat_service_returns_kb_evidence_to_agent_with_request_tool_mode(monkey
     assert json.loads(message.content)["output"]["count"] == 0
     search.assert_called_once_with("学习年限", top_k=8)
     rerank.assert_called_once_with([], "学习年限")
-    rag.assert_not_called()
     if tool_mode is ToolMode.RAG_ONLY:
-        assert model.bound_tool_names == ["search_knowledge_base", model.structured_tool_name]
+        assert model.bound_tool_names == ["search_knowledge_base", "compare_documents", "get_chunk_text", model.structured_tool_name]
     else:
         assert {"search_knowledge_base", "web_search", "compare_documents"} <= set(model.bound_tool_names)
 
@@ -649,13 +645,6 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     monkeypatch.setattr(web_download_module, "Manager", FakeManager)
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
-    monkeypatch.setattr(
-        rag_graph,
-        "run_rag_subgraph",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError(f"web PDF must not enter RAG: {args} {kwargs}")
-        ),
-    )
     settings = settings_env(
         agent_max_iterations=6,
         agent_max_tool_calls=10,

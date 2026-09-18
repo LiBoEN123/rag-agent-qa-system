@@ -24,7 +24,8 @@ governed StructuredTool，不再经过 framework 二次 wrapper。两类 BaseToo
 错误数、重复调用、累计耗时、同批 fail-closed 和 ToolMessage pairing；MCP Server
 Access Policy、审批、远端超时、审计和序列化仍只在 MCP Bridge 内执行。
 
-MCP Tool 不进入本地 RAG；只有本地 `search_knowledge_base` 会调用独立 RAG Graph。
+MCP 保持独立 Bridge 治理；本地 KB 工具返回 Document evidence 给唯一 Agent。
+RAG Evaluation 使用 `RAG_ONLY`，不会发现或执行 MCP 工具。
 `/chat/stream`、ChatService、Agent Runtime 和 SSE Schema 都没有 MCP 特判。
 
 ## 第一版范围

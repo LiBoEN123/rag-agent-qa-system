@@ -140,8 +140,8 @@ external candidates 恢复后，有结构走新 chunker，无结构走旧路径�
 Focused retrieval smoke 使用真实 Chroma/SQLRecordManager/BM25 和确定性 fake embedding，
 查询“企业注册需要哪些材料”，验证命中含“事项：企业注册；条件：年满18岁；材料：身份证、申请表。”
 的 table chunk。它证明语义文本进入现有检索，不提供真实模型效果提升指标。
-Retrieval、reranker、Evidence Gate、generation 和 `max_context_chars`（默认 2500）
-均不变；极长行的 chunk 可能超过最终 context budget，现有 context builder 会整块排除。
+该阶段未修改 Retrieval 与 reranker。当前 AGENTIC-RAG-6 已退役独立生成及 context
+选择阶段，Agent 直接观察 ToolMessage evidence；表格诊断只衡量 chunk 是否通过重排和诊断选择。
 
 ## TABLE-AWARE-1D：Firecrawl 网页结构
 

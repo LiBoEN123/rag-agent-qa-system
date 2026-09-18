@@ -59,3 +59,25 @@ def test_gold_realigns_after_snapshot_ids_change():
 def test_abstain_is_not_counted_as_relation_success():
     question = next(q for q in load_eval(DATASET) if q["expected_behavior"] == "abstain")
     assert relation_chunk_ids(question, []) == []
+
+
+def test_diagnostic_relation_measures_final_selection_without_context(monkeypatch):
+    from app.rag import pipeline
+    from scripts.evaluation.table_diagnostics import diagnose_questions
+    question = next(q for q in load_eval(DATASET) if q['qid'] == 't007')
+    evidence = {
+        "chunk_id": 1, "text": "企业注册 身份证 申请表", "file_name": "registration-html",
+        "source_path": "fixture", "hybrid_score": 0.9, "vector_score": 0.9,
+        "metadata": {"chunk_id": 1, "file_name": "registration-html", "element_type": "table"},
+    }
+    monkeypatch.setattr(pipeline, "chunks", [evidence])
+    monkeypatch.setattr(pipeline, "retrieve", lambda *args: [evidence])
+    monkeypatch.setattr(pipeline, "rerank", lambda chunks, query: chunks)
+    row = diagnose_questions([question], top_k=1)[0]
+    assert row["relation_chunk_survives_diagnostic_selection"] is True
+    assert row["diagnostic_selected_chunk_ids"] == [1]
+    assert not any("context" in key for key in row)
+    monkeypatch.setattr("app.rag.policy.should_refuse", lambda chunks: True)
+    row = diagnose_questions([question], top_k=1)[0]
+    assert row["relation_chunk_survives_diagnostic_selection"] is False
+    assert row["diagnostic_selected_chunk_ids"] == []
