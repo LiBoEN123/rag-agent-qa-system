@@ -598,6 +598,50 @@ def test_evidence_answer_requires_real_cited_ids(evidence_ids):
     assert "候选" not in result["reason"]
 
 
+def test_grounding_mismatch_diagnostics_only_expose_ids():
+    output = _knowledge_output()
+    payload = json.loads(output["messages"][0].content)
+    ids = ["knowledge_base:real-a", "knowledge_base:real-b"]
+    for document, evidence_id in zip(payload["output"]["evidence"], ids):
+        document["id"] = evidence_id
+        document["page_content"] = "PRIVATE SECRET BODY"
+        document["metadata"]["private_metadata"] = "PRIVATE METADATA SECRET"
+    output["messages"][0].content = json.dumps(payload)
+    output["governance_events"][1]["result"] = payload
+    output["structured_response"] = FinalAgentResponse(
+        outcome="answer", answer="UNSUPPORTED PRIVATE ANSWER",
+        evidence_ids=[ids[0], "knowledge_base:fake"],
+    )
+
+    result = build_framework_agent_result(_invocation(), output)
+
+    assert result["status"] == "MODEL_ERROR"
+    assert result["references"] == []
+    compose = next(step for step in result["tool_trace"] if step["step"] == "compose_final_answer")
+    assert compose["mode"] == "error" and compose["status"] == "model_error"
+    assert compose["requested_evidence_ids"] == [ids[0], "knowledge_base:fake"]
+    assert compose["available_evidence_ids"] == ids
+    assert compose["unavailable_evidence_ids"] == ["knowledge_base:fake"]
+    assert result["reason"] == compose["reason"] == "Agent structured response referenced unavailable evidence"
+    serialized = json.dumps(result)
+    for private in ("PRIVATE SECRET BODY", "PRIVATE METADATA SECRET", "private_metadata", "UNSUPPORTED PRIVATE ANSWER"):
+        assert private not in serialized
+    for key in ("reason", "answer", "tool_result_summary"):
+        assert "knowledge_base:fake" not in result[key]
+
+
+@pytest.mark.parametrize("outcome", ["answer", "no_evidence", "clarify"])
+def test_successful_results_do_not_include_grounding_diagnostics(outcome):
+    output = _knowledge_output()
+    if outcome != "answer":
+        output["structured_response"] = FinalAgentResponse(
+            outcome=outcome, clarification_question="请补充年份" if outcome == "clarify" else "",
+        )
+    result = build_framework_agent_result(_invocation(), output)
+    compose = next(step for step in result["tool_trace"] if step["step"] == "compose_final_answer")
+    assert not {"requested_evidence_ids", "available_evidence_ids", "unavailable_evidence_ids"} & compose.keys()
+
+
 @pytest.mark.parametrize("value", [None, {}, {"outcome": "answer", "answer": "unparsed"},
                                        FinalAgentResponse.model_construct(outcome="answer", answer="")])
 def test_unparsed_or_invalid_structured_response_never_falls_back_to_ai(value):

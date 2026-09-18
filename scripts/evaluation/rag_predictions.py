@@ -16,6 +16,7 @@ from app.services.chat_models import ChatServiceRequest
 from scripts.evaluation.agent import capture_tool_output_keys, run_evaluation_chat_turn
 
 PREDICTION_SCHEMA_VERSION = 3
+ERROR_STATUSES = frozenset({"MODEL_ERROR", "MODEL_BAD_OUTPUT", "TOOL_ERROR", "INTERNAL_ERROR"})
 PREDICTION_FIELDNAMES = [
     "prediction_schema_version", "qid", "question", "answer", "status",
     "retrieved_chunk_ids", "reference_chunk_ids",
@@ -75,16 +76,24 @@ def load_eval_questions(eval_file):
     with open(eval_file, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    if isinstance(data, list):
-        return data
-
     if isinstance(data, dict) and "items" in data:
-        return data["items"]
+        data = data["items"]
+    if not isinstance(data, list) or not data:
+        raise ValueError("评测文件必须包含非空题目列表")
+    qids = set()
+    for item in data:
+        if not isinstance(item, dict) or any(
+            not isinstance(item.get(key), str) or not item[key].strip()
+            for key in ("qid", "question")
+        ):
+            raise ValueError("评测题必须包含非空 qid 和 question")
+        if item["qid"] in qids:
+            raise ValueError(f"评测题 qid 重复：{item['qid']}")
+        qids.add(item["qid"])
+    return data
 
-    raise ValueError("评测文件格式不正确：既不是题目列表，也没有 items 字段")
 
-
-def run_rag_once_with_result(
+def _run_rag_once(
     question: str,
     *,
     settings: AppSettings | None = None,
@@ -103,8 +112,8 @@ def run_rag_once_with_result(
         )
     result = dict(outcome.result)
     status = str(result.get("status") or "")
-    if status in {"MODEL_ERROR", "MODEL_BAD_OUTPUT", "TOOL_ERROR", "INTERNAL_ERROR"}:
-        raise RuntimeError(f"RAG prediction failed: {status}")
+    if status not in ERROR_STATUSES | {"OK", "NO_RELEVANT_INFO", "NEED_CLARIFICATION"}:
+        raise ValueError(f"Invalid RAG prediction status: {status}")
     valid_ids = {
         int(value)
         for chunk in pipeline.chunks
@@ -142,38 +151,88 @@ def run_rag_once_with_result(
     return result, trace
 
 
+def run_rag_once_with_result(
+    question: str,
+    *,
+    settings: AppSettings | None = None,
+) -> tuple[dict[str, Any], RagPredictionTrace]:
+    """单题诊断保持 fail-fast；批量预测使用同一执行实现隔离错误状态。"""
+    result, trace = _run_rag_once(question, settings=settings)
+    if trace.status in ERROR_STATUSES:
+        raise RuntimeError(f"RAG prediction failed: {trace.status}")
+    return result, trace
+
+
+def _prediction_failure(
+    item: dict[str, Any], result: dict[str, Any], trace: RagPredictionTrace,
+) -> dict[str, Any]:
+    """只投影公开状态、ID 和计数，绝不保存失败答案或完整 trace。"""
+    compose = next((
+        step for step in result.get("tool_trace", [])
+        if step.get("step") == "compose_final_answer"
+    ), {})
+    return {
+        "qid": item["qid"], "question": item["question"],
+        "status": trace.status, "reason": result.get("reason") or "",
+        "retrieved_chunk_ids": list(trace.retrieved_chunk_ids),
+        "reference_chunk_ids": list(trace.reference_chunk_ids),
+        "retrieval_call_count": trace.retrieval_call_count,
+        "tool_call_count": trace.tool_call_count,
+        "llm_call_count": trace.llm_call_count,
+        **{key: compose.get(key, []) for key in (
+            "requested_evidence_ids", "available_evidence_ids", "unavailable_evidence_ids",
+        )},
+    }
+
+
 def run_predictions(
     *,
     eval_file: str | Path,
     out_file: str | Path,
     force_rebuild: bool = False,
 ) -> list[dict[str, Any]]:
-    """每题使用空 session 的正式 ChatService；错误状态使整次生成失败。"""
+    """逐题落盘；Agent 错误状态仅记录失败，评测结构异常仍中止整批。"""
+    questions = load_eval_questions(eval_file)
     initialize_rag_for_predictions(force_rebuild=force_rebuild)
     rows = []
-    for item in load_eval_questions(eval_file):
-        print(f"Running {item['qid']}: {item['question']}")
-        try:
-            result, trace = run_rag_once_with_result(item["question"])
-        except (RuntimeError, ValueError) as exc:
-            raise RuntimeError(f"RAG prediction failed for qid={item['qid']}: {exc}") from exc
-        rows.append({
-            "prediction_schema_version": PREDICTION_SCHEMA_VERSION,
-            "qid": item["qid"], "question": item["question"],
-            "answer": result["answer"], "status": trace.status,
-            "retrieved_chunk_ids": ",".join(map(str, trace.retrieved_chunk_ids)),
-            "reference_chunk_ids": ",".join(map(str, trace.reference_chunk_ids)),
-            "retrieved_chunk_count": len(trace.retrieved_chunk_ids),
-            "reference_chunk_count": len(trace.reference_chunk_ids),
-            "retrieval_call_count": trace.retrieval_call_count,
-            "tool_call_count": trace.tool_call_count,
-            "llm_call_count": trace.llm_call_count,
-        })
+    failure_count = 0
     out_path = Path(out_file)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_path.open("w", encoding="utf-8-sig", newline="") as file:
+    with (
+        out_path.open("w", encoding="utf-8-sig", newline="") as file,
+        out_path.with_name("prediction_failures.jsonl").open("w", encoding="utf-8") as failures,
+    ):
         writer = csv.DictWriter(file, fieldnames=PREDICTION_FIELDNAMES)
         writer.writeheader()
-        writer.writerows(rows)
+        file.flush()
+        for item in questions:
+            print(f"Running {item['qid']}: {item['question']}")
+            try:
+                result, trace = _run_rag_once(item["question"])
+            except (RuntimeError, ValueError) as exc:
+                raise RuntimeError(f"RAG prediction failed for qid={item['qid']}: {exc}") from exc
+            if trace.status in ERROR_STATUSES:
+                failure = _prediction_failure(item, result, trace)
+                failures.write(json.dumps(failure, ensure_ascii=False) + "\n")
+                failures.flush()
+                failure_count += 1
+                continue
+            row = {
+                "prediction_schema_version": PREDICTION_SCHEMA_VERSION,
+                "qid": item["qid"], "question": item["question"],
+                "answer": result["answer"], "status": trace.status,
+                "retrieved_chunk_ids": ",".join(map(str, trace.retrieved_chunk_ids)),
+                "reference_chunk_ids": ",".join(map(str, trace.reference_chunk_ids)),
+                "retrieved_chunk_count": len(trace.retrieved_chunk_ids),
+                "reference_chunk_count": len(trace.reference_chunk_ids),
+                "retrieval_call_count": trace.retrieval_call_count,
+                "tool_call_count": trace.tool_call_count,
+                "llm_call_count": trace.llm_call_count,
+            }
+            writer.writerow(row)
+            file.flush()
+            rows.append(row)
+    if len(rows) + failure_count != len(questions):
+        raise RuntimeError("RAG prediction batch did not account for every evaluation question")
     print(f"predictions saved to: {out_path}")
     return rows

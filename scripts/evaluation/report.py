@@ -137,37 +137,38 @@ def classify_rag_failures(
         reasons: list[str] = []
         if not row.get("has_prediction"):
             reasons.append("runtime_error")
-        if (
-            row.get("expected_behavior") != "abstain"
-            and float(row.get("retrieval_doc_hit_at_k", 0) or 0) == 0
-        ):
-            reasons.append("rag_document_miss")
-        if (
-            row.get("gold_chunk_ids") not in ("", "[]", None)
-            and float(
-                row.get("retrieval_gold_chunk_hit_at_k", 0) or 0
-            )
-            == 0
-        ):
-            reasons.append("rag_chunk_miss")
-        if row.get(
-            "gold_present_in_final_but_missing_in_context"
-        ) is True:
-            reasons.append("rag_context_gold_miss")
-        if row.get(
-            "gold_present_in_context_but_not_referenced"
-        ) is True or row.get("gold_observed_but_not_referenced") is True:
-            reasons.append("rag_reference_gold_miss")
-        if (
-            row.get("key_point_judge_used")
-            and int(row.get("missing_count", 0) or 0) > 0
-        ):
-            reasons.append("rag_answer_keypoint_miss")
-        behavior = str(row.get("behavior_label") or "")
-        if behavior == "should_answer_but_refused":
-            reasons.append("rag_unexpected_refusal")
-        if behavior == "should_abstain_but_answered":
-            reasons.append("rag_missing_refusal")
+        else:
+            if (
+                row.get("expected_behavior") != "abstain"
+                and float(row.get("retrieval_doc_hit_at_k", 0) or 0) == 0
+            ):
+                reasons.append("rag_document_miss")
+            if (
+                row.get("gold_chunk_ids") not in ("", "[]", None)
+                and float(
+                    row.get("retrieval_gold_chunk_hit_at_k", 0) or 0
+                )
+                == 0
+            ):
+                reasons.append("rag_chunk_miss")
+            if row.get(
+                "gold_present_in_final_but_missing_in_context"
+            ) is True:
+                reasons.append("rag_context_gold_miss")
+            if row.get(
+                "gold_present_in_context_but_not_referenced"
+            ) is True or row.get("gold_observed_but_not_referenced") is True:
+                reasons.append("rag_reference_gold_miss")
+            if (
+                row.get("key_point_judge_used")
+                and int(row.get("missing_count", 0) or 0) > 0
+            ):
+                reasons.append("rag_answer_keypoint_miss")
+            behavior = str(row.get("behavior_label") or "")
+            if behavior == "should_answer_but_refused":
+                reasons.append("rag_unexpected_refusal")
+            if behavior == "should_abstain_but_answered":
+                reasons.append("rag_missing_refusal")
         if reasons:
             failures.append(
                 {

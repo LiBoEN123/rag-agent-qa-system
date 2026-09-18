@@ -260,6 +260,7 @@ def build_framework_agent_result(
     answer_llm_used = successful_models > 0
     references = []
     clarification_question = ""
+    grounding_diagnostics: dict[str, list[str]] = {}
     stop_reason = str(framework_output.get("stop_reason") or "")
     if stop_reason and stop_reason != AgentStopReason.COMPLETED.value:
         status, answer = _stop_result(stop_reason)
@@ -279,6 +280,14 @@ def build_framework_agent_result(
             evidence = collect_evidence_from_messages(framework_output.get("messages"))
             if any(evidence_id not in evidence for evidence_id in final.evidence_ids):
                 reason = "Agent structured response referenced unavailable evidence"
+                grounding_diagnostics = {
+                    "requested_evidence_ids": list(final.evidence_ids),
+                    "available_evidence_ids": list(evidence),
+                    "unavailable_evidence_ids": [
+                        evidence_id for evidence_id in final.evidence_ids
+                        if evidence_id not in evidence
+                    ],
+                }
                 raise ValueError(reason)
             if final.outcome == "answer" and evidence and not final.evidence_ids:
                 reason = "Agent structured answer did not cite available evidence"
@@ -306,6 +315,7 @@ def build_framework_agent_result(
         "status": _TRACE_STATUSES[status],
         "answer_len": len(answer),
         "reason": reason,
+        **grounding_diagnostics,
     }
     tool_trace.append(compose_trace)
     llm_call_count = sum(item.get("kind") == "model" for item in events)

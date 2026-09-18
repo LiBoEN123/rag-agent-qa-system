@@ -91,7 +91,8 @@ Combined、Agent-only 和 RAG-only 都可能需要：
 
 默认 Core 不开放 Web Search、Web Fetch 或 Web PDF Fetch，但调用配置的回答模型、
 Query Rewrite 模型仍可能需要访问模型服务。模型服务网络失败不等于
-RAG 索引失败，也不能计入质量分。
+RAG 索引失败；正式 Agent 返回的错误状态作为当前题目的 runtime failure 计零分。
+初始化或评测执行抛出的结构/基础设施异常仍中止整批。
 
 ## 三、推荐启动流程
 
@@ -296,6 +297,7 @@ outputs/evaluation_baseline_v2/<run-id>/
 │   └── summary.json
 └── rag/
     ├── predictions.csv
+    ├── prediction_failures.jsonl
     ├── per_question_report.csv
     ├── summary_report.csv
     ├── summary_report.json
@@ -358,6 +360,34 @@ Prediction v3 字段为版本、qid、question、answer、status、retrieved/ref
 `reference_chunk_ids` 只从最终通过 grounding 的 references 投影，允许是观察证据的子集。
 缺少有效 chunk_id 或不在当前评测索引时生成失败；模型、工具和内部错误也使正式预测失败。
 NO_RELEVANT_INFO 与 NEED_CLARIFICATION 正常参与行为评分。
+
+批量生成只隔离 Agent 正常返回的 `MODEL_ERROR`、`MODEL_BAD_OUTPUT`、`TOOL_ERROR`、
+`INTERNAL_ERROR`：该题不写 prediction row，而写入 `rag/prediction_failures.jsonl`，然后继续下一题。
+`predictions.csv` 只保存完成 Prediction v3 合同的结果，Schema 仍为 3。
+单题诊断 API `run_rag_once_with_result` 对这些错误状态仍抛出 `RuntimeError`。
+
+Failure sidecar 字段为 `qid`、`question`、`status`、`reason`、`retrieved_chunk_ids`、
+`reference_chunk_ids`、`retrieval_call_count`、`tool_call_count`、`llm_call_count`，以及
+`requested_evidence_ids`、`available_evidence_ids`、`unavailable_evidence_ids`。
+缺失值使用空列表、0 或空字符串。只投影已有公开状态、ID、计数和数据集问题；不保存失败答案、
+证据正文、完整 metadata、ToolMessage、Prompt 或隐藏推理。
+三个 grounding ID 列表来自 `compose_final_answer` 的 mismatch trace；生产成功路径不附这些字段。
+未知证据仍被完整拒绝，不过滤后放行，也不新增 retry。
+
+Missing prediction 的 `has_prediction=false`，行为、关键点、检索及最终分均为 0，
+Judge 不被调用，失败分类仅为 `runtime_error`。Sidecar 中的实际检索 IDs 只用于归因，
+不会输入正式 retrieval score。题目仍进入整体和 category 的 coverage 分母。
+`baseline_summary.json` 的 `rag` 部分增加 `prediction_failure_count` 和
+`prediction_failure_status_counts`；用 `qid` 将 sidecar 的 status/reason 与
+`failure_cases.jsonl` 的 `case_id` 对齐。
+
+CSV header、每条成功 row 与每条失败 JSONL 都即时 flush；完整 loop 必须满足
+`successful_prediction_count + case_runtime_failure_count == evaluation_question_count`。
+全题失败时 CSV 仅含 header，coverage 为 0，Runner 仍可完成 evaluator 和报告。
+缺失/非法 chunk ID、工具捕获与 trace 无法对齐、重复 call ID、损坏/重复题目、初始化失败、
+序列化或文件写入异常仍中止整批。进程崩溃或 KeyboardInterrupt 也不构成成功运行。
+部分产物只供诊断；accepted baseline 必须完成所有题目、正式 evaluator、manifest 和 reports，
+并满足既有 clean-worktree 要求，无需 100% prediction coverage。
 
 ### 2. 评分 cutoff 与历史兼容
 

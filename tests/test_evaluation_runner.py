@@ -1,6 +1,8 @@
 """统一 Evaluation Runner 与多轮内存 session 测试。"""
 
 from contextlib import contextmanager
+import csv
+import json
 from pathlib import Path
 
 import pytest
@@ -505,6 +507,68 @@ def _fake_manifest(run_id: str):
         },
         "judge": {"enabled": False, "model": "", "cache_source": ""},
     }
+
+
+@pytest.mark.parametrize("all_failed", [False, True])
+def test_runner_completes_reports_with_runtime_failures(tmp_path, monkeypatch, all_failed):
+    from app.services.chat_models import ChatServiceOutcome
+    from scripts.evaluation import rag_evaluator, rag_predictions
+    from scripts.evaluation.rag.common import ChunkIndex
+
+    output = tmp_path / "run"
+    eval_file = tmp_path / "questions.json"
+    eval_file.write_text(json.dumps([{
+        "qid": f"q{i}", "question": f"问题{i}", "category": "test", "difficulty": "easy",
+        "expected_behavior": "answer", "gold_chunk_ids": [1], "gold_doc_ids": ["rules.md"],
+    } for i in (1, 2, 3)]))
+    attempted = []
+
+    def chat_turn(request, **kwargs):
+        attempted.append(request.question)
+        failed = all_failed or request.question == "问题2"
+        return ChatServiceOutcome(http_status=200, code=200, message="test", question=request.question, result={
+            "status": "MODEL_ERROR" if failed else "OK",
+            "answer": "unsafe" if failed else "正常回答", "reason": "model failure" if failed else "",
+        })
+
+    monkeypatch.setattr(rag_predictions, "initialize_rag_for_predictions", lambda **k: None)
+    monkeypatch.setattr(rag_predictions, "run_evaluation_chat_turn", chat_turn)
+    monkeypatch.setattr(rag_evaluator, "load_chunk_index", lambda **k: ChunkIndex({1: "rules.md"}, {1: "政策"}, "test"))
+    monkeypatch.setattr(runner, "get_settings", lambda: _settings(tmp_path))
+    monkeypatch.setattr(runner, "get_git_state", lambda: _fake_manifest("test")["code"])
+    monkeypatch.setattr(runner, "build_manifest", lambda **kwargs: _fake_manifest(kwargs["run_id"]))
+    monkeypatch.setattr("app.rag.pipeline.get_rag_status", lambda: {})
+
+    assert runner.main([
+        "--rag-only", "--agent-cases", str(FIXTURE), "--rag-eval-file", str(eval_file),
+        "--output-dir", str(output),
+    ]) == 0
+
+    assert attempted == ["问题1", "问题2", "问题3"]
+    failure_count = 3 if all_failed else 1
+    with (output / "rag/predictions.csv").open(encoding="utf-8-sig") as file:
+        reader = csv.DictReader(file)
+        assert reader.fieldnames == rag_predictions.PREDICTION_FIELDNAMES
+        assert len(list(reader)) == 3 - failure_count
+    summary = json.loads((output / "baseline_summary.json").read_text())
+    assert summary["rag"]["prediction_failure_count"] == failure_count
+    assert summary["rag"]["prediction_failure_status_counts"] == {"MODEL_ERROR": failure_count}
+    assert summary["rag"]["overall"]["prediction_coverage"] == (0 if all_failed else 0.6667)
+    assert summary["rag"]["category:test"]["prediction_coverage"] == (0 if all_failed else 0.6667)
+    if all_failed:
+        assert summary["rag"]["overall"]["avg_final_score"] == 0
+    failures = [json.loads(line) for line in (output / "failure_cases.jsonl").read_text().splitlines()]
+    runtime_failures = [row for row in failures if row["failure_reasons"] == ["runtime_error"]]
+    assert len(runtime_failures) == failure_count
+    sidecar = [json.loads(line) for line in (output / "rag/prediction_failures.jsonl").read_text().splitlines()]
+    assert {row["qid"] for row in sidecar} == {row["case_id"] for row in runtime_failures}
+    assert (output / "manifest.json").exists()
+    assert (output / "baseline_report.md").exists()
+    assert (output / "rag/per_question_report.csv").exists()
+    assert (output / "rag/summary_report.json").exists()
+    for path in output.rglob("*"):
+        if path.is_file():
+            assert "unsafe" not in path.read_text(encoding="utf-8-sig")
 
 
 def test_runner_writes_expected_output_structure(

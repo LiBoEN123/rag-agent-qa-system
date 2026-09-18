@@ -131,6 +131,14 @@ def evaluate(
         pred = preds.get(qid, {})
         answer = get_answer(pred)
         retrieval = score_retrieval(pred, q, chunk_index.chunk_doc_map, chunk_index.chunk_text_map, k)
+        if not pred:
+            # 空 Gold 的默认命中也不能为未完成 Prediction contract 的题目加分。
+            for metric in (
+                "chunk_hit_at_k", "chunk_recall_at_k", "evidence_recall_at_k",
+                "all_evidence_hit_at_k", "gold_chunk_hit_at_k", "gold_chunk_recall_at_k",
+                "all_gold_hit_at_k", "doc_hit_at_k",
+            ):
+                retrieval[metric] = 0.0
         schema_version = prediction_schema_version(pred)
         final_chunk_ids = retrieval["retrieved_chunk_ids"]
         observed_ids = parse_chunk_ids(pred) if schema_version >= 3 else final_chunk_ids
@@ -195,15 +203,18 @@ def evaluate(
             )
         judge_evidence = collect_retrieved_evidence(retrieval, chunk_index)
 
-        key_point_result = unavailable_key_point_result(q.get("gold_key_points", []), "LLM judge 未启用")
-        forbidden_result = unavailable_forbidden_result(q.get("forbidden_points", []), "LLM judge 未启用")
+        unavailable_reason = (
+            "prediction unavailable due runtime failure" if not pred else "LLM judge 未启用"
+        )
+        key_point_result = unavailable_key_point_result(q.get("gold_key_points", []), unavailable_reason)
+        forbidden_result = unavailable_forbidden_result(q.get("forbidden_points", []), unavailable_reason)
         key_point_judge_raw = ""
         forbidden_judge_raw = ""
         key_point_judge_used = False
         forbidden_judge_used = False
         judge_errors: List[str] = []
 
-        if use_llm_judge:
+        if use_llm_judge and pred:
             try:
                 key_point_result = key_point_evaluator(
                     question=q.get("question", ""),
@@ -276,6 +287,9 @@ def evaluate(
             retrieval["gold_chunk_recall_at_k"],
             forbidden_hit,
         )
+        if not pred:
+            behavior = key_point_recall = fscore = 0.0
+            behavior_label = "runtime_error"
 
         judge_error = " | ".join(judge_errors)
         row = {

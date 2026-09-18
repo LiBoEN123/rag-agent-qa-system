@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import json
 import sys
+from collections import Counter
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -217,6 +218,16 @@ def validate_dataset(
     return dataset, coverage, tool_names
 
 
+def _summarize_prediction_failures(path: Path) -> dict[str, Any]:
+    """从生产者完整写出的安全 sidecar 汇总 case runtime failure。"""
+    with path.open(encoding="utf-8") as file:
+        statuses = Counter(json.loads(line)["status"] for line in file if line.strip())
+    return {
+        "prediction_failure_count": sum(statuses.values()),
+        "prediction_failure_status_counts": dict(statuses),
+    }
+
+
 def run_rag_baseline(
     *,
     rag_eval_path: Path,
@@ -235,12 +246,15 @@ def run_rag_baseline(
     rows = run_predictions(
         eval_file=rag_eval_path, out_file=predictions_path, force_rebuild=force_rebuild,
     )
-    if not rows or any(row.get("prediction_schema_version") != PREDICTION_SCHEMA_VERSION for row in rows):
-        raise RuntimeError("RAG prediction requires nonempty Schema v3 records")
-    return run_rag_evaluation(
+    if any(row.get("prediction_schema_version") != PREDICTION_SCHEMA_VERSION for row in rows):
+        raise RuntimeError("RAG prediction requires Schema v3 records")
+    failure_summary = _summarize_prediction_failures(rag_dir / "prediction_failures.jsonl")
+    result = run_rag_evaluation(
         eval_file=rag_eval_path, pred_file=predictions_path, out_dir=rag_dir,
         k=retrieval_k, use_llm_judge=use_llm_judge, judge_model=judge_model,
     )
+    result["summary"].update(failure_summary)
+    return result
 
 
 def _resolve_output_dir(
