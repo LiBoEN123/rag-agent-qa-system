@@ -195,10 +195,12 @@ def get_local_tool_specs(settings: AppSettings) -> tuple[ToolSpec, ...]:
         ),
         ToolSpec(
             name="get_chunk_text",
-            version="1.0.0",
+            version="1.1.0",
             description=(
-                "用于在已知 chunk_id 时读取该知识库片段的完整原文；参数 chunk_id"
-                " 是片段标识，返回 evidence Document。若不知道 chunk_id，应先检索知识库。"
+                "主要用于用户明确给出 chunk_id 时读取完整原文，返回 evidence Document。"
+                "chunk_id 必须来自 Document.metadata.chunk_id，不能使用 Document.id / evidence id。"
+                "search_knowledge_base / compare_documents 返回的 Document.page_content 已是完整 "
+                "chunk 正文，通常无需再次调用本工具读取同一 evidence。"
             ),
             output_model=GetChunkTextOutput,
             handler=_handle_get_chunk_text,

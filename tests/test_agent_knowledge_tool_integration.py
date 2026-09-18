@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from pydantic import ValidationError
 
 from app.agent import framework_agent, framework_tools
 from app.agent.final_response import FinalAgentResponse
@@ -13,7 +14,7 @@ from app.rag import pipeline
 from app.tools.catalog import get_local_tool_specs
 from app.tools.context import ToolInvocationContext
 from app.tools.knowledge_base import search_knowledge_base
-from app.tools.schemas import SearchKnowledgeBaseArgs, SearchKnowledgeBaseOutput
+from app.tools.schemas import GetChunkTextArgs, SearchKnowledgeBaseArgs, SearchKnowledgeBaseOutput
 from tests.support.agent_runtime import FakeToolCallingModel, build_agent_harness
 from tests.support.local_tools import local_tools
 
@@ -114,6 +115,32 @@ def _evidence(model, round_index, call_id):
     assert payload["governance"]["decision"] == "allow"
     assert set(payload["output"]) == {"query", "count", "evidence"}
     return payload["output"]
+
+
+@pytest.mark.asyncio
+async def test_search_tool_message_separates_evidence_id_from_chunk_locator(
+    monkeypatch, settings_factory, retrieval,
+):
+    """q054 合同回归：已读取的正文可直接回答，两个 ID 不可互换。"""
+    search, cross_encoder = retrieval
+    search.side_effect = None
+    search.return_value = [{
+        "text": "通知书由学院送达学生本人。",
+        "metadata": {"chunk_id": 382, "source_id": "academic-warning", "position": 2},
+    }]
+    cross_encoder.predict.return_value = [0.9]
+    model = FakeToolCallingModel([
+        _search("学业警示 通知书 模板"), _grounded_answer("通知书由学院送达学生本人。"),
+    ])
+    output, _, _ = await _invoke(monkeypatch, model, settings_factory)
+    document = _evidence(model, 1, "search-a")["evidence"][0]
+    assert document["id"].startswith("knowledge_base:")
+    assert document["page_content"] == "通知书由学院送达学生本人。"
+    with pytest.raises(ValidationError):
+        GetChunkTextArgs(chunk_id=document["id"])
+    assert GetChunkTextArgs(chunk_id=document["metadata"]["chunk_id"]).chunk_id == 382
+    assert output["result"]["status"] == "OK"
+    assert output["result"]["references"][0]["reference_id"] == document["id"]
 
 
 @pytest.mark.asyncio

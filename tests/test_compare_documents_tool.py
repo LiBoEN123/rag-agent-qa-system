@@ -194,7 +194,7 @@ def test_search_get_chunk_and_compare_share_identity(
 ):
     chunks, _ = compare_retrieval
     chunk = chunks[1]
-    chunk["metadata"]["chunk_id"] = 0
+    chunk["metadata"]["chunk_id"] = 382
     if source_id:
         chunk["metadata"]["source_id"] = source_id
     else:
@@ -202,12 +202,12 @@ def test_search_get_chunk_and_compare_share_identity(
     original = deepcopy(chunks)
     monkeypatch.setattr(pipeline, "search_relevant_chunks", lambda query, top_k: [deepcopy(chunk)])
     search = invoke_local_tool(tool_registry, "search_knowledge_base", {"query": "修读年限", "top_k": 1})
-    lookup = invoke_local_tool(tool_registry, "get_chunk_text", {"chunk_id": "0"})
+    lookup = invoke_local_tool(tool_registry, "get_chunk_text", {"chunk_id": 382})
     compare = invoke_local_tool(tool_registry, "compare_documents", _compare_args())
     assert search["ok"] is lookup["ok"] is compare["ok"] is True
     documents = [result["output"]["evidence"][0] for result in (search, lookup, compare)]
     assert len({doc["id"] for doc in documents}) == 1
-    assert all(doc["metadata"]["chunk_id"] == 0 for doc in documents)
+    assert all(doc["metadata"]["chunk_id"] == 382 for doc in documents)
     assert all(doc["page_content"] == chunk["text"] for doc in documents)
     assert "comparison_side" not in documents[0]["metadata"]
     assert "comparison_side" not in documents[1]["metadata"]

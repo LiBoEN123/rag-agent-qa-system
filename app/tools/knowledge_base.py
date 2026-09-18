@@ -30,7 +30,7 @@ def list_documents() -> dict:
         return tool_error(tool_name, tool_input, str(exc))
 
 
-def get_chunk_text(chunk_id: int | str) -> dict:
+def get_chunk_text(chunk_id: int) -> dict:
     """按 chunk 编号读取完整文本并包装为标准工具结果。"""
     tool_name = "get_chunk_text"
     tool_input = {"chunk_id": chunk_id}
@@ -39,16 +39,19 @@ def get_chunk_text(chunk_id: int | str) -> dict:
 
         chunk = get_chunk_full_text(chunk_id)
         if not chunk.get("found"):
-            return tool_error(
-                tool_name,
-                tool_input,
-                f"未找到 chunk_id={chunk_id} 的 chunk，可能是知识库未初始化或 chunk_id 不存在",
+            raise ToolExecutionError(
+                f"未找到 chunk_id={chunk_id}。get_chunk_text.chunk_id 必须使用知识库 "
+                "evidence 的 metadata.chunk_id，不要使用 Document.id。",
+                code=ToolErrorCode.INVALID_ARGUMENTS,
+                retryable=False,
             )
         return tool_success(
             tool_name,
             tool_input,
             {"count": 1, "evidence": [chunk_to_evidence_document(chunk)]},
         )
+    except ToolExecutionError:
+        raise
     except Exception as exc:
         return tool_error(tool_name, tool_input, str(exc))
 

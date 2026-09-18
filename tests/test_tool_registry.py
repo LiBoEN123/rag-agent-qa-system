@@ -64,7 +64,7 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
     for name, spec in specs_by_name.items():
         registered = next((item for item in tool_registry if item.name == name), None)
         assert registered is not None
-        assert spec["version"] == "1.0.0"
+        assert spec["version"] == ("1.1.0" if name == "get_chunk_text" else "1.0.0")
         assert spec["risk_level"] == "read_only"
         assert spec["required_permissions"] == expected_permissions[name]
         assert spec["timeout"] == expected_timeouts[name]
@@ -252,13 +252,13 @@ def test_search_knowledge_base_rejects_invalid_args_in_structured_tool(
         )
 
 
-@pytest.mark.parametrize("chunk_id", [0, 1, " chunk-abc "])
-def test_get_chunk_text_keeps_integer_and_string_ids(
+@pytest.mark.parametrize("chunk_id", [382, "382"])
+def test_get_chunk_text_passes_integer_locator_to_handler(
     monkeypatch,
     tool_registry,
     chunk_id,
 ):
-    """合法整数和字符串 ID 经 Schema 规范化后进入真实 handler。"""
+    """整数与数字字符串均以整数 locator 进入真实 handler。"""
     from app.rag import pipeline
 
     received = []
@@ -274,9 +274,10 @@ def test_get_chunk_text_keeps_integer_and_string_ids(
         tool_args={"chunk_id": chunk_id},
     )
 
-    expected = chunk_id.strip() if isinstance(chunk_id, str) else chunk_id
+    expected = 382
     assert result["ok"] is True
     assert received == [expected]
+    assert type(received[0]) is int
     assert result["tool_input"] == {"chunk_id": expected}
     assert result["output"]["count"] == 1
     document = result["output"]["evidence"][0]
@@ -293,7 +294,7 @@ def test_retrieval_and_real_chunk_lookup_share_identity_and_provenance(
     from app.rag import pipeline
 
     metadata = {
-        "chunk_id": 0, "source_path": "data/policy.pdf", "position": 2,
+        "chunk_id": 382, "source_path": "data/policy.pdf", "position": 2,
         "file_name": "policy.pdf", "file_type": "pdf", "page_number": 3,
         "document_uid": "document-policy", "title_path": "政策 > 申请",
         "block_id": "b9", "table_id": "t1", "row_start": 4, "row_end": 6,
@@ -310,7 +311,7 @@ def test_retrieval_and_real_chunk_lookup_share_identity_and_provenance(
     monkeypatch.setattr(pipeline, "rerank", lambda chunks, query: [{**chunk, **scores}])
 
     search = invoke_local_tool(tool_registry, "search_knowledge_base", {"query": "申请", "top_k": 1})
-    lookup = invoke_local_tool(tool_registry, "get_chunk_text", {"chunk_id": "0"})
+    lookup = invoke_local_tool(tool_registry, "get_chunk_text", {"chunk_id": 382})
     assert search["ok"] is lookup["ok"] is True
     retrieved = search["output"]["evidence"][0]
     fetched = lookup["output"]["evidence"][0]
@@ -391,15 +392,35 @@ def test_list_documents_output_model_accepts_current_preview_shape(
     assert result["output"] == {"count": 2, "documents": documents}
 
 
-@pytest.mark.parametrize("chunk_id", ["", "   "])
-def test_get_chunk_text_rejects_blank_string_in_structured_tool(tool_registry, chunk_id):
-    """空白字符串 ID 在提交 handler 前由 Pydantic 拒绝。"""
+@pytest.mark.parametrize("chunk_id", [0, -1, "", "   ", "abc", "knowledge_base:ef463ed6"])
+def test_get_chunk_text_rejects_invalid_locator_before_handler(monkeypatch, tool_registry, chunk_id):
+    """无效 locator 在提交 handler 前由 Pydantic 拒绝。"""
+    from unittest.mock import Mock
+
+    lookup = Mock(side_effect=AssertionError("invalid locator must not reach lookup"))
+    monkeypatch.setattr("app.rag.pipeline.get_chunk_full_text", lookup)
     with pytest.raises(ValidationError):
         invoke_local_tool(
             registry=tool_registry,
             tool_name="get_chunk_text",
             tool_args={"chunk_id": chunk_id},
         )
+    lookup.assert_not_called()
+
+
+def test_get_chunk_text_missing_locator_returns_invalid_arguments(monkeypatch, tool_registry):
+    from app.rag import pipeline
+
+    monkeypatch.setattr(pipeline, "RAG_READY", True)
+    monkeypatch.setattr(pipeline, "chunks", [{"text": "正文", "metadata": {"chunk_id": 382}}])
+    result = invoke_local_tool(tool_registry, "get_chunk_text", {"chunk_id": 999999})
+    assert result["ok"] is False
+    assert result["error_code"] == "invalid_arguments"
+    assert result["retryable"] is False
+    assert "999999" in result["error"]
+    assert "metadata.chunk_id" in result["error"]
+    assert "Document.id" in result["error"]
+    assert result["runtime"]["attempt_count"] == 1
 
 
 def test_invoke_local_tool_rejects_unknown_tool(tool_registry):

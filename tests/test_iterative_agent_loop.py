@@ -32,7 +32,7 @@ def isolate_tool_audit(settings_env, monkeypatch):
     settings_env(tool_audit_enabled=False)
     monkeypatch.setattr(
         "app.rag.pipeline.get_chunk_full_text",
-        lambda chunk_id: {"found": chunk_id != "missing", "chunk_id": chunk_id, "text": f"正文 {chunk_id}"},
+        lambda chunk_id: {"found": chunk_id != 999999, "chunk_id": chunk_id, "text": f"正文 {chunk_id}"},
     )
     yield
 
@@ -55,8 +55,8 @@ async def _invoke_graph(
     )
     return [state async for state in build_agent_harness(settings).astream(
         {
-            "original_question": "请读取 chunk-a",
-            "effective_question": "请读取 chunk-a",
+            "original_question": "请读取 chunk_id=382",
+            "effective_question": "请读取 chunk_id=382",
             "trace_id": "trace-loop",
             "session_id": "session-loop",
         },
@@ -116,7 +116,7 @@ async def test_agent_loop_returns_single_tool_message_to_model(monkeypatch):
                 tool_calls=[
                     {
                         "name": "get_chunk_text",
-                        "args": {"chunk_id": "chunk-a"},
+                        "args": {"chunk_id": 382},
                         "id": "chunk-call-1",
                         "type": "tool_call",
                     }
@@ -145,7 +145,7 @@ async def test_agent_loop_returns_single_tool_message_to_model(monkeypatch):
     assert payload["ok"] is True
     assert payload["status"] == "success"
     assert payload["output"]["count"] == 1
-    assert payload["output"]["evidence"][0]["page_content"] == "正文 chunk-a"
+    assert payload["output"]["evidence"][0]["page_content"] == "正文 382"
     assert payload["output"]["evidence"][0]["id"]
     assert payload["runtime"]["attempt_count"] == 1
     assert payload["tool_call_id"]
@@ -166,7 +166,7 @@ async def test_agent_loop_runs_two_sequential_tool_calls(monkeypatch):
                 tool_calls=[
                     {
                         "name": "get_chunk_text",
-                        "args": {"chunk_id": "chunk-a"},
+                        "args": {"chunk_id": 382},
                         "id": "chunk-seq-1",
                         "type": "tool_call",
                     }
@@ -177,7 +177,7 @@ async def test_agent_loop_runs_two_sequential_tool_calls(monkeypatch):
                 tool_calls=[
                     {
                         "name": "get_chunk_text",
-                        "args": {"chunk_id": "chunk-b"},
+                        "args": {"chunk_id": 383},
                         "id": "chunk-seq-2",
                         "type": "tool_call",
                     }
@@ -208,8 +208,8 @@ async def test_agent_loop_runs_two_sequential_tool_calls(monkeypatch):
         item["tool_args"]["chunk_id"]
         for item in output["result"]["tool_trace"] if "step_id" in item
     ] == [
-        "chunk-a",
-        "chunk-b",
+        382,
+        383,
     ]
     assert output["result"]["answer"] == "两个片段读取完成。"
 
@@ -224,13 +224,13 @@ async def test_agent_loop_executes_all_tool_calls_from_one_message(monkeypatch):
                 tool_calls=[
                     {
                         "name": "get_chunk_text",
-                        "args": {"chunk_id": "chunk-c"},
+                        "args": {"chunk_id": 384},
                         "id": "parallel-1",
                         "type": "tool_call",
                     },
                     {
                         "name": "get_chunk_text",
-                        "args": {"chunk_id": "chunk-d"},
+                        "args": {"chunk_id": 385},
                         "id": "parallel-2",
                         "type": "tool_call",
                     },
@@ -262,14 +262,14 @@ async def test_agent_loop_executes_all_tool_calls_from_one_message(monkeypatch):
         item["tool_args"]["chunk_id"]
         for item in output["result"]["tool_trace"] if "step_id" in item
     ] == [
-        "chunk-c",
-        "chunk-d",
+        384,
+        385,
     ]
 
 
 @pytest.mark.asyncio
 async def test_agent_loop_allows_model_to_correct_failed_tool_arguments(monkeypatch):
-    """普通执行错误作为结构化观察返回，模型可修改参数后继续。"""
+    """不存在的 locator 返回参数错误，模型可修正参数后继续。"""
     model = FakeToolCallingModel(
         [
             AIMessage(
@@ -277,7 +277,7 @@ async def test_agent_loop_allows_model_to_correct_failed_tool_arguments(monkeypa
                 tool_calls=[
                     {
                         "name": "get_chunk_text",
-                        "args": {"chunk_id": "missing"},
+                        "args": {"chunk_id": 999999},
                         "id": "bad-chunk",
                         "type": "tool_call",
                     }
@@ -288,7 +288,7 @@ async def test_agent_loop_allows_model_to_correct_failed_tool_arguments(monkeypa
                 tool_calls=[
                     {
                         "name": "get_chunk_text",
-                        "args": {"chunk_id": "chunk-a"},
+                        "args": {"chunk_id": 382},
                         "id": "fixed-chunk",
                         "type": "tool_call",
                     }
@@ -307,7 +307,9 @@ async def test_agent_loop_allows_model_to_correct_failed_tool_arguments(monkeypa
     first_payload = json.loads(first_tool_message.content)
     assert first_tool_message.status == "error"
     assert first_payload["ok"] is False
-    assert first_payload["error_code"] == "execution_error"
+    assert first_payload["error_code"] == "invalid_arguments"
+    assert first_payload["retryable"] is False
+    assert "metadata.chunk_id" in first_payload["error"]
     assert sum(
         bool(event.get("counted_call")) and not event.get("ok")
         for event in output["governance_events"]
@@ -333,7 +335,7 @@ async def test_agent_loop_stops_at_max_iterations(monkeypatch):
                 tool_calls=[
                     {
                         "name": "get_chunk_text",
-                        "args": {"chunk_id": "chunk-e"},
+                        "args": {"chunk_id": 386},
                         "id": "iteration-1",
                         "type": "tool_call",
                     }
@@ -344,7 +346,7 @@ async def test_agent_loop_stops_at_max_iterations(monkeypatch):
                 tool_calls=[
                     {
                         "name": "get_chunk_text",
-                        "args": {"chunk_id": "chunk-c"},
+                        "args": {"chunk_id": 384},
                         "id": "iteration-2",
                         "type": "tool_call",
                     }
@@ -382,7 +384,7 @@ async def test_agent_loop_stops_before_exceeding_tool_call_budget(monkeypatch):
                 tool_calls=[
                     {
                         "name": "get_chunk_text",
-                        "args": {"chunk_id": "chunk-e"},
+                        "args": {"chunk_id": 386},
                         "id": "budget-1",
                         "type": "tool_call",
                     }
@@ -393,7 +395,7 @@ async def test_agent_loop_stops_before_exceeding_tool_call_budget(monkeypatch):
                 tool_calls=[
                     {
                         "name": "get_chunk_text",
-                        "args": {"chunk_id": "chunk-c"},
+                        "args": {"chunk_id": 384},
                         "id": "budget-2",
                         "type": "tool_call",
                     }
@@ -473,7 +475,7 @@ async def test_agent_loop_preserves_runtime_context_and_audit_chain(monkeypatch)
                 tool_calls=[
                     {
                         "name": "get_chunk_text",
-                        "args": {"chunk_id": "chunk-f"},
+                        "args": {"chunk_id": 387},
                         "id": "governed-chunk",
                         "type": "tool_call",
                     }
@@ -535,7 +537,7 @@ async def test_agent_loop_model_failure_after_tool_does_not_replay_tool(monkeypa
                 tool_calls=[
                     {
                         "name": "get_chunk_text",
-                        "args": {"chunk_id": "chunk-g"},
+                        "args": {"chunk_id": 388},
                         "id": "before-model-failure",
                         "type": "tool_call",
                     }

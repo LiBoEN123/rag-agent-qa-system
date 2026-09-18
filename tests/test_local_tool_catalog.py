@@ -17,6 +17,18 @@ def test_knowledge_tool_description_explains_candidate_evidence(settings_factory
         assert guidance in spec.description
 
 
+def test_chunk_lookup_publishes_integer_locator_contract(settings_factory):
+    tool = next(tool for tool in framework_tools.get_local_tools(settings_factory())
+                if tool.name == "get_chunk_text")
+    assert tool.project_spec.version == tool.metadata["tool_version"] == "1.1.0"
+    locator = tool.tool_call_schema.model_json_schema()["properties"]["chunk_id"]
+    assert locator["type"] == "integer"
+    assert locator["minimum"] == 1
+    assert "anyOf" not in locator
+    for guidance in ("Document.metadata.chunk_id", "不能使用 Document.id", "page_content", "完整"):
+        assert guidance in tool.description
+
+
 def test_catalog_caches_configuration_and_preserves_order(settings_factory):
     settings = settings_factory()
     changed = settings_factory(agent_max_total_cost_ms=60_000)

@@ -75,15 +75,15 @@ def test_compare_documents_args_normalizes_text_and_top_k():
     }
 
 
-def test_get_chunk_text_args_accepts_int_or_str():
+def test_get_chunk_text_args_parses_positive_integer_locator():
     assert GetChunkTextArgs(chunk_id=1).chunk_id == 1
-    assert GetChunkTextArgs(chunk_id=0).chunk_id == 0
-    assert GetChunkTextArgs(chunk_id=" chunk-abc ").chunk_id == "chunk-abc"
+    assert GetChunkTextArgs(chunk_id=382).chunk_id == 382
+    assert GetChunkTextArgs(chunk_id="382").chunk_id == 382
 
 
-@pytest.mark.parametrize("chunk_id", ["", "   "])
-def test_get_chunk_text_args_rejects_blank_string(chunk_id):
-    """字符串 chunk_id 必须在 trim 后仍非空。"""
+@pytest.mark.parametrize("chunk_id", [0, -1, "", "   ", "abc", "knowledge_base:ef463ed6"])
+def test_get_chunk_text_args_rejects_invalid_locator(chunk_id):
+    """拒绝非正整数与 evidence identity。"""
     with pytest.raises(ValidationError):
         GetChunkTextArgs(chunk_id=chunk_id)
 

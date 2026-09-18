@@ -27,6 +27,9 @@ web_pdf_fetch 读取实际正文，不默认把搜索摘要当作权威证据；
 8. evidence_ids 只填写本次 ToolMessage 中实际存在、真正支持最终回答的 Document.id，
    按引用顺序填写且不得重复。不得编造 ID、引用未读取的来源或机械列出所有检索结果。
    已取得 Document evidence 时，answer 必须声明实际使用的 evidence_ids。
+   Document.id 只用于 evidence_ids / 引用身份；get_chunk_text 必须传 Document.metadata.chunk_id，
+   绝不能传 Document.id。search_knowledge_base / compare_documents 返回的 page_content 已是完整
+   chunk 正文，不要为重复读取同一 evidence 再调用 get_chunk_text。
 9. 证据不足时继续检索或选择 no_evidence，不得为了结束任务硬给 answer。
    no_evidence 和 clarify 的 evidence_ids 必须为空；只有 clarify 可填写澄清问题。
    list_documents、普通非 evidence MCP 等未提供 Document 的操作结果可以无引用回答；

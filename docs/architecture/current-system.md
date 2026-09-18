@@ -280,6 +280,9 @@ Document 承载正文；工具运行时继续通过现有 Pydantic `model_valida
   内容或页范围变化会改变 ID。PDF 仍以一个页范围对应一个 Document，保留 `[Page N]` 标记。
 - `get_chunk_text` 输出 `count=1` 与单项 evidence；Web/PDF 保留资源诊断及来源字段，
   删除顶层 content，正文只在 Document.page_content 中出现一次。
+  `get_chunk_text` v1.1.0 只接受来自 `Document.metadata.chunk_id` 的正整数 locator
+  （数字字符串可解析为整数），不能传 `Document.id`；不存在的 locator 返回
+  `invalid_arguments` 且不可重试。Search/Compare 已返回完整 chunk 正文，通常无需重复读取。
 - `web_search` 仍用于发现候选 URL；需要正文依据时优先 fetch，按问题需要决定是否读取。
   `list_documents` 仍是目录。Document.id 只是证据身份，不代表最终回答实际引用。
 

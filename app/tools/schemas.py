@@ -3,7 +3,7 @@
 使用 Pydantic 定义并校验各内置工具接收的结构化参数和稳定输出。
 """
 
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from langchain_core.documents import Document
@@ -72,9 +72,13 @@ class GetChunkTextArgs(BaseModel):
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    chunk_id: int | Annotated[str, Field(min_length=1)] = Field(
+    chunk_id: int = Field(
         ...,
-        description="要查看的 chunk_id",
+        ge=1,
+        description=(
+            "知识库运行时 chunk locator；必须使用 Document.metadata.chunk_id，"
+            "不能使用 Document.id / evidence id。"
+        ),
     )
 
 
