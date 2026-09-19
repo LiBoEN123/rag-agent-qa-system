@@ -137,6 +137,8 @@ def test_tool_contracts_use_model_facing_json_schema(
 
     assert {tool["name"] for tool in tools} == {
         "search_knowledge_base",
+        "find_documents",
+        "search_document",
         "web_search",
         "web_fetch",
         "web_pdf_fetch",
@@ -150,6 +152,8 @@ def test_tool_contracts_use_model_facing_json_schema(
     assert all(tool["risk_level"] == "read_only" for tool in tools)
     assert report["default_visible_tools"] == [
         "search_knowledge_base",
+        "find_documents",
+        "search_document",
         "compare_documents",
         "list_documents",
         "get_chunk_text",
@@ -183,12 +187,12 @@ def test_tool_contracts_use_model_facing_json_schema(
 
 
 def test_all_local_framework_tool_schemas_match_registry_contract(settings_factory):
-    """全部七个 Local Tool 保持名称、描述、字段、required 与类型不变。"""
+    """全部九个 Local Tool 保持名称、描述、字段、required 与类型不变。"""
     settings = _knowledge_only(settings_factory, "web:search", "web:fetch")
     registry = get_local_tool_specs(settings)
     tools = get_local_tools(settings)
 
-    assert len(tools) == 7
+    assert len(tools) == 9
     for tool in tools:
         spec = next((item for item in registry if item.name == tool.name), None)
         assert spec is not None

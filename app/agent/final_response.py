@@ -7,6 +7,7 @@ from langchain_core.documents import Document
 from langchain_core.messages import ToolMessage
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.contracts.chat import RAG_EVIDENCE_TOOL_NAMES
 from app.rag.retrieval import make_snippet
 from app.rag.scoring import safe_float
 from app.tools.evidence import validate_evidence_documents
@@ -40,10 +41,7 @@ class FinalAgentResponse(BaseModel):
         return self
 
 
-_EVIDENCE_TOOLS = frozenset({
-    "search_knowledge_base", "get_chunk_text", "web_fetch", "web_pdf_fetch",
-    "compare_documents",
-})
+_EVIDENCE_TOOLS = RAG_EVIDENCE_TOOL_NAMES | frozenset({"web_fetch", "web_pdf_fetch"})
 
 
 def collect_evidence_from_messages(messages: object) -> dict[str, Document]:

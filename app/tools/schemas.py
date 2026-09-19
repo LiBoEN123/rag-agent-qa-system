@@ -67,6 +67,31 @@ class CompareDocumentsArgs(BaseModel):
     top_k: int = Field(default=3, ge=1, le=10, description="每个文档返回的证据数量")
 
 
+class FindDocumentsArgs(BaseModel):
+    """按主题发现知识库文档，只搜索目录元数据。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    query: str = Field(..., min_length=1, max_length=500, description="文档名称或主题关键词")
+    limit: int = Field(default=5, ge=1, le=10, description="最多返回的候选文档数量")
+
+
+class SearchDocumentArgs(BaseModel):
+    """在一个明确定位的知识库文档中检索正文。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    document: str = Field(
+        ..., min_length=1,
+        description=(
+            "优先使用 find_documents 返回的 source_id / document_uid；"
+            "也允许唯一匹配的完整 file_name 或去扩展名后的完整名称，不接受模糊文档名。"
+        ),
+    )
+    query: str = Field(..., min_length=1, description="该文档内的问题或检索查询")
+    top_k: int = Field(default=5, ge=1, le=10, description="返回该文档的候选 chunk 数量")
+
+
 class GetChunkTextArgs(BaseModel):
     """get_chunk_text 工具参数。"""
 
@@ -130,6 +155,45 @@ class CompareDocumentsOutput(BaseModel):
         if self.count != self.doc_a_count + self.doc_b_count:
             raise ValueError("count 必须等于 doc_a_count + doc_b_count")
         return self
+
+
+class DocumentSearchItem(BaseModel):
+    """来自已加载 chunk metadata 的文档目录信息，不包含正文。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str = Field(..., min_length=1)
+    document_uid: str | None = None
+    file_name: str
+    source_uri: str | None = None
+    source_path: str | None = None
+    file_type: str | None = None
+    source_type: str | None = None
+    chunk_count: int = Field(..., ge=1)
+    score: float = Field(default=0.0, ge=0, allow_inf_nan=False, description="确定性匹配分数，非概率")
+
+
+class FindDocumentsOutput(BaseModel):
+    """文档发现结果，不参与正文 evidence transport。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(..., min_length=1, max_length=500)
+    count: int = Field(..., ge=0, le=10)
+    documents: list[DocumentSearchItem]
+
+    @model_validator(mode="after")
+    def validate_document_count(self) -> "FindDocumentsOutput":
+        if self.count != len(self.documents):
+            raise ValueError("count 必须等于 documents 数量")
+        return self
+
+
+class SearchDocumentOutput(SearchKnowledgeBaseOutput):
+    """复用知识库 evidence 校验与数量约束，并明确本次硬范围。"""
+
+    document: str = Field(..., min_length=1)
+    source_id: str = Field(..., min_length=1)
 
 
 class ListDocumentsOutput(BaseModel):

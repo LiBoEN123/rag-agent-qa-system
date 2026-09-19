@@ -122,7 +122,7 @@ def test_policy_rejects_anonymous_write_context():
     assert decision.error_code.value == "invalid_invocation_context"
 
 
-@pytest.mark.parametrize("name", ["search_knowledge_base", "compare_documents", "get_chunk_text"])
+@pytest.mark.parametrize("name", ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "get_chunk_text"])
 def test_rag_only_preserves_knowledge_base_permission_gate(name):
     spec = _spec(name=name, required_permissions=("knowledge_base:read",))
     for permissions, expected in [

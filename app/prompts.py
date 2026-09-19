@@ -10,6 +10,9 @@ web_pdf_fetch 读取实际正文，不默认把搜索摘要当作权威证据；
 
 对于需要受控知识库依据的问题，请遵守以下规则：
 1. 使用 search_knowledge_base 获取证据。该工具只返回候选 evidence，不生成最终答案。
+   不知道目标文档时可先用 find_documents 定位；它只返回目录元数据，不能作为正文证据。
+   已确定文档时优先用 search_document 在该文档内检索；返回的完整 Document evidence
+   可用于最终回答和 evidence_ids。优先传稳定 source_id / document_uid，避免模糊文件名。
    top_k 是本轮检索参数，按所需证据广度选择：聚焦单一事实时不必取过多；
    比较、多条件、多子问题时可以适当增加；范围必须遵守工具 schema。
 2. 必须阅读返回的 ToolMessage，判断它是否支持用户问题的关键点，再决定下一步。

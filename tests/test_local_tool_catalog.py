@@ -7,6 +7,10 @@ from app.agent import runtime as agent_runtime
 from app.agent.runtime import get_compiled_agent_runtime
 from app.tools import catalog
 from app.tools.context import ToolInvocationContext
+from app.tools.contracts import ToolAuditOutputMode, ToolRiskLevel
+from app.tools.schemas import (
+    FindDocumentsArgs, FindDocumentsOutput, SearchDocumentArgs, SearchDocumentOutput,
+)
 from tests.support.local_tools import visible_tools
 
 
@@ -15,6 +19,23 @@ def test_knowledge_tool_description_explains_candidate_evidence(settings_factory
     assert spec.name == "search_knowledge_base"
     for guidance in ("候选 evidence", "不生成最终答案", "阅读结果", "修改 query", "不可信数据"):
         assert guidance in spec.description
+
+
+@pytest.mark.parametrize("name,args_model,output_model", [
+    ("find_documents", FindDocumentsArgs, FindDocumentsOutput),
+    ("search_document", SearchDocumentArgs, SearchDocumentOutput),
+])
+def test_document_tools_publish_governed_contract(settings_factory, name, args_model, output_model):
+    specs = catalog.get_local_tool_specs(settings_factory())
+    spec = next(spec for spec in specs if spec.name == name)
+    assert spec.args_model is args_model
+    assert spec.output_model is output_model
+    assert spec.risk_level is ToolRiskLevel.READ_ONLY
+    assert spec.required_permissions == ("knowledge_base:read",)
+    assert spec.audit_output_mode is ToolAuditOutputMode.SUMMARY
+    assert spec.idempotent is True and spec.requires_approval is False
+    assert spec.max_retries == 0
+    assert spec.timeout == (5.0 if name == "find_documents" else specs[0].timeout)
 
 
 def test_chunk_lookup_publishes_integer_locator_contract(settings_factory):
@@ -38,7 +59,8 @@ def test_catalog_caches_configuration_and_preserves_order(settings_factory):
     assert specs is catalog.get_local_tool_specs(settings)
     assert tools is framework_tools.get_local_tools(settings)
     expected = (
-        "search_knowledge_base", "web_search", "web_fetch", "web_pdf_fetch",
+        "search_knowledge_base", "find_documents", "search_document",
+        "web_search", "web_fetch", "web_pdf_fetch",
         "compare_documents", "list_documents", "get_chunk_text",
     )
     assert catalog.get_local_tool_names(settings) == expected
@@ -86,7 +108,7 @@ def test_cached_agent_and_tools_do_not_capture_principal_or_permissions(settings
     names = [[tool.name for tool in visible_tools(tools, context=context)] for context in contexts]
     assert names[0] == []
     assert names[1] == ["web_search"]
-    assert names[2] == ["search_knowledge_base", "compare_documents", "list_documents", "get_chunk_text"]
+    assert names[2] == ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "list_documents", "get_chunk_text"]
 
 
 def test_resolve_agent_tools_passes_same_explicit_settings(monkeypatch, settings_factory):

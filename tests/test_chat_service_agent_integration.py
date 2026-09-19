@@ -384,7 +384,7 @@ def test_chat_service_returns_kb_evidence_to_agent_with_request_tool_mode(monkey
     search.assert_called_once_with("学习年限", top_k=8)
     rerank.assert_called_once_with([], "学习年限")
     if tool_mode is ToolMode.RAG_ONLY:
-        assert model.bound_tool_names == ["search_knowledge_base", "compare_documents", "get_chunk_text", model.structured_tool_name]
+        assert model.bound_tool_names == ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "get_chunk_text", model.structured_tool_name]
     else:
         assert {"search_knowledge_base", "web_search", "compare_documents"} <= set(model.bound_tool_names)
 

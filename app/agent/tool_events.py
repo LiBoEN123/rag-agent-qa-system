@@ -24,14 +24,18 @@ def summarize_tool_result(tool_name: str, tool_result: dict[str, Any]) -> str:
     if summary:
         return str(summary)
 
+    output = tool_result.get("output")
+    count = output.get("count", 0) if isinstance(output, dict) else 0
+    if tool_name == "find_documents":
+        return f"文档发现完成，找到 {count} 份候选文档"
+    if tool_name == "search_document":
+        return f"文档内检索完成，召回 {count} 个 chunk"
     summaries = {
         "compare_documents": "双文档证据检索完成",
         "list_documents": "文档列表工具执行完成",
         "get_chunk_text": "chunk 原文工具执行完成",
     }
     if tool_name == "search_knowledge_base":
-        output = tool_result.get("output")
-        count = output.get("count", 0) if isinstance(output, dict) else 0
         return f"检索到 {count} 个候选 chunk"
     return summaries.get(tool_name, f"{tool_name} 工具执行完成")
 
