@@ -319,9 +319,17 @@ def inspect_runtime(
             "stream Runtime directly consumes create_agent.astream",
         ),
         _check(
-            "rag_graph_is_tool_owned",
-            "run_rag_subgraph(" in knowledge_source,
-            "knowledge base tool invokes independent RAG graph",
+            "knowledge_tool_is_retrieval_only",
+            "search_relevant_chunks(query, top_k=top_k)" in knowledge_source
+            and "rerank(candidates, query)[:top_k]" in knowledge_source,
+            "knowledge base tool reuses hybrid retrieval and rerank",
+        ),
+        _check(
+            "knowledge_success_returns_to_agent",
+            "knowledge_base_result" not in agent_source
+            and "rag_result" not in results_source
+            and "search_knowledge_base" not in middleware_source,
+            "successful KB evidence returns through the ordinary ToolMessage loop",
         ),
         _check(
             "local_tool_execution_entry_is_unique",
@@ -386,11 +394,6 @@ def inspect_runtime(
         *(
             _check(name, passed, name.replace("_", " "))
             for name, passed in module_boundaries.items()
-        ),
-        _check(
-            "sql_tools_disabled_by_default",
-            resolved_settings.sql_tool_enabled is False,
-            "SQL tools remain opt-in",
         ),
         _check(
             "mcp_disabled_by_default",

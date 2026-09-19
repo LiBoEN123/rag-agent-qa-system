@@ -67,7 +67,6 @@ def collect_trace_metrics(result: dict) -> dict:
     tool_name = ""
     route_cost_ms = 0
     real_tools = {
-        "simple_calculator",
         "list_documents",
         "get_chunk_text",
         "web_search",

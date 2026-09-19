@@ -282,9 +282,6 @@ def build_summary(
         "router_llm_used_count": sum(
             to_bool(row.get("router_llm_used")) for row in metric_rows
         ),
-        "decompose_llm_used_count": sum(
-            to_bool(row.get("decompose_llm_used")) for row in metric_rows
-        ),
         "answer_llm_used_count": sum(
             to_bool(row.get("answer_llm_used")) for row in metric_rows
         ),
@@ -339,7 +336,6 @@ def render_report(
     lines.append(f"- 工具调用失败次数：{summary['tool_failure_count']}")
     lines.append(f"- 平均引用数：{summary['avg_reference_count']:.2f}")
     lines.append(f"- Router LLM 使用次数：{summary['router_llm_used_count']}")
-    lines.append(f"- Decompose LLM 使用次数：{summary['decompose_llm_used_count']}")
     lines.append(f"- Answer LLM 使用次数：{summary['answer_llm_used_count']}")
     lines.append(f"- LLM 调用总数：{summary['total_llm_call_count']}")
     lines.append(f"- 平均 LLM 调用数：{summary['avg_llm_call_count']:.2f}")

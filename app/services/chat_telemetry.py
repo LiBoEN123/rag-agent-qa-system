@@ -13,25 +13,13 @@ from app.services.chat_stream_models import ChatStreamEvent
 
 logger = get_logger("chat_service")
 
-_TIMING_METRIC_KEYS = (
-    "retrieve_cost_ms",
-    "decompose_cost_ms",
-    "rerank_cost_ms",
-    "retrieve_with_sub_queries_cost_ms",
-    "context_build_cost_ms",
-    "llm_cost_ms",
-    "parse_cost_ms",
-    "rag_answer_cost_ms",
-)
-
-
 def build_initial_chat_metrics(
     context: ChatRequestContext,
     *,
     request_enter_time: str,
     queue_wait_ms: int,
 ) -> dict[str, Any]:
-    """构造与现有 JSONL 字段兼容的初始聊天指标。"""
+    """构造生产 Agent Chat 的初始指标。"""
     question_len = len(context.original_question)
     return {
         "trace_id": context.request.trace_id,
@@ -43,14 +31,6 @@ def build_initial_chat_metrics(
         "total_cost_ms": 0,
         "route_cost_ms": 0,
         "agent_cost_ms": 0,
-        "retrieve_cost_ms": 0,
-        "decompose_cost_ms": 0,
-        "rerank_cost_ms": 0,
-        "retrieve_with_sub_queries_cost_ms": 0,
-        "context_build_cost_ms": 0,
-        "llm_cost_ms": 0,
-        "parse_cost_ms": 0,
-        "rag_answer_cost_ms": 0,
         "status": "internal_error",
         "question_len": question_len,
         "reference_count": 0,
@@ -59,7 +39,6 @@ def build_initial_chat_metrics(
         "tool_success": False,
         "tool_name": "",
         "router_llm_used": False,
-        "decompose_llm_used": False,
         "answer_llm_used": False,
         "llm_call_count": 0,
         "query_rewrite_used": False,
@@ -140,7 +119,7 @@ def apply_result_metrics(
     trace_metrics: Mapping[str, Any],
     policy: ChatStatusPolicy,
 ) -> None:
-    """直接读取 Result usage/timings，另合入 trace 独有指标。"""
+    """直接读取 Result usage，另合入 trace 独有指标。"""
     metrics["status"] = policy.metric_status
     metrics["reference_count"] = len(result.get("references") or [])
     for key in (
@@ -153,14 +132,10 @@ def apply_result_metrics(
         metrics[key] = trace_metrics[key]
     for key in (
         "router_llm_used",
-        "decompose_llm_used",
         "answer_llm_used",
         "llm_call_count",
     ):
         metrics[key] = result[key]
-    timings = result["timings"]
-    for timing_key in _TIMING_METRIC_KEYS:
-        metrics[timing_key] = int((timings.get(timing_key, 0) or 0))
     metrics["action"] = result.get("action", "")
     metrics["reason"] = result.get("reason") or policy.default_reason
 
@@ -319,8 +294,7 @@ def finalize_chat_telemetry(
     logger.info(
         "[trace_id=%s] [chat] process_end status=%s queue_wait_ms=%s "
         "latency_ms=%s total_cost_ms=%s route_cost_ms=%s "
-        "agent_cost_ms=%s retrieve_cost_ms=%s decompose_cost_ms=%s "
-        "rerank_cost_ms=%s llm_cost_ms=%s llm_call_count=%s "
+        "agent_cost_ms=%s llm_call_count=%s "
         "query_rewrite_used=%s query_rewrite_llm_used=%s "
         "effective_question_len=%s",
         context.request.trace_id,
@@ -330,10 +304,6 @@ def finalize_chat_telemetry(
         context.metrics.get("total_cost_ms"),
         context.metrics.get("route_cost_ms"),
         context.metrics.get("agent_cost_ms"),
-        context.metrics.get("retrieve_cost_ms"),
-        context.metrics.get("decompose_cost_ms"),
-        context.metrics.get("rerank_cost_ms"),
-        context.metrics.get("llm_cost_ms"),
         context.metrics.get("llm_call_count"),
         context.metrics.get("query_rewrite_used"),
         context.metrics.get("query_rewrite_llm_used"),

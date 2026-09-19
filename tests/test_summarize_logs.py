@@ -39,7 +39,7 @@ def test_summary_uses_current_status_and_llm_fields():
     assert summary["refuse_count"] == 1
     assert summary["avg_reference_count"] == 1
     assert summary["router_llm_used_count"] == 0
-    assert summary["decompose_llm_used_count"] == 1
+    assert "decompose_llm_used_count" not in summary
     assert summary["answer_llm_used_count"] == 1
     assert summary["total_llm_call_count"] == 2
     assert summary["error_type_counter"] == {"clarification": 1}

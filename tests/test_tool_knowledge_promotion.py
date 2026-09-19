@@ -190,12 +190,13 @@ def _stream_agent(
     return state, json.loads(message.content), event, calls
 
 
-def test_local_calculator_and_non_opted_mcp_remain_ephemeral(
+def test_local_documents_and_non_opted_mcp_remain_ephemeral(
     monkeypatch, settings_factory
 ):
     settings = settings_factory()
-    calculator = next(
-        tool for tool in get_local_tools(settings) if tool.name == "simple_calculator"
+    monkeypatch.setattr("app.rag.pipeline.preview_docs", lambda: [])
+    documents_tool = next(
+        tool for tool in get_local_tools(settings) if tool.name == "list_documents"
     )
     model = FakeAgentModel(
         [
@@ -203,24 +204,24 @@ def test_local_calculator_and_non_opted_mcp_remain_ephemeral(
                 content="",
                 tool_calls=[
                     {
-                        "name": calculator.name,
-                        "args": {"expression": "1+1"},
-                        "id": "calc",
+                        "name": documents_tool.name,
+                        "args": {},
+                        "id": "list",
                         "type": "tool_call",
                     }
                 ],
             ),
-            AIMessage(content="2"),
+            AIMessage(content="文档列表读取完成。"),
         ]
     )
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
-    graph = framework_agent.build_framework_agent(settings, tools=[calculator])
+    graph = framework_agent.build_framework_agent(settings, tools=[documents_tool])
     async def stream():
         states = [state async for state in graph.astream(
-            {"messages": [("user", "1+1")], "governance_events": []},
+            {"messages": [("user", "请列出知识库文档")], "governance_events": []},
             context=ToolInvocationContext(
                 principal_id="test",
-                permissions=("calculator:use",),
+                permissions=("knowledge_base:read",),
             ),
             stream_mode="values",
         )]

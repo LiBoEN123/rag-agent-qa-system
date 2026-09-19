@@ -18,7 +18,6 @@ __all__ = [
     "minmax_score",
     "rerank",
     "retrieve",
-    "retrieve_with_sub_queries",
     "search_relevant_chunks",
     "tokenize",
 ]
@@ -305,93 +304,6 @@ def retrieve(
         model=model,
         top_k=top_k,
     )
-
-def retrieve_with_sub_queries(
-    question,
-    sub_queries,
-    chunks,
-    bm25,
-    doc_embeddings,
-    model,
-    rerank_model,
-    per_query_top_k=10,
-    per_query_keep=2,
-    final_top_k=10
-):
-    """多子问题召回时，保护每个子问题的高质量命中，再做全局补足。"""
-    protected_chunks = {}
-    all_candidates = {}
-
-    # 原问题整体召回一次，保留全局语义。
-    global_candidates = retrieve(
-        question=question,
-        chunks=chunks,
-        bm25=bm25,
-        doc_embeddings=doc_embeddings,
-        model=model,
-        top_k=5
-    )
-
-    for item in global_candidates:
-        all_candidates[item["chunk_id"]] = item
-
-    # 每个子查询单独召回、单独 rerank。
-    for sub in sub_queries:
-        sub_question = sub["sub_question"]
-        search_query = sub["search_query"]
-
-        candidates = retrieve(
-            question=search_query,
-            chunks=chunks,
-            bm25=bm25,
-            doc_embeddings=doc_embeddings,
-            model=model,
-            top_k=per_query_top_k
-        )
-
-        for item in candidates:
-            all_candidates[item["chunk_id"]] = item
-
-        reranked = rerank(
-            candidates=candidates,
-            question=sub_question,
-            rerank_model=rerank_model
-        )
-
-        # 每个子问题至少保留 topN，避免某个子问题被全局排序完全挤掉。
-        for item in reranked[:per_query_keep]:
-            item["matched_sub_question"] = sub_question
-            item["protected"] = True
-            protected_chunks[item["chunk_id"]] = item
-
-    merged_candidates = list(all_candidates.values())
-
-    global_reranked = rerank(
-        candidates=merged_candidates,
-        question=question,
-        rerank_model=rerank_model
-    )
-
-    final = []
-    used_ids = set()
-
-    for item in protected_chunks.values():
-        final.append(item)
-        used_ids.add(item["chunk_id"])
-
-    for item in global_reranked:
-        if item["chunk_id"] not in used_ids:
-            item["protected"] = False
-            final.append(item)
-            used_ids.add(item["chunk_id"])
-
-        if len(final) >= final_top_k:
-            break
-
-    for rank, item in enumerate(final, start=1):
-        item["reference_id"] = f"Reference {rank}"
-
-    return final
 
 
 def search_relevant_chunks(

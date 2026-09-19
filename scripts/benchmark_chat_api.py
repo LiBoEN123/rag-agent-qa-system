@@ -117,7 +117,6 @@ async def send_request(
     case: dict[str, Any],
     concurrency: int,
     round_index: int,
-    top_k: int,
 ) -> dict[str, Any]:
     """发送单次请求，并统一传输层、HTTP 层和业务层失败分类。"""
     trace_id = f"benchmark-{uuid4()}"
@@ -136,7 +135,7 @@ async def send_request(
             client,
             "POST",
             chat_url,
-            json={"question": case["question"], "top_k": top_k},
+            json={"question": case["question"]},
             headers={"X-Trace-Id": trace_id},
         ) as source:
             http_status = source.response.status_code
@@ -238,7 +237,6 @@ async def run_concurrency_level(
     cases: list[dict[str, Any]],
     concurrency: int,
     repeats: int,
-    top_k: int,
 ) -> tuple[list[dict[str, Any]], float]:
     """用信号量限制并发，执行全部用例与重复轮次组合。"""
     # 任务可以一次创建，但同时在途的 HTTP 请求不会超过当前并发级别。
@@ -253,7 +251,6 @@ async def run_concurrency_level(
                 case=case,
                 concurrency=concurrency,
                 round_index=round_index,
-                top_k=top_k,
             )
 
     started = time.perf_counter()
@@ -330,7 +327,6 @@ async def run_benchmark(
     repeats: int,
     warmup: int,
     timeout: float,
-    top_k: int,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """复用一个异步客户端完成预热和各级并发的正式测量。"""
     chat_url = f"{base_url.rstrip('/')}/chat/stream"
@@ -350,7 +346,6 @@ async def run_benchmark(
                 case=cases[index % len(cases)],
                 concurrency=0,
                 round_index=index + 1,
-                top_k=top_k,
             )
         for concurrency in concurrency_levels:
             level_rows, duration = await run_concurrency_level(
@@ -359,7 +354,6 @@ async def run_benchmark(
                 cases=cases,
                 concurrency=concurrency,
                 repeats=repeats,
-                top_k=top_k,
             )
             rows.extend(level_rows)
             measured_seconds += duration
@@ -376,7 +370,6 @@ async def run_benchmark(
             "repeats": repeats,
             "warmup": warmup,
             "timeout_seconds": timeout,
-            "top_k": top_k,
             "by_concurrency": by_concurrency,
         }
     )
@@ -461,7 +454,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=120)
-    parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     return parser
 
@@ -472,8 +464,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.repeats < 1 or args.warmup < 0 or args.timeout <= 0:
         parser.error("repeats/timeout 必须大于 0，warmup 不能为负数")
-    if not 1 <= args.top_k <= 10:
-        parser.error("top-k 必须在 1 到 10 之间")
     cases = load_cases(args.cases)
     rows, summary = asyncio.run(
         run_benchmark(
@@ -483,7 +473,6 @@ def main(argv: list[str] | None = None) -> int:
             repeats=args.repeats,
             warmup=args.warmup,
             timeout=args.timeout,
-            top_k=args.top_k,
         )
     )
     write_outputs(args.output_dir, rows, summary)

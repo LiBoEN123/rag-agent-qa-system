@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
+from langchain_core.messages import AIMessage
+
+from app.agent.final_response import FinalAgentResponse
 from app.agent.results import (
     build_framework_agent_result,
     build_short_circuit_result,
@@ -12,6 +15,48 @@ from app.agent.results import (
 from app.agent.runtime import prepare_agent_runtime_invocation
 from app.config import AppSettings, get_settings
 from app.tools.context import ToolInvocationContext
+
+
+class FakeToolCallingModel:
+    """按顺序返回 AIMessage，并记录工具绑定和每轮完整输入。"""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.bound_tool_names: list[str] = []
+        self.bound_tools: list = []
+        self.binding_kwargs: dict[str, Any] = {}
+        self.structured_tool_name = ""
+        self.received_messages: list[list] = []
+
+    def bind_tools(self, tools, **kwargs):
+        self.bound_tools = list(tools)
+        self.bound_tool_names = [tool.name for tool in tools]
+        self.binding_kwargs = dict(kwargs)
+        self.structured_tool_name = next(
+            (tool.name for tool in tools
+             if tool.args_schema == FinalAgentResponse.model_json_schema()),
+            "",
+        )
+        return self
+
+    def final_response(self, **fields):
+        """使用本轮真实绑定的 schema/name；允许测试故意提交非法字段触发框架 retry。"""
+        assert self.structured_tool_name
+        return AIMessage(content="", tool_calls=[{
+            "name": self.structured_tool_name, "args": fields,
+            "id": f"final-{len(self.received_messages)}", "type": "tool_call",
+        }])
+
+    async def ainvoke(self, messages):
+        self.received_messages.append(list(messages))
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        if isinstance(response, FinalAgentResponse):
+            return self.final_response(**response.model_dump())
+        if callable(response):
+            return response(self, messages)
+        return response
 
 
 class AgentRuntimeHarness:
@@ -31,13 +76,6 @@ class AgentRuntimeHarness:
         context: ToolInvocationContext | None,
     ):
         return prepare_agent_runtime_invocation(
-            top_k=int(input_value.get("top_k", self.settings.top_k)),
-            decompose_top_k=int(
-                input_value.get(
-                    "decompose_top_k",
-                    self.settings.decompose_top_k,
-                )
-            ),
             trace_id=str(input_value.get("trace_id") or ""),
             session_id=input_value.get("session_id"),
             original_question=str(input_value.get("original_question") or ""),
@@ -101,8 +139,6 @@ class AgentRuntimeHarness:
             {
                 "original_question": "测试 Agent Runtime",
                 "effective_question": "测试 Agent Runtime",
-                "top_k": self.settings.top_k,
-                "decompose_top_k": self.settings.decompose_top_k,
             },
             None,
         )
@@ -117,4 +153,4 @@ def build_agent_harness(
     return AgentRuntimeHarness(settings)
 
 
-__all__ = ["AgentRuntimeHarness", "build_agent_harness"]
+__all__ = ["AgentRuntimeHarness", "FakeToolCallingModel", "build_agent_harness"]

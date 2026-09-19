@@ -4,8 +4,6 @@ from app.llm.errors import ModelCallError, StructuredOutputError
 from app.llm.factory import (
     clear_model_factory_cache,
     get_answer_model,
-    get_compare_model,
-    get_decompose_model,
     get_judge_model,
     get_query_rewrite_model,
 )
@@ -17,8 +15,6 @@ __all__ = [
     "StructuredOutputError",
     "clear_model_factory_cache",
     "get_answer_model",
-    "get_compare_model",
-    "get_decompose_model",
     "get_judge_model",
     "get_query_rewrite_model",
 ]

@@ -12,11 +12,12 @@ import argparse
 import asyncio
 import json
 import sys
+from collections import Counter
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterator
 
 from app.config import AppSettings, get_settings
 from scripts.evaluation.agent import run_agent_baseline
@@ -217,111 +218,43 @@ def validate_dataset(
     return dataset, coverage, tool_names
 
 
+def _summarize_prediction_failures(path: Path) -> dict[str, Any]:
+    """从生产者完整写出的安全 sidecar 汇总 case runtime failure。"""
+    with path.open(encoding="utf-8") as file:
+        statuses = Counter(json.loads(line)["status"] for line in file if line.strip())
+    return {
+        "prediction_failure_count": sum(statuses.values()),
+        "prediction_failure_status_counts": dict(statuses),
+    }
+
+
 def run_rag_baseline(
     *,
     rag_eval_path: Path,
     output_dir: Path,
-    top_k: int,
-    decompose_top_k: int,
+    retrieval_k: int,
     force_rebuild: bool,
     use_llm_judge: bool,
     judge_model: str | None,
 ) -> dict[str, Any]:
-    """复用 predictions 与语义 evaluator 的 Python 函数。"""
+    """生成生产 Agentic RAG 预测，K 仅作用于离线评分。"""
     from scripts.evaluation.rag_evaluator import run_rag_evaluation
-    from scripts.evaluation.rag_predictions import run_predictions
+    from scripts.evaluation.rag_predictions import PREDICTION_SCHEMA_VERSION, run_predictions
 
     rag_dir = output_dir / "rag"
     predictions_path = rag_dir / "predictions.csv"
-    prediction_rows = run_predictions(
-        eval_file=rag_eval_path,
-        out_file=predictions_path,
-        top_k=top_k,
-        decompose_top_k=decompose_top_k,
-        force_rebuild=force_rebuild,
-        fail_on_model_error=True,
+    rows = run_predictions(
+        eval_file=rag_eval_path, out_file=predictions_path, force_rebuild=force_rebuild,
     )
-    prediction_metadata = _prediction_metadata(prediction_rows)
-    validate_effective_rag_parameters(
-        requested_top_k=top_k,
-        requested_decompose_top_k=decompose_top_k,
-        prediction_metadata=prediction_metadata,
+    if any(row.get("prediction_schema_version") != PREDICTION_SCHEMA_VERSION for row in rows):
+        raise RuntimeError("RAG prediction requires Schema v3 records")
+    failure_summary = _summarize_prediction_failures(rag_dir / "prediction_failures.jsonl")
+    result = run_rag_evaluation(
+        eval_file=rag_eval_path, pred_file=predictions_path, out_dir=rag_dir,
+        k=retrieval_k, use_llm_judge=use_llm_judge, judge_model=judge_model,
     )
-    evaluation_result = run_rag_evaluation(
-        eval_file=rag_eval_path,
-        pred_file=predictions_path,
-        out_dir=rag_dir,
-        k=top_k,
-        use_llm_judge=use_llm_judge,
-        judge_model=judge_model,
-    )
-    return {
-        **evaluation_result,
-        "prediction_metadata": prediction_metadata,
-    }
-
-
-def _prediction_metadata(
-    rows: list[dict[str, Any]],
-) -> dict[str, int]:
-    """从逐题 v2 预测中提取一致的运行级有效参数。"""
-    if not rows:
-        raise RuntimeError("RAG prediction 没有产生任何记录")
-
-    def one_int(field: str) -> int:
-        values: set[int] = set()
-        for row in rows:
-            try:
-                values.add(int(row[field]))
-            except (KeyError, TypeError, ValueError) as exc:
-                raise RuntimeError(
-                    f"RAG prediction 缺少有效字段：{field}"
-                ) from exc
-        if len(values) != 1:
-            raise RuntimeError(
-                f"RAG prediction 字段在逐题间不一致：{field}={sorted(values)}"
-            )
-        return values.pop()
-
-    return {
-        "prediction_schema_version": one_int(
-            "prediction_schema_version"
-        ),
-        "effective_top_k": one_int("top_k"),
-        "effective_decompose_top_k": one_int("decompose_top_k"),
-    }
-
-
-def validate_effective_rag_parameters(
-    *,
-    requested_top_k: int,
-    requested_decompose_top_k: int,
-    prediction_metadata: Mapping[str, Any],
-) -> None:
-    """拒绝请求参数与实际预测参数不一致的正式 RAG 结果。"""
-    try:
-        effective_top_k = int(prediction_metadata["effective_top_k"])
-        effective_decompose_top_k = int(
-            prediction_metadata["effective_decompose_top_k"]
-        )
-    except (KeyError, TypeError, ValueError) as exc:
-        raise RuntimeError("RAG prediction 有效参数元数据不完整") from exc
-
-    mismatches = []
-    if requested_top_k != effective_top_k:
-        mismatches.append(
-            f"top_k requested={requested_top_k} effective={effective_top_k}"
-        )
-    if requested_decompose_top_k != effective_decompose_top_k:
-        mismatches.append(
-            "decompose_top_k "
-            f"requested={requested_decompose_top_k} "
-            f"effective={effective_decompose_top_k}"
-        )
-    if mismatches:
-        raise RuntimeError(
-            "RAG 评测参数合同不一致：" + "; ".join(mismatches)
-        )
+    result["summary"].update(failure_summary)
+    return result
 
 
 def _resolve_output_dir(
@@ -345,8 +278,7 @@ def _reproduce_command(args: argparse.Namespace, output_dir: Path) -> str:
         f"--agent-cases {args.agent_cases}",
         f"--rag-eval-file {args.rag_eval_file}",
         f"--output-dir {output_dir}",
-        f"--top-k {args.top_k}",
-        f"--decompose-top-k {args.decompose_top_k}",
+        f"--retrieval-k {args.retrieval_k}",
     ]
     if args.agent_only:
         parts.append("--agent-only")
@@ -386,8 +318,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--run-name", default=None)
-    parser.add_argument("--top-k", type=int, default=5)
-    parser.add_argument("--decompose-top-k", type=int, default=None)
+    parser.add_argument(
+        "--retrieval-k", type=int, default=5,
+        help="仅对 Agent 观察到的有序去重证据前 K 项评分，不控制工具 top_k",
+    )
     parser.add_argument("--validate-only", action="store_true")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--agent-only", action="store_true")
@@ -407,14 +341,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     settings = get_settings()
-    decompose_top_k = (
-        args.decompose_top_k
-        if args.decompose_top_k is not None
-        else settings.decompose_top_k
-    )
-    args.decompose_top_k = decompose_top_k
-    if args.top_k < 1 or decompose_top_k < 1:
-        parser.error("top-k 与 decompose-top-k 必须大于 0")
+    if args.retrieval_k < 1:
+        parser.error("retrieval-k 必须大于 0")
     dataset, coverage, tool_names = validate_dataset(
         args.agent_cases,
         settings,
@@ -482,30 +410,16 @@ def main(argv: list[str] | None = None) -> int:
                 )
             tool_catalog = build_tool_origin_catalog(mcp_catalog)
             rag_result: dict[str, Any] | None = None
-            effective_rag_parameters: dict[str, Any] = {
-                "prediction_schema_version": 2,
-                "effective_top_k": args.top_k,
-                "effective_decompose_top_k": decompose_top_k,
-            }
             if not args.agent_only:
                 rag_result = run_rag_baseline(
                     rag_eval_path=args.rag_eval_file,
                     output_dir=output_dir,
-                    top_k=args.top_k,
-                    decompose_top_k=decompose_top_k,
+                    retrieval_k=args.retrieval_k,
                     force_rebuild=args.force_rebuild,
                     use_llm_judge=args.use_llm_judge,
                     judge_model=args.judge_model,
                 )
                 rag_rows = rag_result["rows"]
-                effective_rag_parameters = dict(
-                    rag_result["prediction_metadata"]
-                )
-                validate_effective_rag_parameters(
-                    requested_top_k=args.top_k,
-                    requested_decompose_top_k=decompose_top_k,
-                    prediction_metadata=effective_rag_parameters,
-                )
                 rag_summary = {
                     **rag_result["summary"],
                     "metrics_source": (
@@ -520,8 +434,6 @@ def main(argv: list[str] | None = None) -> int:
                     include_online=args.include_online,
                     include_mcp=args.include_mcp,
                     include_mixed=args.include_mixed,
-                    top_k=args.top_k,
-                    decompose_top_k=decompose_top_k,
                     rag_already_initialized=rag_result is not None,
                     force_rebuild=(
                         args.force_rebuild and rag_result is None
@@ -554,8 +466,7 @@ def main(argv: list[str] | None = None) -> int:
             None if args.agent_only else args.rag_eval_file
         ),
         coverage_report=coverage,
-        top_k=args.top_k,
-        decompose_top_k=decompose_top_k,
+        retrieval_metric_k=args.retrieval_k,
         include_online=args.include_online,
         selected_suites=selected_suites,
         mcp_catalog=mcp_catalog,
@@ -566,7 +477,6 @@ def main(argv: list[str] | None = None) -> int:
         use_llm_judge=args.use_llm_judge,
         judge_model=args.judge_model or settings.judge_model,
         rag_status=rag_status,
-        effective_rag_parameters=effective_rag_parameters,
     )
     if manifest["code"]["git_dirty"] and not args.allow_dirty:
         parser.error("运行期间工作区变脏，拒绝写入正式 baseline")

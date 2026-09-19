@@ -1,7 +1,5 @@
 """迭代式 Agent Loop 的消息、工具治理和预算回归测试。"""
 
-from pydantic import RootModel
-
 import json
 
 import pytest
@@ -9,40 +7,34 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agent import framework_agent, framework_tools
 from app.agent.runtime import prepare_agent_runtime_invocation
+from app.agent.final_response import collect_evidence_from_messages
 from app.config import get_settings
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from tests.support.local_tools import local_tools
 from app.tools.result import tool_success
-from app.tools.schemas import SearchKnowledgeBaseArgs
-from tests.support.agent_runtime import build_agent_harness
+from app.tools.knowledge_base import chunk_to_evidence_document
+from app.tools.schemas import SearchKnowledgeBaseArgs, SearchKnowledgeBaseOutput
+from tests.support.agent_runtime import FakeToolCallingModel, build_agent_harness
+
+
+def _grounded_answer(text):
+    """显式声明此 fixture 实际收到的证据，通过框架结构化输出结束。"""
+    return lambda model, messages: model.final_response(
+        outcome="answer", answer=text,
+        evidence_ids=list(collect_evidence_from_messages(messages)),
+    )
 
 
 @pytest.fixture(autouse=True)
-def isolate_tool_audit(settings_env):
+def isolate_tool_audit(settings_env, monkeypatch):
     """Agent loop 测试不写生产工具审计文件。"""
     settings_env(tool_audit_enabled=False)
+    monkeypatch.setattr(
+        "app.rag.pipeline.get_chunk_full_text",
+        lambda chunk_id: {"found": chunk_id != 999999, "chunk_id": chunk_id, "text": f"正文 {chunk_id}"},
+    )
     yield
-
-
-class FakeToolCallingModel:
-    """按顺序返回 AIMessage，并记录工具绑定和每轮完整输入。"""
-
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self.bound_tool_names: list[str] = []
-        self.received_messages: list[list] = []
-
-    def bind_tools(self, tools):
-        self.bound_tool_names = [tool.name for tool in tools]
-        return self
-
-    async def ainvoke(self, messages):
-        self.received_messages.append(list(messages))
-        response = self.responses.pop(0)
-        if isinstance(response, Exception):
-            raise response
-        return response
 
 
 async def _invoke_graph(
@@ -63,10 +55,8 @@ async def _invoke_graph(
     )
     return [state async for state in build_agent_harness(settings).astream(
         {
-            "original_question": "请计算 1+2",
-            "effective_question": "请计算 1+2",
-            "top_k": 5,
-            "decompose_top_k": 10,
+            "original_question": "请读取 chunk_id=382",
+            "effective_question": "请读取 chunk_id=382",
             "trace_id": "trace-loop",
             "session_id": "session-loop",
         },
@@ -86,8 +76,6 @@ def test_initialize_agent_loop_state_uses_effective_question():
     invocation = prepare_agent_runtime_invocation(
         original_question="它什么时候开始？",
         effective_question="奖学金申请什么时候开始？",
-        top_k=5,
-        decompose_top_k=10,
         trace_id="trace-loop-init",
         session_id="session-loop-init",
     )
@@ -99,8 +87,8 @@ def test_initialize_agent_loop_state_uses_effective_question():
 
 @pytest.mark.asyncio
 async def test_agent_loop_answers_without_calling_tools(monkeypatch):
-    """模型首轮无 tool_calls 时直接经 Composer 与 Finalize 返回。"""
-    model = FakeToolCallingModel([AIMessage(content="直接回答")])
+    """模型首轮以 structured response 结束，不执行业务工具。"""
+    model = FakeToolCallingModel([_grounded_answer("直接回答")])
 
     output = await _invoke_graph(
         monkeypatch,
@@ -120,21 +108,21 @@ async def test_agent_loop_answers_without_calling_tools(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_agent_loop_returns_single_tool_message_to_model(monkeypatch):
-    """一次计算调用通过 Runtime 后，以关联 ToolMessage 进入第二轮。"""
+    """一次片段读取调用通过 Runtime 后，以关联 ToolMessage 进入第二轮。"""
     model = FakeToolCallingModel(
         [
             AIMessage(
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "1+2"},
-                        "id": "calc-call-1",
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": 382},
+                        "id": "chunk-call-1",
                         "type": "tool_call",
                     }
                 ],
             ),
-            AIMessage(content="计算结果是 3。"),
+            _grounded_answer("片段读取完成。"),
         ]
     )
 
@@ -144,11 +132,11 @@ async def test_agent_loop_returns_single_tool_message_to_model(monkeypatch):
     )
 
     assert len(model.received_messages) == 2
-    assert "simple_calculator" in model.bound_tool_names
+    assert "get_chunk_text" in model.bound_tool_names
     tool_message = model.received_messages[1][-1]
     assert isinstance(tool_message, ToolMessage)
-    assert tool_message.tool_call_id == "calc-call-1"
-    assert tool_message.name == "simple_calculator"
+    assert tool_message.tool_call_id == "chunk-call-1"
+    assert tool_message.name == "get_chunk_text"
     assert not (
         isinstance(tool_message.artifact, dict)
         and "_project_tool_governance" in tool_message.artifact
@@ -156,14 +144,16 @@ async def test_agent_loop_returns_single_tool_message_to_model(monkeypatch):
     payload = json.loads(tool_message.content)
     assert payload["ok"] is True
     assert payload["status"] == "success"
-    assert payload["output"]["result"] == 3
+    assert payload["output"]["count"] == 1
+    assert payload["output"]["evidence"][0]["page_content"] == "正文 382"
+    assert payload["output"]["evidence"][0]["id"]
     assert payload["runtime"]["attempt_count"] == 1
     assert payload["tool_call_id"]
     assert sum(
         bool(event.get("counted_call"))
         for event in output.get("governance_events", [])
     ) == 1
-    assert output["result"]["answer"] == "计算结果是 3。"
+    assert output["result"]["answer"] == "片段读取完成。"
 
 
 @pytest.mark.asyncio
@@ -175,9 +165,9 @@ async def test_agent_loop_runs_two_sequential_tool_calls(monkeypatch):
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "1+2"},
-                        "id": "calc-seq-1",
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": 382},
+                        "id": "chunk-seq-1",
                         "type": "tool_call",
                     }
                 ],
@@ -186,14 +176,14 @@ async def test_agent_loop_runs_two_sequential_tool_calls(monkeypatch):
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "3*4"},
-                        "id": "calc-seq-2",
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": 383},
+                        "id": "chunk-seq-2",
                         "type": "tool_call",
                     }
                 ],
             ),
-            AIMessage(content="两次计算结果分别是 3 和 12。"),
+            _grounded_answer("两个片段读取完成。"),
         ]
     )
 
@@ -203,11 +193,11 @@ async def test_agent_loop_runs_two_sequential_tool_calls(monkeypatch):
     )
 
     assert len(model.received_messages) == 3
-    assert model.received_messages[1][-1].tool_call_id == "calc-seq-1"
-    assert model.received_messages[2][-1].tool_call_id == "calc-seq-2"
+    assert model.received_messages[1][-1].tool_call_id == "chunk-seq-1"
+    assert model.received_messages[2][-1].tool_call_id == "chunk-seq-2"
     assert any(
         isinstance(message, ToolMessage)
-        and message.tool_call_id == "calc-seq-1"
+        and message.tool_call_id == "chunk-seq-1"
         for message in model.received_messages[2]
     )
     assert sum(
@@ -215,13 +205,13 @@ async def test_agent_loop_runs_two_sequential_tool_calls(monkeypatch):
         for event in output.get("governance_events", [])
     ) == 2
     assert [
-        item["output_summary"]["result"]
+        item["tool_args"]["chunk_id"]
         for item in output["result"]["tool_trace"] if "step_id" in item
     ] == [
-        3,
-        12,
+        382,
+        383,
     ]
-    assert output["result"]["answer"] == "两次计算结果分别是 3 和 12。"
+    assert output["result"]["answer"] == "两个片段读取完成。"
 
 
 @pytest.mark.asyncio
@@ -233,20 +223,20 @@ async def test_agent_loop_executes_all_tool_calls_from_one_message(monkeypatch):
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "2+2"},
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": 384},
                         "id": "parallel-1",
                         "type": "tool_call",
                     },
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "5*5"},
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": 385},
                         "id": "parallel-2",
                         "type": "tool_call",
                     },
                 ],
             ),
-            AIMessage(content="结果是 4 和 25。"),
+            _grounded_answer("两个片段读取完成。"),
         ]
     )
 
@@ -269,26 +259,26 @@ async def test_agent_loop_executes_all_tool_calls_from_one_message(monkeypatch):
         for event in output.get("governance_events", [])
     ) == 2
     assert [
-        item["output_summary"]["result"]
+        item["tool_args"]["chunk_id"]
         for item in output["result"]["tool_trace"] if "step_id" in item
     ] == [
-        4,
-        25,
+        384,
+        385,
     ]
 
 
 @pytest.mark.asyncio
 async def test_agent_loop_allows_model_to_correct_failed_tool_arguments(monkeypatch):
-    """普通执行错误作为结构化观察返回，模型可修改参数后继续。"""
+    """不存在的 locator 返回参数错误，模型可修正参数后继续。"""
     model = FakeToolCallingModel(
         [
             AIMessage(
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "1/0"},
-                        "id": "bad-calc",
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": 999999},
+                        "id": "bad-chunk",
                         "type": "tool_call",
                     }
                 ],
@@ -297,14 +287,14 @@ async def test_agent_loop_allows_model_to_correct_failed_tool_arguments(monkeypa
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "1+2"},
-                        "id": "fixed-calc",
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": 382},
+                        "id": "fixed-chunk",
                         "type": "tool_call",
                     }
                 ],
             ),
-            AIMessage(content="修正后结果是 3。"),
+            _grounded_answer("修正后片段读取完成。"),
         ]
     )
 
@@ -317,7 +307,9 @@ async def test_agent_loop_allows_model_to_correct_failed_tool_arguments(monkeypa
     first_payload = json.loads(first_tool_message.content)
     assert first_tool_message.status == "error"
     assert first_payload["ok"] is False
-    assert first_payload["error_code"] == "execution_error"
+    assert first_payload["error_code"] == "invalid_arguments"
+    assert first_payload["retryable"] is False
+    assert "metadata.chunk_id" in first_payload["error"]
     assert sum(
         bool(event.get("counted_call")) and not event.get("ok")
         for event in output["governance_events"]
@@ -330,7 +322,7 @@ async def test_agent_loop_allows_model_to_correct_failed_tool_arguments(monkeypa
         True,
     ]
     assert output["result"]["status"] == "OK"
-    assert output["result"]["answer"] == "修正后结果是 3。"
+    assert output["result"]["answer"] == "修正后片段读取完成。"
 
 
 @pytest.mark.asyncio
@@ -342,8 +334,8 @@ async def test_agent_loop_stops_at_max_iterations(monkeypatch):
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "1+1"},
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": 386},
                         "id": "iteration-1",
                         "type": "tool_call",
                     }
@@ -353,8 +345,8 @@ async def test_agent_loop_stops_at_max_iterations(monkeypatch):
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "2+2"},
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": 384},
                         "id": "iteration-2",
                         "type": "tool_call",
                     }
@@ -391,8 +383,8 @@ async def test_agent_loop_stops_before_exceeding_tool_call_budget(monkeypatch):
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "1+1"},
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": 386},
                         "id": "budget-1",
                         "type": "tool_call",
                     }
@@ -402,8 +394,8 @@ async def test_agent_loop_stops_before_exceeding_tool_call_budget(monkeypatch):
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "2+2"},
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": 384},
                         "id": "budget-2",
                         "type": "tool_call",
                     }
@@ -444,7 +436,7 @@ async def test_agent_loop_stops_after_forged_hidden_tool_permission_denial(monke
                     }
                 ],
             ),
-            AIMessage(content="hidden tool handled"),
+            _grounded_answer("hidden tool handled"),
         ]
     )
     denied_context = ToolInvocationContext(
@@ -482,14 +474,14 @@ async def test_agent_loop_preserves_runtime_context_and_audit_chain(monkeypatch)
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "6*7"},
-                        "id": "governed-calc",
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": 387},
+                        "id": "governed-chunk",
                         "type": "tool_call",
                     }
                 ],
             ),
-            AIMessage(content="结果是 42。"),
+            _grounded_answer("片段读取完成。"),
         ]
     )
     context = ToolInvocationContext(
@@ -544,8 +536,8 @@ async def test_agent_loop_model_failure_after_tool_does_not_replay_tool(monkeypa
                 content="",
                 tool_calls=[
                     {
-                        "name": "simple_calculator",
-                        "args": {"expression": "8+9"},
+                        "name": "get_chunk_text",
+                        "args": {"chunk_id": 388},
                         "id": "before-model-failure",
                         "type": "tool_call",
                     }
@@ -571,90 +563,41 @@ async def test_agent_loop_model_failure_after_tool_does_not_replay_tool(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_agent_selected_knowledge_search_keeps_rag_citation_path(
-    monkeypatch,
-):
-    """异步模型选择知识库检索后保留 RAG 引用路径。"""
-    model = FakeToolCallingModel(
-        [
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "search_knowledge_base",
-                        "args": {"query": "奖学金申请", "top_k": 5},
-                        "id": "rag-search-call",
-                        "type": "tool_call",
-                    }
-                ],
-            )
-        ]
+async def test_agent_selected_knowledge_search_returns_evidence_to_model(monkeypatch):
+    """知识库与普通工具相同，成功后模型读取 evidence 并回答。"""
+    model = FakeToolCallingModel([
+        AIMessage(content="", tool_calls=[{
+            "name": "search_knowledge_base",
+            "args": {"query": "奖学金申请", "top_k": 5},
+            "id": "knowledge-call", "type": "tool_call",
+        }]),
+        _grounded_answer("奖学金申请在九月开始。"),
+    ])
+    chunk = {"chunk_id": "chunk-1", "text": "奖学金申请在九月开始。"}
+    spec = ToolSpec(
+        name="search_knowledge_base", version="1.0.0",
+        description="从测试知识库检索证据",
+        output_model=SearchKnowledgeBaseOutput,
+        handler=lambda args, context: tool_success("search_knowledge_base", args, {
+            "query": args["query"], "count": 1,
+            "evidence": [chunk_to_evidence_document(chunk)],
+        }),
+        args_model=SearchKnowledgeBaseArgs,
+        required_permissions=("knowledge_base:read",),
     )
-    chunk = {
-        "chunk_id": "chunk-rag-1",
-        "text": "奖学金申请在九月开始。",
-        "file_name": "policy.md",
-    }
-    rag_calls = []
-
-    registry = []
-    registry.append(
-        ToolSpec(
-            name="search_knowledge_base",
-            version="1.0.0",
-            description="从测试知识库检索证据",
-            output_model=RootModel[dict],
-            handler=lambda args, context: tool_success(
-                "search_knowledge_base",
-                args,
-                {
-                    "count": 1,
-                    "chunks": [chunk],
-                    "rag_result": fake_rag_subgraph(
-                        question=context.effective_question,
-                        top_k=context.top_k,
-                        decompose_top_k=context.decompose_top_k,
-                        retrieved_chunks=[chunk],
-                        trace_id=context.trace_id,
-                    ),
-                },
-            ),
-            args_model=SearchKnowledgeBaseArgs,
-            required_permissions=("knowledge_base:read",),
-        )
-    )
-
-    def fake_rag_subgraph(**kwargs):
-        rag_calls.append(kwargs)
-        return {
-            "status": "OK",
-            "answer": "奖学金申请在九月开始。",
-            "references": [{"reference_id": "Reference 1"}],
-            "reason": "证据充分",
-            "decompose_llm_used": False,
-            "answer_llm_used": True,
-            "llm_call_count": 1,
-            "timings": {},
-            "retrieval_confidence": 0.9,
-            "answer_confidence": 0.8,
-        }
-
-    monkeypatch.setattr(
-        framework_tools,
-        "get_local_tools",
-        lambda settings: local_tools(registry),
-    )
+    monkeypatch.setattr(framework_tools, "get_local_tools", lambda settings: local_tools([spec]))
 
     output = await _invoke_graph(monkeypatch, model)
 
-    assert len(model.received_messages) == 1
-    assert len(rag_calls) == 1
-    assert rag_calls[0]["retrieved_chunks"] == [chunk]
-    assert output["result"]["status"] == "OK"
-    assert output["result"]["references"] == [
-        {"reference_id": "Reference 1"}
+    assert len(model.received_messages) == 2
+    message = model.received_messages[1][-1]
+    assert isinstance(message, ToolMessage)
+    assert message.tool_call_id == "knowledge-call"
+    assert json.loads(message.content)["output"]["evidence"] == [
+        chunk_to_evidence_document(chunk).model_dump(mode="json"),
     ]
-    assert any(
-        item.get("mode") == "rag"
-        for item in output["result"]["tool_trace"]
-    )
+    assert "knowledge_base_result" not in output
+    assert output["result"]["answer"] == "奖学金申请在九月开始。"
+    assert [ref["reference_id"] for ref in output["result"]["references"]] == [chunk_to_evidence_document(chunk).id]
+    assert output["result"]["llm_call_count"] == 2
+    assert output["result"]["tool_trace"][-2]["mode"] == "agent_loop"

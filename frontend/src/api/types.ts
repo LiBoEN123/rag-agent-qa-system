@@ -4,10 +4,11 @@
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
 export type PublicStatus = 'ok' | 'no_evidence' | 'empty_index' | 'error' | 'clarify' | 'out_of_scope'
 
+export type ToolMode = 'rag_only' | 'full'
+
 export interface ChatRequest {
   question: string
-  top_k?: number | null
-  decompose_top_k?: number | null
+  tool_mode: ToolMode
   session_id?: string | null
 }
 export interface ChatReference {
@@ -34,7 +35,6 @@ export interface ChatData {
   tool_result_summary: string
   tool_trace: Record<string, unknown>[]
   router_llm_used: boolean
-  decompose_llm_used: boolean
   answer_llm_used: boolean
   llm_call_count: number
 }

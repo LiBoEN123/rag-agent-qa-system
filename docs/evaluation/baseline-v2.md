@@ -29,6 +29,9 @@ Online 搜索结果和网页内容会变化，因此不应成为稳定 CI 门禁
 - RAG：`data/eval/rag_eval_questions_v2_semantic_fixed.json`
 - 示例阈值：`data/eval/evaluation_thresholds_v2.example.json`
 
+工具瘦身后，Agent v1/v2 数据集均删除了计算工具专属用例 `T004`；
+Agent v2 现有 28 条用例，历史结果应按各自记录的数据集 hash 解释。
+
 v1 文件保留。Agent v2 的每条 case 必须包含 `version: 2`，并且只能选择
 `question` 单轮结构或至少两轮的 `turns` 结构。`suite` 只能是 `core`、
 `online`、`mcp` 或 `mixed`。合法 status 来自 `AgentResultStatus`。本地/Web 工具名
@@ -61,8 +64,7 @@ python scripts/run_evaluation_baseline.py \
   --agent-cases data/eval/agent_eval_cases_v2.json \
   --rag-eval-file data/eval/rag_eval_questions_v2_semantic_fixed.json \
   --output-dir outputs/evaluation_baseline_v2/initial-core \
-  --top-k 5 \
-  --decompose-top-k 5
+  --retrieval-k 5
 ```
 
 只运行一个层：
@@ -196,13 +198,10 @@ temperature、top-k 相同；Agent dataset hash、Agent budgets、Tool contract 
 - Agent/RAG 数据路径及 SHA-256、case/suite/category 数量；
 - 索引 manifest 路径及 SHA-256、索引来源、文档/chunk 数量、embedding、
   rerank、chunk size 和 overlap；
-- 回答、Query Rewrite、Decompose 模型名和开关、温度、token、top-k 和 Agent
-  预算；
-- Prediction Schema 版本、`max_context_chars`、请求/有效的 `top_k` 与
-  `decompose_top_k`，以及生产 Context 选择源文件和 SHA-256；
-- 当前八个工具名、完整 Tool contract hash；
-- Prompt、Query Rewrite、Decompose、Generation、Compare 和工具描述所在源文件
-  的 SHA-256；
+- `agent`：回答、Query Rewrite 模型名和开关、温度、token、Agent 预算；
+- `rag`：Prediction Schema v3、`retrieval_metric_k`、`rag_only` 和 `knowledge_base:read`；
+- 当前七个工具名、完整 Tool contract hash；
+- `prompts.agent`：Agent Prompt、Query Rewrite、工具描述源文件的 SHA-256；
 - Judge 是否启用、模型和缓存来源。
 
 Manifest 使用显式白名单，禁止完整 `settings.model_dump()`。递归安全检查拒绝
@@ -218,24 +217,27 @@ Agent 指标按执行 case 计算；跳过的 Online case 不进入分子或分�
 Agent 结果按 suite、category、expected status、expected first tool 和 tags 分组。
 Core 与 Online 在 `groups.suite` 中独立。
 
-RAG 指标直接复用 `scripts/evaluation/rag/evaluation.py`。证据指标分三层：
+RAG Prediction Schema v3 复用生产 `ChatService.stream → stream_agent → create_agent`，
+每题使用空 session、`RAG_ONLY` 与 `knowledge_base:read`。多子问题通过同一个 Agent 阅读
+ToolMessage 后多次检索，query/top_k 可以逐轮变化。
 
-| 层 | 字段 | 含义 |
+| 证据 | 字段 | 含义 |
 | --- | --- | --- |
-| Final-ranked | `final_chunk_ids[:k]` | 原有 Retrieval Recall@k |
-| Prompt Context | `context_chunk_ids` | 字符预算后组装进回答 Context 的完整 chunks |
-| Final Reference | `reference_chunk_ids` | 模型选择并成功绑定的引用 chunks |
+| 实际观察 | `retrieved_chunk_ids` | 成功 KB evidence 工具返回的 chunk，按观察顺序稳定去重 |
+| 最终引用 | `reference_chunk_ids` | 最终通过 grounding 的 references 对应 chunk |
 
-三层分别报告 Gold hit/recall、all-gold hit 和 doc hit。报告还包含 Context 截断率、
-各层平均 chunk 数、Context 丢失 Gold 的题数和 Reference 丢失 Gold 的题数。
-Retrieval Recall@k 不等于 Prompt Context Recall；Prompt Context Recall 也不等于
-Final Reference Recall。新增 Context/Reference 指标只用于诊断，不参与 v2 Final
-Score，原公式仍使用 `retrieval_gold_chunk_recall_at_k`。
+`--retrieval-k` 是评分 cutoff，只评价观察序列前 K 项，不控制 Agent 检索数量。
+Prediction 记录两类 ID/数量、status 与 retrieval/tool/LLM 调用次数，不保存正文。
+retrieval_call_count 包含成功返回空 evidence 的检索。无效或不属于当前索引的 KB ID 使生成失败。
+MODEL_ERROR、TOOL_ERROR、INTERNAL_ERROR 同样终止生成；无证据与澄清是合法预测。
 
-Prediction Schema v2 保存三层 ID、计数、Context 字符数、有效参数、状态和 Decompose
-调用标志，不保存完整 Context 或 chunk 正文。`retrieved_chunk_ids` 是
-`final_chunk_ids` 的弃用兼容别名。旧 v1 prediction 仍可读取；缺失的 Context 和
-Reference 指标为 `null`/unavailable，不会被当成零。
+Context 指标对 v3 为 `null`/unavailable，不计为零，不伪造 context IDs。
+历史 v1/v2 文件继续纯数据兼容。Reference 指标、Judge/cache 与 Final Score 权重保持；
+Final Score 仍使用 gold chunk recall。
+
+Prediction Schema v3 is a new baseline generation contract.
+Raw scores are not strictly comparable to historical v2 workflow scores.
+本文件上方已有历史运行数值保留原始口径。
 
 Judge 关闭时，拒答行为只用高精度规则识别整段独立拒答；长答案中出现“未说明”
 或“未提供”等局部证据限制，不会被直接当作整段拒答。语义关键点覆盖和 forbidden

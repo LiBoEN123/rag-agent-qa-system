@@ -1,10 +1,12 @@
 import { defineComponent, nextTick } from 'vue'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
+import ElementPlus from 'element-plus'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { streamChat, type ChatStreamEvent } from '../api/chat'
 import type { ChatResponse } from '../api/types'
 import { useChat } from '../composables/useChat'
 import { useSession } from '../composables/useSession'
+import ChatView from '../views/ChatView.vue'
 
 vi.mock('../api/chat', () => ({ streamChat: vi.fn() }))
 
@@ -16,7 +18,7 @@ const finalResponse: ChatResponse = {
     tool_trace: [{ step: 'tool_call', tool_name: 'github_get_file_contents', tool_status: 'success', cost_ms: 12 }],
     retrieval_confidence: 0.8, answer_confidence: 0.4, action: 'clarify', reason: '需要年份',
     need_clarification: true, tool_result_summary: '已读取来源', llm_call_count: 2,
-    router_llm_used: true, decompose_llm_used: false, answer_llm_used: true,
+    router_llm_used: true, answer_llm_used: true,
   },
 }
 
@@ -59,7 +61,7 @@ function mountChat() {
 describe('chat conversation', () => {
   it('renders deltas immediately, then takes every final field from the authoritative response', async () => {
     const wrapper = mountChat()
-    const sending = wrapper.vm.send(' 测试问题 ', 5, 3)
+    const sending = wrapper.vm.send(' 测试问题 ')
     event('start', { session_id_present: true })
     event('progress', { stage: 'routing', status: 'completed' })
     event('tool', { tool_name: 'github_get_file_contents', phase: 'completed', status: 'success', cost_ms: 12 })
@@ -81,12 +83,35 @@ describe('chat conversation', () => {
     await sending
     expect(wrapper.vm.sending).toBe(false)
     expect(wrapper.vm.messages[1]?.state).toBe('completed')
-    expect(streamChat).toHaveBeenCalledWith(expect.objectContaining({ question: '测试问题', top_k: 5, decompose_top_k: 3, session_id: useSession().sessionId.value }), expect.any(AbortSignal), expect.any(Function))
+    expect(streamChat).toHaveBeenCalledWith({ question: '测试问题', session_id: useSession().sessionId.value, tool_mode: 'rag_only' }, expect.any(AbortSignal), expect.any(Function))
+  })
+
+  it('defaults the view to rag_only, disables the switch while sending, and sends full when enabled', async () => {
+    const wrapper = mount(ChatView, { global: { plugins: [ElementPlus] } })
+    wrappers.push(wrapper)
+    const toggle = wrapper.get('input[role="switch"]')
+    expect(toggle.attributes('aria-checked')).toBe('false')
+    expect(wrapper.text()).toContain('扩展工具')
+    await wrapper.get('textarea').setValue('默认知识库问题')
+    await wrapper.get('form.composer').trigger('submit')
+    expect(vi.mocked(streamChat).mock.calls[0]?.[0].tool_mode).toBe('rag_only')
+    expect(toggle.attributes('disabled')).toBeDefined()
+    finish()
+    await flushPromises()
+    expect(toggle.attributes('disabled')).toBeUndefined()
+    await toggle.setValue(true)
+    expect(toggle.attributes('aria-checked')).toBe('true')
+    await wrapper.get('textarea').setValue('使用扩展工具')
+    await wrapper.get('form.composer').trigger('submit')
+    expect(vi.mocked(streamChat).mock.calls[1]?.[0].tool_mode).toBe('full')
+    expect(toggle.attributes('disabled')).toBeDefined()
+    finish()
+    await flushPromises()
   })
 
   it('shows public stream errors and does not treat done(error) as success', async () => {
     const wrapper = mountChat()
-    const sending = wrapper.vm.send('测试问题', 5, 5)
+    const sending = wrapper.vm.send('测试问题')
     event('start', { session_id_present: true })
     event('answer_delta', { text: '未完成的文本' })
     event('error', { code: 'STREAM_ERROR', message: '流式处理失败' })
@@ -100,7 +125,7 @@ describe('chat conversation', () => {
 
   it('preserves received text with an interruption warning, without manufacturing a final response', async () => {
     const wrapper = mountChat()
-    const sending = wrapper.vm.send('测试问题', 5, 5)
+    const sending = wrapper.vm.send('测试问题')
     event('answer_delta', { text: '部分回答' })
     rejectStream(new Error('聊天流意外中断，未收到 done。'))
     await sending
@@ -113,7 +138,7 @@ describe('chat conversation', () => {
 
   it('keeps the authoritative final details when the stream closes before done', async () => {
     const wrapper = mountChat()
-    const sending = wrapper.vm.send('测试问题', 5, 5)
+    const sending = wrapper.vm.send('测试问题')
     event('final', { http_status: 200, response: finalResponse, total_cost_ms: 321 })
     rejectStream(new Error('聊天流意外中断，未收到 done。'))
     await sending
@@ -125,7 +150,7 @@ describe('chat conversation', () => {
 
   it('aborts on cancel, ignores late callbacks, and preserves an explicitly incomplete answer', async () => {
     const wrapper = mountChat()
-    const sending = wrapper.vm.send('测试问题', 5, 5)
+    const sending = wrapper.vm.send('测试问题')
     event('answer_delta', { text: '部分回答' })
     wrapper.vm.cancel()
     expect(signal.aborted).toBe(true)
@@ -141,7 +166,7 @@ describe('chat conversation', () => {
   it('creates a new stored session and clears messages while aborting the previous stream', async () => {
     const wrapper = mountChat()
     const oldSession = useSession().sessionId.value
-    const sending = wrapper.vm.send('测试问题', 5, 5)
+    const sending = wrapper.vm.send('测试问题')
     useSession().newSession()
     expect(signal.aborted).toBe(true)
     expect(wrapper.vm.messages).toHaveLength(0)
@@ -156,7 +181,7 @@ describe('chat conversation', () => {
 
   it('aborts safely on navigation and keeps the conversation when the chat view is mounted again', async () => {
     const wrapper = mountChat()
-    const sending = wrapper.vm.send('测试问题', 5, 5)
+    const sending = wrapper.vm.send('测试问题')
     event('answer_delta', { text: '部分回答' })
     wrapper.unmount()
     expect(signal.aborted).toBe(true)
@@ -169,7 +194,7 @@ describe('chat conversation', () => {
 
   it('ignores empty questions without opening a stream', async () => {
     const wrapper = mountChat()
-    await wrapper.vm.send('   ', 5, 5)
+    await wrapper.vm.send('   ')
     expect(streamChat).not.toHaveBeenCalled()
     expect(wrapper.vm.messages).toHaveLength(0)
   })

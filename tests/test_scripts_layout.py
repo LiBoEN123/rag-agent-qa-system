@@ -26,7 +26,6 @@ PUBLIC_CLIS = {
     "smoke_test_agent_tool_calling.py",
     "smoke_test_chat_stream.py",
     "smoke_test_mcp_tools.py",
-    "smoke_test_sql_readonly.py",
     "inspect_agent_runtime.py",
     "cache_models.py",
     "summarize_logs.py",

@@ -1,5 +1,8 @@
 # ADR 0001：开源 Agent 技术栈
 
+> 历史记录：下文描述当时的审计或决策。当前已移除计算器与业务数据库只读工具，
+> 工具集合以[当前系统架构](../architecture/current-system.md)为准。
+
 - 状态：Accepted
 - 日期：2026-07-19
 - 决策者：Project Maintainer

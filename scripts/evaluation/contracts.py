@@ -299,7 +299,6 @@ def build_coverage_report(
     capabilities = {
         "search_knowledge_base": "search_knowledge_base" in all_tools,
         "compare_documents": "compare_documents" in all_tools,
-        "simple_calculator": "simple_calculator" in all_tools,
         "list_documents": "list_documents" in all_tools,
         "get_chunk_text": "get_chunk_text" in all_tools,
         "direct_answer": "direct_answer" in decisions,

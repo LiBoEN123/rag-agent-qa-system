@@ -7,6 +7,20 @@ from types import MappingProxyType
 from typing import Literal, TypeAlias
 
 
+class ToolMode(StrEnum):
+    """聊天请求允许使用的工具范围，独立于主体权限。"""
+
+    RAG_ONLY = "rag_only"
+    FULL = "full"
+
+
+RAG_EVIDENCE_TOOL_NAMES = frozenset({
+    "search_knowledge_base", "search_document", "compare_documents", "get_chunk_text",
+})
+RAG_DISCOVERY_TOOL_NAMES = frozenset({"find_documents"})
+RAG_TOOL_NAMES = RAG_EVIDENCE_TOOL_NAMES | RAG_DISCOVERY_TOOL_NAMES
+
+
 class AgentResultStatus(StrEnum):
     """Agent Runtime 对外提供给聊天应用服务的稳定结果状态。"""
 
@@ -153,5 +167,6 @@ __all__ = [
     "ChatStatusPolicy",
     "MetricStatus",
     "PublicStatus",
+    "ToolMode",
     "get_chat_status_policy",
 ]

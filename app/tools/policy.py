@@ -14,6 +14,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID
 
+from app.contracts.chat import RAG_TOOL_NAMES, ToolMode
 from app.tools.context import (
     PrincipalType,
     ToolInvocationContext,
@@ -136,6 +137,14 @@ class ToolPolicyEngine:
         del args  # 参数内容仅通过已经绑定的指纹进入本阶段决策结果。
         risk_level = spec.risk_level
 
+        if context.tool_mode is ToolMode.RAG_ONLY and spec.name not in RAG_TOOL_NAMES:
+            return self._deny(
+                reason="当前请求仅允许使用知识库检索与文档发现工具",
+                code=ToolErrorCode.POLICY_DENIED,
+                risk_level=risk_level,
+                args_fingerprint=args_fingerprint,
+            )
+
         if not isinstance(context.principal_type, PrincipalType):
             return self._deny(
                 reason="调用主体类型无效",
@@ -162,14 +171,9 @@ class ToolPolicyEngine:
             if not has_permission(context.permissions, permission)
         )
         if missing_permissions:
-            permission_error = (
-                ToolErrorCode.SQL_PERMISSION_DENIED
-                if "database:read" in missing_permissions
-                else ToolErrorCode.PERMISSION_DENIED
-            )
             return self._deny(
                 reason="调用主体缺少工具要求的权限",
-                code=permission_error,
+                code=ToolErrorCode.PERMISSION_DENIED,
                 risk_level=risk_level,
                 args_fingerprint=args_fingerprint,
                 missing_permissions=missing_permissions,

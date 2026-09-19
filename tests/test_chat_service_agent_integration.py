@@ -6,14 +6,17 @@ import asyncio
 import json
 from importlib import import_module
 from pathlib import Path
+from unittest.mock import Mock
 
+import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_tools
 from app.agent import runtime as agent_runtime
 from app.agent.runtime import reset_agent_runtime
-from app.rag import graph as rag_graph
+from app.contracts.chat import ToolMode
+from app.rag import pipeline as rag_pipeline
 from app.services.chat_service import (
     ChatService,
     ChatServiceDependencies,
@@ -24,6 +27,8 @@ from app.storage.memory import append_message_sqlite, get_history_sqlite
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from tests.support.local_tools import local_tools
+from tests.support.agent_runtime import FakeToolCallingModel
+from app.agent.final_response import FinalAgentResponse
 from app.tools.result import tool_success
 
 
@@ -40,15 +45,10 @@ class ChatEchoArgs(BaseModel):
     text: str
 
 
-class ChatAgentModel:
+class ChatAgentModel(FakeToolCallingModel):
     def __init__(self):
+        super().__init__([])
         self.calls = 0
-        self.received_messages: list[list] = []
-        self.bound_tool_names: list[str] = []
-
-    def bind_tools(self, tools):
-        self.bound_tool_names = [tool.name for tool in tools]
-        return self
 
     async def ainvoke(self, messages):
         self.calls += 1
@@ -65,7 +65,7 @@ class ChatAgentModel:
                     }
                 ],
             )
-        return AIMessage(content="ChatService 主路径完成。")
+        return self.final_response(outcome="answer", answer="ChatService 主路径完成。")
 
 
 class ChatWebSearchModel(ChatAgentModel):
@@ -109,9 +109,10 @@ class ChatWebSearchModel(ChatAgentModel):
                 ],
             )
         output = payload["output"]
-        return AIMessage(
-            content=(
-                f"{output['title']}：{output['content']} "
+        return self.final_response(
+            outcome="answer", evidence_ids=[output["evidence"][0]["id"]],
+            answer=(
+                f"{output['title']}：{output['evidence'][0]['page_content']} "
                 f"来源：{output['final_url']}"
             )
         )
@@ -165,8 +166,9 @@ class ChatWebPdfModel(ChatAgentModel):
                 ],
             )
         output = payload["output"]
-        return AIMessage(
-            content=(
+        return self.final_response(
+            outcome="answer", evidence_ids=[output["evidence"][0]["id"]],
+            answer=(
                 f"{output['title']}，相关页码 {output['page_numbers']}，"
                 f"来源：{output['final_url']}"
             )
@@ -273,8 +275,6 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
             service,
             ChatServiceRequest(
                 question="请走完整 Agent 工具主路径",
-                top_k=5,
-                decompose_top_k=10,
                 session_id="session-chat-integration",
                 trace_id="trace-chat-integration",
                 request_enter_time="2026-07-20T09:59:59.000",
@@ -291,10 +291,10 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
     assert outcome.question == "请走完整 Agent 工具主路径"
     assert routed_questions == ["请执行改写后的完整 Agent 工具主路径"]
     assert model.calls == 2
-    assert model.received_messages[0][0].content == (
+    assert model.received_messages[0][-1].content == (
         "请执行改写后的完整 Agent 工具主路径"
     )
-    assert model.bound_tool_names == ["chat_echo"]
+    assert model.bound_tool_names == ["chat_echo", model.structured_tool_name]
     assert isinstance(model.received_messages[1][-1], ToolMessage)
     tool_payload = json.loads(model.received_messages[1][-1].content)
     assert tool_payload["output"] == {"text": "完整主路径"}
@@ -306,6 +306,7 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
     assert context.principal_id == "chat-user"
     assert context.permissions == ("knowledge_base:read",)
     assert context.source == "chat_api"
+    assert context.tool_mode is ToolMode.FULL
     assert session_writes == [
         ("session-chat-integration", "user", "请走完整 Agent 工具主路径"),
         (
@@ -337,6 +338,55 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
     )
     assert metric_writes[0]["route_cost_ms"] == decide_trace["route_cost_ms"]
     assert bad_cases == []
+
+
+@pytest.mark.parametrize("tool_mode", [ToolMode.RAG_ONLY, ToolMode.FULL])
+def test_chat_service_returns_kb_evidence_to_agent_with_request_tool_mode(monkeypatch, settings_env, tool_mode):
+    settings = settings_env(tool_default_permissions=("knowledge_base:read", "web:search"))
+    model = FakeToolCallingModel([
+        AIMessage(content="", tool_calls=[{
+            "name": "search_knowledge_base", "args": {"query": "学习年限", "top_k": 8},
+            "id": "kb-mode-call", "type": "tool_call",
+        }]),
+        FinalAgentResponse(outcome="no_evidence", answer="无法根据当前证据确定学习年限。"),
+    ])
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    search, rerank = Mock(return_value=[]), Mock(return_value=[])
+    monkeypatch.setattr(rag_pipeline, "RAG_READY", True)
+    monkeypatch.setattr(rag_pipeline, "search_relevant_chunks", search)
+    monkeypatch.setattr(rag_pipeline, "rerank", rerank)
+    service = ChatService(ChatServiceDependencies(
+        settings_provider=lambda: settings,
+        get_history=lambda session: [],
+        rewrite_query_with_history=lambda **kwargs: {
+            "rewritten_question": "本科生学习年限是多少？", "rewrite_llm_used": True,
+        },
+        log_and_write_metrics=lambda record: None,
+        write_bad_cases=lambda record: None,
+        append_message=lambda *args: None,
+        now_iso=lambda: "2026-09-16T10:00:00.000",
+        perf_counter=IncrementingClock(),
+    ))
+    outcome = collect_outcome(service, ChatServiceRequest(
+        question="学习年限是多少？",
+        session_id="kb-mode-session", trace_id="kb-mode-trace", tool_mode=tool_mode,
+    ))
+    assert outcome.result["status"] == "NO_RELEVANT_INFO"
+    assert outcome.result["answer"] == "无法根据当前证据确定学习年限。"
+    assert outcome.result["references"] == []
+    assert outcome.result["llm_call_count"] == 3  # 两轮 Agent + 一次 Query Rewrite
+    assert len(model.received_messages) == 2
+    first_messages = model.received_messages[0]
+    assert first_messages[-1].content == "本科生学习年限是多少？"
+    message = model.received_messages[1][-1]
+    assert isinstance(message, ToolMessage) and message.tool_call_id == "kb-mode-call"
+    assert json.loads(message.content)["output"]["count"] == 0
+    search.assert_called_once_with("学习年限", top_k=8)
+    rerank.assert_called_once_with([], "学习年限")
+    if tool_mode is ToolMode.RAG_ONLY:
+        assert model.bound_tool_names == ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "get_chunk_text", model.structured_tool_name]
+    else:
+        assert {"search_knowledge_base", "web_search", "compare_documents"} <= set(model.bound_tool_names)
 
 
 def test_chat_service_completes_web_search_and_fetch_through_production_chain(
@@ -467,8 +517,6 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
             ChatService(dependencies),
             ChatServiceRequest(
                 question="今天有哪些重要的 Python 新闻？",
-                top_k=5,
-                decompose_top_k=10,
                 session_id="session-chat-web",
                 trace_id="trace-chat-web",
                 request_enter_time="2026-07-22T09:59:59.000",
@@ -481,7 +529,7 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
     assert outcome.http_status == 200
     assert outcome.code == 0
     assert outcome.result["status"] == "OK"
-    assert outcome.result["references"] == []
+    assert len(outcome.result["references"]) == 1
     assert outcome.result["action"] == "agent"
     assert model.calls == 3
     assert "web_search" in model.bound_tool_names
@@ -597,13 +645,6 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     monkeypatch.setattr(web_download_module, "Manager", FakeManager)
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
-    monkeypatch.setattr(
-        rag_graph,
-        "run_rag_subgraph",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError(f"web PDF must not enter RAG: {args} {kwargs}")
-        ),
-    )
     settings = settings_env(
         agent_max_iterations=6,
         agent_max_tool_calls=10,
@@ -664,8 +705,6 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
             ChatService(dependencies),
             ChatServiceRequest(
                 question="读取搜索到的公开 PDF",
-                top_k=5,
-                decompose_top_k=10,
                 session_id="session-chat-pdf",
                 trace_id="trace-chat-pdf",
                 request_enter_time="2026-07-23T09:59:59.000",
@@ -678,7 +717,7 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
     assert outcome.http_status == 200
     assert outcome.code == 0
     assert outcome.result["status"] == "OK"
-    assert outcome.result["references"] == []
+    assert len(outcome.result["references"]) == 1
     assert outcome.result["action"] == "agent"
     assert model.calls == 3
     assert {"web_search", "web_pdf_fetch"} <= set(model.bound_tool_names)
@@ -690,7 +729,7 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
     assert pdf_message.tool_call_id == "chat-pdf-fetch-call"
     pdf_output = json.loads(pdf_message.content)["output"]
     assert pdf_output["page_numbers"] == [1, 2]
-    assert "[Page 1]" in pdf_output["content"]
+    assert "[Page 1]" in pdf_output["evidence"][0]["page_content"]
     assert "Governed Web PDF Fixture" in outcome.result["answer"]
     assert model.selected_url in outcome.result["answer"]
     assert session_writes[1][0:2] == ("session-chat-pdf", "assistant")

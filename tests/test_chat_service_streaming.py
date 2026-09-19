@@ -10,7 +10,10 @@ import pytest
 from app.agent.results import build_internal_error_result, create_agent_result
 from app.api.responses import build_chat_response_from_outcome
 from app.contracts.chat import AgentResultStatus
-from app.agent.streaming import AgentRuntimeStreamEvent
+from app.agent.streaming import AgentRuntimeStreamEvent, stream_agent
+from app.agent.final_response import FinalAgentResponse
+from tests.support.agent_runtime import FakeToolCallingModel
+from langchain_core.messages import AIMessage
 from app.services.chat_models import ChatServiceRequest
 from app.services.chat_service import ChatService, ChatServiceDependencies
 from app.services.chat_stream_models import ChatStreamEvent
@@ -56,8 +59,6 @@ def _result(
 def _request(**overrides):
     values = {
         "question": "测试问题",
-        "top_k": 4,
-        "decompose_top_k": 8,
         "session_id": "session-1",
         "trace_id": "trace-1",
         "request_enter_time": "2026-08-02T10:00:00.000",
@@ -108,7 +109,10 @@ def _build_service(
         }
 
     dependencies = ChatServiceDependencies(
-        settings_provider=lambda: SimpleNamespace(top_k=5, decompose_top_k=10),
+        settings_provider=lambda: SimpleNamespace(
+            tool_default_principal_id="test",
+            tool_default_permissions=("knowledge_base:read",),
+        ),
         get_history=lambda session_id: [],
         rewrite_query_with_history=fake_rewrite,
         log_and_write_metrics=lambda record: calls["metrics"].append(dict(record)),
@@ -195,16 +199,12 @@ def test_direct_answer_streams_ordered_deltas_final_and_done_once(monkeypatch):
         for key in (
             "original_question",
             "effective_question",
-            "top_k",
-            "decompose_top_k",
             "trace_id",
             "session_id",
         )
     } == {
         "original_question": "测试问题",
         "effective_question": "测试问题",
-        "top_k": 4,
-        "decompose_top_k": 8,
         "trace_id": "trace-1",
         "session_id": "session-1",
     }
@@ -382,19 +382,16 @@ def test_final_merges_rewrite_metrics_once_without_mutating_runtime(
         answer="一致回答",
         answer_confidence=0.8,
         retrieval_confidence=0.7,
-        decompose_llm_used=True,
         answer_llm_used=True,
         llm_call_count=2,
         tool_trace=[
             {
                 "step": "llm_usage",
                 "router_llm_used": False,
-                "decompose_llm_used": True,
                 "answer_llm_used": True,
                 "llm_call_count": 2,
             }
         ],
-        timings={"llm_cost_ms": 7},
     )
     if has_rewrite_trace:
         result["tool_trace"].insert(
@@ -421,9 +418,7 @@ def test_final_merges_rewrite_metrics_once_without_mutating_runtime(
     assert len(calls["metrics"]) == 1
     metrics = calls["metrics"][0]
     assert metrics["llm_call_count"] == expected_count
-    assert metrics["decompose_llm_used"] is True
     assert metrics["answer_llm_used"] is True
-    assert metrics["llm_cost_ms"] == 7
     assert calls["messages"] == []
     assert result == original
 
@@ -578,3 +573,38 @@ def test_internal_runtime_error_remains_redacted_in_final_response():
         "RuntimeError",
     ):
         assert private not in response.model_dump_json()
+
+
+@pytest.mark.parametrize("final, expected_status, expected_delta_count", [
+    (FinalAgentResponse(outcome="answer", answer="列表读取完成。"), "ok", 1),
+    (FinalAgentResponse(outcome="no_evidence"), "no_evidence", 1),
+    (FinalAgentResponse(outcome="clarify", clarification_question="需要哪份文档？"), "clarify", 0),
+    (FinalAgentResponse(outcome="answer", answer="UNSUPPORTED", evidence_ids=["fake"]), "error", 0),
+])
+def test_real_structured_agent_stream_matches_public_final_and_metrics(
+    monkeypatch, final, expected_status, expected_delta_count,
+):
+    model = FakeToolCallingModel([
+        AIMessage(content="", tool_calls=[{"name": "list_documents", "args": {}, "id": "list"}]),
+        final,
+    ])
+    monkeypatch.setattr("app.agent.framework_agent.get_answer_model", lambda: model)
+    monkeypatch.setattr("app.rag.pipeline.preview_docs", lambda: [])
+    service, calls = _build_service([], stream_agent=stream_agent)
+    events = _collect(service)
+    outcome = next(event.data["outcome"] for event in events if event.event == "final")
+    response = build_chat_response_from_outcome(outcome, trace_id="trace-1")
+    deltas = [event.data["text"] for event in events if event.event == "answer_delta"]
+    assert response.data.status == expected_status
+    assert len(deltas) == expected_delta_count
+    if deltas:
+        assert "".join(deltas) == response.data.answer
+        assert calls["metrics"][0]["streamed_answer_matches_final"] is True
+    assert calls["metrics"][0]["answer_delta_count"] == expected_delta_count
+    assert calls["metrics"][0]["llm_call_count"] == 2
+    assert [event.data["tool_name"] for event in events if event.event == "tool"] == [
+        "list_documents", "list_documents",
+    ]
+    assert model.structured_tool_name not in repr(events)
+    assert "UNSUPPORTED" not in repr(events)
+    assert events[-2].event == "final" and events[-1].event == "done"

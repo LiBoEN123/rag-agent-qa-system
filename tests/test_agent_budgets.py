@@ -26,7 +26,7 @@ class BudgetModel:
         self.response = response
         self.calls = 0
 
-    def bind_tools(self, tools):
+    def bind_tools(self, tools, **kwargs):
         return self
 
     async def ainvoke(self, messages):
@@ -71,8 +71,6 @@ async def _invoke(graph):
         {
             "original_question": "预算测试",
             "effective_question": "预算测试",
-            "top_k": 5,
-            "decompose_top_k": 10,
             "decision": {"action": "agent"},
             "trace_id": "trace-budget",
             "session_id": "session-budget",

@@ -14,7 +14,7 @@ from app.agent.results import (
     create_agent_result,
 )
 from app.api.diagnostics import create_diagnostics_router
-from app.api.schemas import ChatRequest, SearchResponse
+from app.api.schemas import ChatRequest, SearchRequest, SearchResponse
 from app.contracts.chat import AgentResultStatus
 from app.rag import pipeline
 from app.services.chat_models import ChatServiceOutcome
@@ -184,7 +184,7 @@ def test_search_response_model_and_empty_question_behavior_are_unchanged():
     route = next(route for route in router.routes if route.path == "/search")
     response = Response()
 
-    result = route.endpoint(ChatRequest(question="  "), response)
+    result = route.endpoint(SearchRequest(question="  "), response)
 
     assert route.response_model is SearchResponse
     diagnostic.assert_not_called()
@@ -217,7 +217,7 @@ def test_search_empty_index_behavior_is_unchanged():
     )
     response = Response()
 
-    result = endpoint(ChatRequest(question="测试问题"), response)
+    result = endpoint(SearchRequest(question="测试问题"), response)
 
     assert response.status_code == 503
     assert result.model_dump() == {
@@ -239,7 +239,7 @@ def test_search_no_evidence_result_mapping_is_unchanged():
     )
     response = Response()
 
-    result = endpoint(ChatRequest(question="测试问题"), response)
+    result = endpoint(SearchRequest(question="测试问题"), response)
 
     assert response.status_code == 200
     assert result.model_dump() == {
@@ -297,7 +297,7 @@ def test_search_success_shape_and_top_k_resolution_are_unchanged():
     )
     response = Response()
 
-    result = endpoint(ChatRequest(question="  测试问题  "), response)
+    result = endpoint(SearchRequest(question="  测试问题  "), response)
 
     assert calls == [("测试问题", 2)]
     assert response.status_code == 200
@@ -336,7 +336,7 @@ def test_search_success_shape_and_top_k_resolution_are_unchanged():
             ],
         },
     }
-    endpoint(ChatRequest(question="测试问题", top_k=1), Response())
+    endpoint(SearchRequest(question="测试问题", top_k=1), Response())
     assert calls == [("测试问题", 2), ("测试问题", 1)]
     assert all("reference_id" not in chunk for chunk in chunks)
 
@@ -351,7 +351,7 @@ def test_search_internal_error_behavior_is_unchanged():
     )
     response = Response()
 
-    result = endpoint(ChatRequest(question="测试问题"), response)
+    result = endpoint(SearchRequest(question="测试问题"), response)
 
     assert response.status_code == 500
     assert result.model_dump() == {
@@ -519,6 +519,26 @@ def test_default_diagnostics_reads_current_pipeline_state(monkeypatch):
     }
 
 
+def test_metrics_summary_excludes_legacy_usage_from_historical_records():
+    endpoint = get_diagnostics_endpoint(
+        create_diagnostics_router(build_diagnostics_dependencies(
+            read_recent_metrics=lambda limit: [{
+                "status": "success", "latency_ms": 12, "llm_call_count": 2,
+                "router_llm_used": False, "decompose_llm_used": True,
+                "answer_llm_used": True, "decompose_cost_ms": 7,
+            }],
+        )),
+        "/metrics-summary",
+    )
+    data = endpoint(limit=20)["data"]
+    assert "decompose_llm_used_count" not in data
+    assert "decompose_cost_ms" not in data
+    assert data["answer_llm_used_count"] == 1
+    assert data["router_llm_used_count"] == 0
+    assert data["avg_llm_call_count"] == 2
+    assert data["avg_latency_ms"] == 12
+
+
 def test_start_application_resources_wires_incremental_sync(monkeypatch):
     settings = api_application.get_settings()
     calls = []
@@ -588,11 +608,6 @@ def test_lifespan_awaits_mcp_startup_and_closes_it_before_other_runtimes(
     )
     monkeypatch.setattr(
         api_application,
-        "close_sql_engine_runtime",
-        lambda: calls.append("sql_close"),
-    )
-    monkeypatch.setattr(
-        api_application,
         "aclose_agent_runtime",
         close_agent,
     )
@@ -609,7 +624,6 @@ def test_lifespan_awaits_mcp_startup_and_closes_it_before_other_runtimes(
         "serve",
         "mcp_close",
         "tool_close",
-        "sql_close",
         "agent_close",
     ]
 

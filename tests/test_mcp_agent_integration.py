@@ -24,26 +24,8 @@ from app.tools.mcp.provider import (
     install_mcp_tool_provider,
 )
 from tests.support.local_tools import local_tools
-from tests.support.agent_runtime import build_agent_harness
-
-
-class FakeAgentModel:
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self.bound_tool_names = []
-        self.bound_tools = []
-        self.received_messages = []
-
-    def bind_tools(self, tools, **kwargs):
-        del kwargs
-        self.bound_tools = list(tools)
-        self.bound_tool_names = [tool.name for tool in self.bound_tools]
-        return self
-
-    async def ainvoke(self, messages, **kwargs):
-        del kwargs
-        self.received_messages.append(list(messages))
-        return self.responses.pop(0)
+from app.agent.final_response import FinalAgentResponse
+from tests.support.agent_runtime import FakeToolCallingModel, build_agent_harness
 
 
 def _server_config(**overrides):
@@ -130,8 +112,6 @@ def _input():
     return {
         "original_question": "北京天气如何",
         "effective_question": "北京天气如何",
-        "top_k": 5,
-        "decompose_top_k": 10,
         "decision": {"action": "agent"},
         "trace_id": "trace-mcp-agent",
         "session_id": "session-mcp-agent",
@@ -161,12 +141,12 @@ def _responses():
                 }
             ],
         ),
-        AIMessage(content="北京晴，20 摄氏度。"),
+        FinalAgentResponse(outcome="answer", answer="北京晴，20 摄氏度。"),
     ]
 
 
 def _assert_success(output, model, calls):
-    assert model.bound_tool_names == ["weather_get_weather"]
+    assert model.bound_tool_names == ["weather_get_weather", model.structured_tool_name]
     assert calls == [("Beijing", "trace-mcp-agent")]
     tool_message = next(
         message
@@ -202,7 +182,7 @@ async def test_default_service_principal_sees_and_executes_config_authorized_ser
         tool_default_permissions=("knowledge_base:read",),
     )
     calls = []
-    model = FakeAgentModel(_responses())
+    model = FakeToolCallingModel(_responses())
     graph, _ = _setup(
         monkeypatch,
         settings,
@@ -230,7 +210,7 @@ async def test_mcp_external_write_stops_agent_for_human_approval(
 ):
     settings = settings_factory()
     calls = []
-    model = FakeAgentModel(_responses())
+    model = FakeToolCallingModel(_responses())
     graph, _ = _setup(
         monkeypatch,
         settings,
@@ -263,7 +243,7 @@ def test_mcp_native_async_result_projects_to_safe_stream_event(
     """流式路径使用原生异步结果，SSE 投影不暴露参数或输出。"""
     settings = settings_factory()
     calls = []
-    model = FakeAgentModel(_responses())
+    model = FakeToolCallingModel(_responses())
     _, tool = _setup(monkeypatch, settings, model, calls)
     result = asyncio.run(
         invoke_mcp_tool(tool, {"location": "Beijing"}, context=_context())
@@ -312,7 +292,7 @@ def test_mcp_tool_runs_through_create_agent_astream(
     """create_agent astream 通过原生 coroutine 完成同一 MCP Agent 循环。"""
     settings = settings_factory()
     calls = []
-    model = FakeAgentModel(_responses())
+    model = FakeToolCallingModel(_responses())
     graph, _ = _setup(monkeypatch, settings, model, calls)
 
     async def collect():
@@ -350,7 +330,7 @@ async def test_repeated_mcp_calls_are_stopped_by_existing_guardrail(
         )
         for index in range(1, 4)
     ]
-    model = FakeAgentModel(repeated_responses)
+    model = FakeToolCallingModel(repeated_responses)
     settings = settings_factory(agent_max_consecutive_same_tool_calls=2)
     graph, _ = _setup(monkeypatch, settings, model, calls)
 

@@ -45,7 +45,6 @@ def build_chat_response_from_outcome(
             tool_result_summary=result.get("tool_result_summary", ""),
             tool_trace=tool_trace,
             router_llm_used=result.get("router_llm_used", False),
-            decompose_llm_used=result.get("decompose_llm_used", False),
             answer_llm_used=result.get("answer_llm_used", False),
             llm_call_count=result.get("llm_call_count", 0),
         ),

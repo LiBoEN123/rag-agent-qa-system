@@ -66,7 +66,7 @@ def _create_model(
 
 @lru_cache(maxsize=1)
 def get_answer_model() -> Any | None:
-    """返回 RAG 最终回答模型。"""
+    """返回唯一 Agent 主模型。"""
     settings = get_settings()
     return _create_model(
         role="answer",
@@ -93,38 +93,6 @@ def get_query_rewrite_model() -> Any | None:
         max_tokens=settings.query_rewrite_max_tokens,
         timeout=settings.query_rewrite_timeout,
         max_retries=0,
-    )
-
-
-@lru_cache(maxsize=1)
-def get_decompose_model() -> Any | None:
-    """返回 Query Decompose 模型，并保留其现有独立 Key 语义。"""
-    settings = get_settings()
-    return _create_model(
-        role="decompose",
-        api_key=secret_value(settings.decompose_api_key),
-        api_url=settings.decompose_api_url,
-        model_name=settings.decompose_model_name,
-        temperature=0.0,
-        max_tokens=settings.decompose_max_tokens,
-        timeout=settings.decompose_timeout,
-        max_retries=0,
-    )
-
-
-@lru_cache(maxsize=1)
-def get_compare_model() -> Any | None:
-    """返回文档对比模型，并保留其独立推理参数。"""
-    settings = get_settings()
-    return _create_model(
-        role="compare",
-        api_key=secret_value(settings.llm_api_key),
-        api_url=settings.llm_api_url,
-        model_name=settings.model_name,
-        temperature=0.0,
-        max_tokens=min(settings.llm_max_tokens, 1024),
-        timeout=settings.llm_timeout,
-        max_retries=settings.llm_max_retries,
     )
 
 
@@ -167,6 +135,4 @@ def clear_model_factory_cache() -> None:
     """清理全部角色的模型缓存，供测试或配置刷新使用。"""
     get_answer_model.cache_clear()
     get_query_rewrite_model.cache_clear()
-    get_decompose_model.cache_clear()
-    get_compare_model.cache_clear()
     get_judge_model.cache_clear()

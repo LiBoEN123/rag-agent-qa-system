@@ -9,18 +9,15 @@ from functools import lru_cache
 from typing import Any, Protocol, cast
 
 from langchain_core.messages import HumanMessage
-from pydantic import TypeAdapter, ValidationError
 
 import app.agent.framework_tools as framework_tools
 from app.agent.framework_agent import build_framework_agent
 from app.agent.framework_middleware import ProjectToolGovernanceMiddleware
 from app.agent.router import RouteDecision, route_agent_action
 from app.config import AppSettings, get_settings
+from app.contracts.chat import ToolMode
 from app.tools.context import ToolInvocationContext, build_default_tool_context
 from app.tools.mcp.provider import list_mcp_tools_for_context
-
-
-_INTEGER_ADAPTER = TypeAdapter(int)
 
 
 class CompiledAgentRuntime(Protocol):
@@ -40,31 +37,6 @@ class CompiledAgentRuntime(Protocol):
 
     # 约定获取运行时图结构的接口，供检查和可视化使用。
     def get_graph(self, **kwargs: Any) -> Any: ...
-
-
-def validate_runtime_counts(
-    *,
-    top_k: object,
-    decompose_top_k: object,
-) -> tuple[int, int]:
-    """保留公开 Runtime 数字输入原有的边界约束。"""
-
-    # 将召回数量校验为指定范围内的整数，并拒绝布尔值。
-    def validate(name: str, value: object, lower: int, upper: int) -> int:
-        if isinstance(value, bool):
-            raise ValueError(f"{name} must be an integer")
-        try:
-            normalized = _INTEGER_ADAPTER.validate_python(value)
-        except ValidationError as exc:
-            raise ValueError(f"{name} must be an integer") from exc
-        if normalized < lower or normalized > upper:
-            raise ValueError(f"{name} must be between {lower} and {upper}")
-        return normalized
-
-    return (
-        validate("top_k", top_k, 1, 10),
-        validate("decompose_top_k", decompose_top_k, 1, 20),
-    )
 
 
 @lru_cache(maxsize=4)
@@ -90,7 +62,9 @@ def get_compiled_agent_runtime(
 ) -> CompiledAgentRuntime:
     """Local 权限变化共用编译缓存；仅额外 MCP 工具集合需要构图。"""
     resolved_settings = settings or get_settings()
-    if tool_context is None or not list_mcp_tools_for_context(
+    if tool_context is None or tool_context.tool_mode is ToolMode.RAG_ONLY:
+        return _get_cached_framework_agent(resolved_settings)
+    if not list_mcp_tools_for_context(
         tool_context,
         settings=resolved_settings,
     ):
@@ -127,16 +101,12 @@ class AgentRuntimeInvocation:
     route_cost_ms: int
     original_question: str
     effective_question: str
-    top_k: int
-    decompose_top_k: int
     trace_id: str
     session_id: str | None
 
 
 def prepare_agent_runtime_invocation(
     *,
-    top_k: int,
-    decompose_top_k: int,
     trace_id: str,
     session_id: str | None,
     original_question: str,
@@ -146,10 +116,6 @@ def prepare_agent_runtime_invocation(
 ) -> AgentRuntimeInvocation:
     """用普通 Python 完成参数校验、Router 与 Agent 调用准备。"""
     resolved_settings = settings or get_settings()
-    resolved_top_k, resolved_decompose_top_k = validate_runtime_counts(
-        top_k=top_k,
-        decompose_top_k=decompose_top_k,
-    )
     resolved_original = (original_question or "").strip()
     resolved_effective = (effective_question or "").strip()
     route_started = time.perf_counter()
@@ -161,16 +127,12 @@ def prepare_agent_runtime_invocation(
             session_id=session_id or "",
             source="chat_api",
             effective_question=resolved_effective,
-            top_k=resolved_top_k,
-            decompose_top_k=resolved_decompose_top_k,
             settings=resolved_settings,
         )
     else:
         resolved_context = replace(
             tool_context,
             effective_question=resolved_effective,
-            top_k=resolved_top_k,
-            decompose_top_k=resolved_decompose_top_k,
         )
     agent = (
         get_compiled_agent_runtime(
@@ -195,8 +157,6 @@ def prepare_agent_runtime_invocation(
         route_cost_ms=route_cost_ms,
         original_question=resolved_original,
         effective_question=resolved_effective,
-        top_k=resolved_top_k,
-        decompose_top_k=resolved_decompose_top_k,
         trace_id=trace_id,
         session_id=session_id,
     )
@@ -208,5 +168,4 @@ __all__ = [
     "get_compiled_agent_runtime",
     "prepare_agent_runtime_invocation",
     "reset_agent_runtime",
-    "validate_runtime_counts",
 ]

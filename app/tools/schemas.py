@@ -3,9 +3,10 @@
 使用 Pydantic 定义并校验各内置工具接收的结构化参数和稳定输出。
 """
 
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
+from langchain_core.documents import Document
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -15,8 +16,7 @@ from pydantic import (
     model_validator,
 )
 
-from app.rag.schemas import RAGResult
-
+from app.tools.evidence import validate_evidence_documents
 
 _WEB_FETCH_URL_MAX_CHARS = 2048
 
@@ -67,23 +67,44 @@ class CompareDocumentsArgs(BaseModel):
     top_k: int = Field(default=3, ge=1, le=10, description="每个文档返回的证据数量")
 
 
+class FindDocumentsArgs(BaseModel):
+    """按主题发现知识库文档，只搜索目录元数据。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    query: str = Field(..., min_length=1, max_length=500, description="文档名称或主题关键词")
+    limit: int = Field(default=5, ge=1, le=10, description="最多返回的候选文档数量")
+
+
+class SearchDocumentArgs(BaseModel):
+    """在一个明确定位的知识库文档中检索正文。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    document: str = Field(
+        ..., min_length=1,
+        description=(
+            "优先使用 find_documents 返回的 source_id / document_uid；"
+            "也允许唯一匹配的完整 file_name 或去扩展名后的完整名称，不接受模糊文档名。"
+        ),
+    )
+    query: str = Field(..., min_length=1, description="该文档内的问题或检索查询")
+    top_k: int = Field(default=5, ge=1, le=10, description="返回该文档的候选 chunk 数量")
+
+
 class GetChunkTextArgs(BaseModel):
     """get_chunk_text 工具参数。"""
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    chunk_id: int | Annotated[str, Field(min_length=1)] = Field(
+    chunk_id: int = Field(
         ...,
-        description="要查看的 chunk_id",
+        ge=1,
+        description=(
+            "知识库运行时 chunk locator；必须使用 Document.metadata.chunk_id，"
+            "不能使用 Document.id / evidence id。"
+        ),
     )
-
-
-class SimpleCalculatorArgs(BaseModel):
-    """simple_calculator 工具参数。"""
-
-    model_config = ConfigDict(str_strip_whitespace=True)
-
-    expression: str = Field(..., min_length=1, description="安全的四则运算表达式")
 
 
 class ListDocumentsArgs(BaseModel):
@@ -97,46 +118,82 @@ class SearchKnowledgeBaseOutput(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    query: str = Field(..., min_length=1)
     count: int = Field(..., ge=0)
-    chunks: list[dict[str, Any]]
-    top_chunk_ids: list[int | str | None]
-    top_scores: list[float]
-    rag_result: RAGResult
+    evidence: list[Document]
+
+    _validate_evidence = field_validator("evidence")(validate_evidence_documents)
 
     @model_validator(mode="after")
     def validate_evidence_counts(self) -> "SearchKnowledgeBaseOutput":
         """确保公开证据列表与显式数量保持一致。"""
-        if self.count != len(self.chunks):
-            raise ValueError("count 必须等于 chunks 数量")
-        if len(self.top_chunk_ids) != self.count:
-            raise ValueError("top_chunk_ids 数量必须等于 count")
-        if len(self.top_scores) != self.count:
-            raise ValueError("top_scores 数量必须等于 count")
+        if self.count != len(self.evidence):
+            raise ValueError("count 必须等于 evidence 数量")
         return self
 
 
 class CompareDocumentsOutput(BaseModel):
-    """双文档对比工具的稳定输出。"""
+    """双文档证据检索的稳定输出，按 doc_a、doc_b 顺序分组。"""
 
     model_config = ConfigDict(extra="forbid")
 
     query: str
     doc_a: str
     doc_b: str
-    doc_a_evidence: list[dict[str, Any]]
-    doc_b_evidence: list[dict[str, Any]]
-    comparison: str
-    conflict_detected: bool
-    summary: str
+    doc_a_count: int = Field(..., ge=0)
+    doc_b_count: int = Field(..., ge=0)
+    count: int = Field(..., ge=0)
+    evidence: list[Document]
+
+    _validate_evidence = field_validator("evidence")(validate_evidence_documents)
+
+    @model_validator(mode="after")
+    def validate_evidence_counts(self) -> "CompareDocumentsOutput":
+        """确保总数同时匹配证据列表和两份文档的数量。"""
+        if self.count != len(self.evidence):
+            raise ValueError("count 必须等于 evidence 数量")
+        if self.count != self.doc_a_count + self.doc_b_count:
+            raise ValueError("count 必须等于 doc_a_count + doc_b_count")
+        return self
 
 
-class SimpleCalculatorOutput(BaseModel):
-    """安全计算器工具的稳定输出。"""
+class DocumentSearchItem(BaseModel):
+    """来自已加载 chunk metadata 的文档目录信息，不包含正文。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    expression: str
-    result: int | float
+    source_id: str = Field(..., min_length=1)
+    document_uid: str | None = None
+    file_name: str
+    source_uri: str | None = None
+    source_path: str | None = None
+    file_type: str | None = None
+    source_type: str | None = None
+    chunk_count: int = Field(..., ge=1)
+    score: float = Field(default=0.0, ge=0, allow_inf_nan=False, description="确定性匹配分数，非概率")
+
+
+class FindDocumentsOutput(BaseModel):
+    """文档发现结果，不参与正文 evidence transport。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(..., min_length=1, max_length=500)
+    count: int = Field(..., ge=0, le=10)
+    documents: list[DocumentSearchItem]
+
+    @model_validator(mode="after")
+    def validate_document_count(self) -> "FindDocumentsOutput":
+        if self.count != len(self.documents):
+            raise ValueError("count 必须等于 documents 数量")
+        return self
+
+
+class SearchDocumentOutput(SearchKnowledgeBaseOutput):
+    """复用知识库 evidence 校验与数量约束，并明确本次硬范围。"""
+
+    document: str = Field(..., min_length=1)
+    source_id: str = Field(..., min_length=1)
 
 
 class ListDocumentsOutput(BaseModel):
@@ -160,8 +217,10 @@ class GetChunkTextOutput(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    chunk_id: int | str
-    chunk: dict[str, Any]
+    count: Literal[1]
+    evidence: list[Document] = Field(..., min_length=1, max_length=1)
+
+    _validate_evidence = field_validator("evidence")(validate_evidence_documents)
 
 
 class WebSearchArgs(BaseModel):
@@ -286,12 +345,14 @@ class WebFetchOutput(BaseModel):
     published_date: str = Field(default="", max_length=100)
     language: str = Field(default="", max_length=50)
 
-    content: str = Field(..., max_length=20000)
+    evidence: list[Document] = Field(..., min_length=1, max_length=1)
     content_length: int = Field(..., ge=0, le=20000)
     truncated: bool
 
     extractor: Literal["trafilatura"] = "trafilatura"
     content_is_untrusted: Literal[True] = True
+
+    _validate_evidence = field_validator("evidence")(validate_evidence_documents)
 
     @field_validator("requested_url", "final_url")
     @classmethod
@@ -302,8 +363,11 @@ class WebFetchOutput(BaseModel):
     @model_validator(mode="after")
     def validate_content_length(self) -> "WebFetchOutput":
         """确保显式长度与实际返回正文严格一致。"""
-        if self.content_length != len(self.content):
-            raise ValueError("content_length 必须等于 len(content)")
+        if self.content_length != len(self.evidence[0].page_content):
+            raise ValueError("content_length 必须等于 len(evidence[0].page_content)")
+        metadata = self.evidence[0].metadata
+        if metadata["source_type"] != "web_page" or metadata["source_uri"] != self.final_url:
+            raise ValueError("网页 evidence 来源必须与 final_url 一致")
         return self
 
 
@@ -387,12 +451,14 @@ class WebPdfFetchOutput(BaseModel):
     pages_read: int = Field(..., ge=1, le=20)
     page_numbers: list[int] = Field(..., min_length=1, max_length=20)
 
-    content: str = Field(..., min_length=1, max_length=30000)
+    evidence: list[Document] = Field(..., min_length=1, max_length=1)
     content_length: int = Field(..., ge=1, le=30000)
     truncated: bool
 
     extractor: Literal["pypdf"] = "pypdf"
     content_is_untrusted: Literal[True] = True
+
+    _validate_evidence = field_validator("evidence")(validate_evidence_documents)
 
     @field_validator("requested_url", "final_url")
     @classmethod
@@ -403,8 +469,13 @@ class WebPdfFetchOutput(BaseModel):
     @model_validator(mode="after")
     def validate_page_and_content_contract(self) -> "WebPdfFetchOutput":
         """校验页码、显式计数与实际返回正文的一致性。"""
-        if self.content_length != len(self.content):
-            raise ValueError("content_length 必须等于 len(content)")
+        if self.content_length != len(self.evidence[0].page_content):
+            raise ValueError("content_length 必须等于 len(evidence[0].page_content)")
+        metadata = self.evidence[0].metadata
+        if metadata["source_type"] != "web_pdf" or metadata["source_uri"] != self.final_url:
+            raise ValueError("PDF evidence 来源必须与 final_url 一致")
+        if metadata.get("page_numbers") != self.page_numbers:
+            raise ValueError("PDF evidence page_numbers 必须与实际返回页码一致")
         if self.pages_read != len(self.page_numbers):
             raise ValueError("pages_read 必须等于 page_numbers 数量")
         if self.page_numbers != sorted(set(self.page_numbers)):

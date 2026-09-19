@@ -88,47 +88,6 @@ def test_role_models_reuse_answer_key_when_independent_key_is_empty(
     assert model.kwargs["api_key"] == "shared-answer-key"
 
 
-def test_decompose_model_keeps_independent_key_semantics(settings_env):
-    """Decompose 原先允许无独立 Key，Factory 不改变该配置含义。"""
-    settings_env(
-        llm_api_key="shared-answer-key",
-        decompose_api_key="",
-        decompose_api_url="http://localhost:11434/v1",
-        decompose_model_name="qwen-test",
-    )
-
-    model = factory.get_decompose_model()
-
-    assert model.kwargs["api_key"] == "not-required"
-    assert model.kwargs["temperature"] == 0.0
-
-
-def test_compare_model_uses_answer_provider_with_independent_parameters(
-    settings_env,
-):
-    """文档对比复用 Answer 供应商配置，但保持零温度和独立 token 上限。"""
-    settings_env(
-        llm_api_key="compare-key",
-        llm_api_url="https://models.example.test/v1/chat/completions",
-        model_name="compare-model",
-        llm_max_tokens=4096,
-        llm_timeout=21,
-        llm_max_retries=2,
-    )
-
-    model = factory.get_compare_model()
-
-    assert model.kwargs == {
-        "model": "compare-model",
-        "api_key": "compare-key",
-        "base_url": "https://models.example.test/v1",
-        "temperature": 0.0,
-        "max_tokens": 1024,
-        "timeout": 21,
-        "max_retries": 2,
-    }
-
-
 def test_judge_model_accepts_cli_configuration_overrides():
     """离线 Judge 的 CLI 配置覆盖会完整传入 ChatOpenAI。"""
     model = factory.get_judge_model(

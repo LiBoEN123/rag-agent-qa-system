@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from typing import Any, Iterator, Mapping
 
 from app.config import AppSettings
+from app.services.chat_models import ChatServiceOutcome, ChatServiceRequest
 from scripts.evaluation.contracts import (
     AgentEvaluationCase,
     AgentEvaluationDataset,
@@ -230,7 +231,7 @@ class InMemorySessionAdapter:
 
 @contextmanager
 def capture_tool_output_keys() -> Iterator[list[dict[str, Any]]]:
-    """仅为评测捕获真实工具输出的字段名，不保留字段值。"""
+    """捕获工具字段名与 KB 标识；不保存正文、参数或外部来源内容。"""
     from app.agent import framework_tools
 
     records: list[dict[str, Any]] = []
@@ -252,6 +253,16 @@ def capture_tool_output_keys() -> Iterator[list[dict[str, Any]]]:
         records.append(
             {
                 "tool_name": spec.name,
+                "tool_call_id": str(result.get("tool_call_id") or ""),
+                "has_evidence": isinstance(output, dict) and "evidence" in output,
+                "kb_chunk_ids": [
+                    int(value) if not isinstance(value := document["metadata"].get("chunk_id"), bool)
+                    and str(value).isascii() and str(value).isdigit() else None
+                    for document in (output.get("evidence") or [])
+                    if isinstance(document, dict)
+                    and isinstance(document.get("metadata"), dict)
+                    and document["metadata"].get("source_type") == "knowledge_base"
+                ] if isinstance(output, dict) and result.get("ok") is True else [],
                 "status": result.get("status", "")
                 if isinstance(result, dict)
                 else "",
@@ -1279,32 +1290,27 @@ def _permissions_for_suite(
     return tuple(permissions)
 
 
-def execute_agent_case(
-    case: AgentEvaluationCase,
+def run_evaluation_chat_turn(
+    request: ChatServiceRequest,
     *,
     settings: AppSettings,
-    top_k: int,
-    decompose_top_k: int,
-    tool_catalog: Mapping[str, Mapping[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """通过真实 ChatService 执行一个完全隔离的 Agent case。"""
+    permissions: tuple[str, ...],
+    session: InMemorySessionAdapter | None = None,
+    captured_metrics: list[dict[str, Any]] | None = None,
+) -> ChatServiceOutcome:
+    """复用正式 ChatService，隔离会话、指标写入与评测权限。"""
     from dataclasses import replace
 
     from app.agent.streaming import stream_agent
-    from app.services.chat_models import ChatServiceRequest
     from app.services.chat_service import (
         ChatService,
         get_default_chat_service_dependencies,
     )
     from app.tools.context import PrincipalType, ToolInvocationContext
 
-    session = InMemorySessionAdapter()
-    captured_metrics: list[dict[str, Any]] = []
+    session = session or InMemorySessionAdapter()
+    captured_metrics = captured_metrics if captured_metrics is not None else []
     base = get_default_chat_service_dependencies()
-    permissions = _permissions_for_suite(
-        case.suite,
-        tuple(case.mcp_servers),
-    )
 
     async def run_runtime(**kwargs: Any):
         """为真实 Agent 运行时注入评测专用身份与权限上下文。"""
@@ -1314,6 +1320,7 @@ def execute_agent_case(
             principal_id="evaluation_baseline_v2",
             principal_type=PrincipalType.SERVICE,
             permissions=permissions,
+            tool_mode=request.tool_mode,
             source="evaluation_baseline_v2",
         )
         async for event in stream_agent(**kwargs):
@@ -1329,6 +1336,29 @@ def execute_agent_case(
         append_message=session.append_message,
     )
     service = ChatService(dependencies)
+
+    async def collect_turn():
+        outcome = None
+        async for event in service.stream(request):
+            if event.event == "final":
+                outcome = event.data["outcome"]
+        if outcome is None:
+            raise RuntimeError("chat stream ended without final")
+        return outcome
+
+    return asyncio.run(collect_turn())
+
+
+def execute_agent_case(
+    case: AgentEvaluationCase,
+    *,
+    settings: AppSettings,
+    tool_catalog: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """通过真实 ChatService 执行一个完全隔离的 Agent case。"""
+    session = InMemorySessionAdapter()
+    captured_metrics: list[dict[str, Any]] = []
+    permissions = _permissions_for_suite(case.suite, tuple(case.mcp_servers))
     session_id = case.session_id.strip() or f"evaluation-{case.id}"
     turn_rows: list[dict[str, Any]] = []
     for turn_index, (question, expected) in enumerate(
@@ -1338,24 +1368,15 @@ def execute_agent_case(
         trace_id = f"evaluation-{case.id}-turn-{turn_index}"
         started = time.perf_counter()
         with capture_tool_output_keys() as tool_output_records:
-            async def collect_turn():
-                outcome = None
-                async for event in service.stream(
-                    ChatServiceRequest(
-                        question=question,
-                        top_k=top_k,
-                        decompose_top_k=decompose_top_k,
-                        session_id=session_id,
-                        trace_id=trace_id,
-                    )
-                ):
-                    if event.event == "final":
-                        outcome = event.data["outcome"]
-                if outcome is None:
-                    raise RuntimeError("chat stream ended without final")
-                return outcome
-
-            outcome = asyncio.run(collect_turn())
+            outcome = run_evaluation_chat_turn(
+                ChatServiceRequest(
+                    question=question, session_id=session_id, trace_id=trace_id,
+                ),
+                settings=settings,
+                permissions=permissions,
+                session=session,
+                captured_metrics=captured_metrics,
+            )
         elapsed_ms = (time.perf_counter() - started) * 1000
         result = dict(outcome.result)
         latest_metrics = captured_metrics[-1] if captured_metrics else {}
@@ -1391,8 +1412,6 @@ def run_agent_baseline(
     *,
     settings: AppSettings,
     include_online: bool,
-    top_k: int,
-    decompose_top_k: int,
     rag_already_initialized: bool,
     force_rebuild: bool,
     include_mcp: bool = False,
@@ -1422,8 +1441,6 @@ def run_agent_baseline(
         execute_agent_case(
             case,
             settings=settings,
-            top_k=top_k,
-            decompose_top_k=decompose_top_k,
             tool_catalog=tool_catalog,
         )
         for case in selected
@@ -1439,6 +1456,7 @@ def run_agent_baseline(
 __all__ = [
     "calculate_agent_metrics",
     "capture_tool_output_keys",
+    "run_evaluation_chat_turn",
     "check_keywords",
     "check_tool_output_keys",
     "combine_case_turns",

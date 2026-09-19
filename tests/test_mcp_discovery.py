@@ -98,7 +98,7 @@ def test_discovery_filters_extras_prefixes_names_and_limits_metadata(
             client,
             config=_config(),
             settings=settings_factory(),
-            local_tool_names={"simple_calculator"},
+            local_tool_names={"list_documents"},
         )
     )
 

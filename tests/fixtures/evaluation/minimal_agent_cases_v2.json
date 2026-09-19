@@ -6,15 +6,15 @@
       "id": "fixture-core-001",
       "version": 2,
       "suite": "core",
-      "category": "calculator",
-      "question": "1+1 等于多少？",
+      "category": "documents",
+      "question": "请列出知识库文档",
       "expected": {
         "decision": "use_agent",
         "action": "agent",
         "status": "OK",
-        "first_tool": "simple_calculator",
-        "tools_contains": ["simple_calculator"],
-        "keywords": ["2"],
+        "first_tool": "list_documents",
+        "tools_contains": ["list_documents"],
+        "keywords": ["文档"],
         "min_keyword_hits": 1
       },
       "tags": ["fixture"]

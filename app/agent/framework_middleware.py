@@ -6,11 +6,12 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware import AgentMiddleware, ToolCallLimitMiddleware
 from langchain.agents.middleware.types import ToolCallRequest, hook_config
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command
 
+from app.agent.final_response import FinalAgentResponse
 from app.agent.guardrails import (
     AgentStopReason,
     build_tool_governance_event,
@@ -60,6 +61,25 @@ def _has_tool_call_limit_message(messages: list[object]) -> bool:
         ):
             return True
     return False
+
+
+class ProjectToolCallLimitMiddleware(ToolCallLimitMiddleware):
+    """1.3.14 原生限流会计入合成响应；仅过滤其计数输入，复用原生限流。"""
+
+    def after_model(self, state, runtime):
+        messages = list(state.get("messages", []))
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
+            if isinstance(message, AIMessage):
+                messages[index] = message.model_copy(update={"tool_calls": [
+                    call for call in message.tool_calls
+                    if call["name"] != FinalAgentResponse.__name__
+                ]})
+                break
+        update = super().after_model({**state, "messages": messages}, runtime)
+        if update and update.get("messages"):
+            update["stop_reason"] = AgentStopReason.MAX_TOOL_CALLS.value
+        return update
 
 
 def parse_tool_result(
@@ -192,8 +212,6 @@ def _tool_state_command(
     output: ToolMessage | Command[Any],
     message: ToolMessage,
     event: dict[str, Any],
-    *,
-    knowledge_base_result: dict[str, Any] | None = None,
 ) -> Command[Any]:
     """把工具消息与项目治理结果直接写入 FrameworkAgentState。"""
     if isinstance(output, Command):
@@ -213,8 +231,6 @@ def _tool_state_command(
     updates["governance_events"] = [*existing_events, event]
     if event.get("stop_reason"):
         updates["stop_reason"] = str(event["stop_reason"])
-    if knowledge_base_result is not None:
-        updates["knowledge_base_result"] = knowledge_base_result
     return Command(graph=graph, update=updates, resume=resume, goto=goto)
 
 
@@ -309,13 +325,16 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
         }
         if raw_event.get("ok") is False:
             updates["stop_reason"] = "agent_model_call_failed"
-        elif not ai_message.tool_calls:
+        elif not ai_message.tool_calls or (
+            state.get("structured_response") is not None
+            and not raw_event.get("has_tool_calls")
+        ):
             updates["stop_reason"] = AgentStopReason.COMPLETED.value
         return updates
 
     @hook_config(can_jump_to=["end"])
     async def abefore_model(self, state, runtime):
-        """依据 State 中的停止原因和 RAG 结果决定下一步。"""
+        """依据 State 中的治理停止原因决定是否结束。"""
         del runtime
         events = list(state.get("governance_events", []))
         reason = str(state.get("stop_reason") or "")
@@ -326,8 +345,6 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
         }
         if reason:
             updates.update({"stop_reason": reason, "jump_to": "end"})
-        elif state.get("knowledge_base_result"):
-            updates["jump_to"] = "end"
         return updates
 
     def _batch_key(self, request: ToolCallRequest) -> tuple[str, tuple[str, ...]]:
@@ -516,20 +533,7 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
                 "status": "success" if event.get("ok") is True else "error",
             }
         )
-        knowledge_result = None
-        if request.tool_call["name"] == "search_knowledge_base" and event.get("ok"):
-            output_value = result.get("output")
-            if (
-                isinstance(output_value, dict)
-                and isinstance(output_value.get("rag_result"), dict)
-            ):
-                knowledge_result = result
-        return _tool_state_command(
-            output,
-            governed_message,
-            event,
-            knowledge_base_result=knowledge_result,
-        )
+        return _tool_state_command(output, governed_message, event)
 
     async def aafter_agent(self, state, runtime):
         """归一化框架结束原因并保存最终累计耗时。"""

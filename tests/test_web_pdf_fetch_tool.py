@@ -14,6 +14,7 @@ from pypdf import PdfReader, PdfWriter
 from app.config import get_settings
 from app.config import AppSettings
 from app.tools.context import ToolInvocationContext
+from app.tools.evidence import build_evidence_document
 from app.tools.errors import ToolErrorCode, ToolExecutionError
 from app.tools.catalog import get_local_tool_specs
 from app.tools.schemas import WebPdfFetchArgs, WebPdfFetchOutput
@@ -231,7 +232,12 @@ def test_web_pdf_output_validates_lengths_pages_and_fixed_fields():
         "start_page": 1,
         "pages_read": 2,
         "page_numbers": [1, 2],
-        "content": "[Page 1]\none\n\n[Page 2]\ntwo",
+        "evidence": [build_evidence_document(
+            page_content="[Page 1]\none\n\n[Page 2]\ntwo",
+            source_type="web_pdf", source_uri="https://example.com/final.pdf",
+            identity=("https://example.com/final.pdf", [1, 2], "one two"),
+            metadata={"page_numbers": [1, 2]},
+        )],
         "content_length": len("[Page 1]\none\n\n[Page 2]\ntwo"),
         "truncated": False,
     }
@@ -350,18 +356,46 @@ def test_two_page_pdf_preserves_markers_metadata_and_output_contract(monkeypatch
     assert output.total_pages == 2
     assert output.page_numbers == [1, 2]
     assert output.pages_read == 2
-    assert output.content == (
+    assert output.evidence[0].page_content == (
         "[Page 1]\nGoverned PDF page one\n\n"
         "[Page 2]\nGoverned PDF page two"
     )
     assert output.title == "Governed Web PDF Fixture"
     assert output.author == "Codex Tests"
     assert output.subject == "Public PDF extraction"
-    assert output.content_length == len(output.content)
+    assert output.content_length == len(output.evidence[0].page_content)
     assert output.truncated is False
-    dumped = output.model_dump()
+    document = output.evidence[0]
+    assert document.id
+    assert document.metadata["source_type"] == "web_pdf"
+    assert document.metadata["source_uri"] == output.final_url
+    for key in (
+        "requested_url", "final_url", "title", "author", "subject", "total_pages",
+        "start_page", "page_numbers", "content_type", "extractor", "truncated",
+        "content_is_untrusted",
+    ):
+        assert document.metadata[key] == getattr(output, key)
+    dumped = json.loads(json.dumps(output.model_dump(mode="json")))
     assert "body" not in dumped
     assert "metadata" not in dumped
+    assert "content" not in dumped
+    assert dumped["evidence"][0]["type"] == "Document"
+    assert dumped["evidence"][0]["page_content"] == document.page_content
+
+
+def test_pdf_evidence_identity_uses_url_actual_pages_and_content(monkeypatch):
+    _install_fake_manager(monkeypatch, [
+        FakeResponse(), FakeResponse(), FakeResponse(),
+        FakeResponse(url="https://example.com/another.pdf"),
+        FakeResponse(body=build_text_pdf(("changed text", "page two"))),
+    ])
+    documents = [
+        web_pdf_fetch_handler(args, ToolInvocationContext())["output"]["evidence"][0]
+        for args in (_args(), _args(), _args(start_page=2), _args(), _args())
+    ]
+    assert documents[0].id == documents[1].id
+    assert len({documents[index].id for index in (0, 2, 3, 4)}) == 4
+    assert documents[2].metadata["page_numbers"] == [2]
 
 
 def test_start_page_and_max_pages_select_actual_pdf_pages(monkeypatch):
@@ -374,7 +408,7 @@ def test_start_page_and_max_pages_select_actual_pdf_pages(monkeypatch):
 
     assert output["page_numbers"] == [2]
     assert output["pages_read"] == 1
-    assert output["content"] == "[Page 2]\nGoverned PDF page two"
+    assert output["evidence"][0].page_content == "[Page 2]\nGoverned PDF page two"
 
 
 def test_blank_page_is_skipped_without_renumbering_other_pages(monkeypatch):
@@ -389,8 +423,9 @@ def test_blank_page_is_skipped_without_renumbering_other_pages(monkeypatch):
 
     assert output["total_pages"] == 3
     assert output["page_numbers"] == [1, 3]
-    assert "[Page 2]" not in output["content"]
-    assert "[Page 3]\nGoverned PDF page two" in output["content"]
+    assert output["evidence"][0].metadata["page_numbers"] == [1, 3]
+    assert "[Page 2]" not in output["evidence"][0].page_content
+    assert "[Page 3]\nGoverned PDF page two" in output["evidence"][0].page_content
 
 
 def test_truncation_happens_after_page_markers_are_composed(monkeypatch):
@@ -405,10 +440,11 @@ def test_truncation_happens_after_page_markers_are_composed(monkeypatch):
         ToolInvocationContext(),
     )["output"]
 
-    assert output["content"].startswith("[Page 1]\n")
-    assert len(output["content"]) == 1000
+    assert output["evidence"][0].page_content.startswith("[Page 1]\n")
+    assert len(output["evidence"][0].page_content) == 1000
     assert output["content_length"] == 1000
     assert output["page_numbers"] == [1]
+    assert output["evidence"][0].metadata["page_numbers"] == [1]
     assert output["truncated"] is True
 
 

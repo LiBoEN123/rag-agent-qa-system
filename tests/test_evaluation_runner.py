@@ -1,6 +1,7 @@
 """统一 Evaluation Runner 与多轮内存 session 测试。"""
 
 from contextlib import contextmanager
+import csv
 import json
 from pathlib import Path
 
@@ -73,10 +74,8 @@ def test_core_agent_builds_when_environment_enables_mcp(
 
     with runner.evaluation_settings_scope(evaluation):
         invocation = prepare_agent_runtime_invocation(
-            original_question="请计算 1+1",
-            effective_question="请计算 1+1",
-            top_k=5,
-            decompose_top_k=10,
+            original_question="请列出知识库文档",
+            effective_question="请列出知识库文档",
             trace_id="evaluation-mcp-disabled",
             session_id="evaluation-mcp-disabled",
             tool_context=ToolInvocationContext(
@@ -119,7 +118,6 @@ def test_core_evaluation_exposes_only_authorized_local_tools(
     assert visible_names == [
         "search_knowledge_base",
         "compare_documents",
-        "simple_calculator",
         "list_documents",
         "get_chunk_text",
     ]
@@ -325,7 +323,7 @@ def test_capture_tool_output_keys_never_keeps_values(monkeypatch):
             "status": "success",
             "ok": True,
             "tool_name": spec.name,
-            "output": {"result": 7, "private_value": "must-not-persist"},
+            "output": {"count": 7, "private_value": "must-not-persist"},
         }
 
     monkeypatch.setattr(
@@ -335,19 +333,22 @@ def test_capture_tool_output_keys_never_keeps_values(monkeypatch):
     )
 
     with agent_evaluation.capture_tool_output_keys() as records:
-        spec = next((item for item in get_local_tool_specs(get_settings()) if item.name == "simple_calculator"), None)
+        spec = next((item for item in get_local_tool_specs(get_settings()) if item.name == "list_documents"), None)
         assert spec is not None
         framework_tools.execute_project_tool(
             spec=spec,
-            tool_args={"expression": "1+2"},
+            tool_args={},
         )
 
     assert records == [
         {
-            "tool_name": "simple_calculator",
+            "tool_name": "list_documents",
             "status": "success",
             "ok": True,
-            "output_keys": ["private_value", "result"],
+            "output_keys": ["count", "private_value"],
+            "tool_call_id": "",
+            "has_evidence": False,
+            "kb_chunk_ids": [],
         }
     ]
     assert "must-not-persist" not in repr(records)
@@ -454,14 +455,10 @@ def test_in_memory_multi_turn_uses_chat_service_history_and_isolation(
     first = agent_evaluation.execute_agent_case(
         dataset.cases[0],
         settings=settings,
-        top_k=5,
-        decompose_top_k=10,
     )
     second = agent_evaluation.execute_agent_case(
         dataset.cases[0],
         settings=settings,
-        top_k=5,
-        decompose_top_k=10,
     )
 
     assert first["passed"] is True
@@ -497,6 +494,8 @@ def _fake_manifest(run_id: str):
             "rag_eval_sha256": "b",
         },
         "rag": {
+            "prediction_schema_version": 3,
+            "retrieval_metric_k": 3,
             "index_source": "fake",
             "document_count": 1,
             "chunk_count": 1,
@@ -510,6 +509,68 @@ def _fake_manifest(run_id: str):
     }
 
 
+@pytest.mark.parametrize("all_failed", [False, True])
+def test_runner_completes_reports_with_runtime_failures(tmp_path, monkeypatch, all_failed):
+    from app.services.chat_models import ChatServiceOutcome
+    from scripts.evaluation import rag_evaluator, rag_predictions
+    from scripts.evaluation.rag.common import ChunkIndex
+
+    output = tmp_path / "run"
+    eval_file = tmp_path / "questions.json"
+    eval_file.write_text(json.dumps([{
+        "qid": f"q{i}", "question": f"问题{i}", "category": "test", "difficulty": "easy",
+        "expected_behavior": "answer", "gold_chunk_ids": [1], "gold_doc_ids": ["rules.md"],
+    } for i in (1, 2, 3)]))
+    attempted = []
+
+    def chat_turn(request, **kwargs):
+        attempted.append(request.question)
+        failed = all_failed or request.question == "问题2"
+        return ChatServiceOutcome(http_status=200, code=200, message="test", question=request.question, result={
+            "status": "MODEL_ERROR" if failed else "OK",
+            "answer": "unsafe" if failed else "正常回答", "reason": "model failure" if failed else "",
+        })
+
+    monkeypatch.setattr(rag_predictions, "initialize_rag_for_predictions", lambda **k: None)
+    monkeypatch.setattr(rag_predictions, "run_evaluation_chat_turn", chat_turn)
+    monkeypatch.setattr(rag_evaluator, "load_chunk_index", lambda **k: ChunkIndex({1: "rules.md"}, {1: "政策"}, "test"))
+    monkeypatch.setattr(runner, "get_settings", lambda: _settings(tmp_path))
+    monkeypatch.setattr(runner, "get_git_state", lambda: _fake_manifest("test")["code"])
+    monkeypatch.setattr(runner, "build_manifest", lambda **kwargs: _fake_manifest(kwargs["run_id"]))
+    monkeypatch.setattr("app.rag.pipeline.get_rag_status", lambda: {})
+
+    assert runner.main([
+        "--rag-only", "--agent-cases", str(FIXTURE), "--rag-eval-file", str(eval_file),
+        "--output-dir", str(output),
+    ]) == 0
+
+    assert attempted == ["问题1", "问题2", "问题3"]
+    failure_count = 3 if all_failed else 1
+    with (output / "rag/predictions.csv").open(encoding="utf-8-sig") as file:
+        reader = csv.DictReader(file)
+        assert reader.fieldnames == rag_predictions.PREDICTION_FIELDNAMES
+        assert len(list(reader)) == 3 - failure_count
+    summary = json.loads((output / "baseline_summary.json").read_text())
+    assert summary["rag"]["prediction_failure_count"] == failure_count
+    assert summary["rag"]["prediction_failure_status_counts"] == {"MODEL_ERROR": failure_count}
+    assert summary["rag"]["overall"]["prediction_coverage"] == (0 if all_failed else 0.6667)
+    assert summary["rag"]["category:test"]["prediction_coverage"] == (0 if all_failed else 0.6667)
+    if all_failed:
+        assert summary["rag"]["overall"]["avg_final_score"] == 0
+    failures = [json.loads(line) for line in (output / "failure_cases.jsonl").read_text().splitlines()]
+    runtime_failures = [row for row in failures if row["failure_reasons"] == ["runtime_error"]]
+    assert len(runtime_failures) == failure_count
+    sidecar = [json.loads(line) for line in (output / "rag/prediction_failures.jsonl").read_text().splitlines()]
+    assert {row["qid"] for row in sidecar} == {row["case_id"] for row in runtime_failures}
+    assert (output / "manifest.json").exists()
+    assert (output / "baseline_report.md").exists()
+    assert (output / "rag/per_question_report.csv").exists()
+    assert (output / "rag/summary_report.json").exists()
+    for path in output.rglob("*"):
+        if path.is_file():
+            assert "unsafe" not in path.read_text(encoding="utf-8-sig")
+
+
 def test_runner_writes_expected_output_structure(
     tmp_path,
     monkeypatch,
@@ -517,6 +578,7 @@ def test_runner_writes_expected_output_structure(
     settings = _settings(tmp_path)
     output = tmp_path / "run"
     rag_call = {}
+    agent_call = {}
 
     @contextmanager
     def no_scope(_settings):
@@ -556,7 +618,7 @@ def test_runner_writes_expected_output_structure(
     monkeypatch.setattr(
         runner,
         "run_agent_baseline",
-        lambda *args, **kwargs: ([], agent_summary),
+        lambda *args, **kwargs: (agent_call.update(kwargs) or [], agent_summary),
     )
     def fake_rag_baseline(**kwargs):
         rag_call.update(kwargs)
@@ -564,13 +626,6 @@ def test_runner_writes_expected_output_structure(
             "rows": [],
             "summary": {"overall": {"prediction_coverage": 1.0}},
             "judge_enabled": False,
-            "prediction_metadata": {
-                "prediction_schema_version": 2,
-                "effective_top_k": kwargs["top_k"],
-                "effective_decompose_top_k": kwargs[
-                    "decompose_top_k"
-                ],
-            },
         }
 
     monkeypatch.setattr(
@@ -596,10 +651,8 @@ def test_runner_writes_expected_output_structure(
             str(FIXTURE),
             "--output-dir",
             str(output),
-            "--top-k",
+            "--retrieval-k",
             "3",
-            "--decompose-top-k",
-            "7",
         ]
     )
 
@@ -620,8 +673,11 @@ def test_runner_writes_expected_output_structure(
     }
     report = (output / "baseline_report.md").read_text(encoding="utf-8")
     assert "LLM Judge skipped" in report
-    assert rag_call["top_k"] == 3
-    assert rag_call["decompose_top_k"] == 7
+    assert "Raw scores are not strictly comparable" in report
+    assert "Context metrics: unavailable / not applicable" in report
+    assert rag_call["retrieval_k"] == 3
+    assert "top_k" not in agent_call
+    assert "decompose_top_k" not in agent_call
 
 
 def test_dirty_worktree_requires_explicit_allow_dirty(
@@ -651,51 +707,3 @@ def test_dirty_worktree_requires_explicit_allow_dirty(
         )
 
     assert exc.value.code == 2
-
-
-def test_unified_rag_predictions_fail_fast_on_model_error(
-    tmp_path,
-    monkeypatch,
-):
-    from scripts.evaluation import rag_predictions
-
-    eval_file = tmp_path / "rag.json"
-    eval_file.write_text(
-        json.dumps([{"qid": "q1", "question": "问题"}]),
-        encoding="utf-8",
-    )
-    output = tmp_path / "predictions.csv"
-    monkeypatch.setattr(
-        rag_predictions,
-        "initialize_rag_for_predictions",
-        lambda force_rebuild=False: None,
-    )
-    monkeypatch.setattr(
-        rag_predictions,
-        "run_rag_once_with_result",
-        lambda question, top_k, decompose_top_k: (
-            {
-                "status": "MODEL_ERROR",
-                "answer": "",
-            },
-            rag_predictions.RagPredictionTrace(
-                final_chunk_ids=(),
-                context_chunk_ids=(),
-                reference_chunk_ids=(),
-                context_char_count=0,
-                top_k=top_k,
-                decompose_top_k=decompose_top_k,
-                decompose_llm_used=False,
-                status="MODEL_ERROR",
-            ),
-        ),
-    )
-
-    with pytest.raises(RuntimeError, match="qid=q1"):
-        rag_predictions.run_predictions(
-            eval_file=eval_file,
-            out_file=output,
-            fail_on_model_error=True,
-        )
-
-    assert not output.exists()

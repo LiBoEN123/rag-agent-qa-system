@@ -5,23 +5,20 @@
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.contracts.chat import PublicStatus
+from app.contracts.chat import PublicStatus, ToolMode
 
 
-# 定义聊天请求的问题、召回数量和可选会话标识。
+# 定义聊天任务与可选会话标识；检索数量由 Agent Tool Call 决定。
 class ChatRequest(BaseModel):
     question: str = Field(..., description="用户问题")
-    top_k: int | None = Field(None, ge=1, le=10, description="召回条数")
-    decompose_top_k: int | None = Field(
-        None, ge=1, le=10, description="问题拆分后的召回条数"
-    )
     session_id: str | None = Field(None, description="多轮会话 ID")
+    tool_mode: ToolMode = ToolMode.FULL
 
     model_config = ConfigDict(
+        extra="forbid",
         json_schema_extra={
             "example": {
                 "question": "普通本科四年制专业学生最长学习年限是多少？",
-                "top_k": 5,
                 "session_id": "demo_session_001",
             }
         }
@@ -55,7 +52,6 @@ class ChatData(BaseModel):
     tool_result_summary: str = ""
     tool_trace: list[dict] = Field(default_factory=list)
     router_llm_used: bool = False
-    decompose_llm_used: bool = False
     answer_llm_used: bool = False
     llm_call_count: int = Field(default=0, ge=0)
 
@@ -66,6 +62,13 @@ class ChatResponse(BaseModel):
     message: str
     trace_id: str = ""
     data: ChatData
+
+
+class SearchRequest(BaseModel):
+    """确定性诊断检索输入，独立于 Agent Chat 的请求合同。"""
+
+    question: str = Field(..., description="检索问题")
+    top_k: int | None = Field(None, ge=1, le=10, description="召回条数")
 
 
 # 描述诊断检索命中的文档片段及各阶段评分。

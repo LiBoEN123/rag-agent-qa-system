@@ -200,7 +200,9 @@ def parse_chunk_id_value(value: Any) -> List[int]:
 
 
 def parse_chunk_ids(pred: Dict[str, Any]) -> List[int]:
-    """优先从 final_chunk_ids 提取最终排序 chunk_id。"""
+    """v3 只读取实际观察；历史 v1/v2 保留纯数据解析。"""
+    if prediction_schema_version(pred) >= 3:
+        return list(dict.fromkeys(parse_chunk_ids_field(pred, "retrieved_chunk_ids")))
     value = None
     for key in CHUNK_FIELDS:
         if key in pred:

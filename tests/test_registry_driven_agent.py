@@ -16,7 +16,8 @@ from app.tools.contracts import ToolSpec
 from tests.support.local_tools import local_tools
 from app.tools.catalog import get_local_tool_specs
 from app.tools.result import tool_success
-from tests.support.agent_runtime import build_agent_harness
+from app.agent.final_response import FinalAgentResponse
+from tests.support.agent_runtime import FakeToolCallingModel, build_agent_harness
 from app.agent.runtime import reset_agent_runtime
 
 
@@ -31,25 +32,6 @@ class JoinTextsArgs(BaseModel):
 
     parts: list[str]
     separator: str = Field(default=" ")
-
-
-class FakeAgentModel:
-    """按序返回消息并记录每次绑定到模型的动态工具。"""
-
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self.bound_tool_names: list[str] = []
-        self.bound_tools = []
-        self.received_messages: list[list] = []
-
-    def bind_tools(self, tools):
-        self.bound_tools = list(tools)
-        self.bound_tool_names = [tool.name for tool in tools]
-        return self
-
-    async def ainvoke(self, messages):
-        self.received_messages.append(list(messages))
-        return self.responses.pop(0)
 
 
 def _invoke_local(
@@ -110,7 +92,7 @@ async def _invoke_dynamic_graph(
     monkeypatch,
     *,
     registry: list[ToolSpec],
-    model: FakeAgentModel,
+    model: FakeToolCallingModel,
     context: ToolInvocationContext,
     question: str = "调用动态测试工具",
 ):
@@ -126,8 +108,6 @@ async def _invoke_dynamic_graph(
     graph_input = {
         "original_question": question,
         "effective_question": question,
-        "top_k": 5,
-        "decompose_top_k": 10,
         "trace_id": context.trace_id,
         "session_id": context.session_id,
     }
@@ -189,7 +169,7 @@ async def test_agent_discovers_and_calls_echo_without_core_tool_mapping(monkeypa
     registry = []
     contexts: list[ToolInvocationContext] = []
     _register_dynamic_tools(registry, contexts)
-    model = FakeAgentModel(
+    model = FakeToolCallingModel(
         [
             AIMessage(
                 content="",
@@ -202,7 +182,7 @@ async def test_agent_discovers_and_calls_echo_without_core_tool_mapping(monkeypa
                     }
                 ],
             ),
-            AIMessage(content="echo complete"),
+            FinalAgentResponse(outcome="answer", answer="echo complete"),
         ]
     )
     context = ToolInvocationContext(
@@ -220,7 +200,7 @@ async def test_agent_discovers_and_calls_echo_without_core_tool_mapping(monkeypa
         context=context,
     )
 
-    assert model.bound_tool_names == ["echo_text", "join_texts"]
+    assert model.bound_tool_names == ["echo_text", "join_texts", model.structured_tool_name]
     message = model.received_messages[1][-1]
     assert isinstance(message, ToolMessage)
     assert json.loads(message.content)["output"] == {"text": "hello"}
@@ -231,8 +211,6 @@ async def test_agent_discovers_and_calls_echo_without_core_tool_mapping(monkeypa
     assert contexts[0].permissions == ("knowledge_base:read",)
     assert contexts[0].source == "registry_driven_test"
     assert contexts[0].effective_question == "调用动态测试工具"
-    assert contexts[0].top_k == 5
-    assert contexts[0].decompose_top_k == 10
     assert next((item for item in get_local_tool_specs(get_settings()) if item.name == "echo_text"), None) is None
 
 
@@ -242,7 +220,7 @@ async def test_new_tool_request_reaches_agent_without_router_changes(monkeypatch
     registry = []
     contexts: list[ToolInvocationContext] = []
     _register_dynamic_tools(registry, contexts)
-    model = FakeAgentModel(
+    model = FakeToolCallingModel(
         [
             AIMessage(
                 content="",
@@ -255,7 +233,7 @@ async def test_new_tool_request_reaches_agent_without_router_changes(monkeypatch
                     }
                 ],
             ),
-            AIMessage(content="任意新口吻"),
+            FinalAgentResponse(outcome="answer", answer="任意新口吻"),
         ]
     )
     context = ToolInvocationContext(
@@ -272,7 +250,7 @@ async def test_new_tool_request_reaches_agent_without_router_changes(monkeypatch
     )
 
     assert output["result"]["action"] == "agent"
-    assert model.bound_tool_names == ["echo_text", "join_texts"]
+    assert model.bound_tool_names == ["echo_text", "join_texts", model.structured_tool_name]
     assert output["result"]["answer"] == "任意新口吻"
     assert len(contexts) == 1
     assert contexts[0].trace_id == context.trace_id
@@ -285,7 +263,7 @@ async def test_agent_binds_different_dynamic_args_schema(monkeypatch):
     registry = []
     contexts: list[ToolInvocationContext] = []
     _register_dynamic_tools(registry, contexts)
-    model = FakeAgentModel(
+    model = FakeToolCallingModel(
         [
             AIMessage(
                 content="",
@@ -298,7 +276,7 @@ async def test_agent_binds_different_dynamic_args_schema(monkeypatch):
                     }
                 ],
             ),
-            AIMessage(content="registry driven"),
+            FinalAgentResponse(outcome="answer", answer="registry driven"),
         ]
     )
     context = ToolInvocationContext(
@@ -327,7 +305,7 @@ async def test_unknown_model_tool_call_is_structured_and_recoverable(monkeypatch
     registry = []
     contexts: list[ToolInvocationContext] = []
     _register_dynamic_tools(registry, contexts)
-    model = FakeAgentModel(
+    model = FakeToolCallingModel(
         [
             AIMessage(
                 content="",
@@ -340,7 +318,7 @@ async def test_unknown_model_tool_call_is_structured_and_recoverable(monkeypatch
                     }
                 ],
             ),
-            AIMessage(content="unknown tool handled"),
+            FinalAgentResponse(outcome="answer", answer="unknown tool handled"),
         ]
     )
 
@@ -386,7 +364,7 @@ async def test_provider_request_isolation(monkeypatch):
                 args_model=RequestArgs,
             )
         )
-        model = FakeAgentModel(
+        model = FakeToolCallingModel(
             [
                 AIMessage(
                     content="",
@@ -399,7 +377,7 @@ async def test_provider_request_isolation(monkeypatch):
                         }
                     ],
                 ),
-                AIMessage(content=trace_id),
+                FinalAgentResponse(outcome="answer", answer=trace_id),
             ]
         )
         await _invoke_dynamic_graph(
@@ -412,7 +390,8 @@ async def test_provider_request_isolation(monkeypatch):
                 source="isolation_test",
             ),
         )
-        return model.bound_tool_names
+        assert model.structured_tool_name in model.bound_tool_names
+        return [name for name in model.bound_tool_names if name != model.structured_tool_name]
 
     assert await run_request("request_a_tool", "trace-a") == ["request_a_tool"]
     assert await run_request("request_b_tool", "trace-b") == ["request_b_tool"]

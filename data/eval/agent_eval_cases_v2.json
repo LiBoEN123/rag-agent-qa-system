@@ -324,25 +324,6 @@
       "tags": ["tool", "migrated_v1"]
     },
     {
-      "id": "T004",
-      "legacy_id": "T004",
-      "version": 2,
-      "suite": "core",
-      "category": "tool_use",
-      "question": "请帮我算一下 1 + 2 * 3",
-      "expected": {
-        "decision": "use_agent",
-        "action": "agent",
-        "status": "OK",
-        "first_tool": "simple_calculator",
-        "tools_contains": ["simple_calculator"],
-        "keywords": ["7"],
-        "min_keyword_hits": 1,
-        "tool_output_keys": ["expression", "result"]
-      },
-      "tags": ["tool", "migrated_v1"]
-    },
-    {
       "id": "compare_documents_explicit_001",
       "legacy_id": "compare_documents_explicit_001",
       "version": 2,

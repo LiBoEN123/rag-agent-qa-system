@@ -152,3 +152,31 @@ def test_evidence_funnel_summary_includes_counts_and_diagnostics():
     assert overall["context_truncation_rate"] == 1.0
     assert overall["gold_lost_by_context_count"] == 1
     assert overall["gold_lost_by_reference_count"] == 0
+
+
+def test_v3_observation_cutoff_and_reference_metrics_without_context():
+    pred = {"prediction_schema_version": 3, "answer": "政策", "status": "OK",
+            "retrieved_chunk_ids": "2,1,2,3", "reference_chunk_ids": "3",
+            "final_chunk_ids": "1"}  # 历史字段不能覆盖 v3 实际观察。
+    rows, summary, _ = evaluate([_question([3])], {"q1": pred},
+                                ChunkIndex({1: "gold.md", 2: "other.md", 3: "gold.md"}, {}, "test"), k=2)
+    row = rows[0]
+    assert row["retrieval_gold_chunk_recall_at_k"] == 0.0
+    assert row["reference_gold_chunk_recall"] == 1.0
+    assert row["context_gold_chunk_recall"] is None
+    assert row["context_chunk_ids"] is None
+    assert row["final_chunk_ids"] is None
+    assert summary["overall"]["context_gold_chunk_recall"] is None
+
+
+def test_runtime_failure_has_no_secondary_retrieval_or_answer_classification():
+    row, _ = _evaluate({})
+    row.update({
+        "gold_present_in_final_but_missing_in_context": True,
+        "gold_present_in_context_but_not_referenced": True,
+        "gold_observed_but_not_referenced": True,
+        "key_point_judge_used": True, "missing_count": 1,
+        "behavior_label": "should_answer_but_refused",
+    })
+    failure, = classify_rag_failures([row])
+    assert failure["failure_reasons"] == ["runtime_error"]

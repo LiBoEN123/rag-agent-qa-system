@@ -16,7 +16,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from pydantic import SecretStr
 
@@ -31,16 +31,12 @@ SENSITIVE_KEY_FRAGMENTS = (
     "password",
     "secret",
 )
-PROMPT_INPUT_FILES = (
+AGENT_PROMPT_INPUT_FILES = (
     "app/prompts.py",
     "app/agent/query_rewrite.py",
-    "app/rag/decomposition.py",
-    "app/rag/generation.py",
-    "app/tools/compare_documents.py",
     "app/tools/catalog.py",
 )
-CONTEXT_SELECTION_SOURCE = "app/rag/generation.py"
-PREDICTION_SCHEMA_VERSION = 2
+PREDICTION_SCHEMA_VERSION = 3
 CORE_EVALUATION_MCP_MODE = "core_disabled"
 
 
@@ -182,11 +178,11 @@ def _read_index_metadata(
     }
 
 
-def _prompt_hashes() -> dict[str, str]:
-    """记录实际影响回答、改写、分解和工具选择的源文件哈希。"""
+def _prompt_hashes(paths: tuple[str, ...]) -> dict[str, str]:
+    """记录生产 Agent 的 prompt 源文件哈希。"""
     return {
         path: sha256_file(PROJECT_ROOT / path)
-        for path in PROMPT_INPUT_FILES
+        for path in paths
         if (PROJECT_ROOT / path).is_file()
     }
 
@@ -215,8 +211,7 @@ def build_manifest(
     agent_cases_path: Path | None,
     rag_eval_path: Path | None,
     coverage_report: dict[str, Any],
-    top_k: int,
-    decompose_top_k: int,
+    retrieval_metric_k: int,
     include_online: bool,
     use_llm_judge: bool,
     judge_model: str,
@@ -225,27 +220,10 @@ def build_manifest(
     selected_mcp_servers: list[str] | tuple[str, ...] = (),
     rag_status: dict[str, Any] | None = None,
     generated_at: str | None = None,
-    effective_rag_parameters: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """用显式白名单生成 manifest，绝不 dump 完整 Settings。"""
     tool_names, _, contract_hash = build_tool_contract(settings)
     git_state = get_git_state()
-    effective_parameters = dict(effective_rag_parameters or {})
-    effective_top_k = int(
-        effective_parameters.get("effective_top_k", top_k)
-    )
-    effective_decompose_top_k = int(
-        effective_parameters.get(
-            "effective_decompose_top_k",
-            decompose_top_k,
-        )
-    )
-    prediction_schema_version = int(
-        effective_parameters.get(
-            "prediction_schema_version",
-            PREDICTION_SCHEMA_VERSION,
-        )
-    )
     explicit_suites = selected_suites is not None
     suites = sorted(
         set(
@@ -279,6 +257,7 @@ def build_manifest(
                 "tools": safe_mcp_catalog,
             }
         )
+    agent_prompt_hashes = _prompt_hashes(AGENT_PROMPT_INPUT_FILES)
     manifest = {
         "schema_version": 2,
         "run_id": run_id,
@@ -314,16 +293,11 @@ def build_manifest(
         },
         "rag": {
             **_read_index_metadata(settings, rag_status),
-            "prediction_schema_version": prediction_schema_version,
-            "max_context_chars": settings.max_context_chars,
-            "requested_top_k": top_k,
-            "effective_top_k": effective_top_k,
-            "requested_decompose_top_k": decompose_top_k,
-            "effective_decompose_top_k": effective_decompose_top_k,
-            "context_selection_source": CONTEXT_SELECTION_SOURCE,
-            "context_selection_source_sha256": sha256_file(
-                PROJECT_ROOT / CONTEXT_SELECTION_SOURCE
-            ),
+            "prediction_schema_version": PREDICTION_SCHEMA_VERSION,
+            "prediction_producer": "production_chat_service",
+            "retrieval_metric_k": retrieval_metric_k,
+            "tool_mode": "rag_only",
+            "permissions": ["knowledge_base:read"],
         },
         "agent": {
             "answer_model": settings.model_name,
@@ -331,12 +305,8 @@ def build_manifest(
             "query_rewrite_model": (
                 settings.query_rewrite_model_name_resolved
             ),
-            "decompose_enabled": settings.enable_query_decompose,
-            "decompose_model": settings.decompose_model_name,
             "temperature": settings.temperature,
             "max_tokens": settings.llm_max_tokens,
-            "top_k": top_k,
-            "decompose_top_k": decompose_top_k,
             "budget": {
                 "max_iterations": settings.agent_max_iterations,
                 "max_tool_calls": settings.agent_max_tool_calls,
@@ -355,8 +325,10 @@ def build_manifest(
         },
         "mcp": mcp_metadata,
         "prompts": {
-            "files": _prompt_hashes(),
-            "combined_sha256": sha256_json(_prompt_hashes()),
+            "agent": {
+                "files": agent_prompt_hashes,
+                "combined_sha256": sha256_json(agent_prompt_hashes),
+            },
         },
         "judge": {
             "enabled": use_llm_judge,

@@ -3,7 +3,13 @@
 向 Agent 暴露文档列表、chunk 原文和相关证据检索等基础能力。
 """
 
+from urllib.parse import quote
+
+from langchain_core.documents import Document
+
 from app.tools.context import ToolInvocationContext
+from app.tools.evidence import build_evidence_document
+from app.tools.errors import ToolErrorCode, ToolExecutionError
 from app.tools.result import tool_error, tool_success
 
 
@@ -24,7 +30,7 @@ def list_documents() -> dict:
         return tool_error(tool_name, tool_input, str(exc))
 
 
-def get_chunk_text(chunk_id: int | str) -> dict:
+def get_chunk_text(chunk_id: int) -> dict:
     """按 chunk 编号读取完整文本并包装为标准工具结果。"""
     tool_name = "get_chunk_text"
     tool_input = {"chunk_id": chunk_id}
@@ -33,94 +39,98 @@ def get_chunk_text(chunk_id: int | str) -> dict:
 
         chunk = get_chunk_full_text(chunk_id)
         if not chunk.get("found"):
-            return tool_error(
-                tool_name,
-                tool_input,
-                f"未找到 chunk_id={chunk_id} 的 chunk，可能是知识库未初始化或 chunk_id 不存在",
+            raise ToolExecutionError(
+                f"未找到 chunk_id={chunk_id}。get_chunk_text.chunk_id 必须使用知识库 "
+                "evidence 的 metadata.chunk_id，不要使用 Document.id。",
+                code=ToolErrorCode.INVALID_ARGUMENTS,
+                retryable=False,
             )
         return tool_success(
             tool_name,
             tool_input,
-            {"chunk_id": chunk_id, "chunk": chunk},
+            {"count": 1, "evidence": [chunk_to_evidence_document(chunk)]},
         )
+    except ToolExecutionError:
+        raise
     except Exception as exc:
         return tool_error(tool_name, tool_input, str(exc))
 
 
-def _get_chunk_value(chunk: dict, key: str, default=None):
-    """优先从 chunk 顶层读取字段，其次读取 metadata。"""
-    if not isinstance(chunk, dict):
-        return default
-    value = chunk.get(key)
-    if value is not None:
-        return value
-    metadata = chunk.get("metadata") or {}
-    return metadata.get(key, default) if isinstance(metadata, dict) else default
-
-
-def _round_chunk_score(chunk: dict, key: str) -> float:
-    """安全读取并保留四位小数的 chunk 分数。"""
-    try:
-        return round(float(_get_chunk_value(chunk, key, 0.0) or 0.0), 4)
-    except (TypeError, ValueError):
-        return 0.0
+def chunk_to_evidence_document(chunk: dict) -> Document:
+    """将检索或原文读取的 chunk 投影为同一 Document，不改变正文和分数。"""
+    metadata = dict(chunk.get("metadata") or {})
+    source_uri = metadata.get("source_uri")
+    # 原索引 source_type 表示入库来源；transport source_type 表示工具证据种类。
+    if metadata.get("source_type"):
+        metadata["knowledge_source_type"] = metadata["source_type"]
+    for key in (
+        "source_id", "source_uri", "source_path", "document_uid", "file_type",
+        "page_number", "title_path", "file_name", "chunk_id", "position",
+        "bm25_score", "vector_score", "hybrid_score", "rerank_score",
+    ):
+        if chunk.get(key) is not None:
+            metadata[key] = chunk[key]
+    for key in (
+        "file_name", "chunk_id", "position", "bm25_score", "vector_score",
+        "hybrid_score", "rerank_score",
+    ):
+        metadata.setdefault(key, None)
+    source_id = metadata.get("source_id")
+    position = metadata.get("position")
+    chunk_id = metadata.get("chunk_id")
+    source_uri = source_uri or metadata.get("source_uri") or metadata.get("source_path")
+    if source_id and position is not None:
+        identity = ("source_position", source_id, str(position))
+    elif source_uri and position is not None:
+        identity = ("uri_position", source_uri, str(position))
+    elif chunk_id is not None and str(chunk_id).strip():
+        identity = ("chunk", source_id or source_uri or "", str(chunk_id))
+    else:
+        raise ValueError("chunk 缺少稳定来源和 locator")
+    # 旧 chunk 可能仅有 chunk_id；URI 明确标记为 KB locator，不伪造文件路径。
+    source_uri = source_uri or (
+        f"knowledge_base://source/{quote(str(source_id), safe='')}" if source_id
+        else f"knowledge_base://chunk/{quote(str(chunk_id), safe='')}"
+    )
+    return build_evidence_document(
+        page_content=chunk["text"], source_type="knowledge_base",
+        source_uri=source_uri, identity=identity, metadata=metadata,
+    )
 
 
 def search_knowledge_base(
     args: dict,
     context: ToolInvocationContext | None = None,
 ) -> dict:
-    """检索本地证据并在工具内部执行独立 RAG Graph。"""
+    """按本轮工具参数混合召回、重排，只返回候选证据。"""
     tool_name = "search_knowledge_base"
     try:
-        from app.config import get_settings
-        from app.rag.pipeline import search_relevant_chunks
-        from app.rag.graph import run_rag_subgraph
+        from app.rag.pipeline import get_rag_status, rerank, search_relevant_chunks
+
+        if not get_rag_status()["ready"]:
+            raise ToolExecutionError(
+                "知识库尚未准备完成",
+                code=ToolErrorCode.DEPENDENCY_UNAVAILABLE,
+                retryable=False,
+            )
 
         query = args["query"]
         top_k = args["top_k"]
         tool_input = {"query": query, "top_k": top_k}
 
-        prefetched_chunks = search_relevant_chunks(query, top_k=top_k)
-        effective_question = (
-            (context.effective_question if context is not None else "").strip()
-            or query
-        )
-        rag_top_k = (
-            context.top_k
-            if context is not None and context.top_k > 0
-            else top_k
-        )
-        decompose_top_k = (
-            context.decompose_top_k
-            if context is not None and context.decompose_top_k > 0
-            else get_settings().decompose_top_k
-        )
-        rag_result = run_rag_subgraph(
-            question=effective_question,
-            top_k=rag_top_k,
-            decompose_top_k=decompose_top_k,
-            retrieved_chunks=prefetched_chunks,
-            trace_id=context.trace_id if context is not None else "",
-        )
-        final_chunks = rag_result.get("final_chunks") or []
+        candidates = search_relevant_chunks(query, top_k=top_k)
+        final_chunks = rerank(candidates, query)[:top_k]
         return tool_success(
             tool_name,
             tool_input,
             {
+                "query": query,
                 "count": len(final_chunks),
-                "chunks": final_chunks,
-                "top_chunk_ids": [
-                    _get_chunk_value(chunk, "chunk_id")
-                    for chunk in final_chunks
-                ],
-                "top_scores": [
-                    _round_chunk_score(chunk, "hybrid_score")
-                    for chunk in final_chunks
-                ],
-                "rag_result": rag_result,
+                "evidence": [chunk_to_evidence_document(chunk) for chunk in final_chunks],
             },
         )
+    except ToolExecutionError:
+        raise
     except Exception as exc:
         return tool_error(
             tool_name,

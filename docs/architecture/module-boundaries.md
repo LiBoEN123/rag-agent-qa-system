@@ -23,6 +23,10 @@ app.api
 `app.ingestion` 定义的 repository contract，但 domain 不反向依赖 storage。
 `app.contracts | app.config | app.common` 是三个彼此独立的基础模块。
 
+工具正文证据直接使用 `langchain_core.documents.Document`。`app.tools.evidence` 只负责
+稳定 ID、构造与必填 metadata 校验；KB/Web/PDF 在各自工具中适配，Pydantic 输出校验和
+原生 ToolMessage 负责 JSON transport。它不持有 Agent state，也不负责最终引用绑定。
+
 PDF/DOCX 的稳定结构值对象位于 `app.ingestion.document_blocks`，由
 `KnowledgeDocument.structured_content` 持有并随 candidate JSON 持久化；
 Docling 仅由 `app.rag.parsing` infrastructure 适配，Local/Upload 共用此入口。
@@ -43,7 +47,7 @@ Ingestion domain 不导入 Docling 或反向导入 rag/sources，详见
 | `app.agent` | 直接 `create_agent` Runtime、Router、框架适配、治理事件和结果转换 | tools、rag、llm 及基础设施/基础层 | api、services |
 | `app.sources` | 显式外部 source fetch、纯 Adapter、proposal/approval 与 approved-only indexing 编排 | tools、rag、ingestion 及基础层 | api、services、agent |
 | `app.tools` | ToolSpec、Provider、Registry、Runtime 和具体工具 | rag、llm、storage 及基础层 | api、services、agent |
-| `app.rag` | 索引、检索、重排、生成、引用和独立 RAG Graph | llm、storage、observability 及基础层 | api、services、agent、tools |
+| `app.rag` | 索引、解析、检索、重排和诊断分数门 | llm、storage、observability 及基础层 | api、services、agent、tools |
 | `app.ingestion` | 永久知识进入前的 source、identity、provenance、trust、policy 与 approval domain | common | api、services、agent、tools、rag、llm、storage、observability |
 | `app.llm` | 模型传输、工厂、错误和模型 Schema | contracts、config、common | rag、tools、agent、services、api |
 | `app.storage` | SQLite session、ingestion repository 持久化适配 | ingestion 及基础层 | api、services、agent、tools、rag、sources |
@@ -137,7 +141,7 @@ python scripts/inspect_agent_runtime.py --check
 3. 跨层且框架无关的稳定类型放入 `app.contracts`；纯 helper 放入
    `app.common`；配置解析和语义留在 `app.config`。
 4. Agent Loop 与直接 Runtime 放入 `app.agent`，工具执行放入 `app.tools`；只有独立
-   RAG Graph、索引、检索和生成放入 `app.rag`；进入永久知识前的 identity、
+   索引、检索和重排放入 `app.rag`；生成与 grounding 由唯一 `app.agent` 执行；进入永久知识前的 identity、
    provenance、policy 和 approval 放入 `app.ingestion`；受治理外部 fetch 与这些边界的
    薄编排放入 `app.sources`。不要重新创建 Parent Agent Graph。
 5. 更新 `.importlinter` 时把新 package 加到职责匹配的层，不通过调整顺序把偶然

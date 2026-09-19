@@ -12,12 +12,13 @@ from app.tools.catalog import get_local_tool_specs
 from tests.support.local_tools import invoke_local_tool
 
 
-def test_execution_entry_runs_default_registry_tool():
+def test_execution_entry_runs_default_registry_tool(monkeypatch):
+    monkeypatch.setattr("app.rag.pipeline.preview_docs", lambda: [])
     result = invoke_local_tool(
         registry=get_local_tool_specs(get_settings()),
-        tool_name="simple_calculator",
-        tool_args={"expression": "1 + 2"},
-        context=ToolInvocationContext(trace_id="direct-trace"),
+        tool_name="list_documents",
+        tool_args={},
+        context=ToolInvocationContext(trace_id="direct-trace", permissions=("knowledge_base:read",)),
     )
     assert result["ok"] is True
     assert result["governance"]["decision"] == "allow"
@@ -34,7 +35,7 @@ def test_public_tool_trace_redacts_args_and_summarizes_chunk_output():
         result={
             "status": "success",
             "ok": True,
-            "output": {"chunk": {"text": chunk_text, "token": "raw-token"}},
+            "output": {"count": 1, "evidence": [{"page_content": chunk_text, "metadata": {"token": "raw-token"}}]},
             "governance": {"decision": "allow", "risk_level": "read_only"},
             "runtime": {"attempt_count": 1},
         },
@@ -64,10 +65,9 @@ def test_knowledge_tool_trace_projects_public_final_evidence():
         },
     ]
     output = {
+        "query": "对比两个政策",
         "count": 2,
-        "chunks": chunks,
-        "top_chunk_ids": ["final-b", "final-c"],
-        "top_scores": [0.82, 0.73],
+        "evidence": [{"metadata": chunk} for chunk in chunks],
     }
     trace = build_tool_trace(
         step_id=1,
@@ -90,23 +90,23 @@ def test_governance_event_normalization_is_pure_and_keeps_separate_step_counts()
     model = {
         "kind": "model", "ok": True, "has_tool_calls": True,
         "requested_tool_call_count": 1, "cost_ms": 2,
-        "available_tool_names": ["simple_calculator"],
+        "available_tool_names": ["list_documents"],
     }
     tool = {
-        "kind": "tool", "name": "simple_calculator",
-        "args": {"expression": "1+2"},
+        "kind": "tool", "name": "list_documents",
+        "args": {},
         "result": {
-            "ok": True, "status": "success", "output": {"result": 3},
-            "tool_call_id": "calc-1", "runtime": {"attempt_count": 1},
+            "ok": True, "status": "success", "output": {"count": 0},
+            "tool_call_id": "list-1", "runtime": {"attempt_count": 1},
         },
         "ok": True, "counted_call": True, "handler_executed": True,
-        "cost_ms": 3, "tool_call_id": "calc-1",
+        "cost_ms": 3, "tool_call_id": "list-1",
     }
     blocked = {
-        "kind": "tool", "name": "simple_calculator",
+        "kind": "tool", "name": "list_documents",
         "result": {"ok": False, "error": "blocked"},
         "counted_call": False, "error_code": "repeated_tool_call",
-        "stop_reason": "repeated_tool_call", "tool_call_id": "calc-2",
+        "stop_reason": "repeated_tool_call", "tool_call_id": "list-2",
     }
     events = [model, blocked, tool, model, blocked, tool]
     original = deepcopy(events)
@@ -118,27 +118,27 @@ def test_governance_event_normalization_is_pure_and_keeps_separate_step_counts()
     assert trace[0] == {
         "step": "agent_iteration", "iteration_index": 1, "status": "success",
         "model_has_tool_calls": True, "requested_tool_call_count": 1,
-        "model_cost_ms": 2, "available_tool_names": ["simple_calculator"],
+        "model_cost_ms": 2, "available_tool_names": ["list_documents"],
         "error_type": "",
     }
     assert trace[3] == {**trace[0], "iteration_index": 2}
     assert trace[1] == trace[4] == {
         "step": "tool_call", "action": "tool_call",
-        "tool_name": "simple_calculator", "tool_status": "error", "success": False,
+        "tool_name": "list_documents", "tool_status": "error", "success": False,
         "error": "blocked", "error_code": "repeated_tool_call",
-        "tool_call_id": "calc-2", "cost_ms": 0, "handler_executed": False,
+        "tool_call_id": "list-2", "cost_ms": 0, "handler_executed": False,
         "will_return_to_agent_model": False, "stop_reason": "repeated_tool_call",
         "call_fingerprint": "",
     }
     assert trace[2] == {
         "step": "tool_call", "step_id": 1, "action": "tool_call",
-        "tool_name": "simple_calculator", "tool_args": {"expression": "1+2"},
-        "sanitized_tool_args": {"expression": "1+2"}, "tool_status": "success",
-        "success": True, "summary": "计算工具执行完成", "error": "", "cost_ms": 3,
-        "error_code": "", "tool_call_id": "calc-1", "policy_decision": "",
+        "tool_name": "list_documents", "tool_args": {},
+        "sanitized_tool_args": {}, "tool_status": "success",
+        "success": True, "summary": "文档列表工具执行完成", "error": "", "cost_ms": 3,
+        "error_code": "", "tool_call_id": "list-1", "policy_decision": "",
         "risk_level": "", "approval_required": False, "args_fingerprint": "",
         "attempt_count": 1, "max_attempts": 0, "timed_out": False,
-        "output_summary": {"result": 3}, "failure_kind": "", "handler_executed": True,
+        "output_summary": {"count": 0}, "failure_kind": "", "handler_executed": True,
         "will_return_to_agent_model": True, "stop_reason": "", "call_fingerprint": "",
     }
     assert trace[5] == {**trace[2], "step_id": 2}
@@ -158,10 +158,10 @@ def test_governance_event_normalization_is_pure_and_keeps_separate_step_counts()
 )
 def test_public_tool_trace_keeps_ok_precedence(result, success):
     trace = build_tool_trace(
-        step_id=1, tool_name="simple_calculator", tool_args={}, result=result, cost_ms=0,
+        step_id=1, tool_name="list_documents", tool_args={}, result=result, cost_ms=0,
     )
     assert trace["success"] is success
-    assert trace["summary"] == ("计算工具执行完成" if success else "工具执行失败")
+    assert trace["summary"] == ("文档列表工具执行完成" if success else "工具执行失败")
     assert trace["error"] == ("" if success else "Tool execution failed")
 
 
@@ -170,7 +170,7 @@ def test_public_tool_trace_keeps_ok_precedence(result, success):
     [
         *[(code, "安全策略错误 token=raw-token", "安全策略错误 token=***REDACTED***")
           for code in (
-              "permission_denied", "sql_permission_denied", "approval_required",
+              "permission_denied", "approval_required",
               "missing_idempotency_key", "invalid_invocation_context", "policy_denied",
               "audit_write_failed",
           )],
@@ -182,14 +182,14 @@ def test_public_tool_trace_keeps_ok_precedence(result, success):
 )
 def test_public_tool_trace_keeps_safe_error_policy(error_code, raw_error, expected):
     trace = build_tool_trace(
-        step_id=1, tool_name="simple_calculator", tool_args={}, cost_ms=0,
+        step_id=1, tool_name="list_documents", tool_args={}, cost_ms=0,
         result={"ok": False, "error_code": error_code, "error": raw_error},
     )
     assert trace["error"] == expected
     assert trace["summary"] == "工具执行失败"
 
 
-@pytest.mark.parametrize("tool_name", ["simple_calculator", "search_knowledge_base", "mcp_probe"])
+@pytest.mark.parametrize("tool_name", ["list_documents", "search_knowledge_base", "mcp_probe"])
 @pytest.mark.parametrize("output", [None, ["private raw output"], "private raw output"])
 def test_public_tool_trace_normalizes_non_dict_output(tool_name, output):
     trace = build_tool_trace(
@@ -200,18 +200,14 @@ def test_public_tool_trace_normalizes_non_dict_output(tool_name, output):
     if tool_name == "search_knowledge_base":
         assert trace["final_chunk_count"] == 0
         assert trace["top_chunk_ids"] == trace["top_scores"] == trace["hits"] == []
+    elif tool_name == "list_documents":
+        assert trace["output_summary"] == {"count": 0}
     else:
         assert trace["output_summary"] == {}
 
 
-@pytest.mark.parametrize("tool_name", ["web_search", "web_fetch", "web_pdf_fetch", "query_sql_readonly"])
-def test_public_tool_trace_keeps_business_body_out_of_output_summary(tool_name, settings_env, tmp_path):
-    if tool_name == "query_sql_readonly":
-        settings_env(
-            sql_tool_enabled=True,
-            sql_database_url=f"sqlite:///{tmp_path / 'business.sqlite3'}",
-            sql_allowed_tables=("students",),
-        )
+@pytest.mark.parametrize("tool_name", ["web_search", "web_fetch", "web_pdf_fetch"])
+def test_public_tool_trace_keeps_business_body_out_of_output_summary(tool_name):
     trace = build_tool_trace(
         step_id=1, tool_name=tool_name, tool_args={"password": "raw-password"}, cost_ms=1,
         result={
@@ -245,35 +241,36 @@ def test_public_nonlocal_tool_trace_preserves_existing_redaction_boundary():
     assert "raw-" not in json.dumps(trace)
 
 
-def test_knowledge_tool_trace_caps_redacts_and_keeps_metadata_score_fallbacks():
-    chunks = [
+def test_knowledge_tool_trace_caps_redacts_and_derives_metadata_scores():
+    evidence = [
         {
-            "metadata": {"chunk_id": f"chunk-{index}", "file_name": "token=raw-token"},
-            "text": "private full chunk", "rerank_score": 0.9, "hybrid_score": 0.8,
-            "bm25_score": 0.7, "vector_score": 0.6,
+            "metadata": {
+                "chunk_id": f"chunk-{index}", "file_name": "token=raw-token",
+                "rerank_score": 0.9, "hybrid_score": 0.8,
+                "bm25_score": 0.7, "vector_score": 0.6,
+            },
+            "page_content": "private full chunk",
         }
         for index in range(12)
     ]
-    chunks[1].update(chunk_id="explicit-id", file_name="explicit.md")
-    chunks[2]["metadata"] = "invalid metadata"
-    chunks[3] = "invalid chunk"
+    evidence[1]["metadata"].update(chunk_id=0, file_name="explicit.md", hybrid_score="invalid-score")
+    evidence[2]["metadata"] = "invalid metadata"
+    evidence[3] = "invalid document"
     trace = build_tool_trace(
         step_id=1, tool_name="search_knowledge_base", tool_args={}, cost_ms=1,
         result={"ok": True, "output": {
-            "count": 12, "chunks": chunks,
-            "top_chunk_ids": tuple(f"chunk-{index}" for index in range(12)),
-            "top_scores": [0.8] * 12,
+            "count": 12, "evidence": evidence,
         }},
     )
     assert trace["final_chunk_count"] == 12
-    assert trace["top_chunk_ids"] == [f"chunk-{index}" for index in range(10)]
-    assert trace["top_scores"] == [0.8] * 10
+    assert trace["top_chunk_ids"] == ["chunk-0", 0, None, *[f"chunk-{index}" for index in range(4, 10)]]
+    assert trace["top_scores"] == [0.8, 0.0, 0.0, *[0.8] * 6]
     assert len(trace["hits"]) == 9
     assert trace["hits"][0] == {
         "chunk_id": "chunk-0", "file_name": "token=***REDACTED***",
         "rerank": 0.9, "score": 0.8, "bm25": 0.7, "vector": 0.6,
     }
-    assert trace["hits"][1]["chunk_id"] == "explicit-id"
+    assert trace["hits"][1]["chunk_id"] == 0
     assert trace["hits"][1]["file_name"] == "explicit.md"
     assert trace["hits"][2]["chunk_id"] is None
     assert trace["hits"][2]["file_name"] is None

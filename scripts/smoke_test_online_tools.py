@@ -150,7 +150,10 @@ def _print_result(
             "title": output.get("title", ""),
             "content_length": output.get("content_length", 0),
             "truncated": bool(output.get("truncated", False)),
-            "content_preview": str(output.get("content", ""))[:500],
+            "content_preview": "\n\n".join(
+                str(item.get("page_content", ""))
+                for item in output.get("evidence", []) if isinstance(item, dict)
+            )[:500],
         }
     else:
         details = {
@@ -161,7 +164,10 @@ def _print_result(
             "page_numbers": output.get("page_numbers", []),
             "content_length": output.get("content_length", 0),
             "truncated": bool(output.get("truncated", False)),
-            "content_preview": str(output.get("content", ""))[:500],
+            "content_preview": "\n\n".join(
+                str(item.get("page_content", ""))
+                for item in output.get("evidence", []) if isinstance(item, dict)
+            )[:500],
         }
     print(json.dumps({**common, **details}, ensure_ascii=False, indent=2))
 

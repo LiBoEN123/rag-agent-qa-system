@@ -3,9 +3,13 @@
 from collections.abc import Callable, Mapping
 from typing import Any, Literal, Protocol
 
-from langchain_core.messages import AIMessage
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.agent.final_response import (
+    FinalAgentResponse,
+    collect_evidence_from_messages,
+    document_to_reference,
+)
 from app.agent.guardrails import AgentStopReason
 from app.agent.router import RouteDecision
 from app.agent.tool_events import normalize_governance_events
@@ -17,7 +21,7 @@ INTERNAL_ERROR_MARKER = "internal_error"
 DIRECT_ANSWER_TEXT = (
     "我是一个 RAG 知识库问答助手。"
     "我可以基于已导入的文档回答问题并提供引用，"
-    "也可以列出知识库文档、查看指定 chunk、对比文档内容，以及进行简单四则运算。"
+    "也可以列出知识库文档、查看指定 chunk、对比文档内容。"
 )
 
 # 仅供公开 trace 序列化，保留既有值；不参与 Result 状态决策。
@@ -48,10 +52,8 @@ class AgentRunResult(BaseModel):
     tool_result_summary: str
     tool_trace: list[dict[str, Any]]
     router_llm_used: Literal[False]
-    decompose_llm_used: bool
     answer_llm_used: bool
     llm_call_count: int = Field(ge=0)
-    timings: dict[str, Any]
 
 
 class AgentResultInvocation(Protocol):
@@ -63,19 +65,16 @@ class AgentResultInvocation(Protocol):
 
 def summarize_tool_trace_for_result(
     *,
-    status: AgentResultStatus,
     reason: str,
     tool_trace: list[dict[str, Any]],
 ) -> str:
     """从唯一公开 trace 中提取计入工具调用的结果摘要。"""
-    if status is AgentResultStatus.NEED_CLARIFICATION:
-        return "未调用工具，问题需要澄清"
     summaries = []
     for trace in tool_trace:
         # step_id 仅属于 counted call；handler_executed 会排除已计数的失败。
         if trace.get("step") != "tool_call" or "step_id" not in trace:
             continue
-        if trace.get("tool_name") == "search_knowledge_base":
+        if trace.get("tool_name") == "search_knowledge_base" and trace.get("success"):
             count = trace.get("final_chunk_count", 0)
             summaries.append(f"知识库检索完成，召回 {count} 个 chunk")
             continue
@@ -114,23 +113,9 @@ def build_decide_trace(
     }
 
 
-def resolve_llm_call_count(
-    *,
-    decompose_llm_used: bool,
-    answer_llm_used: bool,
-    current_count: int,
-) -> int:
-    """解析 Agent Model 与 RAG 回答侧已经累计的精确调用数。"""
-    return max(
-        int(bool(decompose_llm_used)) + int(bool(answer_llm_used)),
-        max(0, int(current_count or 0)),
-    )
-
-
 def upsert_llm_usage_trace(
     tool_trace: list[dict[str, Any]],
     *,
-    decompose_llm_used: bool,
     answer_llm_used: bool,
     llm_call_count: int,
 ) -> list[dict[str, Any]]:
@@ -138,7 +123,6 @@ def upsert_llm_usage_trace(
     usage_trace = {
         "step": "llm_usage",
         "router_llm_used": False,
-        "decompose_llm_used": bool(decompose_llm_used),
         "answer_llm_used": bool(answer_llm_used),
         "llm_call_count": max(0, int(llm_call_count or 0)),
     }
@@ -156,30 +140,6 @@ def upsert_llm_usage_trace(
     if not usage_written:
         updated.append(usage_trace)
     return updated
-
-
-def _normalize_ai_content(content: object) -> str:
-    """把模型支持的文本内容形式归一化为字符串。"""
-    if isinstance(content, str):
-        return content.strip()
-    if not isinstance(content, list):
-        return str(content or "").strip()
-    parts = [
-        item if isinstance(item, str) else item.get("text", "")
-        for item in content
-        if isinstance(item, (str, dict))
-    ]
-    return "\n".join(str(part).strip() for part in parts if str(part).strip())
-
-
-def _last_final_ai(messages: object) -> AIMessage | None:
-    """查找最近一条不再请求工具的最终模型消息。"""
-    if not isinstance(messages, list):
-        return None
-    for message in reversed(messages):
-        if isinstance(message, AIMessage) and not message.tool_calls:
-            return message
-    return None
 
 
 def _stop_result(reason: str) -> tuple[AgentResultStatus, str]:
@@ -268,15 +228,12 @@ def build_short_circuit_result(
         tool_result_summary=summary,
         tool_trace=upsert_llm_usage_trace(
             tool_trace,
-            decompose_llm_used=False,
             answer_llm_used=False,
             llm_call_count=0,
         ),
         router_llm_used=False,
-        decompose_llm_used=False,
         answer_llm_used=False,
         llm_call_count=0,
-        timings={},
     )
     return _finalize_agent_result(result)
 
@@ -300,111 +257,89 @@ def build_framework_agent_result(
         build_decide_trace(invocation.decision, route_cost_ms=invocation.route_cost_ms),
         *event_trace,
     ]
-    decompose_llm_used = False
     answer_llm_used = successful_models > 0
-    rag_llm_call_count = 0
     references = []
-    retrieval_confidence = answer_confidence = 0.0
-    timings = {}
-
-    raw_knowledge_result = framework_output.get("knowledge_base_result")
-    knowledge_result = (
-        raw_knowledge_result if isinstance(raw_knowledge_result, Mapping) else {}
-    )
-    knowledge_output = knowledge_result.get("output")
-    rag_result = (
-        knowledge_output.get("rag_result")
-        if isinstance(knowledge_output, Mapping)
-        else None
-    )
-    if isinstance(rag_result, Mapping):
-        status = {
-            "OK": AgentResultStatus.OK,
-            "NEED_CLARIFICATION": AgentResultStatus.NEED_CLARIFICATION,
-            "NO_RELEVANT_INFO": AgentResultStatus.NO_RELEVANT_INFO,
-            "MODEL_ERROR": AgentResultStatus.MODEL_ERROR,
-            "MODEL_BAD_OUTPUT": AgentResultStatus.MODEL_ERROR,
-        }.get(str(rag_result.get("status") or "").strip(), AgentResultStatus.INTERNAL_ERROR)
-        answer = str(rag_result.get("answer") or "")
-        reason = str(rag_result.get("reason") or "")
-        raw_references = rag_result.get("references")
-        references = (
-            [dict(item) for item in raw_references if isinstance(item, dict)]
-            if isinstance(raw_references, list)
-            else []
-        )
-        retrieval_confidence = rag_result.get("retrieval_confidence", 0.0)
-        answer_confidence = rag_result.get("answer_confidence", 0.0)
-        raw_timings = rag_result.get("timings")
-        timings = dict(raw_timings) if isinstance(raw_timings, dict) else {}
-        decompose_llm_used = bool(rag_result.get("decompose_llm_used"))
-        answer_llm_used = bool(rag_result.get("answer_llm_used"))
-        rag_llm_call_count = max(0, int(rag_result.get("llm_call_count", 0) or 0))
-        mode = "rag"
+    clarification_question = ""
+    grounding_diagnostics: dict[str, list[str]] = {}
+    stop_reason = str(framework_output.get("stop_reason") or "")
+    if stop_reason and stop_reason != AgentStopReason.COMPLETED.value:
+        status, answer = _stop_result(stop_reason)
+        reason = stop_reason
+        mode = "error"
     else:
-        stop_reason = str(framework_output.get("stop_reason") or "")
-        if stop_reason and stop_reason != AgentStopReason.COMPLETED.value:
-            status, answer = _stop_result(stop_reason)
-            reason = stop_reason
-            mode = "error"
+        final = framework_output.get("structured_response")
+        status = AgentResultStatus.MODEL_ERROR
+        answer = "模型未生成可用的最终回答。"
+        reason = "Agent structured response is missing or invalid"
+        mode = "error"
+        try:
+            # 只接受框架已解析的 Pydantic 对象；不解析模型文本或未验证的 dict。
+            if not isinstance(final, FinalAgentResponse):
+                raise ValueError(reason)
+            final = FinalAgentResponse.model_validate(final)
+            evidence = collect_evidence_from_messages(framework_output.get("messages"))
+            if any(evidence_id not in evidence for evidence_id in final.evidence_ids):
+                reason = "Agent structured response referenced unavailable evidence"
+                grounding_diagnostics = {
+                    "requested_evidence_ids": list(final.evidence_ids),
+                    "available_evidence_ids": list(evidence),
+                    "unavailable_evidence_ids": [
+                        evidence_id for evidence_id in final.evidence_ids
+                        if evidence_id not in evidence
+                    ],
+                }
+                raise ValueError(reason)
+            if final.outcome == "answer" and evidence and not final.evidence_ids:
+                reason = "Agent structured answer did not cite available evidence"
+                raise ValueError(reason)
+        except (ValueError, TypeError):
+            pass
         else:
-            message = _last_final_ai(framework_output.get("messages"))
-            answer = _normalize_ai_content(message.content if message else "")
-            status = AgentResultStatus.OK if answer else AgentResultStatus.MODEL_ERROR
-            reason = (
-                "Agent model produced final answer"
-                if answer
-                else "Agent model returned empty final answer"
-            )
-            mode = "agent_loop" if answer else "error"
-            answer = answer or "模型未生成可用的最终回答。"
+            mode = "agent_loop"
+            if final.outcome == "answer":
+                status = AgentResultStatus.OK
+                answer = final.answer
+                reason = "Agent model produced structured answer"
+                references = [document_to_reference(evidence[key]) for key in final.evidence_ids]
+            elif final.outcome == "no_evidence":
+                status = AgentResultStatus.NO_RELEVANT_INFO
+                answer = final.answer or "我无法根据当前取得的证据确定答案。"
+                reason = "Agent reported insufficient evidence"
+            else:
+                status = AgentResultStatus.NEED_CLARIFICATION
+                answer = clarification_question = final.clarification_question
+                reason = "Agent requested clarification"
     compose_trace = {
         "step": "compose_final_answer",
         "mode": mode,
         "status": _TRACE_STATUSES[status],
         "answer_len": len(answer),
         "reason": reason,
+        **grounding_diagnostics,
     }
-    if mode == "rag":
-        compose_trace.update(
-            reference_count=len(references),
-            retrieval_confidence=retrieval_confidence,
-            answer_confidence=answer_confidence,
-            timings=timings,
-            rag_llm_call_count=rag_llm_call_count,
-        )
     tool_trace.append(compose_trace)
-    llm_call_count = resolve_llm_call_count(
-        decompose_llm_used=decompose_llm_used,
-        answer_llm_used=answer_llm_used,
-        current_count=successful_models + rag_llm_call_count,
-    )
+    llm_call_count = sum(item.get("kind") == "model" for item in events)
     result = AgentRunResult(
         status=status,
         answer=answer,
         references=references,
-        retrieval_confidence=retrieval_confidence,
-        answer_confidence=answer_confidence,
+        retrieval_confidence=0.0,
+        answer_confidence=0.0,
         need_clarification=status is AgentResultStatus.NEED_CLARIFICATION,
-        clarification_question=(
-            answer if status is AgentResultStatus.NEED_CLARIFICATION else ""
-        ),
+        clarification_question=clarification_question,
         reason=reason,
         action=str(invocation.decision.get("action") or ""),
         tool_result_summary=summarize_tool_trace_for_result(
-            status=status, reason=reason, tool_trace=tool_trace,
+            reason=reason, tool_trace=tool_trace,
         ),
         tool_trace=upsert_llm_usage_trace(
             tool_trace,
-            decompose_llm_used=decompose_llm_used,
             answer_llm_used=answer_llm_used,
             llm_call_count=llm_call_count,
         ),
         router_llm_used=False,
-        decompose_llm_used=decompose_llm_used,
         answer_llm_used=answer_llm_used,
         llm_call_count=llm_call_count,
-        timings=timings,
     )
     return _finalize_agent_result(result)
 
@@ -422,10 +357,8 @@ def create_agent_result(
     action: str = "",
     tool_result_summary: str = "",
     tool_trace: list[dict[str, Any]] | None = None,
-    decompose_llm_used: bool = False,
     answer_llm_used: bool = False,
     llm_call_count: int = 0,
-    timings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """为服务级特殊分支构造同一完整、经过校验的结果字典。"""
     result = AgentRunResult(
@@ -441,10 +374,8 @@ def create_agent_result(
         tool_result_summary=tool_result_summary,
         tool_trace=list(tool_trace or []),
         router_llm_used=False,
-        decompose_llm_used=decompose_llm_used,
         answer_llm_used=answer_llm_used,
         llm_call_count=llm_call_count,
-        timings=dict(timings or {}),
     )
     return result.model_dump(mode="json")
 
@@ -569,6 +500,5 @@ __all__ = [
     "build_short_circuit_result",
     "create_agent_result",
     "get_route_decision_for_trace",
-    "resolve_llm_call_count",
     "upsert_llm_usage_trace",
 ]

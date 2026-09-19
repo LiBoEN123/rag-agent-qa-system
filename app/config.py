@@ -10,7 +10,7 @@ import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, Literal
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
 
 from pydantic import (
     AliasChoices,
@@ -20,7 +20,6 @@ from pydantic import (
     model_validator,
 )
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
-from sqlalchemy.engine import make_url
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -29,21 +28,9 @@ WEB_FETCH_TOOL_TIMEOUT_SECONDS = 30
 _TOOL_PERMISSION_PATTERN = re.compile(
     r"^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*$"
 )
-_SQL_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_SQL_SYSTEM_SCHEMAS = frozenset(
-    {
-        "information_schema",
-        "mysql",
-        "performance_schema",
-        "pg_catalog",
-        "sys",
-        "temp",
-    }
-)
 
 WebSearchSafeSearch = Literal["on", "moderate", "off"]
 ToolPermissions = Annotated[tuple[str, ...], NoDecode]
-SqlAllowedTables = Annotated[tuple[str, ...], NoDecode]
 
 
 def project_path(path: Path) -> Path:
@@ -55,58 +42,6 @@ def project_path(path: Path) -> Path:
 def secret_value(value: SecretStr | None) -> str | None:
     """仅在模型传输边界解开 SecretStr。"""
     return value.get_secret_value() if value is not None else None
-
-
-def sqlite_database_path(database_url: SecretStr | str | None) -> Path | None:
-    """安全解析 SQLite 文件 URL；非 SQLite URL 返回 ``None``。"""
-    raw_url = secret_value(database_url) if isinstance(database_url, SecretStr) else database_url
-    if not raw_url:
-        return None
-    try:
-        url = make_url(raw_url)
-    except Exception as exc:
-        raise ValueError("SQL_DATABASE_URL 格式无效") from exc
-    if url.get_backend_name() != "sqlite":
-        return None
-    database = url.database
-    if not database or database == ":memory:":
-        raise ValueError("SQL_DATABASE_URL 必须指向持久化 SQLite 文件")
-    if "\x00" in database:
-        raise ValueError("SQL_DATABASE_URL 包含非法 SQLite 路径")
-    if database.startswith("file:"):
-        database = unquote(database.removeprefix("file:"))
-        if database.startswith("//"):
-            raise ValueError("SQL_DATABASE_URL 不支持带主机名的 SQLite URI")
-    return project_path(Path(database)).resolve()
-
-
-def validate_sql_allowed_table(value: str) -> str:
-    """校验一个无通配符的 ``table`` 或 ``schema.table`` allowlist 项。"""
-    normalized = value.strip()
-    parts = normalized.split(".")
-    if not normalized or len(parts) not in {1, 2}:
-        raise ValueError(
-            "SQL_ALLOWED_TABLES 仅允许 table 或 schema.table 标识符"
-        )
-    if any(
-        len(part) > 128 or not _SQL_IDENTIFIER_PATTERN.fullmatch(part)
-        for part in parts
-    ):
-        raise ValueError(
-            "SQL_ALLOWED_TABLES 只允许安全 SQL 标识符，不支持通配符或引号"
-        )
-    table_key = parts[-1].casefold()
-    schema_key = parts[0].casefold() if len(parts) == 2 else None
-    if table_key.startswith("sqlite_") or (
-        schema_key is not None
-        and (
-            schema_key in _SQL_SYSTEM_SCHEMAS
-            or schema_key.startswith("pg_temp")
-            or schema_key.startswith("pg_toast")
-        )
-    ):
-        raise ValueError("SQL_ALLOWED_TABLES 不允许系统表或临时 Schema")
-    return normalized
 
 
 def validate_trusted_web_proxy_url(value: str) -> str:
@@ -169,11 +104,10 @@ class AppSettings(BaseSettings):
     chroma_persist_dir: Path = BASE_DIR / "data" / "chroma"
     chroma_collection_name: str = "mini_rag_chunks"
     chroma_index_collection_name: str = "mini_rag_chunks_v2"
+    # 诊断检索默认值；不控制 Agent Tool Call。
     top_k: int = Field(default=5, ge=1, le=10)
-    decompose_top_k: int = Field(default=10, ge=1, le=20)
     chunk_size: int = 600
     chunk_overlap: int = 120
-    max_context_chars: int = 2500
     vector_threshold: float = 0.35
     auto_rebuild_on_startup: bool = False
 
@@ -211,13 +145,6 @@ class AppSettings(BaseSettings):
     query_rewrite_max_tokens: int = 256
     query_rewrite_temperature: float = 0.0
 
-    # 查询分解
-    enable_query_decompose: bool = True
-    decompose_api_key: SecretStr | None = None
-    decompose_model_name: str = "qwen2.5:7b"
-    decompose_api_url: str = "http://localhost:11434/v1/chat/completions"
-    decompose_timeout: int = 15
-    decompose_max_tokens: int = 512
 
     # 结果评判
     use_llm_judge: bool = False
@@ -294,23 +221,6 @@ class AppSettings(BaseSettings):
     ingestion_admin_api_enabled: bool = False
     ingestion_admin_api_key: SecretStr | None = None
     ingestion_upload_max_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
-
-    # 受治理的只读 SQL 工具
-    sql_tool_enabled: bool = False
-    sql_database_url: SecretStr | None = None
-    sql_allowed_tables: SqlAllowedTables = ()
-    sql_default_schema: str | None = None
-    sql_max_rows: int = Field(default=50, ge=1, le=1000)
-    sql_max_columns: int = Field(default=50, ge=1, le=200)
-    sql_max_cell_chars: int = Field(default=1000, ge=16, le=100_000)
-    sql_max_output_chars: int = Field(default=50_000, ge=64, le=1_000_000)
-    sql_statement_timeout_ms: int = Field(default=5000, ge=1, le=120_000)
-    sql_tool_timeout_seconds: float = Field(
-        default=10.0,
-        gt=0,
-        le=300,
-        allow_inf_nan=False,
-    )
 
     # Web 工具
     web_trusted_proxy_mode: bool = False
@@ -407,9 +317,7 @@ class AppSettings(BaseSettings):
     @field_validator(
         "llm_api_key",
         "query_rewrite_api_key",
-        "decompose_api_key",
         "judge_api_key",
-        "sql_database_url",
         "ingestion_admin_api_key",
         mode="before",
     )
@@ -425,10 +333,8 @@ class AppSettings(BaseSettings):
 
     @field_validator(
         "top_k",
-        "decompose_top_k",
         "chunk_size",
         "chunk_overlap",
-        "max_context_chars",
         "vector_threshold",
         "temperature",
         "llm_max_tokens",
@@ -437,8 +343,6 @@ class AppSettings(BaseSettings):
         "query_rewrite_timeout",
         "query_rewrite_max_tokens",
         "query_rewrite_temperature",
-        "decompose_timeout",
-        "decompose_max_tokens",
         "judge_timeout",
         "judge_max_retries",
         "judge_max_tokens",
@@ -461,12 +365,6 @@ class AppSettings(BaseSettings):
         "mcp_max_tools_per_server",
         "mcp_max_text_chars",
         "mcp_max_structured_chars",
-        "sql_max_rows",
-        "sql_max_columns",
-        "sql_max_cell_chars",
-        "sql_max_output_chars",
-        "sql_statement_timeout_ms",
-        "sql_tool_timeout_seconds",
         "web_search_timeout",
         "web_fetch_connect_timeout",
         "web_fetch_read_timeout",
@@ -526,48 +424,6 @@ class AppSettings(BaseSettings):
             return tuple(value)
         raise ValueError("TOOL_DEFAULT_PERMISSIONS 必须是权限序列")
 
-    @field_validator("sql_allowed_tables", mode="before")
-    @classmethod
-    def _parse_sql_allowed_tables(cls, value: object) -> tuple[str, ...]:
-        """解析、校验并按首次出现顺序去重 SQL 表 allowlist。"""
-        if isinstance(value, str):
-            items = value.split(",")
-        elif isinstance(value, (list, tuple)):
-            items = list(value)
-        else:
-            raise ValueError("SQL_ALLOWED_TABLES 必须是逗号分隔文本或字符串序列")
-        normalized: list[str] = []
-        seen: set[str] = set()
-        for item in items:
-            if not isinstance(item, str):
-                raise ValueError("SQL_ALLOWED_TABLES 每一项都必须是字符串")
-            table_name = validate_sql_allowed_table(item)
-            dedupe_key = table_name.casefold()
-            if dedupe_key not in seen:
-                seen.add(dedupe_key)
-                normalized.append(table_name)
-        return tuple(normalized)
-
-    @field_validator("sql_default_schema", mode="before")
-    @classmethod
-    def _normalize_sql_default_schema(cls, value: object) -> str | None:
-        """规范化可选默认 Schema，并拒绝可注入标识符。"""
-        if value is None or (isinstance(value, str) and not value.strip()):
-            return None
-        if not isinstance(value, str):
-            raise ValueError("SQL_DEFAULT_SCHEMA 必须为空或字符串")
-        normalized = value.strip()
-        if not _SQL_IDENTIFIER_PATTERN.fullmatch(normalized):
-            raise ValueError("SQL_DEFAULT_SCHEMA 必须是安全 SQL 标识符")
-        schema_key = normalized.casefold()
-        if (
-            schema_key in _SQL_SYSTEM_SCHEMAS
-            or schema_key.startswith("pg_temp")
-            or schema_key.startswith("pg_toast")
-        ):
-            raise ValueError("SQL_DEFAULT_SCHEMA 不允许系统或临时 Schema")
-        return normalized
-
     @model_validator(mode="after")
     def _validate_configuration(self) -> AppSettings:
         """校验需要多个配置字段共同满足的约束。"""
@@ -613,41 +469,6 @@ class AppSettings(BaseSettings):
                 raise ValueError(
                     "TOOL_DEFAULT_PERMISSIONS 必须使用 resource:action 格式"
                 )
-        if self.sql_tool_enabled:
-            if self.sql_database_url is None:
-                raise ValueError(
-                    "SQL_TOOL_ENABLED=true 时必须配置 SQL_DATABASE_URL"
-                )
-            if not self.sql_allowed_tables:
-                raise ValueError(
-                    "SQL_TOOL_ENABLED=true 时 SQL_ALLOWED_TABLES 不能为空"
-                )
-            if (
-                self.sql_statement_timeout_ms
-                >= self.sql_tool_timeout_seconds * 1000
-            ):
-                raise ValueError(
-                    "SQL_STATEMENT_TIMEOUT_MS 必须小于 SQL_TOOL_TIMEOUT_SECONDS"
-                    " 对应的总工具超时"
-                )
-            sqlite_path = sqlite_database_path(self.sql_database_url)
-            if sqlite_path is not None:
-                protected_files = {
-                    self.sqlite_db_path.resolve(),
-                    self.tool_audit_path.resolve(),
-                }
-                protected_directories = {
-                    self.index_store_dir.resolve(),
-                    self.chroma_persist_dir.resolve(),
-                    (BASE_DIR / "outputs").resolve(),
-                }
-                if sqlite_path in protected_files or any(
-                    sqlite_path.is_relative_to(directory)
-                    for directory in protected_directories
-                ):
-                    raise ValueError(
-                        "SQL_DATABASE_URL 不得指向项目内部数据库或持久化目录"
-                    )
         return self
 
     @property
@@ -774,8 +595,6 @@ __all__ = [
     "project_path",
     "resolve_web_proxy",
     "secret_value",
-    "sqlite_database_path",
-    "validate_sql_allowed_table",
     "validate_rag_environment",
     "validate_startup_environment",
 ]

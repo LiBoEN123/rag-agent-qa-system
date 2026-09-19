@@ -7,17 +7,19 @@ from typing import Annotated, Any
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
     ModelCallLimitMiddleware,
-    ToolCallLimitMiddleware,
     ToolErrorMiddleware,
     ToolRetryMiddleware,
 )
 from langchain.agents.middleware.types import AgentState as LangChainAgentState
+from langchain.agents.structured_output import ToolStrategy
 from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
 from typing_extensions import NotRequired
 
+from app.agent.final_response import FinalAgentResponse
 from app.agent.framework_middleware import (
     _MODEL_GOVERNANCE_KEY,
+    ProjectToolCallLimitMiddleware,
     ProjectToolExecutionMiddleware,
     ProjectToolGovernanceMiddleware,
 )
@@ -25,6 +27,7 @@ from app.agent.framework_tools import ProjectStructuredTool, resolve_agent_tools
 from app.agent.tool_visibility import ProjectToolVisibilityMiddleware
 from app.config import AppSettings, get_settings
 from app.llm.factory import get_answer_model
+from app.prompts import AGENT_SYSTEM_PROMPT
 from app.tools.context import ToolInvocationContext, build_default_tool_context
 from app.tools.execution import project_failure_content, retry_project_failure
 
@@ -34,26 +37,12 @@ def _prefer_stop_reason(left: str, right: str) -> str:
     return right or left
 
 
-def _prefer_knowledge_base_result(
-    left: dict[str, Any] | None,
-    right: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    """同批知识库调用完成时保留最后一个非空交接结果。"""
-    return right or left
-
-
 class FrameworkAgentState(LangChainAgentState):
     """create_agent 内部使用的最小治理状态。"""
 
     governance_events: NotRequired[Annotated[list[dict[str, Any]], operator.add]]
     agent_elapsed_ms: NotRequired[int]
     stop_reason: NotRequired[Annotated[str, _prefer_stop_reason]]
-    knowledge_base_result: NotRequired[
-        Annotated[
-            dict[str, Any] | None,
-            _prefer_knowledge_base_result,
-        ]
-    ]
 
 
 class _DeferredAgentModel:
@@ -77,7 +66,9 @@ class _DeferredAgentModel:
         bound = self._model().bind_tools(tools, **clean_kwargs)
         return _GovernedBoundModel(
             bound,
-            available_tool_names=[tool.name for tool in tools],
+            available_tool_names=[
+                tool.name for tool in tools if tool.name != FinalAgentResponse.__name__
+            ],
         )
 
     def bind(self, **kwargs):
@@ -101,12 +92,16 @@ class _GovernedBoundModel:
     def _success(self, output: Any, started: int) -> Any:
         if not isinstance(output, AIMessage):
             return output
+        business_calls = [
+            call for call in output.tool_calls
+            if call["name"] != FinalAgentResponse.__name__
+        ]
         event = {
             "kind": "model",
             "ok": True,
             "cost_ms": max(0, _now_ms() - started),
-            "has_tool_calls": bool(output.tool_calls),
-            "requested_tool_call_count": len(output.tool_calls),
+            "has_tool_calls": bool(business_calls),
+            "requested_tool_call_count": len(business_calls),
             "available_tool_names": self._available_tool_names,
         }
         return output.model_copy(
@@ -190,6 +185,8 @@ def build_framework_agent(
     agent = create_agent(
         _DeferredAgentModel(),
         tools=resolved_tools,
+        system_prompt=AGENT_SYSTEM_PROMPT,
+        response_format=ToolStrategy(FinalAgentResponse, handle_errors=True),
         middleware=[
             ProjectToolVisibilityMiddleware(),
             resolved_governance,
@@ -198,7 +195,7 @@ def build_framework_agent(
                 run_limit=resolved.agent_max_iterations,
                 exit_behavior="end",
             ),
-            ToolCallLimitMiddleware(
+            ProjectToolCallLimitMiddleware(
                 run_limit=resolved.agent_max_tool_calls,
                 exit_behavior="continue",
             ),

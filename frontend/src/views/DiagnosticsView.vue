@@ -29,7 +29,6 @@ const cards: { key: keyof Omit<MetricsSummary, 'status_count'>; label: string; p
   { key: 'internal_error_count', label: '内部错误' },
   { key: 'no_relevant_info_count', label: '无相关信息' },
   { key: 'router_llm_used_count', label: 'Router 使用 LLM' },
-  { key: 'decompose_llm_used_count', label: 'Decompose 使用 LLM' },
   { key: 'answer_llm_used_count', label: 'Answer 使用 LLM' },
 ]
 

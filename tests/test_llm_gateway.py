@@ -1,14 +1,20 @@
-"""统一 ModelGateway 及 RAG generation 接入的回归测试。"""
+"""统一 ModelGateway 的协议、错误与 fallback 回归测试。"""
 
 import pytest
 from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.llm.errors import ModelCallError, StructuredOutputError
 from app.llm.gateway import ModelGateway
-from app.llm.schemas import AnswerOutput
-from app.rag import generation
+
+
+class GatewayPayload(BaseModel):
+    """Gateway 通用结构化解析 fixture，与生产回答合同无关。"""
+
+    model_config = ConfigDict(strict=True)
+    answer: str
+    references: list[str] = Field(default_factory=list)
 
 
 MESSAGES = [
@@ -188,7 +194,7 @@ def test_pydantic_v2_validation_preserves_instance_identity():
 @pytest.mark.parametrize("as_dict", [False, True], ids=["instance", "dict"])
 def test_structured_call_returns_schema_instance(as_dict):
     """原生 structured 输出转换为 Schema，已有实例保持对象身份。"""
-    expected = AnswerOutput(answer="structured", references=["Reference 1"])
+    expected = GatewayPayload(answer="structured", references=["Reference 1"])
 
     class StructuredRunnable:
         def invoke(self, messages):
@@ -197,15 +203,15 @@ def test_structured_call_returns_schema_instance(as_dict):
 
     class StructuredModel(RecordingModel):
         def with_structured_output(self, schema):
-            assert schema is AnswerOutput
+            assert schema is GatewayPayload
             return StructuredRunnable()
 
     model = StructuredModel()
     gateway = ModelGateway(role="answer", langchain_model=model)
 
-    result = gateway.invoke_structured(MESSAGES, AnswerOutput)
+    result = gateway.invoke_structured(MESSAGES, GatewayPayload)
 
-    assert isinstance(result, AnswerOutput)
+    assert isinstance(result, GatewayPayload)
     assert result == expected
     if not as_dict:
         assert result is expected
@@ -226,7 +232,7 @@ def test_structured_incompatibility_degrades_to_same_model_text_json():
     )
     gateway = ModelGateway(role="answer", langchain_model=model)
 
-    result = gateway.invoke_structured(MESSAGES, AnswerOutput)
+    result = gateway.invoke_structured(MESSAGES, GatewayPayload)
 
     assert result.answer == "text fallback"
     assert result.references == []
@@ -255,7 +261,7 @@ def test_provider_capability_error_during_invoke_degrades_to_text_json(status_co
     )
     gateway = ModelGateway(role="answer", langchain_model=model)
 
-    result = gateway.invoke_structured(MESSAGES, AnswerOutput)
+    result = gateway.invoke_structured(MESSAGES, GatewayPayload)
 
     assert result.answer == "request fallback"
     assert len(model.calls) == 1
@@ -268,7 +274,7 @@ def test_missing_structured_method_degrades_to_same_model_text_json():
     )
     gateway = ModelGateway(role="answer", langchain_model=model)
 
-    result = gateway.invoke_structured(MESSAGES, AnswerOutput)
+    result = gateway.invoke_structured(MESSAGES, GatewayPayload)
 
     assert result.answer == "attribute fallback"
     assert len(model.calls) == 1
@@ -301,7 +307,7 @@ def test_structured_transport_errors_do_not_retry_as_text(exception):
     gateway = ModelGateway(role="answer", langchain_model=model)
 
     with pytest.raises(ModelCallError):
-        gateway.invoke_structured(MESSAGES, AnswerOutput)
+        gateway.invoke_structured(MESSAGES, GatewayPayload)
 
     assert model.calls == []
 
@@ -321,10 +327,10 @@ def test_invalid_native_structured_result_does_not_retry_as_text():
     gateway = ModelGateway(role="answer", langchain_model=model)
 
     with pytest.raises(StructuredOutputError) as error:
-        gateway.invoke_structured(MESSAGES, AnswerOutput)
+        gateway.invoke_structured(MESSAGES, GatewayPayload)
 
     assert model.calls == []
-    assert error.value.schema_name == "AnswerOutput"
+    assert error.value.schema_name == "GatewayPayload"
     assert error.value.detail == "ValidationError"
     assert isinstance(error.value.__cause__, ValidationError)
 
@@ -345,10 +351,10 @@ def test_native_structured_parser_error_does_not_retry_as_text():
     gateway = ModelGateway(role="answer", langchain_model=model)
 
     with pytest.raises(StructuredOutputError) as error:
-        gateway.invoke_structured(MESSAGES, AnswerOutput)
+        gateway.invoke_structured(MESSAGES, GatewayPayload)
 
     assert model.calls == []
-    assert error.value.schema_name == "AnswerOutput"
+    assert error.value.schema_name == "GatewayPayload"
     assert error.value.detail == "OutputParserException"
     assert error.value.__cause__ is parser_error
 
@@ -369,9 +375,9 @@ def test_invalid_structured_text_maps_to_structured_output_error():
         StructuredOutputError,
         match="结构化内容不符合预期",
     ) as error:
-        gateway.invoke_structured(MESSAGES, AnswerOutput)
+        gateway.invoke_structured(MESSAGES, GatewayPayload)
 
-    assert error.value.schema_name == "AnswerOutput"
+    assert error.value.schema_name == "GatewayPayload"
     assert error.value.detail == "ValueError"
 
 
@@ -396,7 +402,7 @@ def test_text_fallback_requires_all_fields_and_valid_types(content):
     )
 
     with pytest.raises(StructuredOutputError) as error:
-        gateway.invoke_structured(MESSAGES, AnswerOutput)
+        gateway.invoke_structured(MESSAGES, GatewayPayload)
 
     assert error.value.detail == "ValidationError"
 
@@ -413,21 +419,3 @@ def test_model_call_error_redacts_api_key_from_user_and_debug_messages(monkeypat
     assert "environment-secret-key" not in error.user_message
     assert "environment-secret-key" not in error.detail
     assert "[REDACTED]" in error.user_message
-
-
-def test_generation_call_llm_uses_answer_factory_and_keeps_prompt(monkeypatch):
-    """Answer 调用使用对应工厂，并返回经过校验的 Pydantic 实例。"""
-    model = RecordingModel(
-        AIMessage(content='{"answer":"answer content","references":[]}')
-    )
-    monkeypatch.setattr(generation, "get_answer_model", lambda: model)
-
-    result = generation.call_llm("question", "context", trace_id="answer-trace")
-
-    assert result == AnswerOutput(answer="answer content", references=[])
-    assert isinstance(result, AnswerOutput)
-    assert len(model.calls) == 1
-    assert [message.content for message in model.calls[0]] == [
-        message["content"]
-        for message in generation._build_answer_messages("question", "context")
-    ]

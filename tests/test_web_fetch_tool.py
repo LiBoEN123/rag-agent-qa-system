@@ -21,6 +21,7 @@ from app.config import (
     AppSettings,
 )
 from app.tools.context import ToolInvocationContext
+from app.tools.evidence import build_evidence_document
 from app.tools.errors import ToolErrorCode, ToolExecutionError
 from app.tools.catalog import get_local_tool_specs
 from app.tools.schemas import WebFetchArgs, WebFetchOutput
@@ -205,7 +206,11 @@ def test_web_fetch_output_validates_url_status_and_content_length():
         "final_url": "https://example.com/final",
         "status_code": 200,
         "content_type": "text/plain",
-        "content": "正文",
+        "evidence": [build_evidence_document(
+            page_content="正文", source_type="web_page",
+            source_uri="https://example.com/final",
+            identity=("https://example.com/final", "正文"), metadata={},
+        )],
         "content_length": 2,
         "truncated": False,
     }
@@ -316,7 +321,8 @@ def test_explicit_server_proxy_is_used_but_never_returned(
     kwargs = managers[0].session.calls[0][2]
     assert managers[0].config.ip_filter_enable is True
     assert kwargs["proxies"] == {"http": proxy, "https": proxy}
-    assert proxy not in json.dumps(result)
+    serialized = {**result, "output": WebFetchOutput.model_validate(result["output"]).model_dump(mode="json")}
+    assert proxy not in json.dumps(serialized)
 
 
 def test_trusted_proxy_mode_delegates_ip_policy_and_uses_explicit_proxy(
@@ -342,7 +348,8 @@ def test_trusted_proxy_mode_delegates_ip_policy_and_uses_explicit_proxy(
     assert manager.config.ip_filter_allow_loopback_ips is False
     assert manager.session.trust_env is False
     assert kwargs["proxies"] == {"http": proxy, "https": proxy}
-    assert proxy not in json.dumps(result)
+    serialized = {**result, "output": WebFetchOutput.model_validate(result["output"]).model_dump(mode="json")}
+    assert proxy not in json.dumps(serialized)
 
 
 def test_trusted_proxy_mode_without_proxy_fails_closed(settings_env):
@@ -427,13 +434,44 @@ def test_html_types_use_real_trafilatura(monkeypatch, content_type):
 
     assert output.content_type == content_type
     assert output.title == "受治理的网页正文测试文章"
-    assert "Trafilatura 正文提取" in output.content
+    assert "Trafilatura 正文提取" in output.evidence[0].page_content
     assert output.published_date == "2026-07-22"
     assert output.author == ""
     assert output.content_is_untrusted is True
-    assert output.content_length == len(output.content)
-    assert "<html" not in output.content
-    assert "站点导航" not in output.content
+    assert output.content_length == len(output.evidence[0].page_content)
+    assert "<html" not in output.evidence[0].page_content
+    assert "站点导航" not in output.evidence[0].page_content
+    document = output.evidence[0]
+    assert document.id
+    assert document.metadata["source_type"] == "web_page"
+    assert document.metadata["source_uri"] == output.final_url
+    for key in (
+        "requested_url", "final_url", "title", "author", "published_date",
+        "language", "content_type", "extractor", "truncated", "content_is_untrusted",
+    ):
+        assert document.metadata[key] == getattr(output, key)
+    dumped = json.loads(json.dumps(output.model_dump(mode="json")))
+    assert "content" not in dumped
+    assert dumped["evidence"][0]["page_content"] == document.page_content
+    assert dumped["evidence"][0]["type"] == "Document"
+
+
+def test_web_evidence_identity_uses_final_url_and_returned_content(monkeypatch):
+    _install_fake_manager(monkeypatch, [
+        FakeResponse(body=body, content_type="text/plain", url=url)
+        for body, url in (
+            (b"one", "https://example.com/final"),
+            (b"one", "https://example.com/final"),
+            (b"two", "https://example.com/final"),
+            (b"one", "https://example.com/another"),
+        )
+    ])
+    documents = [
+        web_fetch_handler(_args(), ToolInvocationContext())["output"]["evidence"][0]
+        for _ in range(4)
+    ]
+    assert documents[0].id == documents[1].id
+    assert len({documents[index].id for index in (0, 2, 3)}) == 3
 
 
 def test_plain_text_is_normalized_without_html_extraction(monkeypatch):
@@ -449,7 +487,7 @@ def test_plain_text_is_normalized_without_html_extraction(monkeypatch):
 
     output = web_fetch_handler(_args(), ToolInvocationContext())["output"]
 
-    assert output["content"] == "first\n\nsecond"
+    assert output["evidence"][0].page_content == "first\n\nsecond"
     assert output["title"] == ""
     assert output["author"] == ""
     assert output["published_date"] == ""
@@ -495,7 +533,7 @@ def test_extracted_content_is_truncated_at_requested_character_limit(monkeypatch
 
     output = web_fetch_handler(_args(max_chars=1000), ToolInvocationContext())["output"]
 
-    assert len(output["content"]) == 1000
+    assert len(output["evidence"][0].page_content) == 1000
     assert output["content_length"] == 1000
     assert output["truncated"] is True
 

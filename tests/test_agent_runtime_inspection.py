@@ -38,7 +38,7 @@ def test_runtime_report_preserves_direct_create_agent_contract(
 
     assert inspection.EXPECTED_AGENT_NODES <= agent_nodes
     assert inspection.FORBIDDEN_PARENT_NODES.isdisjoint(agent_nodes)
-    assert "knowledge_base_result" in state_fields
+    assert "knowledge_base_result" not in state_fields
     assert "framework_events_applied" not in state_fields
     assert {
         "create_agent_is_only_agent_loop",
@@ -54,7 +54,8 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "result_builder_owns_agent_result",
         "chat_service_consumes_agent_result",
         "streaming_uses_create_agent_directly",
-        "rag_graph_is_tool_owned",
+        "knowledge_tool_is_retrieval_only",
+        "knowledge_success_returns_to_agent",
         "local_tool_execution_entry_is_unique",
         "local_handler_is_adapter_owned",
         "local_visibility_is_model_middleware",
@@ -71,7 +72,6 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "http_framework_boundary",
         "settings_framework_boundary",
         "zero_import_ignores",
-        "sql_tools_disabled_by_default",
         "mcp_disabled_by_default",
         "tool_runtime_governance_preserved",
     } <= {item["name"] for item in report["checks"]}
@@ -137,11 +137,12 @@ def test_tool_contracts_use_model_facing_json_schema(
 
     assert {tool["name"] for tool in tools} == {
         "search_knowledge_base",
+        "find_documents",
+        "search_document",
         "web_search",
         "web_fetch",
         "web_pdf_fetch",
         "compare_documents",
-        "simple_calculator",
         "list_documents",
         "get_chunk_text",
     }
@@ -151,8 +152,9 @@ def test_tool_contracts_use_model_facing_json_schema(
     assert all(tool["risk_level"] == "read_only" for tool in tools)
     assert report["default_visible_tools"] == [
         "search_knowledge_base",
+        "find_documents",
+        "search_document",
         "compare_documents",
-        "simple_calculator",
         "list_documents",
         "get_chunk_text",
     ]
@@ -185,12 +187,12 @@ def test_tool_contracts_use_model_facing_json_schema(
 
 
 def test_all_local_framework_tool_schemas_match_registry_contract(settings_factory):
-    """全部八个 Local Tool 保持名称、描述、字段、required 与类型不变。"""
+    """全部九个 Local Tool 保持名称、描述、字段、required 与类型不变。"""
     settings = _knowledge_only(settings_factory, "web:search", "web:fetch")
     registry = get_local_tool_specs(settings)
     tools = get_local_tools(settings)
 
-    assert len(tools) == 8
+    assert len(tools) == 9
     for tool in tools:
         spec = next((item for item in registry if item.name == tool.name), None)
         assert spec is not None

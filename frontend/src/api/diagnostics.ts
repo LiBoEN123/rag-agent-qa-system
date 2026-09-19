@@ -84,7 +84,6 @@ export interface MetricsSummary {
   avg_latency_ms: number
   avg_llm_call_count: number
   router_llm_used_count: number
-  decompose_llm_used_count: number
   answer_llm_used_count: number
 }
 

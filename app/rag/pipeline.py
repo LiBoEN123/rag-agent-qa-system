@@ -25,7 +25,6 @@ from app.rag.retrieval import (
     retrieve as retrieve_impl,
     rerank as rerank_impl,
     search_relevant_chunks as search_relevant_chunks_impl,
-    retrieve_with_sub_queries,
 )
 from app.rag.scoring import safe_float
 from app.rag.store import (
@@ -50,7 +49,6 @@ RAG_READY = False
 RAG_INIT_MESSAGE = "RAG 尚未初始化"
 INDEX_SOURCE = "none"
 NO_DOCUMENTS_MESSAGE = "当前知识库为空，请先在 data 目录中放入文档后再提问"
-STOP_WORD = "我无法根据提供的文档确定答案"
 
 
 # =========================
@@ -254,24 +252,6 @@ def rerank(candidates: list[dict], question: str=""):
         rerank_model=rerank_model,
         candidates=candidates,
         question=question,
-    )
-
-
-def retrieve_with_sub_queries_from_current_index(
-    question: str,
-    sub_queries: list[dict],
-    final_top_k: int,
-) -> list[dict]:
-    """使用当前进程索引执行现有多查询检索，不复制索引或检索逻辑。"""
-    return retrieve_with_sub_queries(
-        question=question,
-        sub_queries=sub_queries,
-        chunks=chunks,
-        bm25=bm25,
-        doc_embeddings=doc_embeddings,
-        model=model,
-        rerank_model=rerank_model,
-        final_top_k=final_top_k,
     )
 
 

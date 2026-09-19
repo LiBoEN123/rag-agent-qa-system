@@ -21,6 +21,7 @@ from scripts.evaluation.rag.common import (
     json_dumps,
     mean,
     parse_chunk_ids_field,
+    parse_chunk_ids,
     prediction_schema_version,
 )
 from scripts.evaluation.rag.judge import (
@@ -130,8 +131,17 @@ def evaluate(
         pred = preds.get(qid, {})
         answer = get_answer(pred)
         retrieval = score_retrieval(pred, q, chunk_index.chunk_doc_map, chunk_index.chunk_text_map, k)
+        if not pred:
+            # 空 Gold 的默认命中也不能为未完成 Prediction contract 的题目加分。
+            for metric in (
+                "chunk_hit_at_k", "chunk_recall_at_k", "evidence_recall_at_k",
+                "all_evidence_hit_at_k", "gold_chunk_hit_at_k", "gold_chunk_recall_at_k",
+                "all_gold_hit_at_k", "doc_hit_at_k",
+            ):
+                retrieval[metric] = 0.0
         schema_version = prediction_schema_version(pred)
         final_chunk_ids = retrieval["retrieved_chunk_ids"]
+        observed_ids = parse_chunk_ids(pred) if schema_version >= 3 else final_chunk_ids
         context_chunk_ids: List[int] | None = None
         reference_chunk_ids: List[int] | None = None
         context_scored: Dict[str, Any] | None = None
@@ -140,7 +150,7 @@ def evaluate(
         final_to_context_drop_count: int | None = None
         gold_lost_by_context: bool | None = None
         gold_lost_by_reference: bool | None = None
-        if schema_version >= 2:
+        if schema_version == 2:
             context_chunk_ids = parse_chunk_ids_field(
                 pred,
                 "context_chunk_ids",
@@ -185,17 +195,26 @@ def evaluate(
             gold_lost_by_reference = (
                 gold_in_context and not gold_in_reference
             )
+        if schema_version >= 3:
+            reference_chunk_ids = parse_chunk_ids_field(pred, "reference_chunk_ids")
+            reference_scored = score_evidence_chunks(
+                reference_chunk_ids, q, chunk_index.chunk_doc_map, chunk_index.chunk_text_map,
+                scored_gold_chunk_ids=retrieval["scored_gold_chunk_ids"],
+            )
         judge_evidence = collect_retrieved_evidence(retrieval, chunk_index)
 
-        key_point_result = unavailable_key_point_result(q.get("gold_key_points", []), "LLM judge 未启用")
-        forbidden_result = unavailable_forbidden_result(q.get("forbidden_points", []), "LLM judge 未启用")
+        unavailable_reason = (
+            "prediction unavailable due runtime failure" if not pred else "LLM judge 未启用"
+        )
+        key_point_result = unavailable_key_point_result(q.get("gold_key_points", []), unavailable_reason)
+        forbidden_result = unavailable_forbidden_result(q.get("forbidden_points", []), unavailable_reason)
         key_point_judge_raw = ""
         forbidden_judge_raw = ""
         key_point_judge_used = False
         forbidden_judge_used = False
         judge_errors: List[str] = []
 
-        if use_llm_judge:
+        if use_llm_judge and pred:
             try:
                 key_point_result = key_point_evaluator(
                     question=q.get("question", ""),
@@ -268,6 +287,9 @@ def evaluate(
             retrieval["gold_chunk_recall_at_k"],
             forbidden_hit,
         )
+        if not pred:
+            behavior = key_point_recall = fscore = 0.0
+            behavior_label = "runtime_error"
 
         judge_error = " | ".join(judge_errors)
         row = {
@@ -332,12 +354,12 @@ def evaluate(
             "gold_chunk_ids": json.dumps(retrieval["scored_gold_chunk_ids"], ensure_ascii=False),
             "hit_chunk_ids": json.dumps(retrieval["hit_chunk_ids"], ensure_ascii=False),
             "missing_gold_chunk_ids": json.dumps(retrieval["missing_gold_chunk_ids"], ensure_ascii=False),
-            "retrieved_chunk_ids": json.dumps(retrieval["retrieved_chunk_ids"], ensure_ascii=False),
+            "retrieved_chunk_ids": json.dumps(observed_ids, ensure_ascii=False),
             "prediction_schema_version": schema_version,
             "final_chunk_ids": json.dumps(
                 final_chunk_ids,
                 ensure_ascii=False,
-            ),
+            ) if schema_version == 2 else None,
             "context_chunk_ids": (
                 json.dumps(context_chunk_ids, ensure_ascii=False)
                 if context_chunk_ids is not None
@@ -381,7 +403,7 @@ def evaluate(
                 else None
             ),
             "final_chunk_count": (
-                len(final_chunk_ids) if schema_version >= 2 else None
+                len(final_chunk_ids) if schema_version == 2 else None
             ),
             "context_chunk_count": (
                 len(context_chunk_ids)
@@ -393,17 +415,18 @@ def evaluate(
                 if reference_chunk_ids is not None
                 else None
             ),
-            "context_char_count": _optional_int(
-                pred.get("context_char_count")
-            ),
-            "top_k": _optional_int(pred.get("top_k")),
-            "decompose_top_k": _optional_int(
-                pred.get("decompose_top_k")
-            ),
-            "decompose_llm_used": pred.get("decompose_llm_used"),
+            "retrieved_chunk_count": len(observed_ids),
+            "retrieval_call_count": _optional_int(pred.get("retrieval_call_count")),
+            "tool_call_count": _optional_int(pred.get("tool_call_count")),
+            "llm_call_count": _optional_int(pred.get("llm_call_count")),
             "status": pred.get("status"),
             "context_truncated": context_truncated,
             "final_to_context_drop_count": final_to_context_drop_count,
+            "gold_observed_but_not_referenced": (
+                bool(set(retrieval["scored_gold_chunk_ids"]) & set(observed_ids))
+                and not bool(set(retrieval["scored_gold_chunk_ids"]) & set(reference_chunk_ids or []))
+                if schema_version >= 3 else None
+            ),
             "gold_present_in_final_but_missing_in_context": (
                 gold_lost_by_context
             ),
@@ -520,6 +543,7 @@ def summarize(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
                 vals,
                 "context_truncated",
             ),
+            "avg_retrieved_chunk_count": optional_mean(vals, "retrieved_chunk_count"),
             "avg_final_chunk_count": optional_mean(
                 vals,
                 "final_chunk_count",

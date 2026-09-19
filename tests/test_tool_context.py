@@ -5,6 +5,7 @@ from dataclasses import fields
 import pytest
 
 from app.tools.context import PrincipalType, ToolInvocationContext
+from app.contracts.chat import ToolMode
 
 
 def test_context_normalizes_and_freezes_request_fields():
@@ -41,9 +42,10 @@ def test_context_normalizes_and_freezes_request_fields():
         "source",
         "idempotency_key",
         "effective_question",
-        "top_k",
-        "decompose_top_k",
+        "tool_mode",
     }
+    assert context.tool_mode is ToolMode.FULL
+    assert ToolInvocationContext(tool_mode="rag_only").tool_mode is ToolMode.RAG_ONLY
 
 
 @pytest.mark.parametrize(
@@ -51,6 +53,8 @@ def test_context_normalizes_and_freezes_request_fields():
     [
         ("permissions", "knowledge_base:read"),
         ("permissions", ("knowledge_base:*",)),
+        ("tool_mode", "invalid"),
+        ("tool_mode", None),
     ],
 )
 def test_context_rejects_invalid_permissions(field_name, value):

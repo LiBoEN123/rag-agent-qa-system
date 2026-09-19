@@ -1,16 +1,12 @@
 """证据策略模块。
 
-根据多路检索分数判断是否拒答，并为模糊问题生成针对性的澄清追问。
+供诊断搜索与表格诊断使用的检索分数门。
 """
 
 from app.config import get_settings
 from app.rag.scoring import safe_float
 
 
-AMBIGUOUS_WORDS = [
-    "这个", "那个", "它", "这条", "这项", "这份",
-    "上面", "前面", "后面", "这里", "那里",
-]
 VECTOR_RELAX_RATIO = 0.70
 RERANK_STRONG_THRESHOLD = 0.45
 RERANK_VERY_STRONG_THRESHOLD = 0.55
@@ -58,28 +54,3 @@ def should_refuse(retrieved_chunks, vector_threshold: float = None):
         if item.get("protected") and (near_vector or strong_rerank):
             return False
     return True
-
-
-def is_ambiguous_question(question: str) -> bool:
-    """判断问题是否过短或包含缺少上下文的指代表达。"""
-    normalized = (question or "").strip()
-    return (
-        not normalized
-        or len(normalized) <= 3
-        or (
-            any(word in normalized for word in AMBIGUOUS_WORDS)
-            and len(normalized) < 18
-        )
-    )
-
-
-def build_clarification_question(question: str) -> str:
-    """根据问题主题生成更具体的中文澄清追问。"""
-    normalized = (question or "").strip()
-    if "退款" in normalized:
-        return "你想问的是退款条件、退款时间窗口，还是退款申请方式？"
-    if "报销" in normalized:
-        return "你指的是哪一类费用？比如交通费、住宿费、餐费，还是办公用品？"
-    if "流程" in normalized:
-        return "你想查询哪一类流程？比如退款流程、报销流程、请假流程，还是采购流程？"
-    return "你的问题还不够具体，请补充对象、场景或范围后再问。"

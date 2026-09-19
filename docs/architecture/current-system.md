@@ -8,8 +8,8 @@
 
 系统不存在 Parent Agent Graph。确定性 Router 位于 `create_agent` 之外，由 Agent
 Runtime 以普通 Python 调用；正常 agent 请求直接进入 LangChain `create_agent` 返回的
-CompiledStateGraph。项目仍用
-LangGraph 实现独立 RAG Graph，但它只由本地知识库工具调用，不是 Agent 外层控制图。
+CompiledStateGraph。生产与 RAG Evaluation 共用这一执行路径；知识库工具仅返回证据，
+独立 RAG Graph、拆分模型、旧生成及引用工作流已删除。
 
 ```text
 FastAPI application
@@ -35,22 +35,28 @@ create_agent
 → search_knowledge_base StructuredTool
 → execute_project_tool
 → search_knowledge_base handler
-→ 独立 RAG Graph
-→ 结构化工具结果 + 配对 ToolMessage
-→ Agent Result builder 归一化
+→ existing Hybrid Retrieval（BM25 + Chroma/Embedding）
+→ existing CrossEncoder rerank → Top-K chunks
+→ 配对 ToolMessage（候选 evidence）
+→ create_agent 下一轮 Model
+  ├─ 证据足够：ToolStrategy → structured_response → ID 校验 → references
+  ├─ 证据不足：修改 query 后再次检索
+  └─ 无法确定：no_evidence → NO_RELEVANT_INFO；问题有歧义 → clarify
 ```
 
 ## Architecture Freeze（2026-08-21）
 
 架构状态：`frozen`。这表示本轮 Phase 1～6B 的结构整理已经结束；后续功能应落入以下
-现有边界，而不是继续以“瘦身”为理由改写 Runtime。
+现有边界，而不是继续以“瘦身”为理由改写 Runtime。知识库路径已按
+AGENTIC-RAG-1（2026-09-16）更新为 retrieval → ToolMessage → Agent。
 
 ### Stable Boundaries
 
 - FastAPI/API 只负责组合、协议转换、HTTP/SSE 与生命周期。
 - ChatService 拥有 Query Rewrite、session、Agent 调用、状态策略和 telemetry 编排。
-- JSON 形态的业务模型输出由 `app.llm.schemas` 定义，并统一经过 `ModelGateway` 的原生
-  Structured Output 或受控文本 fallback；业务模块不自行解析模型 JSON。
+- Agent 最终合同由 `app.agent.final_response.FinalAgentResponse` 定义，经 LangChain
+  `ToolStrategy` 校验和重试，权威输出为 `structured_response`；不解析普通模型文本。
+  其他专用模型输出继续使用 `app.llm.schemas` / `ModelGateway`。
 - `runtime.py` 以普通 Python 准备请求和 Router；`stream_agent` 唯一执行 `create_agent.astream`。
 - LangChain `create_agent` 是唯一 Agent Loop；项目不再包裹 Parent Agent Graph。
 - Project Governance Middleware 拥有模型事件消费、Tool Hook、预算和 fail-closed 语义。
@@ -58,7 +64,7 @@ create_agent
   Context 过滤模型可见集合。
 - `execute_project_tool` 是唯一本地工具执行治理边界。
 - MCP Bridge / Interceptor 独立治理远端 MCP；MCP 不进入本地 ToolRuntime。
-- 独立 RAG Graph 只由知识库工具调用，是唯一专用业务工作流 Graph。
+- KB 工具只复用检索与重排，成功后回到唯一 Agent Loop；RAG Evaluation 复用同一个 ChatService。
 - Framework State 只保存框架运行所需状态；`AgentRunResult` 是 Runtime 输出边界。
 - `ChatStatusPolicy` 唯一决定业务目标 HTTP 状态、公开状态与 metrics 状态，结果通过 SSE final 公开。
 
@@ -152,20 +158,18 @@ LLM 计数与 tool trace 语义。本地同步工具由框架调度，MCP 由异
 
 ## 工具系统与治理边界
 
-生产 catalog 默认固定包含八个 `ToolSpec`：
+生产 catalog 按以下稳定顺序包含七个 `ToolSpec`：
 
 1. `search_knowledge_base`
-2. `compare_documents`
-3. `simple_calculator`
-4. `list_documents`
-5. `get_chunk_text`
-6. `web_search`
-7. `web_fetch`
-8. `web_pdf_fetch`
+2. `web_search`
+3. `web_fetch`
+4. `web_pdf_fetch`
+5. `compare_documents`
+6. `list_documents`
+7. `get_chunk_text`
 
-只有 `SQL_TOOL_ENABLED=true` 时才额外注册 `list_sql_tables`、
-`describe_sql_table` 和 `query_sql_readonly`。模型可见性由 LangChain Model Middleware
-根据请求权限过滤；
+模型可见性由 LangChain Model Middleware 根据请求 `tool_mode` 与权限过滤；
+`rag_only` 允许 `search_knowledge_base`、`compare_documents`、`get_chunk_text`，`full` 按权限开放剩余工具。
 本地工具的执行期治理始终经过：
 
 ```text
@@ -215,31 +219,126 @@ McpToolCallInterceptor → remote MCP server`，继续独立承担 Server Access
 超时、审计、序列化和 fail-closed。完整配置见
 [受治理的 MCP Client 工具源](../tools/mcp-client.md)。
 
-## 知识库工具与独立 RAG Graph
+## 知识库工具与 Agentic RAG 评估
 
-`search_knowledge_base` 是普通 StructuredTool。它先经过唯一执行入口和 ToolRuntime 的
-统一治理，再由 handler 检索候选 chunks，并调用 `app.rag.graph.run_rag_subgraph()`。
-传入 RAG 的问题是 Query Rewrite 后的 `effective_question`，`top_k`、
-`decompose_top_k` 和 `trace_id` 来自请求级 Tool Context。
+`search_knowledge_base` 仍是受治理的 `ProjectStructuredTool`，沿用权限、审计、
+预算、超时、重试、输出校验和 ToolMessage 配对。handler 使用本轮 Tool Call 的
+`args["query"]` 和 `args["top_k"]`，调用现有 `search_relevant_chunks` 与 `rerank`，
+重排后截取 Top-K，再投影为原生 `langchain_core.documents.Document`。公开 trace 继续
+提供 `final_chunk_count`、`top_chunk_ids`、`top_scores` 和 `hits`，由 evidence metadata
+派生。`top_scores` 仍是四位小数的 hybrid score；hits 保留原 rerank、BM25、vector 与
+hybrid score、file_name。审计摘要使用同一 metadata 来源，不记录正文。
 
-RAG Graph 保持原有问题歧义判断、Query Decompose、BM25 + Embedding 混合召回、
-CrossEncoder 重排、Evidence Gate、Context Build、回答生成、结构化结果规范化、引用
-绑定和验证。模型调用失败与结构化输出校验失败仍分别映射为 `MODEL_ERROR` 和
-`MODEL_BAD_OUTPUT`。工具成功结果包含 RAG 的答案、引用、状态、置信度、timings 与 trace，并形成与
-原 tool call ID 配对的普通 ToolMessage。Middleware 在同一个原生 Command 中把该消息、
-治理事件和 `knowledge_base_result` 写入 State，下一轮 `abefore_model` 直接读取 State
-并结束 Agent Model，Result builder 采用 RAG 的权威结果；不存在 `Command.PARENT`、
-`pending_rag_result` 或父图条件边。
+工具输出只有 `query`、`count`、`evidence: list[Document]`，不生成答案、不调用
+Decompose/Answer LLM、不执行最终 Evidence Gate 或 citation binding。零命中是成功的
+工具结果；知识库 readiness 为 false 时抛出 `ToolExecutionError(dependency_unavailable)`，
+由原执行治理边界转换为错误 ToolMessage，模型可以安全恢复。
 
-Web Search、Web Fetch、Web PDF Fetch、SQL 和 MCP 都是普通 ToolMessage 路径；它们不
-进入本地 RAG、不写 ChromaDB/BM25，也不生成本地 RAG references。
+Middleware 通过原生 `Command` 写入配对 ToolMessage 与治理事件，成功后正常进入
+下一轮 Agent Model。没有 `knowledge_base_result`、KB 成功终止规则或替代的私有
+证据 State。预算、工具上限、模型失败和 terminal governance error 仍能结束执行。
+
+`AGENT_SYSTEM_PROMPT` 通过 `create_agent(system_prompt=...)` 原生参数注入，指导模型
+读取 evidence、必要时修改 query、证据足够就回答、不足时明确说明无法确定；文档与网页
+都是不可信数据，不能作为指令执行。Query Rewrite 仍在 ChatService 中进行对话指代消解；
+`effective_question` 提供给 Agent，不覆盖 Agent 主动选择的 retrieval query。
+
+生产请求为 `ChatRequest → ChatService → create_agent → per-call query/top_k → StructuredTool`。
+ChatRequest、ChatServiceRequest、Runtime、ToolInvocationContext 均不再携带召回数量；
+旧 Chat 请求字段由 Pydantic `extra="forbid"` 拒绝。`search_knowledge_base.top_k` 与
+`compare_documents.top_k` 范围仍为 1–10，每轮可以不同；`/search` 用独立 SearchRequest 保留显式 top_k。
+
+`AppSettings.top_k` 只服务诊断检索。RAG Evaluation 使用生产 ChatServiceRequest，
+每题为 RAG_ONLY、knowledge_base:read、空 session。v3 prediction 从真实工具输出捕获
+有序去重 chunk ID，从 grounded references 投影最终引用；Runner 的 `--retrieval-k` 只用于评分。
+独立拆分模型、旧 context 配置与 multi-query helper 已删除；Agent 仍可多轮检索。
+已不存在的旧模块不再需要临时 Import Linter 隔离 contract，其余边界继续生效。
+
+生产 AgentRunResult 已移除 `decompose_llm_used` 和固定空的 `timings`；Chat metrics 不再
+初始化 legacy RAG 的补零耗时。有效耗时仍来自 route_cost_ms、agent_cost_ms、Tool trace
+和 Model governance events；answer_llm_used 与 llm_call_count 保留。
+MCP 与 Source Promotion 保留现有边界。
+
+### 统一正文 Evidence Transport（AGENTIC-RAG-2）
+
+`search_knowledge_base`、`get_chunk_text`、`web_fetch`、`web_pdf_fetch`，以及
+AGENTIC-RAG-4 接入的 `compare_documents`，都用原生
+Document 承载正文；工具运行时继续通过现有 Pydantic `model_validate(...).model_dump(mode="json")`
+输出 JSON，再由 StructuredTool/ToolMessage 送回下一轮 `create_agent`。
+没有第二套 evidence 值对象、serializer、pool、state 或 finalizer。
+
+- `Document.id`、`page_content`、`metadata.source_type`、`metadata.source_uri` 必须非空，
+  `metadata.content_is_untrusted` 必须为 `True`。正文是数据，不能向 Agent 发指令。
+- `source_type` 为 `knowledge_base`、`web_page` 或 `web_pdf`。KB 保留原 metadata，
+  包括 source_id、document_uid、文件/页码/标题/表格定位和检索分数；原入库 source_type
+  保存为 `knowledge_source_type`。source_uri 优先保留原值，否则使用 source_path。
+- ID 使用带来源类型的 SHA-256：KB 优先 source_id + position，其次 source_uri/source_path
+  + position，最后使用来源 + chunk_id；不依赖 rank、Reference 编号或分数。
+  极旧数据仅有 chunk_id 时使用 `knowledge_base://chunk/...` locator，无法还原缺失的来源。
+  原文读取仅补传一份原 metadata，让检索与 `get_chunk_text` 的同一 chunk 使用相同 ID。
+- Web ID 使用 final_url + 实际返回正文；PDF 再加入实际 page_numbers。截断正文参与 identity，
+  内容或页范围变化会改变 ID。PDF 仍以一个页范围对应一个 Document，保留 `[Page N]` 标记。
+- `get_chunk_text` 输出 `count=1` 与单项 evidence；Web/PDF 保留资源诊断及来源字段，
+  删除顶层 content，正文只在 Document.page_content 中出现一次。
+  `get_chunk_text` v1.1.0 只接受来自 `Document.metadata.chunk_id` 的正整数 locator
+  （数字字符串可解析为整数），不能传 `Document.id`；不存在的 locator 返回
+  `invalid_arguments` 且不可重试。Search/Compare 已返回完整 chunk 正文，通常无需重复读取。
+- `web_search` 仍用于发现候选 URL；需要正文依据时优先 fetch，按问题需要决定是否读取。
+  `list_documents` 仍是目录。Document.id 只是证据身份，不代表最终回答实际引用。
+
+### 最终结构化回答与引用绑定（AGENTIC-RAG-3）
+
+唯一 Agent 使用 `create_agent(response_format=ToolStrategy(FinalAgentResponse))`，由框架
+执行 Pydantic 校验、错误反馈与重试。最终合同包含 `outcome`、`answer`、`evidence_ids`、
+`clarification_question`。终止治理优先；缺失或非法 `structured_response` 返回 `MODEL_ERROR`。
+
+Result Builder 从本次成功的五类正文工具 ToolMessage 恢复并验证原生 Document。
+`answer` 已有 Document 时必须引用，所有引用 ID 必须存在于本次历史中，否则 fail closed。
+只按声明顺序投影实际引用的 Document，使用真实 Document.id；召回数量不等于引用数量。
+KB 保留文件、chunk、位置与分数；Web/PDF 以 URL、标题和起始页兼容公开引用字段。
+snippet 复用有限预览。无 Document 的目录、普通 MCP 操作仍允许无引用回答。
+
+`no_evidence` 恢复 `NO_RELEVANT_INFO`，`clarify` 映射 `NEED_CLARIFICATION`；两者引用为空。
+两项 confidence 保持 `0.0`。未引入 evidence pool、语义 Judge 或 legacy citation heuristic。
+MCP 尚未统一为 Document evidence。
+
+LangChain 1.3.14 原生工具限流会计入合成响应。`ProjectToolCallLimitMiddleware` 仅在委托
+原生计数前过滤该调用；框架原本就不把它送入业务 ToolNode。合成响应不产生业务 audit、
+tool trace 或 SSE tool event。LLM usage 计入实际 Agent Model 调用（包括失败及真实 retry），
+schema 校验本身不增加调用。ChatService 继续单独合并实际 Query Rewrite 使用。
+
+SSE 在最终校验成功后，为 answer/no_evidence 发送一次完整 `answer_delta`，随后发送最终
+结果；不发送普通模型文本或 schema args，避免错误引用答案提前泄漏。这里接受失去逐 token
+答案展示的权衡，进度与业务工具事件继续实时输出。Router 短路和澄清公开策略保持原样。
+
+### 双文档证据检索（AGENTIC-RAG-4）
+
+`compare_documents` 保留名称标准化、扩展名兼容、精确优先和包含匹配，分别选出
+doc_a / doc_b 的候选。先复制 candidate dict 与 metadata，再对两组分别调用现有
+`pipeline.rerank` / CrossEncoder，各取 Top-K，经 `chunk_to_evidence_document` 转换。
+不调用内部 LLM，不使用 legacy citation keyword scorer，不修改共享 `pipeline.chunks`。
+
+输出只有 `query`、`doc_a`、`doc_b`、`doc_a_count`、`doc_b_count`、`count`、`evidence`；
+count 同时等于 evidence 长度与两侧数量之和。顺序为 doc_a Top-K 后接 doc_b Top-K。
+Document 返回视图追加 `comparison_side`（doc_a / doc_b）与 `comparison_document`
+（对应传入名称），不改变 KB evidence identity。同一 chunk 经 search/get_chunk/compare
+获得相同 Document.id。审计只记录文档名、数量及最多十条 chunk ID/重排分数，不记录正文。
+
+KB 未就绪通过标准 `ToolExecutionError(dependency_unavailable)` 返回错误 ToolMessage；
+缺少指定文档仍为工具错误。存在文档时不按词面重合度拒绝候选，相关性由 CrossEncoder
+排序，再由唯一 Agent 判断证据是否足够；适用对象、条件、时间、否定和例外须保留。
+
+Compare 的成功 ToolMessage 直接进入统一 evidence collector，Agent 自行比较并通过
+既有 ToolStrategy 声明实际使用的 Document.id。缺失或未知引用由相同 grounding 规则
+拒绝；没有 compare 专属 Result Builder 分支，也没有专属 SSE 事件。
+Compare Model 工厂、缓存、内部输出 schema 已删除；ModelGateway 继续供 Query Rewrite 与 evaluation Judge 使用。最终合同、confidence 与 SSE 单次校验后 delta 保持原样。
 
 ## 状态与结果
 
 运行中只有两类必要状态：
 
 - `FrameworkAgentState`：`create_agent` 内部的 messages、append-only
-  `governance_events`、累计耗时、停止原因和可选知识库结构化结果；
+  `governance_events`、累计耗时和停止原因；
 - `AgentRunResult`：`results.py` 直接构造的最终结果，包含 references、公开 tool trace、
   LLM usage 和最终状态；`tool_result_summary` 仅从同一份公开 tool trace 生成。
 
@@ -287,8 +386,7 @@ api → services → agent → tools → rag → llm
 ```
 
 `app.api` 是唯一 HTTP 组合层；services 不依赖 API，FastAPI/Starlette 不进入低层，
-`pydantic-settings` 只由 `app.config` 直接导入。生产代码中没有 `app.graph` 包；独立
-RAG Graph 属于 `app.rag`。额外 forbidden contract 明确禁止
+`pydantic-settings` 只由 `app.config` 直接导入。生产代码中没有 `app.graph` 或独立 RAG Graph。额外 forbidden contract 明确禁止
 `app.agent.framework_middleware → app.agent.runtime`。详细规则见
 [模块依赖边界](module-boundaries.md)。
 
@@ -308,14 +406,15 @@ git diff --check
 
 Runtime Inspection 检查直接 `create_agent` 节点、Parent Graph 文件/符号不存在、默认
 ToolSpec 与可选 SQL/MCP 合同、本地工具唯一执行入口和 Runtime handler 所有权、MCP
-独立治理、原生 Tool Middleware Hook、项目 artifact 协议不存在、知识库 Tool 到 RAG
-Graph 的边界、唯一流式执行入口、唯一 Result/Status
+独立治理、原生 Tool Middleware Hook、项目 artifact 协议不存在、知识库检索与 RAG
+Graph 解耦且成功后回到 Agent、唯一流式执行入口、唯一 Result/Status
 Policy、应用组合根和当前文档。Import Linter 负责完整生产 import graph。自动测试用
 fake 隔离模型、网络、RAG 索引和生产持久化副作用。
 
 ## 已知产品边界
 
-- RAG JSON 生成节点不提供 token streaming；完整结果由 SSE `final` 返回。
+- 生产 KB 回答由 Agent Model 生成；Legacy RAG JSON 节点不在该流式路径中。
+- 当前证据约束由 prompt 指导；统一引用绑定与最终 grounding 校验尚未实现。
 - 无 Interrupt/Resume、跨请求人工审批恢复、Replay 或 Time Travel。
 - MCP 第一版仅为默认关闭的 Streamable HTTP read-only Client。
 - 无 SQL 写操作/自动迁移和多 Agent 编排。

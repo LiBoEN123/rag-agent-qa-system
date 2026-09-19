@@ -26,7 +26,6 @@ langchain-openai
 langchain-mcp-adapters
 langgraph
 SQLAlchemy
-sqlglot
 pypdf
 python-docx
 docling==2.127.0

@@ -1,12 +1,12 @@
 # `/chat/stream` SSE 接口
 
 `POST /chat/stream` 是唯一聊天 HTTP 入口。Vue 通过 `ChatService.stream()` 调用
-`stream_agent()`，继续使用 Query Rewrite、直接 `create_agent`、Agent/Tool/RAG Runtime、
+`stream_agent()`，继续使用 Query Rewrite、直接 `create_agent`、Agent/Tool Runtime、
 `AgentRunResult`、`ChatStatusPolicy`、Session 和 telemetry。
 
 ## HTTP 语义
 
-请求体仍是现有 `ChatRequest`：
+`ChatRequest` 只接受 `question`、`session_id`、`tool_mode`（默认 `full`）：
 
 ```bash
 curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
@@ -15,12 +15,13 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
   -H "X-Trace-Id: demo-stream-001" \
   -d '{
     "question": "缓考应该如何办理？",
-    "top_k": 5,
-    "decompose_top_k": 10,
     "session_id": "demo_session_001"
   }'
 ```
 
+- 旧 `top_k`、`decompose_top_k` 及其他未知字段由 `extra="forbid"` 拒绝，返回 HTTP 422，不会静默忽略。
+- `rag_only` 仅允许 search_knowledge_base、compare_documents、get_chunk_text 三种 KB 证据工具；仍需 `knowledge_base:read` 权限，Web/MCP 被排除。
+- 每次检索的 query/top_k 由 Agent 通过工具 schema 选择；`/search` 仍接受诊断 top_k。
 - Schema 校验失败：FastAPI 在建流前返回 `HTTP 422 application/json`。
 - 通过 Schema 校验的请求（包括空问题）：返回 `HTTP 200 text/event-stream`。
 - 问题去除空白后为空：发送 `start → final → done(completed)`；
@@ -32,6 +33,8 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
 响应头始终提供 `X-Trace-Id`。响应头建立时业务尚未完成，不提供
 `X-Total-Cost-Ms`，真实总耗时位于
 `final.data.total_cost_ms`。
+
+生产响应已移除 `decompose_llm_used`；保留 `answer_llm_used`、`llm_call_count` 和固定 false 的 `router_llm_used`。Chat metrics 保留 route/agent 总耗时及工具、模型 trace，不再发布 legacy RAG 的补零 timing 字段。
 
 ## 事件信封与顺序
 
@@ -55,7 +58,7 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
 | `start` | `session_id_present` | 第一条业务事件；只说明是否存在 session ID |
 | `progress` | `stage`、`status` | 高层阶段；stage 为 `query_rewrite/routing/agent/rag/finalizing` |
 | `tool` | `tool_name`、`phase`、`status`、完成时的 `cost_ms` | 安全工具开始/完成状态 |
-| `answer_delta` | `text` | 已确认属于直接回答的普通文本增量 |
+| `answer_delta` | `text` | 通过 structured-response 与 evidence-ID 校验的完整答案文本 |
 | `final` | `http_status`、完整 `response`、`total_cost_ms` | 唯一权威业务结果 |
 | `error` | 固定 `STREAM_ERROR` 和通用消息 | 仅表示 SSE 协议自身无法继续 |
 | `done` | `reason=completed/error` | 正常可发送结束事件 |
@@ -67,10 +70,11 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
 ## 安全投影
 
 `updates` 只投影工具名、状态和耗时；`values` 只在 Runtime 内捕获最终状态，不向 SSE
-序列化。`messages` 只接受 `create_agent` 模型节点中的
-`AIMessage`/`AIMessageChunk`
-普通字符串或显式 text block。一次模型调用的 chunk 会先缓冲，确认没有 tool call
-且不属于 RAG 命名空间后才作为原始增量释放。
+序列化。`messages` 中的 `AIMessage`/`AIMessageChunk` 仅用于业务工具开始事件，
+普通模型文本和 ToolStrategy 合成调用均不直接发送。最终 `structured_response` 通过
+Result Builder 的 evidence-ID 校验后，answer/no_evidence 在 result 前发送一次完整
+`answer_delta`，与 `final.data.response.answer` 一致。当前不提供逐 token 答案流；
+治理失败、未知引用或缺少结构化响应不会提前泄漏候选答案。
 
 增量事件不会公开 reasoning/thinking、tool call JSON、工具参数、`ToolMessage` 正文、
 原始工具结果、RAG JSON、网页/PDF/chunk 正文、系统 Prompt、provider/usage

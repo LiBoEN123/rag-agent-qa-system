@@ -132,8 +132,6 @@ def test_scalar_path_literal_secret_and_permissions_types(tmp_path):
     [
         ("top_k", 0),
         ("top_k", 11),
-        ("decompose_top_k", 0),
-        ("decompose_top_k", 21),
         ("agent_max_iterations", 0),
         ("agent_max_iterations", 101),
         ("agent_max_tool_calls", 1001),

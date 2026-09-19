@@ -59,8 +59,8 @@ def test_build_manifest_records_commit_dirty_hashes_and_safe_whitelist(
         evaluation_manifest,
         "build_tool_contract",
         lambda _settings: (
-            ["simple_calculator"],
-            [{"name": "simple_calculator"}],
+            ["list_documents"],
+            [{"name": "list_documents"}],
             "contract-hash",
         ),
     )
@@ -72,8 +72,7 @@ def test_build_manifest_records_commit_dirty_hashes_and_safe_whitelist(
         agent_cases_path=cases,
         rag_eval_path=rag,
         coverage_report=_coverage(),
-        top_k=5,
-        decompose_top_k=10,
+        retrieval_metric_k=5,
         include_online=False,
         use_llm_judge=False,
         judge_model="",
@@ -85,23 +84,21 @@ def test_build_manifest_records_commit_dirty_hashes_and_safe_whitelist(
     assert manifest["code"]["git_dirty"] is True
     assert manifest["data"]["agent_cases_sha256"]
     assert manifest["agent"]["tool_contract_sha256"] == "contract-hash"
+    assert not {"top_k", "decompose_top_k", "decompose_enabled", "decompose_model"} & manifest["agent"].keys()
+    assert set(manifest["prompts"]["agent"]["files"]) == set(evaluation_manifest.AGENT_PROMPT_INPUT_FILES)
+    assert "legacy_rag" not in manifest["prompts"]
+    assert not any(path.startswith("app/rag/") for path in manifest["prompts"]["agent"]["files"])
     assert manifest["mcp"] == {
         "production_enabled": True,
         "evaluation_enabled": False,
         "mode": "core_disabled",
     }
     assert manifest["rag"]["index_manifest_sha256"] == ""
-    assert manifest["rag"]["prediction_schema_version"] == 2
-    assert manifest["rag"]["max_context_chars"] == settings.max_context_chars
-    assert manifest["rag"]["requested_top_k"] == 5
-    assert manifest["rag"]["effective_top_k"] == 5
-    assert manifest["rag"]["requested_decompose_top_k"] == 10
-    assert manifest["rag"]["effective_decompose_top_k"] == 10
-    assert (
-        manifest["rag"]["context_selection_source"]
-        == "app/rag/generation.py"
-    )
-    assert manifest["rag"]["context_selection_source_sha256"]
+    assert manifest["rag"]["prediction_schema_version"] == 3
+    assert manifest["rag"]["retrieval_metric_k"] == 5
+    assert manifest["rag"]["tool_mode"] == "rag_only"
+    assert manifest["rag"]["permissions"] == ["knowledge_base:read"]
+    assert not any(key.startswith(("requested_", "effective_", "decompose_", "context_")) for key in manifest["rag"])
     assert "do-not-leak" not in serialized
     assert "rewrite-do-not-leak" not in serialized
 
@@ -149,8 +146,7 @@ def test_manifest_reads_index_manifest_without_loading_rag(
         agent_cases_path=None,
         rag_eval_path=None,
         coverage_report=_coverage(),
-        top_k=5,
-        decompose_top_k=10,
+        retrieval_metric_k=5,
         include_online=False,
         use_llm_judge=False,
         judge_model="",
@@ -217,8 +213,7 @@ def test_manifest_mcp_metadata_does_not_read_or_expose_server_secrets(
         agent_cases_path=None,
         rag_eval_path=None,
         coverage_report=_coverage(),
-        top_k=5,
-        decompose_top_k=10,
+        retrieval_metric_k=5,
         include_online=False,
         use_llm_judge=False,
         judge_model="",
@@ -300,8 +295,7 @@ def test_extended_manifest_records_only_safe_mcp_catalog_metadata(
         agent_cases_path=None,
         rag_eval_path=None,
         coverage_report=_coverage(),
-        top_k=5,
-        decompose_top_k=10,
+        retrieval_metric_k=5,
         include_online=False,
         use_llm_judge=False,
         judge_model="",

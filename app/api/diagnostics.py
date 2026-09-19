@@ -13,6 +13,7 @@ from app.agent.router import route_agent_action
 from app.api.schemas import (
     ChatRequest,
     SearchData,
+    SearchRequest,
     SearchResponse,
     SearchResult,
 )
@@ -57,7 +58,7 @@ def create_diagnostics_router(
         return {"count": len(data), "data": data}
 
     @router.post("/search", response_model=SearchResponse)
-    def search_api(req: ChatRequest, response: Response):
+    def search_api(req: SearchRequest, response: Response):
         """清理检索输入，并将 RAG 诊断结果映射为 HTTP 响应。"""
         question = (req.question or "").strip()
         logger.info(
@@ -190,9 +191,6 @@ def create_diagnostics_router(
                 "avg_llm_call_count": average("llm_call_count"),
                 "router_llm_used_count": sum(
                     bool(record.get("router_llm_used")) for record in records
-                ),
-                "decompose_llm_used_count": sum(
-                    bool(record.get("decompose_llm_used")) for record in records
                 ),
                 "answer_llm_used_count": sum(
                     bool(record.get("answer_llm_used")) for record in records
