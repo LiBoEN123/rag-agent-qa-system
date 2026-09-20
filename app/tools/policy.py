@@ -20,16 +20,15 @@ from app.tools.context import (
     ToolInvocationContext,
     has_permission,
 )
-from app.tools.contracts import ToolRiskLevel, ToolSpec
+from app.tools.contracts import ToolSpec
 from app.tools.errors import ToolErrorCode
 
 
 class ToolPolicyDecisionType(str, Enum):
-    """策略门允许产生的三种确定性决策。"""
+    """只读工具策略门的允许或拒绝决策。"""
 
     ALLOW = "allow"
     DENY = "deny"
-    REQUIRE_APPROVAL = "require_approval"
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,8 +38,6 @@ class ToolPolicyDecision:
     decision: ToolPolicyDecisionType
     reason: str
     missing_permissions: tuple[str, ...] = ()
-    approval_required: bool = False
-    risk_level: ToolRiskLevel = ToolRiskLevel.READ_ONLY
     args_fingerprint: str = ""
     error_code: ToolErrorCode | None = None
 
@@ -115,15 +112,7 @@ def build_tool_args_fingerprint(
 
 
 class ToolPolicyEngine:
-    """按固定顺序评估主体、权限、幂等键、风险和审批要求。"""
-
-    _WRITE_RISKS = frozenset(
-        {
-            ToolRiskLevel.INTERNAL_WRITE,
-            ToolRiskLevel.EXTERNAL_WRITE,
-            ToolRiskLevel.DESTRUCTIVE,
-        }
-    )
+    """评估当前只读 Local Tool 的请求范围、主体和权限。"""
 
     def evaluate(
         self,
@@ -135,13 +124,12 @@ class ToolPolicyEngine:
     ) -> ToolPolicyDecision:
         """返回确定性策略结果，不调用 handler 或修改上下文。"""
         del args  # 参数内容仅通过已经绑定的指纹进入本阶段决策结果。
-        risk_level = spec.risk_level
 
         if context.tool_mode is ToolMode.RAG_ONLY and spec.name not in RAG_TOOL_NAMES:
             return self._deny(
                 reason="当前请求仅允许使用知识库检索与文档发现工具",
                 code=ToolErrorCode.POLICY_DENIED,
-                risk_level=risk_level,
+
                 args_fingerprint=args_fingerprint,
             )
 
@@ -149,19 +137,7 @@ class ToolPolicyEngine:
             return self._deny(
                 reason="调用主体类型无效",
                 code=ToolErrorCode.INVALID_INVOCATION_CONTEXT,
-                risk_level=risk_level,
-                args_fingerprint=args_fingerprint,
-            )
 
-        if risk_level in self._WRITE_RISKS and (
-            not context.principal_id
-            or not context.source
-            or context.principal_type is PrincipalType.ANONYMOUS
-        ):
-            return self._deny(
-                reason="写工具要求非匿名主体、主体标识和调用来源",
-                code=ToolErrorCode.INVALID_INVOCATION_CONTEXT,
-                risk_level=risk_level,
                 args_fingerprint=args_fingerprint,
             )
 
@@ -174,44 +150,15 @@ class ToolPolicyEngine:
             return self._deny(
                 reason="调用主体缺少工具要求的权限",
                 code=ToolErrorCode.PERMISSION_DENIED,
-                risk_level=risk_level,
+
                 args_fingerprint=args_fingerprint,
                 missing_permissions=missing_permissions,
-            )
-
-        # PR3 只校验幂等键存在，不实现持久化去重、缓存、唯一约束或并发锁。
-        if risk_level in self._WRITE_RISKS and not context.idempotency_key:
-            return self._deny(
-                reason="写工具调用缺少幂等键",
-                code=ToolErrorCode.MISSING_IDEMPOTENCY_KEY,
-                risk_level=risk_level,
-                args_fingerprint=args_fingerprint,
-            )
-
-        requires_approval = (
-            risk_level in {
-                ToolRiskLevel.EXTERNAL_WRITE,
-                ToolRiskLevel.DESTRUCTIVE,
-            }
-            or (
-                risk_level is ToolRiskLevel.INTERNAL_WRITE
-                and spec.requires_approval
-            )
-        )
-        if requires_approval:
-            return ToolPolicyDecision(
-                decision=ToolPolicyDecisionType.REQUIRE_APPROVAL,
-                reason="该工具需要人工审批后才能执行",
-                approval_required=True,
-                risk_level=risk_level,
-                args_fingerprint=args_fingerprint,
-                error_code=ToolErrorCode.APPROVAL_REQUIRED,
             )
 
         return ToolPolicyDecision(
             decision=ToolPolicyDecisionType.ALLOW,
             reason="工具调用满足当前治理策略",
-            risk_level=risk_level,
+
             args_fingerprint=args_fingerprint,
         )
 
@@ -220,7 +167,6 @@ class ToolPolicyEngine:
         *,
         reason: str,
         code: ToolErrorCode,
-        risk_level: ToolRiskLevel,
         args_fingerprint: str,
         missing_permissions: tuple[str, ...] = (),
     ) -> ToolPolicyDecision:
@@ -229,7 +175,7 @@ class ToolPolicyEngine:
             decision=ToolPolicyDecisionType.DENY,
             reason=reason,
             missing_permissions=missing_permissions,
-            risk_level=risk_level,
+
             args_fingerprint=args_fingerprint,
             error_code=code,
         )

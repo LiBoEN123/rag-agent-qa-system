@@ -298,9 +298,9 @@ def build_coverage_report(
 
     capabilities = {
         "search_knowledge_base": "search_knowledge_base" in all_tools,
-        "compare_documents": "compare_documents" in all_tools,
-        "list_documents": "list_documents" in all_tools,
-        "get_chunk_text": "get_chunk_text" in all_tools,
+        "search_document": "search_document" in all_tools,
+        "find_documents": "find_documents" in all_tools,
+        "get_chunk_context": "get_chunk_context" in all_tools,
         "direct_answer": "direct_answer" in decisions,
         "clarify": "clarify" in decisions,
         "NO_RELEVANT_INFO": "NO_RELEVANT_INFO" in statuses,

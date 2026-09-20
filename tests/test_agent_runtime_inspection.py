@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from app.tools.catalog import get_local_tool_specs
 from app.agent import framework_agent
-from app.agent.framework_tools import get_local_tools
+from app.agent.framework_tools import local_tool_contract, get_local_tools
 from app.tools.context import build_default_tool_context
 from app.tools.contracts import ToolSpec
 from tests.support.local_tools import local_tools
@@ -104,10 +104,10 @@ def test_runtime_report_preserves_direct_create_agent_contract(
     assert report["local_tool_execution"] == {
         "catalog": "get_local_tools",
         "visibility": "ProjectToolVisibilityMiddleware",
-        "adapter": "ProjectStructuredTool",
-        "input_validation": "LangChain StructuredTool/Pydantic",
-        "retry": "LangChain ToolRetryMiddleware",
-        "timeout": "shared bounded executor helper",
+        "adapter": "StructuredTool",
+        "input_validation": "Pydantic model_validate",
+        "retry": "LangChain Runnable.with_retry",
+        "timeout": "asyncio.timeout",
         "terminal": "ToolSpec.handler",
     }
     assert {
@@ -142,22 +142,18 @@ def test_tool_contracts_use_model_facing_json_schema(
         "web_search",
         "web_fetch",
         "web_pdf_fetch",
-        "compare_documents",
-        "list_documents",
-        "get_chunk_text",
+
         "get_chunk_context",
     }
     assert all(tool["args_schema"]["type"] == "object" for tool in tools)
     assert all("runtime" not in tool["args_schema"].get("properties", {}) for tool in tools)
     assert all(tool["description"] and tool["version"] for tool in tools)
-    assert all(tool["risk_level"] == "read_only" for tool in tools)
+    assert all("risk_level" not in tool for tool in tools)
     assert report["default_visible_tools"] == [
         "search_knowledge_base",
         "find_documents",
         "search_document",
-        "compare_documents",
-        "list_documents",
-        "get_chunk_text",
+
         "get_chunk_context",
     ]
     web = next(tool for tool in tools if tool["name"] == "web_search")
@@ -189,17 +185,17 @@ def test_tool_contracts_use_model_facing_json_schema(
 
 
 def test_all_local_framework_tool_schemas_match_registry_contract(settings_factory):
-    """全部九个 Local Tool 保持名称、描述、字段、required 与类型不变。"""
+    """全部七个 Local Tool 保持名称、描述、字段、required 与类型不变。"""
     settings = _knowledge_only(settings_factory, "web:search", "web:fetch")
     registry = get_local_tool_specs(settings)
     tools = get_local_tools(settings)
 
-    assert len(tools) == 9
+    assert len(tools) == 7
     for tool in tools:
         spec = next((item for item in registry if item.name == tool.name), None)
         assert spec is not None
         expected = spec.args_model.model_json_schema()
-        actual = tool.tool_call_schema.model_json_schema()
+        actual = tool.tool_call_schema
         assert tool.name == spec.name
         assert tool.description == spec.description
         assert actual.get("properties") == expected.get("properties")
@@ -315,6 +311,7 @@ def test_inspection_does_not_initialize_model_or_handler(
         forbidden,
     )
 
+    monkeypatch.setattr(inspection, "get_local_tool_contracts", lambda settings: [local_tool_contract(spec) for spec in registry])
     report = inspection.inspect_runtime(
         local_tools(registry),
         settings=_knowledge_only(settings_factory),

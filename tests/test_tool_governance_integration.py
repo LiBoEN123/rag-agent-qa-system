@@ -13,10 +13,11 @@ from tests.support.local_tools import invoke_local_tool
 
 
 def test_execution_entry_runs_default_registry_tool(monkeypatch):
-    monkeypatch.setattr("app.rag.pipeline.preview_docs", lambda: [])
+    monkeypatch.setattr("app.rag.pipeline.chunks", [])
+    monkeypatch.setattr("app.rag.pipeline.RAG_READY", True)
     result = invoke_local_tool(
         registry=get_local_tool_specs(get_settings()),
-        tool_name="list_documents",
+        tool_name="find_documents",
         tool_args={},
         context=ToolInvocationContext(trace_id="direct-trace", permissions=("knowledge_base:read",)),
     )
@@ -30,7 +31,7 @@ def test_public_tool_trace_redacts_args_and_summarizes_chunk_output():
     chunk_text = "private chunk body " * 100
     trace = build_tool_trace(
         step_id=1,
-        tool_name="get_chunk_text",
+        tool_name="get_chunk_context",
         tool_args={"chunk_id": 1, "password": "raw-password"},
         result={
             "status": "success",
@@ -90,10 +91,10 @@ def test_governance_event_normalization_is_pure_and_keeps_separate_step_counts()
     model = {
         "kind": "model", "ok": True, "has_tool_calls": True,
         "requested_tool_call_count": 1, "cost_ms": 2,
-        "available_tool_names": ["list_documents"],
+        "available_tool_names": ["find_documents"],
     }
     tool = {
-        "kind": "tool", "name": "list_documents",
+        "kind": "tool", "name": "find_documents",
         "args": {},
         "result": {
             "ok": True, "status": "success", "output": {"count": 0},
@@ -103,7 +104,7 @@ def test_governance_event_normalization_is_pure_and_keeps_separate_step_counts()
         "cost_ms": 3, "tool_call_id": "list-1",
     }
     blocked = {
-        "kind": "tool", "name": "list_documents",
+        "kind": "tool", "name": "find_documents",
         "result": {"ok": False, "error": "blocked"},
         "counted_call": False, "error_code": "repeated_tool_call",
         "stop_reason": "repeated_tool_call", "tool_call_id": "list-2",
@@ -118,13 +119,13 @@ def test_governance_event_normalization_is_pure_and_keeps_separate_step_counts()
     assert trace[0] == {
         "step": "agent_iteration", "iteration_index": 1, "status": "success",
         "model_has_tool_calls": True, "requested_tool_call_count": 1,
-        "model_cost_ms": 2, "available_tool_names": ["list_documents"],
+        "model_cost_ms": 2, "available_tool_names": ["find_documents"],
         "error_type": "",
     }
     assert trace[3] == {**trace[0], "iteration_index": 2}
     assert trace[1] == trace[4] == {
         "step": "tool_call", "action": "tool_call",
-        "tool_name": "list_documents", "tool_status": "error", "success": False,
+        "tool_name": "find_documents", "tool_status": "error", "success": False,
         "error": "blocked", "error_code": "repeated_tool_call",
         "tool_call_id": "list-2", "cost_ms": 0, "handler_executed": False,
         "will_return_to_agent_model": False, "stop_reason": "repeated_tool_call",
@@ -132,13 +133,13 @@ def test_governance_event_normalization_is_pure_and_keeps_separate_step_counts()
     }
     assert trace[2] == {
         "step": "tool_call", "step_id": 1, "action": "tool_call",
-        "tool_name": "list_documents", "tool_args": {},
+        "tool_name": "find_documents", "tool_args": {},
         "sanitized_tool_args": {}, "tool_status": "success",
-        "success": True, "summary": "文档列表工具执行完成", "error": "", "cost_ms": 3,
+        "success": True, "summary": "文档发现完成，找到 0 份候选文档", "error": "", "cost_ms": 3,
         "error_code": "", "tool_call_id": "list-1", "policy_decision": "",
         "risk_level": "", "approval_required": False, "args_fingerprint": "",
         "attempt_count": 1, "max_attempts": 0, "timed_out": False,
-        "output_summary": {"count": 0}, "failure_kind": "", "handler_executed": True,
+        "output_summary": {"type": "dict", "fields": ["count"], "count": 0}, "failure_kind": "", "handler_executed": True,
         "will_return_to_agent_model": True, "stop_reason": "", "call_fingerprint": "",
     }
     assert trace[5] == {**trace[2], "step_id": 2}
@@ -158,10 +159,10 @@ def test_governance_event_normalization_is_pure_and_keeps_separate_step_counts()
 )
 def test_public_tool_trace_keeps_ok_precedence(result, success):
     trace = build_tool_trace(
-        step_id=1, tool_name="list_documents", tool_args={}, result=result, cost_ms=0,
+        step_id=1, tool_name="find_documents", tool_args={}, result=result, cost_ms=0,
     )
     assert trace["success"] is success
-    assert trace["summary"] == ("文档列表工具执行完成" if success else "工具执行失败")
+    assert trace["summary"] == ("文档发现完成，找到 0 份候选文档" if success else "工具执行失败")
     assert trace["error"] == ("" if success else "Tool execution failed")
 
 
@@ -171,7 +172,7 @@ def test_public_tool_trace_keeps_ok_precedence(result, success):
         *[(code, "安全策略错误 token=raw-token", "安全策略错误 token=***REDACTED***")
           for code in (
               "permission_denied", "approval_required",
-              "missing_idempotency_key", "invalid_invocation_context", "policy_denied",
+              "invalid_invocation_context", "policy_denied",
               "audit_write_failed",
           )],
         ("execution_error", "private backend detail", "工具执行失败（execution_error）"),
@@ -182,14 +183,14 @@ def test_public_tool_trace_keeps_ok_precedence(result, success):
 )
 def test_public_tool_trace_keeps_safe_error_policy(error_code, raw_error, expected):
     trace = build_tool_trace(
-        step_id=1, tool_name="list_documents", tool_args={}, cost_ms=0,
+        step_id=1, tool_name="find_documents", tool_args={}, cost_ms=0,
         result={"ok": False, "error_code": error_code, "error": raw_error},
     )
     assert trace["error"] == expected
     assert trace["summary"] == "工具执行失败"
 
 
-@pytest.mark.parametrize("tool_name", ["list_documents", "search_knowledge_base", "mcp_probe"])
+@pytest.mark.parametrize("tool_name", ["find_documents", "search_knowledge_base", "mcp_probe"])
 @pytest.mark.parametrize("output", [None, ["private raw output"], "private raw output"])
 def test_public_tool_trace_normalizes_non_dict_output(tool_name, output):
     trace = build_tool_trace(
@@ -200,8 +201,8 @@ def test_public_tool_trace_normalizes_non_dict_output(tool_name, output):
     if tool_name == "search_knowledge_base":
         assert trace["final_chunk_count"] == 0
         assert trace["top_chunk_ids"] == trace["top_scores"] == trace["hits"] == []
-    elif tool_name == "list_documents":
-        assert trace["output_summary"] == {"count": 0}
+    elif tool_name == "find_documents":
+        assert trace["output_summary"] == {"type": "dict", "fields": []}
     else:
         assert trace["output_summary"] == {}
 

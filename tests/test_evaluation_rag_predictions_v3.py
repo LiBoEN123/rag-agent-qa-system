@@ -28,7 +28,7 @@ def call(name="search_knowledge_base", cid="a", **args):
 
 def finish(model, messages):
     docs = [doc for message in messages if isinstance(message, ToolMessage)
-            for doc in json.loads(message.content).get("output", {}).get("evidence", [])]
+            for doc in (message.artifact or json.loads(message.content)).get("output", {}).get("evidence", [])]
     return model.final_response(outcome="answer", answer="A 与 B 的申请条件见已检索证据。",
                                 evidence_ids=[doc["id"] for doc in docs if doc["metadata"]["chunk_id"] in (1, 3)])
 
@@ -84,8 +84,8 @@ def test_multi_subquestion_observes_a_then_changes_query_and_top_k(monkeypatch, 
 
 @pytest.mark.parametrize("tool,args,expected", [
     ("search_knowledge_base", {"query": "申请条件", "top_k": 3}, (1, 2)),
-    ("compare_documents", {"query": "申请条件", "doc_a": "A.md", "doc_b": "B.md", "top_k": 3}, (1, 2, 3)),
-    ("get_chunk_text", {"chunk_id": 1}, (1,)),
+    ("search_document", {"query": "申请条件", "doc_a": "A.md", "doc_b": "B.md", "top_k": 3}, (1, 2, 3)),
+    ("get_chunk_context", {"chunk_id": 1}, (1,)),
 ])
 def test_all_kb_evidence_tools_contribute(monkeypatch, setup_prediction, tool, args, expected):
     monkeypatch.setattr(pipeline, "search_relevant_chunks", lambda *a, **k: [chunk(1), chunk(2)])

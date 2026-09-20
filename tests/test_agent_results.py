@@ -348,7 +348,7 @@ def test_framework_structured_answer_and_governance_trace_are_preserved(
             AIMessage(
                 content="工具请求",
                 tool_calls=[
-                    {"name": "list_documents", "args": {}, "id": "call-1"},
+                    {"name": "find_documents", "args": {}, "id": "call-1"},
                 ],
             ),
             ToolMessage(content="工具输出", tool_call_id="call-1"),
@@ -424,7 +424,7 @@ def test_framework_missing_or_empty_final_answer_fails_closed(messages):
     [
         "fatal_tool_error",
         "approval_required",
-        "missing_idempotency_key",
+
         "runtime_unavailable",
     ],
 )
@@ -538,7 +538,7 @@ def test_counted_pre_handler_failure_keeps_failure_summary(error_code):
         _invocation(), {
             "stop_reason": "fatal_tool_error",
             "governance_events": [{
-                "kind": "tool", "name": "list_documents", "counted_call": True,
+                "kind": "tool", "name": "find_documents", "counted_call": True,
                 "handler_executed": False,
                 "result": {"ok": False, "error_code": error_code},
             }],
@@ -677,7 +677,7 @@ def test_agent_clarification_preserves_real_tool_summary():
     assert result["tool_result_summary"] == "知识库检索完成，召回 2 个 chunk"
 
 
-@pytest.mark.parametrize("name", ["web_search", "list_documents", "mcp_read"])
+@pytest.mark.parametrize("name", ["web_search", "find_documents", "mcp_read"])
 def test_non_evidence_tool_outputs_cannot_be_promoted_to_references(name):
     output = _knowledge_output()
     payload = json.loads(output["messages"][0].content)
@@ -694,7 +694,7 @@ def test_non_evidence_tool_outputs_cannot_be_promoted_to_references(name):
 def test_failed_or_invalid_evidence_cannot_ground_answer(damage):
     output = _knowledge_output()
     message = output["messages"][0]
-    payload = json.loads(message.content)
+    payload = (message.artifact or json.loads(message.content))
     if damage == "failed_message":
         message.status = "error"
     elif damage == "failed_result":
@@ -741,15 +741,15 @@ def test_web_pdf_references_keep_declared_order_and_existing_api_contract():
 
 
 @pytest.mark.parametrize("chunk_id", [0, None])
-def test_get_chunk_text_reference_preserves_locator_and_safe_scores(chunk_id):
+def test_get_chunk_context_reference_preserves_locator_and_safe_scores(chunk_id):
     document = chunk_to_evidence_document({
         "chunk_id": chunk_id, "text": "原文", "source_id": "source-1", "position": 3,
         "hybrid_score": "invalid", "rerank_score": "nan",
     })
     result = build_framework_agent_result(_invocation(), {
         "messages": [ToolMessage(
-            name="get_chunk_text", tool_call_id="chunk",
-            content=json.dumps(tool_success("get_chunk_text", {}, {"evidence": [document.model_dump()]})),
+            name="get_chunk_context", tool_call_id="chunk",
+            content=json.dumps(tool_success("get_chunk_context", {}, {"evidence": [document.model_dump()]})),
         )],
         "structured_response": FinalAgentResponse(
             outcome="answer", answer="原文回答", evidence_ids=[document.id],

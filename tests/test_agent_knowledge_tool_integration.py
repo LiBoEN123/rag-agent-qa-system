@@ -7,6 +7,7 @@ from unittest.mock import Mock
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from pydantic import ValidationError
+from langchain_core.tools import StructuredTool
 
 from app.agent import framework_agent, framework_tools
 from app.agent.final_response import FinalAgentResponse
@@ -14,7 +15,7 @@ from app.rag import pipeline
 from app.tools.catalog import get_local_tool_specs
 from app.tools.context import ToolInvocationContext
 from app.tools.knowledge_base import search_knowledge_base
-from app.tools.schemas import GetChunkTextArgs, SearchKnowledgeBaseArgs, SearchKnowledgeBaseOutput
+from app.tools.schemas import GetChunkContextArgs, SearchKnowledgeBaseArgs
 from tests.support.agent_runtime import FakeToolCallingModel, build_agent_harness
 from tests.support.local_tools import local_tools
 
@@ -65,10 +66,9 @@ async def _invoke(monkeypatch, model, settings_factory, **settings_overrides):
         "trace_id": context.trace_id, "session_id": context.session_id,
     }, context=context)][-1]
     assert "knowledge_base_result" not in output
-    assert isinstance(tools[0], framework_tools.ProjectStructuredTool)
-    assert issubclass(tools[0].args_schema, SearchKnowledgeBaseArgs)
-    assert tools[0].project_spec.output_model is SearchKnowledgeBaseOutput
-    assert "runtime" not in tools[0].tool_call_schema.model_fields
+    assert isinstance(tools[0], StructuredTool)
+    assert tools[0].args_schema == SearchKnowledgeBaseArgs.model_json_schema()
+    assert "runtime" not in tools[0].tool_call_schema["properties"]
     assert isinstance(model.received_messages[0][0], SystemMessage)
     assert [m.content for m in model.received_messages[0] if isinstance(m, HumanMessage)] == [
         "奖学金申请条件与开始时间是什么？"
@@ -94,7 +94,7 @@ def _grounded_answer(answer, *, indexes=None):
         ids = list(dict.fromkeys(
             document["id"]
             for message in messages if isinstance(message, ToolMessage) and message.name == "search_knowledge_base"
-            for document in json.loads(message.content)["output"]["evidence"]
+            for document in (message.artifact or json.loads(message.content))["output"]["evidence"]
         ))
         return model.final_response(
             outcome="answer", answer=answer,
@@ -109,7 +109,7 @@ def _evidence(model, round_index, call_id):
     assert message.tool_call_id == call_id
     assert message.name == "search_knowledge_base"
     assert message.status == "success"
-    payload = json.loads(message.content)
+    payload = (message.artifact or json.loads(message.content))
     assert payload["ok"] is True
     assert payload["runtime"]["attempt_count"] == 1
     assert payload["governance"]["decision"] == "allow"
@@ -137,8 +137,8 @@ async def test_search_tool_message_separates_evidence_id_from_chunk_locator(
     assert document["id"].startswith("knowledge_base:")
     assert document["page_content"] == "通知书由学院送达学生本人。"
     with pytest.raises(ValidationError):
-        GetChunkTextArgs(chunk_id=document["id"])
-    assert GetChunkTextArgs(chunk_id=document["metadata"]["chunk_id"]).chunk_id == 382
+        GetChunkContextArgs(chunk_id=document["id"])
+    assert GetChunkContextArgs(chunk_id=document["metadata"]["chunk_id"]).chunk_id == 382
     assert output["result"]["status"] == "OK"
     assert output["result"]["references"][0]["reference_id"] == document["id"]
 
@@ -239,7 +239,7 @@ async def test_unavailable_kb_returns_error_and_agent_recovers(monkeypatch, sett
     message = model.received_messages[1][-1]
     assert isinstance(message, ToolMessage) and message.tool_call_id == "search-a"
     assert message.status == "error"
-    payload = json.loads(message.content)
+    payload = (message.artifact or json.loads(message.content))
     assert payload["ok"] is False and payload["error_code"] == "dependency_unavailable"
     search.assert_not_called()
     cross_encoder.predict.assert_not_called()

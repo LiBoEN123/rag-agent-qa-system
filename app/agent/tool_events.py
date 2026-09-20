@@ -32,14 +32,9 @@ def summarize_tool_result(tool_name: str, tool_result: dict[str, Any]) -> str:
         return f"文档内检索完成，召回 {count} 个 chunk"
     if tool_name == "get_chunk_context":
         return f"上下文扩展完成，返回 {count} 个同文档 chunk"
-    summaries = {
-        "compare_documents": "双文档证据检索完成",
-        "list_documents": "文档列表工具执行完成",
-        "get_chunk_text": "chunk 原文工具执行完成",
-    }
     if tool_name == "search_knowledge_base":
         return f"检索到 {count} 个候选 chunk"
-    return summaries.get(tool_name, f"{tool_name} 工具执行完成")
+    return f"{tool_name} 工具执行完成"
 
 
 def build_tool_trace(
@@ -64,7 +59,7 @@ def build_tool_trace(
     safe_policy_codes = {
         "permission_denied",
         "approval_required",
-        "missing_idempotency_key",
+
         "invalid_invocation_context",
         "policy_denied",
         "audit_write_failed",

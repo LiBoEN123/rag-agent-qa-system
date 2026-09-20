@@ -380,13 +380,13 @@ def test_chat_service_returns_kb_evidence_to_agent_with_request_tool_mode(monkey
     assert first_messages[-1].content == "本科生学习年限是多少？"
     message = model.received_messages[1][-1]
     assert isinstance(message, ToolMessage) and message.tool_call_id == "kb-mode-call"
-    assert json.loads(message.content)["output"]["count"] == 0
+    assert (message.artifact or json.loads(message.content))["output"]["count"] == 0
     search.assert_called_once_with("学习年限", top_k=8)
     rerank.assert_called_once_with([], "学习年限")
     if tool_mode is ToolMode.RAG_ONLY:
-        assert model.bound_tool_names == ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "get_chunk_text", "get_chunk_context", model.structured_tool_name]
+        assert model.bound_tool_names == ["search_knowledge_base", "find_documents", "search_document", "get_chunk_context", model.structured_tool_name]
     else:
-        assert {"search_knowledge_base", "web_search", "compare_documents"} <= set(model.bound_tool_names)
+        assert {"search_knowledge_base", "web_search", "search_document"} <= set(model.bound_tool_names)
 
 
 def test_chat_service_completes_web_search_and_fetch_through_production_chain(

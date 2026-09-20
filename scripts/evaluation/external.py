@@ -73,8 +73,8 @@ def build_tool_origin_catalog(
             "origin": origin,
             "server": "",
             "remote_tool": "",
-            "risk_level": spec.risk_level.value,
-            "approval_required": spec.requires_approval,
+            "risk_level": "read_only",
+            "approval_required": False,
         }
     for row in safe_mcp_catalog_rows(mcp_catalog):
         name = str(row["tool_name"])

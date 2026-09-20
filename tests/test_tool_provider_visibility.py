@@ -1,4 +1,4 @@
-"""请求级工具可见性与 ProjectStructuredTool 最终授权边界测试。"""
+"""请求级工具可见性与 原生 StructuredTool 最终授权边界测试。"""
 
 from pydantic import RootModel
 
@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_tools
 from app.tools.context import ToolInvocationContext, has_permission
-from app.tools.contracts import ToolRiskLevel, ToolSpec
+from app.tools.contracts import ToolSpec
 from tests.support.local_tools import local_tools
 from tests.support.local_tools import visible_tools
 from app.tools.result import tool_success
@@ -29,8 +29,6 @@ def _spec(
     *,
     required_permissions: tuple[str, ...] = (),
     description: str = "受控可见性测试工具",
-    risk_level: ToolRiskLevel = ToolRiskLevel.READ_ONLY,
-    requires_approval: bool = False,
 ) -> ToolSpec:
     def handler(args, context):
         calls.append((name, dict(args), context))
@@ -43,9 +41,7 @@ def _spec(
         output_model=RootModel[dict],
         handler=handler,
         args_model=TextArgs,
-        risk_level=risk_level,
         required_permissions=required_permissions,
-        requires_approval=requires_approval,
     )
 
 
@@ -127,22 +123,10 @@ def test_provider_filters_in_order_without_mutation_or_execution():
         registry.append(spec)
     context = ToolInvocationContext(permissions=("documents:read",))
     before = (context, public.required_permissions, hidden.required_permissions)
-    specs = [t.project_spec for t in visible_tools(local_tools(registry), context=context)]
-    assert specs == [public, allowed]
+    specs = [t for t in visible_tools(local_tools(registry), context=context)]
+    assert [tool.name for tool in specs] == [public.name, allowed.name]
     assert (context, public.required_permissions, hidden.required_permissions) == before
     assert calls == []
-
-
-def test_execution_policy_fields_do_not_hide_authorized_tool():
-    spec = _spec(
-        "approval_tool",
-        [],
-        required_permissions=("documents:write",),
-        risk_level=ToolRiskLevel.INTERNAL_WRITE,
-        requires_approval=True,
-    )
-    context = ToolInvocationContext(permissions=("documents:write",))
-    assert _visible(spec, context=context) is True
 
 
 def test_same_provider_keeps_request_visibility_isolated():
@@ -255,7 +239,7 @@ async def test_forged_hidden_tool_is_denied_by_execution_policy(monkeypatch):
 
     output = await _invoke_graph(monkeypatch, registry, model, context)
     message = next(m for m in output["messages"] if isinstance(m, ToolMessage))
-    payload = json.loads(message.content)
+    payload = (message.artifact or json.loads(message.content))
     assert model.bound_tool_names == ["public_tool", model.structured_tool_name]
     assert isinstance(message, ToolMessage)
     assert payload["error_code"] == "permission_denied"

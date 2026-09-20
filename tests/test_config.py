@@ -139,7 +139,6 @@ def test_scalar_path_literal_secret_and_permissions_types(tmp_path):
         ("agent_max_consecutive_same_tool_calls", 101),
         ("agent_max_consecutive_same_tool_errors", 101),
         ("agent_max_total_cost_ms", 3_600_001),
-        ("tool_runtime_max_workers", 0),
         ("tool_retry_base_delay_ms", -1),
         ("tool_retry_jitter_ratio", -0.01),
         ("tool_retry_jitter_ratio", 1.01),

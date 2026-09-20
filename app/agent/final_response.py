@@ -56,7 +56,7 @@ def collect_evidence_from_messages(messages: object) -> dict[str, Document]:
             or message.status != "success"
         ):
             continue
-        result = json.loads(message.content)
+        result = message.artifact if isinstance(message.artifact, dict) else json.loads(message.content)
         if not isinstance(result, dict):
             raise ValueError("Invalid evidence tool result")
         if result.get("ok") is not True or result.get("status") != "success":

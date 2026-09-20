@@ -39,7 +39,7 @@ def test_check_tool_output_keys_reports_missing_from_trace_output():
         "tool_trace": [
             {
                 "step": "tool_call",
-                "tool_name": "compare_documents",
+                "tool_name": "search_document",
                 "tool_output": {"comparison": "compared"},
             }
         ]
@@ -65,7 +65,7 @@ def test_agent_helpers_extract_real_tool_trace_keywords_and_sources():
             },
             {
                 "step": "tool_call",
-                "tool_name": "compare_documents",
+                "tool_name": "search_document",
                 "tool_status": "success",
             },
         ],
@@ -80,8 +80,8 @@ def test_agent_helpers_extract_real_tool_trace_keywords_and_sources():
     assert actual == {
         "actual_decision": "use_agent",
         "actual_action": "agent",
-        "actual_tool": "compare_documents",
-        "actual_tools": ["compare_documents"],
+        "actual_tool": "search_document",
+        "actual_tools": ["search_document"],
         "actual_status": "OK",
     }
     assert keyword["keyword_pass"] is True

@@ -12,12 +12,18 @@
         "decision": "use_agent",
         "action": "agent",
         "status": "OK",
-        "first_tool": "list_documents",
-        "tools_contains": ["list_documents"],
-        "keywords": ["文档"],
+        "first_tool": "find_documents",
+        "tools_contains": [
+          "find_documents"
+        ],
+        "keywords": [
+          "文档"
+        ],
         "min_keyword_hits": 1
       },
-      "tags": ["fixture"]
+      "tags": [
+        "fixture"
+      ]
     }
   ]
 }

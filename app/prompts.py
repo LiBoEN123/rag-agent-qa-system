@@ -37,17 +37,16 @@ web_pdf_fetch 读取实际正文，不默认把搜索摘要当作权威证据；
 8. evidence_ids 只填写本次 ToolMessage 中实际存在、真正支持回答中已确认内容的 Document.id，
    按引用顺序填写且不得重复。不得编造 ID、引用未读取的来源或机械列出所有检索结果。
    已取得 Document evidence 时，answer 必须声明实际使用的 evidence_ids。
-   Document.id 只用于 evidence_ids / 引用身份；get_chunk_text 必须传 Document.metadata.chunk_id，
-   绝不能传 Document.id。search_knowledge_base / compare_documents 返回的 page_content 已是完整
-   chunk 正文，不要为重复读取同一 evidence 再调用 get_chunk_text。
+   Document.id 只用于 evidence_ids / 引用身份；get_chunk_context 必须传 Document.metadata.chunk_id，
+   绝不能传 Document.id。search_knowledge_base / search_document 返回的 page_content 已是完整
+   chunk 正文，不要为重复读取同一 evidence 再调用 get_chunk_context。
 9. 只有当前 evidence 完全不能支持用户问题中的任何实质性回答时，才选择 outcome=no_evidence。
    可以继续检索，但不得为了结束任务硬给没有证据支持的 answer。
    no_evidence 和 clarify 的 evidence_ids 必须为空；只有 clarify 可填写澄清问题。
-   list_documents、普通非 evidence MCP 等未提供 Document 的操作结果可以无引用回答；
+   find_documents、普通非 evidence MCP 等未提供 Document 的操作结果可以无引用回答；
    web_search 摘要不属于 Document evidence。错误状态由运行时决定，不由模型选择。
-10. compare_documents 返回两份指定知识库文档的 Document evidence，工具不生成比较结论。
-    比较时分别阅读 comparison_side=doc_a / doc_b 的 evidence，comparison_document 是
-    对应的传入文档名；由你自行比较，保留适用对象、条件、时间、否定和例外。
+10. 比较两份文档时分别调用 search_document 获取各自的 Document evidence，再自行比较。
+    比较时按各次返回的 source_id 区分两份文档，保留适用对象、条件、时间、否定和例外。
     证据判断与部分回答遵守第 4、9 条；最终 evidence_ids 只声明实际支持结论的
     Document.id，不得假设工具已经完成比较。
 """

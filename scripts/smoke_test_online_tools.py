@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 import time
@@ -47,20 +48,19 @@ def invoke_local_tool(
     tool_args: dict[str, Any],
     context: ToolInvocationContext,
 ) -> dict[str, Any]:
-    """通过诊断用 BaseTool.invoke 执行一个已注册本地工具。"""
+    """通过诊断用 BaseTool.ainvoke 执行一个已注册本地工具。"""
     spec = next((item for item in registry if item.name == tool_name), None)
     if spec is None:
         raise LookupError(f"unknown local tool: {tool_name}")
-    result = build_local_tool(
-        spec,
-
-    ).invoke({**tool_args, "runtime": ToolRuntime(
-        state={}, context=context, config={}, stream_writer=lambda _: None,
-        tool_call_id="manual-smoke", store=None,
-    )})
-    if not isinstance(result, dict):
-        raise TypeError("local tool returned a non-mapping result")
-    return result
+    tool = build_local_tool(spec)
+    message = asyncio.run(tool.ainvoke({
+        "name": tool.name, "id": "manual-smoke", "type": "tool_call",
+        "args": {**tool_args, "runtime": ToolRuntime(
+            state={}, context=context, config={}, stream_writer=lambda _: None,
+            tool_call_id="manual-smoke", store=None,
+        )},
+    }))
+    return message.artifact
 
 
 def build_context(tool_name: str) -> ToolInvocationContext:

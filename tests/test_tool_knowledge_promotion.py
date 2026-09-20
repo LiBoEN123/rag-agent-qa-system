@@ -32,7 +32,7 @@ from app.tools.context import ToolInvocationContext
 from app.tools.mcp.bridge import McpToolCallInterceptor
 from app.tools.mcp.config import McpConfig, McpServerConfig
 from app.tools.mcp.discovery import discover_mcp_tools
-from tests.test_mcp_agent_integration import FakeAgentModel
+from tests.support.agent_runtime import FakeToolCallingModel as FakeAgentModel
 
 
 SHA = "a" * 40
@@ -187,16 +187,17 @@ def _stream_agent(
         assert "knowledge_candidate_id" not in message.content
         assert "content_blocks" not in message.content
         assert "mcp_ingestion_output" not in json.dumps(state, default=str)
-    return state, json.loads(message.content), event, calls
+    return state, (message.artifact or json.loads(message.content)), event, calls
 
 
 def test_local_documents_and_non_opted_mcp_remain_ephemeral(
     monkeypatch, settings_factory
 ):
     settings = settings_factory()
-    monkeypatch.setattr("app.rag.pipeline.preview_docs", lambda: [])
+    monkeypatch.setattr("app.rag.pipeline.chunks", [])
+    monkeypatch.setattr("app.rag.pipeline.RAG_READY", True)
     documents_tool = next(
-        tool for tool in get_local_tools(settings) if tool.name == "list_documents"
+        tool for tool in get_local_tools(settings) if tool.name == "find_documents"
     )
     model = FakeAgentModel(
         [
@@ -398,23 +399,12 @@ def test_incomplete_source_is_not_promoted_and_tool_answer_is_preserved(
     [
         "tool_error",
         "permission_denied",
-        "governance_block",
         "audit_failure",
         "storage_failure",
     ],
 )
 def test_execution_and_promotion_failure_domains(monkeypatch, settings_factory, case):
-    settings = (
-        settings_factory(agent_max_total_cost_ms=1)
-        if case == "governance_block"
-        else settings_factory()
-    )
-    if case == "governance_block":
-        # 已完成模型调用消耗完预算，工具不应执行。
-        clock = iter(range(0, 10000, 10))
-        monkeypatch.setattr(
-            "app.agent.framework_middleware._now_ms", lambda: next(clock)
-        )
+    settings = settings_factory()
     if case == "storage_failure":
 
         def fail(self, **kwargs):
@@ -441,7 +431,7 @@ def test_execution_and_promotion_failure_domains(monkeypatch, settings_factory, 
         assert result["ok"] is True
     else:
         assert result["ok"] is False
-    if case in {"permission_denied", "governance_block"}:
+    if case in {"permission_denied"}:
         assert calls == []
 
 

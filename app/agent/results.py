@@ -147,7 +147,6 @@ def _stop_result(reason: str) -> tuple[AgentResultStatus, str]:
     tool_errors = {
         AgentStopReason.FATAL_TOOL_ERROR.value,
         AgentStopReason.APPROVAL_REQUIRED.value,
-        AgentStopReason.MISSING_IDEMPOTENCY_KEY.value,
         AgentStopReason.RUNTIME_UNAVAILABLE.value,
     }
     if reason in tool_errors:

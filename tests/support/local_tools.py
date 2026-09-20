@@ -1,5 +1,7 @@
 """通过 LangChain public tool path 注入显式 Runtime 的本地测试辅助。"""
 
+import asyncio
+
 from collections.abc import Sequence
 from typing import Any
 
@@ -31,12 +33,12 @@ def invoke_local_tool(
         raise LookupError(f"unknown local tool: {tool_name}")
     resolved_settings = settings or get_settings()
     context = context or build_default_tool_context(source="direct_test", settings=resolved_settings)
-    result = build_local_tool(spec, settings=resolved_settings, audit_sink=audit_sink).invoke(
-        {**tool_args, "runtime": tool_runtime(context)}
-    )
-    if not isinstance(result, dict):
-        raise TypeError("local tool did not return a result mapping")
-    return result
+    tool = build_local_tool(spec, settings=resolved_settings, audit_sink=audit_sink)
+    message = asyncio.run(tool.ainvoke({
+        "name": tool.name, "id": "direct-test", "type": "tool_call",
+        "args": {**tool_args, "runtime": tool_runtime(context)},
+    }))
+    return message.artifact
 
 
 def local_tools(specs: Sequence[ToolSpec], settings: AppSettings | None = None):

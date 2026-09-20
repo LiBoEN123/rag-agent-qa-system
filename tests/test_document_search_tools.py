@@ -119,8 +119,8 @@ def test_discovery_never_invents_missing_ids_or_optional_fields(document_kb, inv
 
 
 @pytest.mark.parametrize("args", [
-    {"query": ""}, {"query": " \n "}, {"query": "a" * 501},
-    {"query": "x", "limit": 0}, {"query": "x", "limit": 11},
+    {"query": "a" * 501},
+    {"query": "x", "limit": 0}, {"query": "x", "limit": 101},
 ])
 def test_discovery_rejects_invalid_arguments(args):
     with pytest.raises(ValidationError):
@@ -219,9 +219,9 @@ def test_unready_kb_is_dependency_error(document_kb, invoke, monkeypatch, name, 
 
 def test_output_counts_and_discovery_evidence_exclusion():
     with pytest.raises(ValidationError, match="count"):
-        FindDocumentsOutput(query="q", count=1, documents=[])
+        FindDocumentsOutput(query="q", count=1, total=1, documents=[])
     with pytest.raises(ValidationError, match="evidence"):
-        FindDocumentsOutput(query="q", count=0, documents=[], evidence=[])
+        FindDocumentsOutput(query="q", count=0, total=0, documents=[], evidence=[])
     with pytest.raises(ValidationError, match="count"):
         SearchDocumentOutput(query="q", document="s", source_id="s", count=1, evidence=[])
 
@@ -240,7 +240,7 @@ async def test_agent_discovers_searches_and_cites_in_rag_only(
         message = messages[-1]
         assert isinstance(message, ToolMessage) and message.name == "find_documents"
         assert collect_evidence_from_messages(messages) == {}
-        result = json.loads(message.content)
+        result = (message.artifact or json.loads(message.content))
         assert result["ok"] is True and result["governance"]["decision"] == "allow"
         source_id = result["output"]["documents"][0]["source_id"]
         return AIMessage(content="", tool_calls=[{
@@ -251,7 +251,7 @@ async def test_agent_discovers_searches_and_cites_in_rag_only(
     def answer(model, messages):
         message = messages[-1]
         assert isinstance(message, ToolMessage) and message.name == "search_document"
-        result = json.loads(message.content)
+        result = (message.artifact or json.loads(message.content))
         assert result["ok"] is True and result["governance"]["decision"] == "allow"
         evidence = collect_evidence_from_messages(messages)
         assert len(evidence) == 1
@@ -287,3 +287,35 @@ async def test_agent_discovers_searches_and_cites_in_rag_only(
         (name, event) for name in ("find_documents", "search_document")
         for event in ("requested", "started", "succeeded")
     ]
+
+
+@pytest.mark.parametrize("args", [{}, {"query": None}, {"query": ""}, {"query": "  "}])
+def test_empty_discovery_lists_metadata_without_evidence(document_kb, invoke, args):
+    result = invoke("find_documents", **args)
+    assert result["ok"] and result["output"]["count"] == result["output"]["total"] > 0
+    assert "evidence" not in result["output"]
+    assert all("page_content" not in item for item in result["output"]["documents"])
+
+
+@pytest.mark.asyncio
+async def test_agent_compares_two_scoped_searches(document_kb, settings_factory, monkeypatch):
+    def answer(model, messages):
+        evidence = collect_evidence_from_messages(messages)
+        assert {doc.metadata["source_id"] for doc in evidence.values()} == {"source-0", "source-1"}
+        return model.final_response(outcome="answer", answer="两份文档均要求提交成绩单。", evidence_ids=list(evidence))
+
+    model = FakeToolCallingModel([
+        AIMessage(content="", tool_calls=[{
+            "name": "search_document", "args": {"document": source, "query": "申请要求", "top_k": 1},
+            "id": source, "type": "tool_call",
+        } for source in ("source-0", "source-1")]),
+        answer,
+    ])
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    context = ToolInvocationContext(permissions=("knowledge_base:read",))
+    output = [state async for state in build_agent_harness(settings_factory()).astream({
+        "original_question": "比较两份文档的申请要求", "effective_question": "比较两份文档的申请要求",
+    }, context=context)][-1]
+    assert output["result"]["status"] == "OK"
+    assert len(output["result"]["references"]) == 2
+    assert [event["name"] for event in output["governance_events"] if event["kind"] == "tool"] == ["search_document", "search_document"]

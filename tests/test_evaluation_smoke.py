@@ -2,6 +2,8 @@
 
 from dataclasses import replace
 import json
+import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -9,7 +11,7 @@ from scripts.evaluation import agent, rag_evaluator, rag_predictions, report
 from scripts.evaluation.contracts import AgentEvaluationCase
 
 
-@pytest.mark.parametrize("tool", ["", "list_documents"], ids=["direct", "local_tool"])
+@pytest.mark.parametrize("tool", ["", "find_documents"], ids=["direct", "local_tool"])
 def test_minimal_agent_smoke(tool, settings_factory, monkeypatch, tmp_path):
     from app.agent import framework_tools, streaming
     from app.agent.streaming import AgentRuntimeStreamEvent
@@ -21,7 +23,8 @@ def test_minimal_agent_smoke(tool, settings_factory, monkeypatch, tmp_path):
     from app.tools.policy import ToolPolicyEngine
 
     settings = settings_factory(mcp_tools_enabled=False)
-    monkeypatch.setattr("app.rag.pipeline.preview_docs", lambda: [])
+    monkeypatch.setattr("app.rag.pipeline.chunks", [])
+    monkeypatch.setattr("app.rag.pipeline.RAG_READY", True)
     base = chat_service.get_default_chat_service_dependencies()
     monkeypatch.setattr(chat_service, "get_default_chat_service_dependencies", lambda: replace(
         base, rewrite_query_with_history=lambda question, history, trace_id: {
@@ -33,11 +36,11 @@ def test_minimal_agent_smoke(tool, settings_factory, monkeypatch, tmp_path):
         calls = []
         if tool:
             spec = next(s for s in get_local_tool_specs(settings) if s.name == tool)
-            output = framework_tools.execute_project_tool(
+            output = await framework_tools.execute_project_tool(
                 spec=spec, tool_args={}, context=kwargs["tool_context"],
                 settings=settings, policy_engine=ToolPolicyEngine(), audit_sink=NullToolAuditSink(),
             )
-            assert output["ok"] and output["output"] == {"count": 0, "documents": []}
+            assert output["ok"] and output["output"] == {"query": None, "count": 0, "total": 0, "documents": []}
             calls.append({"step": "tool_call", "tool_name": tool, "tool_status": "success"})
         yield AgentRuntimeStreamEvent("result", {"result": create_agent_result(
             status=AgentResultStatus.OK, answer="文档列表为空" if tool else "你好", action="agent",
@@ -77,16 +80,16 @@ def test_minimal_rag_smoke_judge_disabled(monkeypatch, tmp_path):
     def chat_turn(*args, **kwargs):
         from app.agent import framework_tools
         from types import SimpleNamespace
-        framework_tools.execute_project_tool(spec=SimpleNamespace(name="search_knowledge_base"), tool_args={})
+        asyncio.run(framework_tools.execute_project_tool(spec=SimpleNamespace(name="search_knowledge_base"), tool_args={}))
         return ChatServiceOutcome(http_status=200, code=200, message="ok", question="规则是什么", result={
             "answer": "评测规则", "status": "OK", "references": [{"chunk_id": 1}],
             "tool_trace": [{"step": "tool_call", "tool_call_id": "a"}], "llm_call_count": 2,
         })
-    monkeypatch.setattr("app.agent.framework_tools.execute_project_tool", lambda **kwargs: {
+    monkeypatch.setattr("app.agent.framework_tools.execute_project_tool", AsyncMock(return_value={
         "tool_call_id": "a", "ok": True, "output": {"evidence": [
             {"metadata": {"source_type": "knowledge_base", "chunk_id": 1}},
         ]},
-    })
+    }))
     monkeypatch.setattr(rag_predictions, "run_evaluation_chat_turn", chat_turn)
     eval_file, pred_file, chunks_file = [tmp_path / n for n in ("eval.json", "predictions.csv", "chunks.json")]
     eval_file.write_text(json.dumps([{

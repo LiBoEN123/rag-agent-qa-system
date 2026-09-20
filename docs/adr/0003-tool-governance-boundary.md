@@ -1,5 +1,7 @@
 # ADR 0003：工具治理边界
 
+> 历史设计记录。本地工具当前实现以 [current-system](../architecture/current-system.md) 为准：TOOL-SLIM-1/2 已移除动态 runtime schema、自定义工具子类、私有线程池与假设性的 Local write 治理；MCP 写入审批保留。
+
 - 状态：Accepted
 - 日期：2026-07-19
 - 决策者：Project Maintainer

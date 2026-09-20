@@ -31,10 +31,6 @@ from app.tools.errors import ToolErrorCode
             ToolErrorCode.INVALID_INVOCATION_CONTEXT,
             AgentToolFailureKind.TERMINAL_GOVERNANCE,
         ),
-        (
-            ToolErrorCode.MISSING_IDEMPOTENCY_KEY,
-            AgentToolFailureKind.TERMINAL_GOVERNANCE,
-        ),
         (ToolErrorCode.APPROVAL_REQUIRED, AgentToolFailureKind.APPROVAL_REQUIRED),
         (ToolErrorCode.RUNTIME_UNAVAILABLE, AgentToolFailureKind.TERMINAL_RUNTIME),
     ],
@@ -102,11 +98,6 @@ def test_error_fingerprint_binds_call_and_normalized_code():
             "approval_required",
             AgentToolFailureKind.APPROVAL_REQUIRED,
             AgentStopReason.APPROVAL_REQUIRED,
-        ),
-        (
-            "missing_idempotency_key",
-            AgentToolFailureKind.TERMINAL_GOVERNANCE,
-            AgentStopReason.MISSING_IDEMPOTENCY_KEY,
         ),
         (
             "runtime_unavailable",

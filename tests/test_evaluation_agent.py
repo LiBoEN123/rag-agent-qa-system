@@ -11,7 +11,7 @@ from scripts.evaluation.contracts import ExpectedOutcome
 def _result(
     *,
     status="OK",
-    tool="list_documents",
+    tool="find_documents",
     tool_status="success",
     answer="共有 7 份文档",
     rewrite=None,
@@ -63,8 +63,8 @@ def _expected(**changes):
         "decision": "use_agent",
         "action": "agent",
         "status": "OK",
-        "first_tool": "list_documents",
-        "tools_contains": ["list_documents"],
+        "first_tool": "find_documents",
+        "tools_contains": ["find_documents"],
         "keywords": ["7"],
         "min_keyword_hits": 1,
         "sources": ["rules.md"],
@@ -109,7 +109,7 @@ def test_score_agent_turn_uses_captured_keys_without_persisting_values():
         result=result,
         tool_output_records=[
             {
-                "tool_name": "list_documents",
+                "tool_name": "find_documents",
                 "status": "success",
                 "ok": True,
                 "output_keys": ["count", "documents"],
@@ -127,7 +127,7 @@ def test_score_agent_turn_accepts_explicit_error_then_success_recovery():
     result["tool_trace"].append(
         {
             "step": "tool_call",
-            "tool_name": "list_documents",
+            "tool_name": "find_documents",
             "tool_status": "success",
             "tool_output": {
                 "documents": [{}] * 7,
@@ -136,7 +136,7 @@ def test_score_agent_turn_accepts_explicit_error_then_success_recovery():
         }
     )
     expected = _expected(
-        tool_sequence=["list_documents", "list_documents"],
+        tool_sequence=["find_documents", "find_documents"],
         tool_status_sequence=["error", "success"],
     )
 
@@ -455,7 +455,7 @@ def test_mcp_execution_error_before_remote_handler_is_application_regression():
 def test_first_tool_any_of_accepts_a_reasonable_alternative_route():
     expected = _expected(
         first_tool="",
-        first_tool_any_of=["list_documents", "search_knowledge_base"],
+        first_tool_any_of=["find_documents", "search_knowledge_base"],
     )
 
     row = _score(expected=expected)

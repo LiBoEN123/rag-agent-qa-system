@@ -13,49 +13,6 @@ from app.tools.errors import ToolErrorCode, ToolExecutionError
 from app.tools.result import tool_error, tool_success
 
 
-def list_documents() -> dict:
-    """列出知识库中的文档并包装为标准工具结果。"""
-    tool_name = "list_documents"
-    tool_input = {}
-    try:
-        from app.rag.pipeline import preview_docs
-
-        documents = preview_docs()
-        return tool_success(
-            tool_name,
-            tool_input,
-            {"count": len(documents), "documents": documents},
-        )
-    except Exception as exc:
-        return tool_error(tool_name, tool_input, str(exc))
-
-
-def get_chunk_text(chunk_id: int) -> dict:
-    """按 chunk 编号读取完整文本并包装为标准工具结果。"""
-    tool_name = "get_chunk_text"
-    tool_input = {"chunk_id": chunk_id}
-    try:
-        from app.rag.pipeline import get_chunk_full_text
-
-        chunk = get_chunk_full_text(chunk_id)
-        if not chunk.get("found"):
-            raise ToolExecutionError(
-                f"未找到 chunk_id={chunk_id}。get_chunk_text.chunk_id 必须使用知识库 "
-                "evidence 的 metadata.chunk_id，不要使用 Document.id。",
-                code=ToolErrorCode.INVALID_ARGUMENTS,
-                retryable=False,
-            )
-        return tool_success(
-            tool_name,
-            tool_input,
-            {"count": 1, "evidence": [chunk_to_evidence_document(chunk)]},
-        )
-    except ToolExecutionError:
-        raise
-    except Exception as exc:
-        return tool_error(tool_name, tool_input, str(exc))
-
-
 def get_chunk_context(
     args: dict,
     context: ToolInvocationContext | None = None,

@@ -237,14 +237,14 @@ def capture_tool_output_keys() -> Iterator[list[dict[str, Any]]]:
     records: list[dict[str, Any]] = []
     original_execute = framework_tools.execute_project_tool
 
-    def execute_with_schema_capture(
+    async def execute_with_schema_capture(
         *,
         spec,
         tool_args: dict,
         **kwargs,
     ) -> dict:
-        """调用 ProjectStructuredTool adapter，只记录输出结构。"""
-        result = original_execute(
+        """调用异步本地执行入口，只记录输出结构。"""
+        result = await original_execute(
             spec=spec,
             tool_args=tool_args,
             **kwargs,

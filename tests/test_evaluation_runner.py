@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 import csv
+import asyncio
 import json
 from pathlib import Path
 
@@ -119,9 +120,7 @@ def test_core_evaluation_exposes_only_authorized_local_tools(
         "search_knowledge_base",
         "find_documents",
         "search_document",
-        "compare_documents",
-        "list_documents",
-        "get_chunk_text",
+
         "get_chunk_context",
     ]
 
@@ -320,7 +319,7 @@ def test_evaluation_profiles_do_not_share_mcp_provider_cache(
 
 
 def test_capture_tool_output_keys_never_keeps_values(monkeypatch):
-    def fake_execute(*, spec, tool_args, **kwargs):
+    async def fake_execute(*, spec, tool_args, **kwargs):
         del tool_args, kwargs
         return {
             "status": "success",
@@ -336,16 +335,16 @@ def test_capture_tool_output_keys_never_keeps_values(monkeypatch):
     )
 
     with agent_evaluation.capture_tool_output_keys() as records:
-        spec = next((item for item in get_local_tool_specs(get_settings()) if item.name == "list_documents"), None)
+        spec = next((item for item in get_local_tool_specs(get_settings()) if item.name == "find_documents"), None)
         assert spec is not None
-        framework_tools.execute_project_tool(
+        asyncio.run(framework_tools.execute_project_tool(
             spec=spec,
             tool_args={},
-        )
+        ))
 
     assert records == [
         {
-            "tool_name": "list_documents",
+            "tool_name": "find_documents",
             "status": "success",
             "ok": True,
             "output_keys": ["count", "private_value"],

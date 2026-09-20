@@ -26,7 +26,7 @@ from app.agent.framework_middleware import (  # noqa: E402
     _MODEL_GOVERNANCE_KEY,
     ProjectToolGovernanceMiddleware,
 )
-from app.agent.framework_tools import get_local_tools, local_tool_contract  # noqa: E402
+from app.agent.framework_tools import get_local_tools, get_local_tool_contracts  # noqa: E402
 from app.agent.results import AgentRunResult  # noqa: E402
 from app.agent.streaming import stream_agent  # noqa: E402
 from app.config import AppSettings  # noqa: E402
@@ -93,7 +93,7 @@ def _tool_report(
     tools: tuple[BaseTool, ...], *, settings: AppSettings,
 ) -> tuple[list[dict[str, Any]], list[str], dict[str, int]]:
     context = build_default_tool_context(source="agent_runtime_inspection", settings=settings)
-    registered = [local_tool_contract(tool) for tool in tools]
+    registered = get_local_tool_contracts(settings)
     request = ModelRequest(model=_DeferredAgentModel(), tools=list(tools), messages=[], runtime=Runtime(context=context))
     visible = [tool.name for tool in ProjectToolVisibilityMiddleware.visible_request(request).tools]
     return registered, visible, {
@@ -198,9 +198,6 @@ def inspect_runtime(
     )
     catalog_source = (
         PROJECT_ROOT / "app" / "tools" / "catalog.py"
-    ).read_text(encoding="utf-8")
-    tool_runtime_source = (
-        PROJECT_ROOT / "app" / "tools" / "runtime.py"
     ).read_text(encoding="utf-8")
     tool_execution_source = (
         PROJECT_ROOT / "app" / "tools" / "execution.py"
@@ -333,18 +330,18 @@ def inspect_runtime(
         ),
         _check(
             "local_tool_execution_entry_is_unique",
-            "class ProjectStructuredTool(StructuredTool)" in framework_tools_source
+            "StructuredTool.from_function(" in framework_tools_source
             and "execute_project_tool(" in framework_tools_source
             and "execute_registered_tool" not in framework_tools_source
             and "registry.dispatch(" not in framework_tools_source
             and "def dispatch(" not in catalog_source
             and not (PROJECT_ROOT / "app" / "tools" / "dispatch.py").exists(),
-            "ProjectStructuredTool directly enters the thin project adapter",
+            "native StructuredTool enters the thin project adapter",
         ),
         _check(
             "local_handler_is_adapter_owned",
             tool_execution_source.count("spec.handler") == 1
-            and "spec.handler" not in tool_runtime_source
+            and not (PROJECT_ROOT / "app" / "tools" / "runtime.py").exists()
             and "spec.handler" not in framework_tools_source
             and "spec.handler" not in visibility_source,
             "only the thin project execution adapter submits ToolSpec.handler",
@@ -354,7 +351,7 @@ def inspect_runtime(
             "request.override(" in visibility_source
             and "def wrap_model_call(" not in visibility_source
             and "def awrap_model_call(" in visibility_source
-            and "isinstance(tool, ProjectStructuredTool)" in visibility_source
+            and '"required_permissions"' in visibility_source
             and not (PROJECT_ROOT / "app" / "tools" / "providers" / "local.py").exists(),
             "LangChain async model middleware filters local tools",
         ),
@@ -402,8 +399,8 @@ def inspect_runtime(
         ),
         _check(
             "tool_runtime_governance_preserved",
-            all(item["risk_level"] == "read_only" for item in registered),
-            "registered default tools retain read-only governance metadata",
+            all("risk_level" not in item and "requires_approval" not in item for item in registered),
+            "local tools omit hypothetical write governance",
         ),
     ]
     return {
@@ -447,10 +444,10 @@ def inspect_runtime(
         "local_tool_execution": {
             "catalog": "get_local_tools",
             "visibility": "ProjectToolVisibilityMiddleware",
-            "adapter": "ProjectStructuredTool",
-            "input_validation": "LangChain StructuredTool/Pydantic",
-            "retry": "LangChain ToolRetryMiddleware",
-            "timeout": "shared bounded executor helper",
+            "adapter": "StructuredTool",
+            "input_validation": "Pydantic model_validate",
+            "retry": "LangChain Runnable.with_retry",
+            "timeout": "asyncio.timeout",
             "terminal": "ToolSpec.handler",
         },
         "module_boundaries": module_boundaries,

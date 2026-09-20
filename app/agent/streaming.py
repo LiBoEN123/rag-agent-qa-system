@@ -11,6 +11,8 @@ from typing import Any
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
 from app.agent.final_response import FinalAgentResponse
+from app.agent.guardrails import AgentStopReason
+from app.config import get_settings
 from app.agent.results import (
     build_agent_runtime_error_result,
     build_framework_agent_result,
@@ -265,32 +267,41 @@ async def stream_agent(
         final_state: Mapping[str, Any] | None = None
         seen_event_keys: set[str] = set()
 
-        async for part in agent_stream:
-            if isinstance(part, Mapping) and part.get("type") == "values":
-                value = part.get("data")
-                if isinstance(value, Mapping):
-                    final_state = value
-                continue
-            for event in project_agent_stream_part(part):
-                if event.key and event.key in seen_event_keys:
-                    continue
-                if event.key:
-                    seen_event_keys.add(event.key)
-                yield event
-                if (
-                    event.event == "tool"
-                    and event.data.get("tool_name") == "search_knowledge_base"
-                ):
-                    phase = str(event.data.get("phase") or "")
-                    if phase in {"started", "completed"}:
-                        progress = AgentRuntimeStreamEvent(
-                            event="progress",
-                            data={"stage": "rag", "status": phase},
-                            key=f"progress:rag:{phase}",
-                        )
-                        if progress.key not in seen_event_keys:
-                            seen_event_keys.add(progress.key)
-                            yield progress
+        deadline = asyncio.timeout(get_settings().agent_max_total_cost_ms / 1000.0)
+        try:
+            async with deadline:
+                async for part in agent_stream:
+                    if isinstance(part, Mapping) and part.get("type") == "values":
+                        value = part.get("data")
+                        if isinstance(value, Mapping):
+                            final_state = value
+                        continue
+                    for event in project_agent_stream_part(part):
+                        if event.key and event.key in seen_event_keys:
+                            continue
+                        if event.key:
+                            seen_event_keys.add(event.key)
+                        yield event
+                        if (
+                            event.event == "tool"
+                            and event.data.get("tool_name") == "search_knowledge_base"
+                        ):
+                            phase = str(event.data.get("phase") or "")
+                            if phase in {"started", "completed"}:
+                                progress = AgentRuntimeStreamEvent(
+                                    event="progress",
+                                    data={"stage": "rag", "status": phase},
+                                    key=f"progress:rag:{phase}",
+                                )
+                                if progress.key not in seen_event_keys:
+                                    seen_event_keys.add(progress.key)
+                                    yield progress
+
+        except TimeoutError:
+            if not deadline.expired():
+                raise
+            final_state = {**(final_state or {}), "stop_reason": AgentStopReason.MAX_TOTAL_COST.value}
+            await _close_async_iterator(agent_stream)
 
         agent_stream_completed = True
         if final_state is None:

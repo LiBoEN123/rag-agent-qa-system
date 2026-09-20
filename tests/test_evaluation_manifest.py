@@ -59,8 +59,8 @@ def test_build_manifest_records_commit_dirty_hashes_and_safe_whitelist(
         evaluation_manifest,
         "build_tool_contract",
         lambda _settings: (
-            ["list_documents"],
-            [{"name": "list_documents"}],
+            ["find_documents"],
+            [{"name": "find_documents"}],
             "contract-hash",
         ),
     )

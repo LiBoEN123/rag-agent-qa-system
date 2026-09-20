@@ -20,14 +20,12 @@ def test_context_normalizes_and_freezes_request_fields():
             "ticket:create",
         ),
         source=" test ",
-        idempotency_key=" idem-1 ",
     )
 
     assert context.trace_id == "trace-1"
     assert context.session_id == "session-1"
     assert context.principal_id == "service-1"
     assert context.source == "test"
-    assert context.idempotency_key == "idem-1"
     assert context.principal_type is PrincipalType.SERVICE
     assert context.permissions == (
         "knowledge_base:read",
@@ -40,7 +38,6 @@ def test_context_normalizes_and_freezes_request_fields():
         "principal_type",
         "permissions",
         "source",
-        "idempotency_key",
         "effective_question",
         "tool_mode",
     }

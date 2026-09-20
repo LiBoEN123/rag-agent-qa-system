@@ -29,7 +29,7 @@ class SchemaModel(FakeToolCallingModel):
 
     def bind_tools(self, tools, **kwargs):
         super().bind_tools(tools, **kwargs)
-        self.schemas.append({tool.name: tool.tool_call_schema.model_json_schema() for tool in tools if tool.name != self.structured_tool_name})
+        self.schemas.append({tool.name: tool.tool_call_schema for tool in tools if tool.name != self.structured_tool_name})
         return self
 
     async def ainvoke(self, messages):
@@ -55,7 +55,7 @@ def test_native_agent_binds_exact_schemas_for_each_context(monkeypatch, settings
     model = SchemaModel()
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     agent = build_framework_agent(settings, tools=tools)
-    kb = ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "list_documents", "get_chunk_text", "get_chunk_context"]
+    kb = ["search_knowledge_base", "find_documents", "search_document", "get_chunk_context"]
     cases = [
         (build_default_tool_context(settings=settings), kb),
         (ToolInvocationContext(), []),
@@ -63,7 +63,7 @@ def test_native_agent_binds_exact_schemas_for_each_context(monkeypatch, settings
         (ToolInvocationContext(permissions=("web:search",)), ["web_search"]),
         (ToolInvocationContext(permissions=("web:fetch",)), ["web_fetch", "web_pdf_fetch"]),
         (ToolInvocationContext(permissions=("knowledge_base:read", "web:search")), [*kb[:3], "web_search", *kb[3:]]),
-        (ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "web:search", "web:fetch", "mcp:github")), ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "get_chunk_text", "get_chunk_context"]),
+        (ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "web:search", "web:fetch", "mcp:github")), ["search_knowledge_base", "find_documents", "search_document", "get_chunk_context"]),
         (ToolInvocationContext(tool_mode=ToolMode.FULL, permissions=("knowledge_base:read", "web:search")), [*kb[:3], "web_search", *kb[3:]]),
     ]
     for context, expected in cases:
@@ -72,7 +72,7 @@ def test_native_agent_binds_exact_schemas_for_each_context(monkeypatch, settings
         # 无可见工具时框架直接调用模型，不会调用 bind_tools。
         schemas = model.schemas[-1] if model.schemas else {}
         assert list(schemas) == expected
-        assert schemas == {t.name: t.tool_call_schema.model_json_schema() for t in tools if t.name in expected}
+        assert schemas == {t.name: t.tool_call_schema for t in tools if t.name in expected}
         assert all("runtime" not in schema["properties"] for schema in schemas.values())
         assert all("tool_mode" not in schema["properties"] for schema in schemas.values())
 
@@ -89,7 +89,7 @@ def test_hidden_registered_tool_cannot_execute(monkeypatch, settings_factory):
     settings = settings_factory()
     output = stream(build_framework_agent(settings, tools=local_tools([hidden, public], settings)), ToolInvocationContext())
     message = next(m for m in output["messages"] if isinstance(m, ToolMessage))
-    result = json.loads(message.content)
+    result = (message.artifact or json.loads(message.content))
     assert all(list(s) == ["public_tool"] for s in model.schemas)
     assert result["error_code"] == "permission_denied"
     assert result["governance"]["decision"] == "deny"
@@ -119,10 +119,10 @@ def test_missing_runtime_fails_closed(settings_factory):
 
     spec = ToolSpec(name="public_tool", version="1.0.0", description="public", args_model=Args, output_model=RootModel[dict], handler=lambda a, c: calls.append(c))
     tool = framework_tools.build_local_tool(spec, settings=settings_factory())
-    with pytest.raises(ValueError, match="runtime"):
-        tool.invoke({"value": "no runtime"})
+    with pytest.raises(TypeError, match="runtime"):
+        asyncio.run(tool.ainvoke({"value": "no runtime"}))
     with pytest.raises(RuntimeError, match="ToolRuntime"):
-        tool.func(runtime=None, value="missing")
+        asyncio.run(tool.coroutine(runtime=None, value="missing"))
     assert calls == []
 
 
@@ -133,11 +133,10 @@ def test_rag_only_filters_even_registered_mcp_tools(monkeypatch, settings_factor
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     agent = build_framework_agent(settings, tools=[*framework_tools.get_local_tools(settings), external])
     stream(agent, ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "mcp:github")))
-    assert list(model.schemas[-1]) == ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "get_chunk_text", "get_chunk_context"]
+    assert list(model.schemas[-1]) == ["search_knowledge_base", "find_documents", "search_document", "get_chunk_context"]
 
 
 @pytest.mark.parametrize(("name", "args"), [
-    ("list_documents", {}),
     ("web_search", {"query": "test"}),
 ])
 def test_rag_only_forged_calls_are_denied_before_handler(monkeypatch, settings_factory, name, args):
@@ -150,10 +149,10 @@ def test_rag_only_forged_calls_are_denied_before_handler(monkeypatch, settings_f
     context = ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "web:search"))
     output = stream(build_framework_agent(settings, tools=local_tools(specs, settings)), context)
     message = next(m for m in output["messages"] if isinstance(m, ToolMessage))
-    result = json.loads(message.content)
-    assert all(list(schema) == ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "get_chunk_text", "get_chunk_context"] for schema in model.schemas)
+    result = (message.artifact or json.loads(message.content))
+    assert all(list(schema) == ["search_knowledge_base", "find_documents", "search_document", "get_chunk_context"] for schema in model.schemas)
     assert result["error_code"] == "policy_denied"
-    assert result["handler_executed"] is False
+    assert result["runtime"]["attempt_count"] == 0
     assert result["governance"]["decision"] == "deny"
     assert result["runtime"]["attempt_count"] == 0
     handler.assert_not_called()

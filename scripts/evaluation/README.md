@@ -349,7 +349,7 @@ python scripts/compare_evaluation_runs.py \
 
 Agent 与 RAG Evaluation 共用 `run_evaluation_chat_turn → ChatService.stream → stream_agent → create_agent`。
 每题 RAG 预测使用空 session、`RAG_ONLY` 与唯一权限 `knowledge_base:read`。
-模型可见且可执行的 KB 证据工具为 `search_knowledge_base`、`compare_documents`、`get_chunk_text`；
+模型可见且可执行的 KB 证据工具为 `search_knowledge_base`、`search_document`、`get_chunk_context`，以及目录工具 `find_documents`；
 Web、MCP 和文档列表不参与该 baseline。每轮 query/top_k 由 Agent 自主决定。
 
 Prediction v3 字段为版本、qid、question、answer、status、retrieved/reference chunk IDs 与数量，

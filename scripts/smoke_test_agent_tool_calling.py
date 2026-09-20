@@ -28,7 +28,7 @@ from app.common.redaction import redact_sensitive_data  # noqa: E402
 
 SCENARIOS = (
     (
-        "list_documents",
+        "find_documents",
         "请列出知识库中的文档，必须调用文档列表工具。",
     ),
     (
@@ -68,7 +68,7 @@ def main() -> int:
     )).tools
     tool_map = {tool.name: tool for tool in tools}
     print("bound_tool_names:", sorted(tool_map))
-    for required_name in ("search_knowledge_base", "list_documents"):
+    for required_name in ("search_knowledge_base", "find_documents"):
         tool = tool_map.get(required_name)
         if tool is None:
             raise RuntimeError(f"模型工具列表缺少 {required_name}")

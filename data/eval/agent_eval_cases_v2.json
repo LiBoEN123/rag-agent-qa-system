@@ -277,8 +277,8 @@
         "decision": "use_agent",
         "action": "agent",
         "status": "OK",
-        "first_tool": "list_documents",
-        "tools_contains": ["list_documents"],
+        "first_tool": "find_documents",
+        "tools_contains": ["find_documents"],
         "keywords": ["文档", "14"],
         "min_keyword_hits": 2,
         "tool_output_keys": ["count", "documents"]
@@ -296,8 +296,8 @@
         "decision": "use_agent",
         "action": "agent",
         "status": "OK",
-        "first_tool": "list_documents",
-        "tools_contains": ["list_documents"],
+        "first_tool": "find_documents",
+        "tools_contains": ["find_documents"],
         "keywords": ["文档包括", "关于调整缓考", "内蒙古工业大学", "学生手册", "学籍管理"],
         "min_keyword_hits": 3,
         "tool_output_keys": ["count", "documents"]
@@ -315,11 +315,11 @@
         "decision": "use_agent",
         "action": "agent",
         "status": "OK",
-        "first_tool": "get_chunk_text",
-        "tools_contains": ["get_chunk_text"],
+        "first_tool": "get_chunk_context",
+        "tools_contains": ["get_chunk_context"],
         "keywords": ["chunk_2", "综合业务系统", "办理缓考免考", "10天"],
         "min_keyword_hits": 3,
-        "tool_output_keys": ["chunk_id", "chunk"]
+        "tool_output_keys": ["anchor_chunk_id", "count", "evidence"]
       },
       "tags": ["tool", "migrated_v1"]
     },
@@ -328,17 +328,17 @@
       "legacy_id": "compare_documents_explicit_001",
       "version": 2,
       "suite": "core",
-      "category": "compare_documents",
+      "category": "document_compare",
       "question": "请对比《内蒙古工业大学学生手册》和《内蒙古工业大学关于调整普通全日制本科学生最长学习年限和成绩记载方式的通知》中关于普通本科四年制最长学习年限的规定差异。",
       "expected": {
         "decision": "use_agent",
         "action": "agent",
         "status": "OK",
-        "first_tool": "compare_documents",
-        "tools_contains": ["compare_documents"],
+        "first_tool_any_of": ["find_documents", "search_document"],
+        "tools_contains": ["search_document"],
         "keywords": ["最长学习年限", "差异"],
         "min_keyword_hits": 2,
-        "tool_output_keys": ["doc_a_evidence", "doc_b_evidence", "comparison", "conflict_detected"]
+        "tool_output_keys": ["source_id", "count", "evidence"]
       },
       "tags": ["tool", "document_compare", "migrated_v1"]
     },
@@ -481,9 +481,9 @@
         "decision": "use_agent",
         "action": "agent",
         "status": "OK",
-        "first_tool": "list_documents",
-        "tools_contains": ["list_documents", "get_chunk_text"],
-        "tool_sequence": ["list_documents", "get_chunk_text"],
+        "first_tool": "find_documents",
+        "tools_contains": ["find_documents", "get_chunk_context"],
+        "tool_sequence": ["find_documents", "get_chunk_context"],
         "keywords": ["综合业务系统", "学生服务", "办理缓考免考"],
         "min_keyword_hits": 2
       },
@@ -500,13 +500,13 @@
         "decision": "use_agent",
         "action": "agent",
         "status": "OK",
-        "first_tool": "get_chunk_text",
-        "tools_contains": ["get_chunk_text"],
-        "tool_sequence": ["get_chunk_text", "get_chunk_text"],
+        "first_tool": "get_chunk_context",
+        "tools_contains": ["get_chunk_context"],
+        "tool_sequence": ["get_chunk_context", "get_chunk_context"],
         "tool_status_sequence": ["error", "success"],
         "keywords": ["综合业务系统", "学生服务", "办理缓考免考"],
         "min_keyword_hits": 2,
-        "tool_output_keys": ["chunk_id", "chunk"]
+        "tool_output_keys": ["anchor_chunk_id", "count", "evidence"]
       },
       "tags": ["tool_recovery", "argument_correction", "tool_sequence"],
       "notes": "首个 chunk_id 明确不存在，第二个 chunk_id 与 v1 T003 的本地索引 ground truth 相同。"

@@ -81,7 +81,6 @@ class ToolInvocationContext:
     permissions: tuple[str, ...] = ()
 
     source: str = ""
-    idempotency_key: str = ""
 
     # 保留请求问题上下文；工具的检索参数通过本轮 StructuredTool args 传入。
     effective_question: str = ""
@@ -94,7 +93,6 @@ class ToolInvocationContext:
             "session_id",
             "principal_id",
             "source",
-            "idempotency_key",
             "effective_question",
         ):
             raw_value = getattr(self, field_name)

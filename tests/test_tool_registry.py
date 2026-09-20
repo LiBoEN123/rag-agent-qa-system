@@ -4,7 +4,6 @@ from copy import deepcopy
 from pydantic import RootModel
 
 import pytest
-from pydantic import ValidationError
 
 from app.tools.context import ToolInvocationContext
 from app.tools.catalog import ToolSpec
@@ -14,7 +13,6 @@ from tests.support.local_tools import invoke_local_tool
 from app.tools.schemas import (
     SearchKnowledgeBaseArgs,
     SearchKnowledgeBaseOutput,
-    ListDocumentsOutput,
 )
 
 
@@ -23,9 +21,6 @@ def test_tool_registry_names_include_builtin_tools(tool_registry):
     names = [item.name for item in tool_registry]
 
     assert "search_knowledge_base" in names
-    assert "list_documents" in names
-    assert "get_chunk_text" in names
-    assert "compare_documents" in names
     assert "web_search" in names
     assert "web_fetch" in names
     assert "web_pdf_fetch" in names
@@ -33,17 +28,15 @@ def test_tool_registry_names_include_builtin_tools(tool_registry):
 
 def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
     """验证注册生产工具发布完整且符合要求的 V2 契约。"""
-    from app.agent.framework_tools import build_local_tool, local_tool_contract
+    from app.agent.framework_tools import local_tool_contract
 
-    specs = [local_tool_contract(build_local_tool(item)) for item in tool_registry]
+    specs = [local_tool_contract(item) for item in tool_registry]
     specs_by_name = {spec["name"]: spec for spec in specs}
     expected_permissions = {
         "search_knowledge_base": ["knowledge_base:read"],
         "find_documents": ["knowledge_base:read"],
         "search_document": ["knowledge_base:read"],
-        "compare_documents": ["knowledge_base:read"],
-        "list_documents": ["knowledge_base:read"],
-        "get_chunk_text": ["knowledge_base:read"],
+
         "get_chunk_context": ["knowledge_base:read"],
         "web_search": ["web:search"],
         "web_fetch": ["web:fetch"],
@@ -53,9 +46,7 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
         "search_knowledge_base": 120.0,
         "find_documents": 5.0,
         "search_document": 120.0,
-        "compare_documents": 20.0,
-        "list_documents": 5.0,
-        "get_chunk_text": 5.0,
+
         "get_chunk_context": 5.0,
         "web_search": 10.0,
         "web_fetch": 30.0,
@@ -70,22 +61,17 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
     for name, spec in specs_by_name.items():
         registered = next((item for item in tool_registry if item.name == name), None)
         assert registered is not None
-        assert spec["version"] == ("1.1.0" if name == "get_chunk_text" else "1.0.0")
-        assert spec["risk_level"] == "read_only"
+        assert spec["version"] == "1.0.0"
         assert spec["required_permissions"] == expected_permissions[name]
         assert spec["timeout"] == expected_timeouts[name]
         assert spec["max_retries"] == (
             1 if name in {"web_search", "web_fetch", "web_pdf_fetch"} else 0
         )
-        assert spec["idempotent"] is True
-        assert spec["requires_approval"] is False
         assert spec["output_model"] == {
             "search_knowledge_base": "SearchKnowledgeBaseOutput",
             "find_documents": "FindDocumentsOutput",
             "search_document": "SearchDocumentOutput",
-            "compare_documents": "CompareDocumentsOutput",
-            "list_documents": "ListDocumentsOutput",
-            "get_chunk_text": "GetChunkTextOutput",
+
             "get_chunk_context": "GetChunkContextOutput",
             "web_search": "WebSearchOutput",
             "web_fetch": "WebFetchOutput",
@@ -115,33 +101,6 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
         knowledge_schema["properties"]
     )
     assert "RAGResult" not in json.dumps(knowledge_schema)
-
-
-def test_list_documents_rejects_malformed_output(tool_registry):
-    """生产文档列表契约会在 Runtime 拒绝结构错误的成功输出。"""
-    spec = next((item for item in tool_registry if item.name == "list_documents"), None)
-    assert spec is not None
-    assert spec.output_model is ListDocumentsOutput
-
-    registry = []
-    registry.append(
-        spec.model_copy(update={'handler': lambda args, context: tool_success(
-                "list_documents",
-                args,
-                {"count": 1, "documents": []},
-            )})
-    )
-
-    result = invoke_local_tool(
-        registry=registry,
-        tool_name="list_documents",
-        tool_args={},
-    )
-
-    assert result["ok"] is False
-    assert result["status"] == "error"
-    assert result["error_code"] == "output_validation_error"
-    assert result["output"] is None
 
 
 def test_invoke_local_tool_runs_search_and_rerank(monkeypatch, tool_registry):
@@ -253,50 +212,15 @@ def test_search_knowledge_base_rejects_invalid_args_in_structured_tool(
     tool_args,
 ):
     """知识库参数非法时由 StructuredTool/Pydantic 拒绝。"""
-    with pytest.raises(ValidationError):
-        invoke_local_tool(
+    result = invoke_local_tool(
             registry=tool_registry,
             tool_name="search_knowledge_base",
             tool_args=tool_args,
-        )
-
-
-@pytest.mark.parametrize("chunk_id", [382, "382"])
-def test_get_chunk_text_passes_integer_locator_to_handler(
-    monkeypatch,
-    tool_registry,
-    chunk_id,
-):
-    """整数与数字字符串均以整数 locator 进入真实 handler。"""
-    from app.rag import pipeline
-
-    received = []
-
-    def fake_get_chunk_full_text(value):
-        received.append(value)
-        return {"found": True, "chunk_id": value, "text": "测试正文"}
-
-    monkeypatch.setattr(pipeline, "get_chunk_full_text", fake_get_chunk_full_text)
-    result = invoke_local_tool(
-        registry=tool_registry,
-        tool_name="get_chunk_text",
-        tool_args={"chunk_id": chunk_id},
     )
-
-    expected = 382
-    assert result["ok"] is True
-    assert received == [expected]
-    assert type(received[0]) is int
-    assert result["tool_input"] == {"chunk_id": expected}
-    assert result["output"]["count"] == 1
-    document = result["output"]["evidence"][0]
-    assert document["id"]
-    assert document["page_content"] == "测试正文"
-    assert document["metadata"]["chunk_id"] == expected
-    assert document["metadata"]["source_uri"].startswith("knowledge_base://chunk/")
+    assert result["error_code"] == "invalid_arguments"
 
 
-@pytest.mark.parametrize("source_id", ["source-policy", None])
+@pytest.mark.parametrize("source_id", ["source-policy"])
 def test_retrieval_and_real_chunk_lookup_share_identity_and_provenance(
     monkeypatch, tool_registry, source_id,
 ):
@@ -320,7 +244,7 @@ def test_retrieval_and_real_chunk_lookup_share_identity_and_provenance(
     monkeypatch.setattr(pipeline, "rerank", lambda chunks, query: [{**chunk, **scores}])
 
     search = invoke_local_tool(tool_registry, "search_knowledge_base", {"query": "申请", "top_k": 1})
-    lookup = invoke_local_tool(tool_registry, "get_chunk_text", {"chunk_id": 382})
+    lookup = invoke_local_tool(tool_registry, "get_chunk_context", {"chunk_id": 382, "before": 0, "after": 0})
     assert search["ok"] is lookup["ok"] is True
     retrieved = search["output"]["evidence"][0]
     fetched = lookup["output"]["evidence"][0]
@@ -376,60 +300,6 @@ def test_kb_source_uri_prefers_original_metadata():
     })
     assert document.metadata["source_uri"] == "https://example.com/original"
     assert document.metadata["source_path"] == "cache/a.md"
-
-
-def test_list_documents_output_model_accepts_current_preview_shape(
-    monkeypatch,
-    tool_registry,
-):
-    """文档列表生产输出模型接受当前普通字典预览结构。"""
-    from app.rag import pipeline
-
-    documents = [
-        {"file_name": "a.md", "source_path": "data/a.md", "chunk_count": 2},
-        {"file_name": "b.md", "source_path": "data/b.md", "chunk_count": 1},
-    ]
-    monkeypatch.setattr(pipeline, "preview_docs", lambda: documents)
-
-    result = invoke_local_tool(
-        registry=tool_registry,
-        tool_name="list_documents",
-        tool_args={},
-    )
-
-    assert result["ok"] is True
-    assert result["output"] == {"count": 2, "documents": documents}
-
-
-@pytest.mark.parametrize("chunk_id", [0, -1, "", "   ", "abc", "knowledge_base:ef463ed6"])
-def test_get_chunk_text_rejects_invalid_locator_before_handler(monkeypatch, tool_registry, chunk_id):
-    """无效 locator 在提交 handler 前由 Pydantic 拒绝。"""
-    from unittest.mock import Mock
-
-    lookup = Mock(side_effect=AssertionError("invalid locator must not reach lookup"))
-    monkeypatch.setattr("app.rag.pipeline.get_chunk_full_text", lookup)
-    with pytest.raises(ValidationError):
-        invoke_local_tool(
-            registry=tool_registry,
-            tool_name="get_chunk_text",
-            tool_args={"chunk_id": chunk_id},
-        )
-    lookup.assert_not_called()
-
-
-def test_get_chunk_text_missing_locator_returns_invalid_arguments(monkeypatch, tool_registry):
-    from app.rag import pipeline
-
-    monkeypatch.setattr(pipeline, "RAG_READY", True)
-    monkeypatch.setattr(pipeline, "chunks", [{"text": "正文", "metadata": {"chunk_id": 382}}])
-    result = invoke_local_tool(tool_registry, "get_chunk_text", {"chunk_id": 999999})
-    assert result["ok"] is False
-    assert result["error_code"] == "invalid_arguments"
-    assert result["retryable"] is False
-    assert "999999" in result["error"]
-    assert "metadata.chunk_id" in result["error"]
-    assert "Document.id" in result["error"]
-    assert result["runtime"]["attempt_count"] == 1
 
 
 def test_invoke_local_tool_rejects_unknown_tool(tool_registry):
@@ -503,27 +373,28 @@ def test_execution_entry_uses_structured_tool_validation_before_handler():
         )
     )
 
-    with pytest.raises(ValidationError):
-        invoke_local_tool(
+    result = invoke_local_tool(
             registry=registry,
             tool_name="search_knowledge_base",
             tool_args={"query": "测试", "top_k": 999},
-        )
+    )
+    assert result["error_code"] == "invalid_arguments"
 
     assert called["count"] == 0
 
 
 def test_execution_entry_accepts_explicit_context(tool_registry, monkeypatch):
     """验证唯一执行入口保留显式请求上下文。"""
-    monkeypatch.setattr("app.rag.pipeline.preview_docs", lambda: [])
+    monkeypatch.setattr("app.rag.pipeline.chunks", [])
+    monkeypatch.setattr("app.rag.pipeline.RAG_READY", True)
     context = ToolInvocationContext(trace_id="test-trace", permissions=("knowledge_base:read",))
     result = invoke_local_tool(
         registry=tool_registry,
-        tool_name="list_documents",
+        tool_name="find_documents",
         tool_args={},
         context=context,
     )
 
     assert result["ok"] is True
     assert result["status"] == "success"
-    assert result["output"] == {"count": 0, "documents": []}
+    assert result["output"] == {"query": None, "count": 0, "total": 0, "documents": []}

@@ -172,7 +172,7 @@ def test_collect_trace_metrics_keeps_existing_activity_semantics_only():
                 "final_chunk_count": 4,
                 "tool_status": "success",
             },
-            {"tool_name": "compare_documents", "tool_status": "success"},
+            {"tool_name": "search_document", "tool_status": "success"},
             {"tool_name": "mcp__example__lookup", "tool_status": "success"},
         ],
     }

@@ -95,7 +95,7 @@ def test_update_projector_emits_safe_tool_completion():
                         "governance_events": [
                             {
                                 "kind": "tool",
-                                "name": "list_documents",
+                                "name": "find_documents",
                                 "ok": True,
                                 "cost_ms": 4,
                                 "tool_call_id": "list-1",
@@ -123,7 +123,7 @@ def test_update_projector_emits_safe_tool_completion():
 
     assert [event.data for event in events] == [
         {
-            "tool_name": "list_documents",
+            "tool_name": "find_documents",
             "phase": "completed",
             "status": "success",
             "cost_ms": 4,
@@ -219,15 +219,16 @@ def test_stream_executes_create_agent_and_returns_authoritative_result(
         assert all(event.event != "tool" for event in events)
         assert events[-2].event == "answer_delta" and events[-1].event == "result"
         assert model.structured_tool_name not in repr(events)
-        assert "evidence_ids" not in repr(events)
+        assert "evidence_ids" not in repr([event for event in events if event.event != "result"])
 
 
 def test_stream_projects_native_command_tool_completion(monkeypatch):
     """原生 Command tools update 仍产生一次开始和一次完成事件。"""
-    monkeypatch.setattr("app.rag.pipeline.preview_docs", lambda: [])
+    monkeypatch.setattr("app.rag.pipeline.chunks", [])
+    monkeypatch.setattr("app.rag.pipeline.RAG_READY", True)
     model = FakeToolCallingModel([
         AIMessage(content="", tool_calls=[{
-            "name": "list_documents", "args": {}, "id": "stream-list-call",
+            "name": "find_documents", "args": {}, "id": "stream-list-call",
         }]),
         FinalAgentResponse(outcome="answer", answer="文档列表读取完成。"),
     ])
@@ -255,7 +256,7 @@ def test_stream_projects_native_command_tool_completion(monkeypatch):
         event
         for event in events
         if event.event == "tool"
-        and event.data.get("tool_name") == "list_documents"
+        and event.data.get("tool_name") == "find_documents"
     ]
     result = next(event.data["result"] for event in events if event.event == "result")
 
@@ -320,8 +321,8 @@ async def test_stream_withholds_model_text_until_grounding_passes(monkeypatch, i
     )
     assert "未经校验的模型文本" not in repr(events)
     assert model.structured_tool_name not in repr(events)
-    assert "knowledge_base:fake" not in repr(events)
-    assert "evidence_ids" not in repr(events)
+    assert "knowledge_base:fake" not in repr([event for event in events if event.event != "result"])
+    assert "evidence_ids" not in repr([event for event in events if event.event != "result"])
 
 
 def test_plain_text_and_tool_schema_chunks_are_never_answer_deltas():
@@ -334,3 +335,52 @@ def test_plain_text_and_tool_schema_chunks_are_never_answer_deltas():
             "id": "final", "index": 0,
         }],
     ))) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("slow_tool", [False, True])
+async def test_total_deadline_interrupts_model_or_sync_tool(monkeypatch, settings_env, slow_tool):
+    import time
+    from pydantic import BaseModel, RootModel
+    from app.agent import framework_tools
+    from app.tools.contracts import ToolSpec
+    from app.tools.result import tool_success
+
+    settings_env(agent_max_total_cost_ms=30)
+    calls = []
+
+    class Args(BaseModel):
+        pass
+
+    def handler(args, context):
+        calls.append("tool")
+        time.sleep(0.15)
+        return tool_success("slow_read", args, {})
+
+    spec = ToolSpec(name="slow_read", version="1.0.0", description="slow read",
+                    args_model=Args, output_model=RootModel[dict], handler=handler)
+    monkeypatch.setattr(framework_tools, "get_local_tools", lambda settings: (
+        framework_tools.build_local_tool(spec, settings=settings),
+    ))
+
+    class Model(FakeToolCallingModel):
+        async def ainvoke(self, messages):
+            if not slow_tool:
+                await asyncio.sleep(0.15)
+            return AIMessage(content="private unfinished text", tool_calls=[{
+                "name": "slow_read", "args": {}, "id": "slow-call",
+            }])
+
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: Model([]))
+    started = time.perf_counter()
+    events = [event async for event in stream_agent(
+        write_bad_cases=None, trace_id="deadline", session_id=None, bad_case=None,
+        original_question="执行慢查询", effective_question="执行慢查询",
+    )]
+    assert time.perf_counter() - started < 0.12
+    result = events[-1].data["result"]
+    assert result["status"] == "MODEL_ERROR"
+    assert result["reason"] == "max_total_cost_reached"
+    assert all(event.event != "answer_delta" for event in events)
+    assert "private unfinished text" not in repr(events)
+    assert calls == (["tool"] if slow_tool else [])

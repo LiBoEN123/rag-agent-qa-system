@@ -16,7 +16,7 @@ from app.rag import debug, pipeline
 from app.tools.catalog import get_local_tool_specs
 from app.tools.context import ToolInvocationContext
 from app.tools.knowledge_base import chunk_to_evidence_document
-from app.tools.schemas import GetChunkContextArgs, GetChunkContextOutput, GetChunkTextArgs
+from app.tools.schemas import GetChunkContextOutput, GetChunkContextArgs
 from tests.support.agent_runtime import FakeToolCallingModel, build_agent_harness
 from tests.support.local_tools import invoke_local_tool
 
@@ -90,7 +90,7 @@ def test_window_is_source_scoped_ordered_and_keeps_identity(
 
 def test_defaults_share_the_exact_existing_locator_contract(context_kb, invoke):
     assert GetChunkContextArgs.model_json_schema()["properties"]["chunk_id"] == (
-        GetChunkTextArgs.model_json_schema()["properties"]["chunk_id"]
+        GetChunkContextArgs.model_json_schema()["properties"]["chunk_id"]
     )
     assert GetChunkContextArgs(chunk_id="35").model_dump() == {
         "chunk_id": 35, "before": 1, "after": 1,
@@ -134,19 +134,18 @@ def test_missing_anchor_returns_stable_locator_error(context_kb, invoke):
     {"chunk_id": 35, "before": 0, "after": 0},
 ])
 def test_schema_rejects_invalid_locators_and_windows(invoke, args):
-    with pytest.raises(ValidationError):
-        invoke(**args)
+    assert invoke(**args)["error_code"] == "invalid_arguments"
 
 
-def test_anchor_only_request_points_to_get_chunk_text():
-    with pytest.raises(ValidationError, match="before 和 after 不能同时为 0.*get_chunk_text"):
-        GetChunkContextArgs(chunk_id=35, before=0, after=0)
+def test_anchor_only_returns_exactly_the_anchor(context_kb, invoke):
+    result = invoke(chunk_id=35, before=0, after=0)
+    assert result["ok"] and result["output"]["count"] == 1
+    assert result["output"]["evidence"][0]["metadata"]["chunk_id"] == 35
 
 
 def test_evidence_id_cannot_be_used_as_chunk_locator(context_kb, invoke):
     document = chunk_to_evidence_document(context_kb[3])
-    with pytest.raises(ValidationError, match="chunk_id"):
-        invoke(chunk_id=document.id)
+    assert invoke(chunk_id=document.id)["error_code"] == "invalid_arguments"
 
 
 @pytest.mark.parametrize("field,value", [
@@ -214,7 +213,7 @@ async def test_agent_explicitly_expands_search_hit_and_cites_neighbors(
     def expand(model, messages):
         message = messages[-1]
         assert isinstance(message, ToolMessage) and message.name == search_name
-        output = json.loads(message.content)["output"]
+        output = (message.artifact or json.loads(message.content))["output"]
         assert output["count"] == 1  # search 本身没有自动扩展。
         anchor = output["evidence"][0]
         assert anchor["metadata"]["chunk_id"] == 35
@@ -227,8 +226,8 @@ async def test_agent_explicitly_expands_search_hit_and_cites_neighbors(
         message = messages[-1]
         assert isinstance(message, ToolMessage) and message.name == "get_chunk_context"
         assert message.status == "success"
-        payload = json.loads(message.content)
-        assert payload["ok"] is True and payload["governance"]["decision"] == "allow"
+        payload = (message.artifact or json.loads(message.content))
+        assert payload["ok"] is True and message.artifact["governance"]["decision"] == "allow"
         evidence = payload["output"]["evidence"]
         assert [doc["metadata"]["position"] for doc in evidence] == [2, 3, 4]
         collected = collect_evidence_from_messages(messages)

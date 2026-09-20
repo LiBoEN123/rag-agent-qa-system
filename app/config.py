@@ -176,7 +176,6 @@ class AppSettings(BaseSettings):
     )
 
     # 工具运行时与治理
-    tool_runtime_max_workers: int = Field(default=8, ge=1)
     tool_retry_base_delay_ms: int = Field(default=100, ge=0)
     tool_retry_max_delay_ms: int = Field(default=2000, ge=0)
     tool_retry_jitter_ratio: float = Field(
@@ -352,7 +351,6 @@ class AppSettings(BaseSettings):
         "agent_max_consecutive_same_tool_calls",
         "agent_max_consecutive_same_tool_errors",
         "agent_max_total_cost_ms",
-        "tool_runtime_max_workers",
         "tool_retry_base_delay_ms",
         "tool_retry_max_delay_ms",
         "tool_retry_jitter_ratio",

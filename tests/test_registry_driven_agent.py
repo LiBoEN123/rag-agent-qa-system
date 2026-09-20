@@ -142,7 +142,7 @@ def test_tool_spec_builds_framework_structured_tool_from_provider():
     assert issubclass(tool.args_schema, JoinTextsArgs)
     assert "runtime" not in tool.tool_call_schema.model_fields
     exported = framework_tools.local_tool_contract(tool)
-    framework_schema = tool.tool_call_schema.model_json_schema()
+    framework_schema = tool.tool_call_schema
     assert exported["args_schema"]["properties"] == framework_schema["properties"]
     assert exported["args_schema"]["required"] == framework_schema["required"]
     assert exported["args_schema"]["properties"]["separator"]["default"] == " "
@@ -203,7 +203,7 @@ async def test_agent_discovers_and_calls_echo_without_core_tool_mapping(monkeypa
     assert model.bound_tool_names == ["echo_text", "join_texts", model.structured_tool_name]
     message = model.received_messages[1][-1]
     assert isinstance(message, ToolMessage)
-    assert json.loads(message.content)["output"] == {"text": "hello"}
+    assert (message.artifact or json.loads(message.content))["output"] == {"text": "hello"}
     assert output["result"]["answer"] == "echo complete"
     assert len(contexts) == 1
     assert contexts[0].trace_id == "trace-echo"

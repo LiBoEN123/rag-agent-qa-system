@@ -154,7 +154,7 @@ def _assert_success(output, model, calls):
         for message in messages
         if isinstance(message, ToolMessage)
     )
-    payload = json.loads(tool_message.content)
+    payload = (tool_message.artifact or json.loads(tool_message.content))
     assert payload["ok"] is True
     assert payload["output"]["content_is_untrusted"] is True
     assert output["result"]["answer"] == "北京晴，20 摄氏度。"
@@ -229,11 +229,11 @@ async def test_mcp_external_write_stops_agent_for_human_approval(
         for item in output["messages"]
         if isinstance(item, ToolMessage) and item.tool_call_id == "weather-call"
     )
-    payload = json.loads(message.content)
+    payload = (message.artifact or json.loads(message.content))
     assert payload["error_code"] == "approval_required"
     assert payload["governance"]["risk_level"] == "external_write"
     assert payload["governance"]["approval_required"] is True
-    assert payload["handler_executed"] is False
+    assert payload["runtime"]["attempt_count"] == 0
 
 
 def test_mcp_native_async_result_projects_to_safe_stream_event(

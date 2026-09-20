@@ -249,7 +249,7 @@ def test_rag_stream_has_safe_progress_tool_and_authoritative_final_without_delta
             },
             {
                 "step": "tool_call",
-                "tool_name": "get_chunk_text",
+                "tool_name": "get_chunk_context",
                 "tool_status": "success",
                 "cost_ms": 2,
             },
@@ -288,7 +288,7 @@ def test_rag_stream_has_safe_progress_tool_and_authoritative_final_without_delta
     assert calls["metrics"][0]["streamed_answer_matches_final"] is None
     assert final.data["outcome"].result["tool_trace"][1:] == result["tool_trace"]
     assert [line for line in logs if "tool_call_chain=" in line] == [
-        "[trace_id=trace-1] [agent] tool_call_chain=search_knowledge_base(success,15ms) -> get_chunk_text(success,2ms)"
+        "[trace_id=trace-1] [agent] tool_call_chain=search_knowledge_base(success,15ms) -> get_chunk_context(success,2ms)"
     ]
 
 
@@ -585,11 +585,12 @@ def test_real_structured_agent_stream_matches_public_final_and_metrics(
     monkeypatch, final, expected_status, expected_delta_count,
 ):
     model = FakeToolCallingModel([
-        AIMessage(content="", tool_calls=[{"name": "list_documents", "args": {}, "id": "list"}]),
+        AIMessage(content="", tool_calls=[{"name": "find_documents", "args": {}, "id": "list"}]),
         final,
     ])
     monkeypatch.setattr("app.agent.framework_agent.get_answer_model", lambda: model)
-    monkeypatch.setattr("app.rag.pipeline.preview_docs", lambda: [])
+    monkeypatch.setattr("app.rag.pipeline.chunks", [])
+    monkeypatch.setattr("app.rag.pipeline.RAG_READY", True)
     service, calls = _build_service([], stream_agent=stream_agent)
     events = _collect(service)
     outcome = next(event.data["outcome"] for event in events if event.event == "final")
@@ -603,7 +604,7 @@ def test_real_structured_agent_stream_matches_public_final_and_metrics(
     assert calls["metrics"][0]["answer_delta_count"] == expected_delta_count
     assert calls["metrics"][0]["llm_call_count"] == 2
     assert [event.data["tool_name"] for event in events if event.event == "tool"] == [
-        "list_documents", "list_documents",
+        "find_documents", "find_documents",
     ]
     assert model.structured_tool_name not in repr(events)
     assert "UNSUPPORTED" not in repr(events)

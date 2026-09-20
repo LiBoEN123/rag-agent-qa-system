@@ -74,11 +74,9 @@ def _clear_runtime_caches() -> None:
     from app.llm.factory import clear_model_factory_cache
     from app.tools.catalog import get_local_tool_specs
     from app.agent.framework_tools import get_local_tools
-    from app.tools.runtime import close_tool_executor
     from app.tools.mcp.client import reset_mcp_runtime
 
     reset_agent_runtime()
-    close_tool_executor()
     get_local_tool_specs.cache_clear()
     get_local_tools.cache_clear()
     clear_model_factory_cache()

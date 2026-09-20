@@ -7,19 +7,12 @@ import pytest
 from langchain_core.documents import Document
 from pydantic import BaseModel, Field
 
-from app.agent.framework_tools import build_local_tool, local_tool_contract
+from app.agent.framework_tools import local_tool_contract
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import (
-    ToolRiskLevel,
-    ToolRiskLevel as ContractToolRiskLevel,
     ToolSpec,
 )
-from app.tools.contracts import ToolSpec as ContractToolSpec
-from app.tools.catalog import (
-    ToolRiskLevel as RegistryToolRiskLevel,
-)
-from app.tools.catalog import ToolSpec as RegistryToolSpec
-from app.tools.schemas import CompareDocumentsOutput, SearchDocumentOutput, SearchKnowledgeBaseOutput
+from app.tools.schemas import SearchDocumentOutput, SearchKnowledgeBaseOutput
 
 
 def test_knowledge_output_contains_only_retrieval_evidence():
@@ -49,7 +42,7 @@ def test_knowledge_output_keeps_count_consistency():
     ("source_uri", " "), ("content_is_untrusted", False),
     ("content_is_untrusted", 1), ("content_is_untrusted", "true"),
 ])
-@pytest.mark.parametrize("output_model", [SearchKnowledgeBaseOutput, CompareDocumentsOutput, SearchDocumentOutput])
+@pytest.mark.parametrize("output_model", [SearchKnowledgeBaseOutput, SearchDocumentOutput])
 def test_evidence_rejects_missing_identity_body_or_trust_metadata(field, value, output_model):
     document = Document(id="test", page_content="正文", metadata={
         "source_type": "knowledge_base", "source_uri": "test://1",
@@ -60,8 +53,6 @@ def test_evidence_rejects_missing_identity_body_or_trust_metadata(field, value, 
     with pytest.raises(ValueError, match=field):
         output_model.model_validate({
             "query": "test", "count": 1, "evidence": [document],
-            **({"doc_a": "a", "doc_b": "b", "doc_a_count": 1, "doc_b_count": 0}
-               if output_model is CompareDocumentsOutput else {}),
             **({"document": "source-a", "source_id": "source-a"}
                if output_model is SearchDocumentOutput else {}),
         })
@@ -122,16 +113,6 @@ def _make_spec(**overrides: Any) -> ToolSpec:
     return ToolSpec(**values)
 
 
-def test_tool_contract_public_exports_are_compatible():
-    """公共入口、契约模块和旧注册表入口导出同一类型。"""
-    assert ToolSpec is ContractToolSpec is RegistryToolSpec
-    assert (
-        ToolRiskLevel
-        is ContractToolRiskLevel
-        is RegistryToolRiskLevel
-    )
-
-
 def test_tool_spec_normalizes_and_serializes_contract():
     """合法契约会被规范化，并可安全序列化给治理与检查端。"""
     spec = _make_spec(
@@ -139,7 +120,6 @@ def test_tool_spec_normalizes_and_serializes_contract():
         version=" 1.0.0-beta.1 ",
         description="  回显输入  ",
         output_model=EchoOutput,
-        risk_level="internal_write",
         required_permissions=(
             " knowledge_base:read ",
             "ticket:create",
@@ -151,7 +131,6 @@ def test_tool_spec_normalizes_and_serializes_contract():
     assert spec.name == "echo_tool"
     assert spec.version == "1.0.0-beta.1"
     assert spec.description == "回显输入"
-    assert spec.risk_level is ToolRiskLevel.INTERNAL_WRITE
     assert spec.timeout == 5.0
     assert isinstance(spec.timeout, float)
     assert spec.required_permissions == (
@@ -159,7 +138,7 @@ def test_tool_spec_normalizes_and_serializes_contract():
         "ticket:create",
     )
 
-    contract_spec = local_tool_contract(build_local_tool(spec))
+    contract_spec = local_tool_contract(spec)
     json.dumps(contract_spec)
 
     assert "handler" not in contract_spec
@@ -185,7 +164,7 @@ def test_tool_spec_normalizes_and_serializes_contract():
 
 def test_tool_spec_derives_fresh_deterministic_schemas():
     """重复导出模型派生的稳定副本，外部修改不影响工具契约。"""
-    tool = build_local_tool(_make_spec())
+    tool = _make_spec()
 
     first = local_tool_contract(tool)
     first["args_schema"]["properties"].clear()
@@ -298,20 +277,3 @@ def test_tool_spec_rejects_invalid_base_field_types(
     assert field_name in error
 
 
-def test_non_idempotent_tool_cannot_declare_retries():
-    """非幂等工具不能声明自动重试。"""
-    with pytest.raises(ValueError, match="非幂等工具不能声明自动重试"):
-        _make_spec(idempotent=False, max_retries=1)
-
-
-@pytest.mark.parametrize(
-    "risk_level",
-    [ToolRiskLevel.EXTERNAL_WRITE, ToolRiskLevel.DESTRUCTIVE],
-)
-def test_high_risk_tool_requires_approval(risk_level):
-    """外部写和破坏性工具必须要求人工审批。"""
-    with pytest.raises(ValueError, match="必须要求人工审批"):
-        _make_spec(
-            risk_level=risk_level,
-            requires_approval=False,
-        )

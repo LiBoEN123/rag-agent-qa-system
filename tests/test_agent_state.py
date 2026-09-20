@@ -45,7 +45,7 @@ def test_tool_trace_builder_preserves_numeric_constraints():
     with pytest.raises(ValueError, match="step_id"):
         build_tool_trace(
             step_id=0,
-            tool_name="list_documents",
+            tool_name="find_documents",
             tool_args={},
             result={"ok": True},
             cost_ms=0,
@@ -54,7 +54,7 @@ def test_tool_trace_builder_preserves_numeric_constraints():
     with pytest.raises(ValueError, match="cost_ms"):
         build_tool_trace(
             step_id=1,
-            tool_name="list_documents",
+            tool_name="find_documents",
             tool_args={},
             result={"ok": True},
             cost_ms=-1,
@@ -62,7 +62,7 @@ def test_tool_trace_builder_preserves_numeric_constraints():
 
     trace = build_tool_trace(
         step_id=1,
-        tool_name="list_documents",
+        tool_name="find_documents",
         tool_args={},
         result={"ok": True},
         cost_ms=0,

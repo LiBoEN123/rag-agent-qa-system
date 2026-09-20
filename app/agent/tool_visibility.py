@@ -2,7 +2,6 @@
 
 from langchain.agents.middleware import AgentMiddleware, ModelRequest
 
-from app.agent.framework_tools import ProjectStructuredTool
 from app.contracts.chat import RAG_TOOL_NAMES, ToolMode
 from app.tools.context import ToolInvocationContext, has_permission
 
@@ -27,10 +26,9 @@ class ProjectToolVisibilityMiddleware(AgentMiddleware):
                 for tool in request.tools
                 if (not rag_only or getattr(tool, "name", None) in RAG_TOOL_NAMES)
                 and (
-                    not isinstance(tool, ProjectStructuredTool)
-                    or all(
+                    all(
                         has_permission(permissions, permission)
-                        for permission in tool.project_spec.required_permissions
+                        for permission in (getattr(tool, "metadata", None) or {}).get("required_permissions", ())
                     )
                 )
             ]

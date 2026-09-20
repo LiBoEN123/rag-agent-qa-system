@@ -20,7 +20,7 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
 ```
 
 - 旧 `top_k`、`decompose_top_k` 及其他未知字段由 `extra="forbid"` 拒绝，返回 HTTP 422，不会静默忽略。
-- `rag_only` 仅允许 search_knowledge_base、compare_documents、get_chunk_text 三种 KB 证据工具；仍需 `knowledge_base:read` 权限，Web/MCP 被排除。
+- `rag_only` 仅允许 search_knowledge_base、search_document、get_chunk_context 正文工具及 find_documents 目录工具；仍需 `knowledge_base:read` 权限，Web/MCP 被排除。
 - 每次检索的 query/top_k 由 Agent 通过工具 schema 选择；`/search` 仍接受诊断 top_k。
 - Schema 校验失败：FastAPI 在建流前返回 `HTTP 422 application/json`。
 - 通过 Schema 校验的请求（包括空问题）：返回 `HTTP 200 text/event-stream`。

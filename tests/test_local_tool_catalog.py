@@ -7,7 +7,7 @@ from app.agent import runtime as agent_runtime
 from app.agent.runtime import get_compiled_agent_runtime
 from app.tools import catalog
 from app.tools.context import ToolInvocationContext
-from app.tools.contracts import ToolAuditOutputMode, ToolRiskLevel
+from app.tools.contracts import ToolAuditOutputMode
 from app.tools.schemas import (
     FindDocumentsArgs, FindDocumentsOutput, GetChunkContextArgs, GetChunkContextOutput,
     SearchDocumentArgs, SearchDocumentOutput,
@@ -31,39 +31,23 @@ def test_document_tools_publish_governed_contract(settings_factory, name, args_m
     spec = next(spec for spec in specs if spec.name == name)
     assert spec.args_model is args_model
     assert spec.output_model is output_model
-    assert spec.risk_level is ToolRiskLevel.READ_ONLY
     assert spec.required_permissions == ("knowledge_base:read",)
     assert spec.audit_output_mode is ToolAuditOutputMode.SUMMARY
-    assert spec.idempotent is True and spec.requires_approval is False
     assert spec.max_retries == 0
     assert spec.timeout == (5.0 if name == "find_documents" else specs[0].timeout)
-
-
-def test_chunk_lookup_publishes_integer_locator_contract(settings_factory):
-    tool = next(tool for tool in framework_tools.get_local_tools(settings_factory())
-                if tool.name == "get_chunk_text")
-    assert tool.project_spec.version == tool.metadata["tool_version"] == "1.1.0"
-    locator = tool.tool_call_schema.model_json_schema()["properties"]["chunk_id"]
-    assert locator["type"] == "integer"
-    assert locator["minimum"] == 1
-    assert "anyOf" not in locator
-    for guidance in ("Document.metadata.chunk_id", "不能使用 Document.id", "page_content", "完整"):
-        assert guidance in tool.description
 
 
 def test_chunk_context_publishes_governed_contract(settings_factory):
     tool = next(tool for tool in framework_tools.get_local_tools(settings_factory())
                 if tool.name == "get_chunk_context")
-    spec = tool.project_spec
+    spec = next(spec for spec in catalog.get_local_tool_specs(settings_factory()) if spec.name == tool.name)
     assert spec.args_model is GetChunkContextArgs
     assert spec.output_model is GetChunkContextOutput
     assert spec.version == tool.metadata["tool_version"] == "1.0.0"
-    assert spec.risk_level is ToolRiskLevel.READ_ONLY
     assert spec.required_permissions == ("knowledge_base:read",)
     assert spec.timeout == 5.0 and spec.max_retries == 0
-    assert spec.idempotent is True and spec.requires_approval is False
     assert spec.audit_output_mode is ToolAuditOutputMode.NONE
-    schema = tool.tool_call_schema.model_json_schema()["properties"]
+    schema = tool.tool_call_schema["properties"]
     assert set(schema) == {"chunk_id", "before", "after"}
     for field in ("before", "after"):
         assert schema[field]["minimum"] == 0 and schema[field]["maximum"] == 3
@@ -82,8 +66,7 @@ def test_catalog_caches_configuration_and_preserves_order(settings_factory):
     assert tools is framework_tools.get_local_tools(settings)
     expected = (
         "search_knowledge_base", "find_documents", "search_document",
-        "web_search", "web_fetch", "web_pdf_fetch",
-        "compare_documents", "list_documents", "get_chunk_text", "get_chunk_context",
+        "web_search", "web_fetch", "web_pdf_fetch", "get_chunk_context",
     )
     assert catalog.get_local_tool_names(settings) == expected
     assert tuple(tool.name for tool in tools) == expected
@@ -130,7 +113,7 @@ def test_cached_agent_and_tools_do_not_capture_principal_or_permissions(settings
     names = [[tool.name for tool in visible_tools(tools, context=context)] for context in contexts]
     assert names[0] == []
     assert names[1] == ["web_search"]
-    assert names[2] == ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "list_documents", "get_chunk_text", "get_chunk_context"]
+    assert names[2] == ["search_knowledge_base", "find_documents", "search_document", "get_chunk_context"]
 
 
 def test_resolve_agent_tools_passes_same_explicit_settings(monkeypatch, settings_factory):

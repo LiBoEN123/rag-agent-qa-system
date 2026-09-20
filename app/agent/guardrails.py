@@ -31,7 +31,6 @@ class AgentStopReason(StrEnum):
     REPEATED_TOOL_ERROR = "repeated_tool_error"
     FATAL_TOOL_ERROR = "fatal_tool_error"
     APPROVAL_REQUIRED = "approval_required"
-    MISSING_IDEMPOTENCY_KEY = "missing_idempotency_key"
     RUNTIME_UNAVAILABLE = "runtime_unavailable"
 
 
@@ -59,7 +58,6 @@ _GOVERNANCE = (
     ToolErrorCode.POLICY_DENIED.value,
     ToolErrorCode.AUDIT_WRITE_FAILED.value,
     ToolErrorCode.INVALID_INVOCATION_CONTEXT.value,
-    ToolErrorCode.MISSING_IDEMPOTENCY_KEY.value,
     ToolErrorCode.MCP_NOT_CONFIGURED.value,
     ToolErrorCode.MCP_PERMISSION_DENIED.value,
     ToolErrorCode.MCP_TOOL_NOT_ALLOWED.value,
@@ -88,8 +86,6 @@ def stop_reason_for_tool_failure(
     code = str(error_code or "").strip().lower()
     if code == ToolErrorCode.APPROVAL_REQUIRED.value:
         return AgentStopReason.APPROVAL_REQUIRED
-    if code == ToolErrorCode.MISSING_IDEMPOTENCY_KEY.value:
-        return AgentStopReason.MISSING_IDEMPOTENCY_KEY
     if code == ToolErrorCode.RUNTIME_UNAVAILABLE.value:
         return AgentStopReason.RUNTIME_UNAVAILABLE
     if failure_kind not in {
@@ -128,11 +124,6 @@ def build_agent_tool_error_fingerprint(
             "error_code": str(error_code or "").strip().lower(),
         }
     )
-
-
-def sum_governance_event_costs(events: list[dict[str, Any]]) -> int:
-    """汇总模型和工具治理事件记录的非负耗时。"""
-    return sum(max(0, int(item.get("cost_ms", 0) or 0)) for item in events)
 
 
 def count_consecutive_events(
@@ -212,10 +203,6 @@ def build_tool_governance_event(
         ):
             stop_reason = AgentStopReason.REPEATED_TOOL_ERROR.value
 
-    elapsed_ms = sum_governance_event_costs(prior_events) + max(0, cost_ms)
-    if not stop_reason and elapsed_ms >= resolved_settings.agent_max_total_cost_ms:
-        stop_reason = AgentStopReason.MAX_TOTAL_COST.value
-
     runtime = result.get("runtime") if isinstance(result.get("runtime"), dict) else {}
     error_source = "tool_runtime"
     if (
@@ -257,5 +244,4 @@ __all__ = [
     "classify_tool_failure",
     "count_consecutive_events",
     "stop_reason_for_tool_failure",
-    "sum_governance_event_costs",
 ]

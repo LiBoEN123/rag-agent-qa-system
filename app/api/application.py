@@ -21,7 +21,6 @@ from app.api.lifecycle import (
     StartupDependencies,
     aclose_agent_runtime,
     close_mcp_runtime,
-    close_tool_executor,
     initialize_agent_runtime,
     initialize_mcp_runtime,
     initialize_rag,
@@ -133,7 +132,6 @@ async def lifespan(_app: FastAPI):
         yield
     finally:
         await close_mcp_runtime()
-        close_tool_executor()
         await aclose_agent_runtime()
 
 

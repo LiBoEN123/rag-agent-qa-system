@@ -194,16 +194,6 @@ def summarize_tool_output(
             "type": type(value).__name__,
         }
 
-    if spec.audit_output_mode is ToolAuditOutputMode.SANITIZED:
-        return redact_sensitive_data(
-            value,
-            sensitive_keys=(
-                *DEFAULT_SENSITIVE_KEYS,
-                *spec.sensitive_output_fields,
-            ),
-            **audit_redaction_limits(settings),
-        )
-
     if not isinstance(value, dict):
         if isinstance(value, (list, tuple)):
             return {"type": type(value).__name__, "count": len(value)}
@@ -218,38 +208,7 @@ def summarize_tool_output(
         }
         return redact_sensitive_data(
             summary,
-            sensitive_keys=spec.sensitive_output_fields,
-            **audit_redaction_limits(settings),
-        )
-    if spec.name == "compare_documents":
-        metadata = retrieval_evidence_metadata(value)
-        summary = {
-            "doc_a": value.get("doc_a", ""),
-            "doc_b": value.get("doc_b", ""),
-            "doc_a_count": value.get("doc_a_count", 0),
-            "doc_b_count": value.get("doc_b_count", 0),
-            "count": value.get("count", 0),
-            "top_chunk_ids": [item.get("chunk_id") for item in metadata],
-            "top_rerank_scores": [
-                round(safe_float(item.get("rerank_score")), 4) for item in metadata
-            ],
-        }
-        return redact_sensitive_data(
-            summary,
-            sensitive_keys=spec.sensitive_output_fields,
-            **audit_redaction_limits(settings),
-        )
-    if spec.name == "list_documents":
-        documents = value.get("documents")
-        summary = {
-            "count": value.get(
-                "count",
-                len(documents) if isinstance(documents, list) else 0,
-            )
-        }
-        return redact_sensitive_data(
-            summary,
-            sensitive_keys=spec.sensitive_output_fields,
+
             **audit_redaction_limits(settings),
         )
     if spec.name == "web_fetch":
@@ -264,7 +223,7 @@ def summarize_tool_output(
         }
         return redact_sensitive_data(
             summary,
-            sensitive_keys=spec.sensitive_output_fields,
+
             **audit_redaction_limits(settings),
         )
     if spec.name == "web_pdf_fetch":
@@ -282,7 +241,7 @@ def summarize_tool_output(
         }
         return redact_sensitive_data(
             summary,
-            sensitive_keys=spec.sensitive_output_fields,
+
             **audit_redaction_limits(settings),
         )
 
@@ -297,7 +256,7 @@ def summarize_tool_output(
             summary[key] = value[key]
     return redact_sensitive_data(
         summary,
-        sensitive_keys=spec.sensitive_output_fields,
+
         **audit_redaction_limits(settings),
     )
 

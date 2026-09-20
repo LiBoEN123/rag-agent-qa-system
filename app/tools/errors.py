@@ -26,7 +26,6 @@ class ToolErrorCode(str, Enum):
 
     PERMISSION_DENIED = "permission_denied"
     APPROVAL_REQUIRED = "approval_required"
-    MISSING_IDEMPOTENCY_KEY = "missing_idempotency_key"
     INVALID_INVOCATION_CONTEXT = "invalid_invocation_context"
     POLICY_DENIED = "policy_denied"
     AUDIT_WRITE_FAILED = "audit_write_failed"

@@ -25,7 +25,7 @@ FIXTURE = (
     / "minimal_agent_cases_v2.json"
 )
 KNOWN_TOOLS = {
-    "list_documents",
+    "find_documents",
     "search_knowledge_base",
 }
 
@@ -177,7 +177,7 @@ def test_first_tool_any_of_is_exclusive_with_first_tool():
             expected={
                 "status": "OK",
                 "first_tool_any_of": [
-                    "list_documents",
+                    "find_documents",
                     "search_knowledge_base",
                 ],
             }
@@ -188,7 +188,7 @@ def test_first_tool_any_of_is_exclusive_with_first_tool():
     raw = _single_case(
         expected={
             "status": "OK",
-            "first_tool": "list_documents",
+            "first_tool": "find_documents",
             "first_tool_any_of": ["search_knowledge_base"],
         }
     )

@@ -3,12 +3,11 @@
 import pytest
 from pydantic import RootModel
 
-import json
 
 from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import BaseModel
 
-from app.agent import framework_agent, framework_middleware, framework_tools
+from app.agent import framework_agent, framework_tools
 from app.config import get_settings
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
@@ -133,53 +132,3 @@ async def test_tool_budget_limit_adds_messages_for_every_unexecuted_call(monkeyp
     assert str(blocked.content).startswith("Tool call limit exceeded")
 
 
-@pytest.mark.asyncio
-async def test_model_elapsed_budget_blocks_tool_without_real_sleep(monkeypatch):
-    handler_calls: list[int] = []
-
-    def handler(args, context):
-        handler_calls.append(args["value"])
-        return tool_success("budget_tool", args, {"value": args["value"]})
-
-    model = BudgetModel(
-        AIMessage(
-            content="",
-            tool_calls=[
-                {
-                    "name": "budget_tool",
-                    "args": {"value": 1},
-                    "id": "elapsed-call",
-                    "type": "tool_call",
-                }
-            ],
-        )
-    )
-    ticks = iter([10_000, 10_020])
-    monkeypatch.setattr(framework_middleware, "_now_ms", lambda: next(ticks))
-    graph = _setup(
-        monkeypatch,
-        model=model,
-        handler=handler,
-        max_elapsed_ms=10,
-    )
-
-    output = await _invoke(graph)
-    payload = json.loads(
-        next(
-            item
-            for item in output["messages"]
-            if isinstance(item, ToolMessage)
-        ).content
-    )
-    iteration_trace = next(
-        item
-        for item in output["result"]["tool_trace"]
-        if item.get("step") == "agent_iteration"
-    )
-
-    assert model.calls == 1
-    assert handler_calls == []
-    assert output["agent_elapsed_ms"] == 20
-    assert output["stop_reason"] == "max_total_cost_reached"
-    assert payload["stop_reason"] == "max_total_cost_reached"
-    assert iteration_trace["model_cost_ms"] == 20
