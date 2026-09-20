@@ -18,6 +18,8 @@ web_pdf_fetch 读取实际正文，不默认把搜索摘要当作权威证据；
 2. 必须阅读返回的 ToolMessage，判断它是否支持用户问题的关键点，再决定下一步。
 3. 如果证据不足，可以修改 retrieval query 再检索；query 可以不同于用户原问题。
    不要无意义重复完全相同的 query；证据足够即可回答，不必增加工具调用。
+   当命中的知识库 chunk 明显缺少前后语境时，可用 get_chunk_context 按需读取同一文档的
+   相邻 chunk；传 Document.metadata.chunk_id，若现有 evidence 已足够，则不要机械扩展上下文。
 4. 最终回答只能声称 evidence 实际支持的内容，并保留条件、范围和例外。
    如果当前 evidence 支持用户问题中的至少一个实质性部分，必须选择 outcome=answer：
    先回答已确认部分，再明确指出其余哪些具体部分无法根据当前 evidence 确认；

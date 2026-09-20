@@ -107,6 +107,21 @@ class GetChunkTextArgs(BaseModel):
     )
 
 
+class GetChunkContextArgs(GetChunkTextArgs):
+    """复用原文工具的 chunk locator，显式读取同文档相邻 chunk。"""
+
+    before: int = Field(default=1, ge=0, le=3, description="读取 anchor 之前的位置数量")
+    after: int = Field(default=1, ge=0, le=3, description="读取 anchor 之后的位置数量")
+
+    @model_validator(mode="after")
+    def validate_context_window(self) -> "GetChunkContextArgs":
+        if self.before == 0 and self.after == 0:
+            raise ValueError(
+                "before 和 after 不能同时为 0；如只需读取当前 chunk，请使用 get_chunk_text。"
+            )
+        return self
+
+
 class ListDocumentsArgs(BaseModel):
     """list_documents 工具参数。"""
 
@@ -221,6 +236,28 @@ class GetChunkTextOutput(BaseModel):
     evidence: list[Document] = Field(..., min_length=1, max_length=1)
 
     _validate_evidence = field_validator("evidence")(validate_evidence_documents)
+
+
+class GetChunkContextOutput(BaseModel):
+    """同文档位置窗口中的独立 Document evidence，包含 anchor 本身。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    anchor_chunk_id: int = Field(..., ge=1)
+    source_id: str = Field(..., min_length=1)
+    anchor_position: int = Field(..., ge=1)
+    before: int = Field(..., ge=0, le=3)
+    after: int = Field(..., ge=0, le=3)
+    count: int = Field(..., ge=1, le=7)
+    evidence: list[Document]
+
+    _validate_evidence = field_validator("evidence")(validate_evidence_documents)
+
+    @model_validator(mode="after")
+    def validate_evidence_counts(self) -> "GetChunkContextOutput":
+        if self.count != len(self.evidence):
+            raise ValueError("count 必须等于 evidence 数量")
+        return self
 
 
 class WebSearchArgs(BaseModel):

@@ -32,25 +32,31 @@ def test_tool_registry_names_include_builtin_tools(tool_registry):
 
 
 def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
-    """验证七个注册生产工具发布完整且符合要求的 V2 契约。"""
+    """验证注册生产工具发布完整且符合要求的 V2 契约。"""
     from app.agent.framework_tools import build_local_tool, local_tool_contract
 
     specs = [local_tool_contract(build_local_tool(item)) for item in tool_registry]
     specs_by_name = {spec["name"]: spec for spec in specs}
     expected_permissions = {
         "search_knowledge_base": ["knowledge_base:read"],
+        "find_documents": ["knowledge_base:read"],
+        "search_document": ["knowledge_base:read"],
         "compare_documents": ["knowledge_base:read"],
         "list_documents": ["knowledge_base:read"],
         "get_chunk_text": ["knowledge_base:read"],
+        "get_chunk_context": ["knowledge_base:read"],
         "web_search": ["web:search"],
         "web_fetch": ["web:fetch"],
         "web_pdf_fetch": ["web:fetch"],
     }
     expected_timeouts = {
         "search_knowledge_base": 120.0,
+        "find_documents": 5.0,
+        "search_document": 120.0,
         "compare_documents": 20.0,
         "list_documents": 5.0,
         "get_chunk_text": 5.0,
+        "get_chunk_context": 5.0,
         "web_search": 10.0,
         "web_fetch": 30.0,
         "web_pdf_fetch": 45.0,
@@ -75,9 +81,12 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
         assert spec["requires_approval"] is False
         assert spec["output_model"] == {
             "search_knowledge_base": "SearchKnowledgeBaseOutput",
+            "find_documents": "FindDocumentsOutput",
+            "search_document": "SearchDocumentOutput",
             "compare_documents": "CompareDocumentsOutput",
             "list_documents": "ListDocumentsOutput",
             "get_chunk_text": "GetChunkTextOutput",
+            "get_chunk_context": "GetChunkContextOutput",
             "web_search": "WebSearchOutput",
             "web_fetch": "WebFetchOutput",
             "web_pdf_fetch": "WebPdfFetchOutput",

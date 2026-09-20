@@ -9,7 +9,8 @@ from app.tools import catalog
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolAuditOutputMode, ToolRiskLevel
 from app.tools.schemas import (
-    FindDocumentsArgs, FindDocumentsOutput, SearchDocumentArgs, SearchDocumentOutput,
+    FindDocumentsArgs, FindDocumentsOutput, GetChunkContextArgs, GetChunkContextOutput,
+    SearchDocumentArgs, SearchDocumentOutput,
 )
 from tests.support.local_tools import visible_tools
 
@@ -50,6 +51,27 @@ def test_chunk_lookup_publishes_integer_locator_contract(settings_factory):
         assert guidance in tool.description
 
 
+def test_chunk_context_publishes_governed_contract(settings_factory):
+    tool = next(tool for tool in framework_tools.get_local_tools(settings_factory())
+                if tool.name == "get_chunk_context")
+    spec = tool.project_spec
+    assert spec.args_model is GetChunkContextArgs
+    assert spec.output_model is GetChunkContextOutput
+    assert spec.version == tool.metadata["tool_version"] == "1.0.0"
+    assert spec.risk_level is ToolRiskLevel.READ_ONLY
+    assert spec.required_permissions == ("knowledge_base:read",)
+    assert spec.timeout == 5.0 and spec.max_retries == 0
+    assert spec.idempotent is True and spec.requires_approval is False
+    assert spec.audit_output_mode is ToolAuditOutputMode.NONE
+    schema = tool.tool_call_schema.model_json_schema()["properties"]
+    assert set(schema) == {"chunk_id", "before", "after"}
+    for field in ("before", "after"):
+        assert schema[field]["minimum"] == 0 and schema[field]["maximum"] == 3
+        assert schema[field]["default"] == 1
+    for guidance in ("Document.metadata.chunk_id", "不能使用 Document.id", "不会跨文档", "不要机械", "evidence_ids"):
+        assert guidance in spec.description
+
+
 def test_catalog_caches_configuration_and_preserves_order(settings_factory):
     settings = settings_factory()
     changed = settings_factory(agent_max_total_cost_ms=60_000)
@@ -61,7 +83,7 @@ def test_catalog_caches_configuration_and_preserves_order(settings_factory):
     expected = (
         "search_knowledge_base", "find_documents", "search_document",
         "web_search", "web_fetch", "web_pdf_fetch",
-        "compare_documents", "list_documents", "get_chunk_text",
+        "compare_documents", "list_documents", "get_chunk_text", "get_chunk_context",
     )
     assert catalog.get_local_tool_names(settings) == expected
     assert tuple(tool.name for tool in tools) == expected
@@ -108,7 +130,7 @@ def test_cached_agent_and_tools_do_not_capture_principal_or_permissions(settings
     names = [[tool.name for tool in visible_tools(tools, context=context)] for context in contexts]
     assert names[0] == []
     assert names[1] == ["web_search"]
-    assert names[2] == ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "list_documents", "get_chunk_text"]
+    assert names[2] == ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "list_documents", "get_chunk_text", "get_chunk_context"]
 
 
 def test_resolve_agent_tools_passes_same_explicit_settings(monkeypatch, settings_factory):

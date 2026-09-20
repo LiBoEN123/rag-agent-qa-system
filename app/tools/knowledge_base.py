@@ -56,6 +56,67 @@ def get_chunk_text(chunk_id: int) -> dict:
         return tool_error(tool_name, tool_input, str(exc))
 
 
+def get_chunk_context(
+    args: dict,
+    context: ToolInvocationContext | None = None,
+) -> dict:
+    """按已有 source_id + position 扩展上下文，不检索或修改 runtime chunks。"""
+    tool_name = "get_chunk_context"
+    try:
+        from app.rag import pipeline
+        from app.rag.debug import get_chunk_full_text
+
+        # anchor 与邻居使用同一 runtime 快照；复用原文工具底层的唯一查找逻辑。
+        chunks = pipeline.chunks
+        chunk_id = args["chunk_id"]
+        anchor = get_chunk_full_text(chunks, chunk_id)
+        if not anchor.get("found"):
+            raise ToolExecutionError(
+                f"未找到 chunk_id={chunk_id}。chunk_id 必须来自知识库 evidence 的 "
+                "metadata.chunk_id，不能使用 Document.id / evidence id。",
+                code=ToolErrorCode.INVALID_ARGUMENTS, retryable=False,
+            )
+        metadata = anchor["metadata"]
+        source_id = metadata.get("source_id")
+        position = metadata.get("position")
+        if (
+            not isinstance(source_id, str) or not source_id.strip()
+            or type(position) is not int or position < 1
+        ):
+            raise ToolExecutionError(
+                f"chunk_id={chunk_id} 缺少有效的 source_id 或正整数 position，"
+                "无法确定同文档上下文。",
+                code=ToolErrorCode.INVALID_ARGUMENTS, retryable=False,
+            )
+
+        before, after = args["before"], args["after"]
+        start, end = max(1, position - before), position + after
+        neighbors = []
+        for chunk in chunks:
+            neighbor_metadata = chunk.get("metadata") or {}
+            neighbor_position = neighbor_metadata.get("position")
+            if (
+                neighbor_metadata.get("source_id") == source_id
+                and type(neighbor_position) is int
+                and start <= neighbor_position <= end
+            ):
+                neighbors.append(chunk)
+        neighbors.sort(key=lambda chunk: chunk["metadata"]["position"])
+        evidence: dict[str, Document] = {}
+        for chunk in neighbors:
+            document = chunk_to_evidence_document(chunk)
+            evidence.setdefault(document.id, document)
+        return tool_success(tool_name, args, {
+            "anchor_chunk_id": chunk_id, "source_id": source_id,
+            "anchor_position": position, "before": before, "after": after,
+            "count": len(evidence), "evidence": list(evidence.values()),
+        })
+    except ToolExecutionError:
+        raise
+    except Exception as exc:
+        return tool_error(tool_name, args, str(exc))
+
+
 def chunk_to_evidence_document(chunk: dict) -> Document:
     """将检索或原文读取的 chunk 投影为同一 Document，不改变正文和分数。"""
     metadata = dict(chunk.get("metadata") or {})

@@ -55,7 +55,7 @@ def test_native_agent_binds_exact_schemas_for_each_context(monkeypatch, settings
     model = SchemaModel()
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     agent = build_framework_agent(settings, tools=tools)
-    kb = ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "list_documents", "get_chunk_text"]
+    kb = ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "list_documents", "get_chunk_text", "get_chunk_context"]
     cases = [
         (build_default_tool_context(settings=settings), kb),
         (ToolInvocationContext(), []),
@@ -63,7 +63,7 @@ def test_native_agent_binds_exact_schemas_for_each_context(monkeypatch, settings
         (ToolInvocationContext(permissions=("web:search",)), ["web_search"]),
         (ToolInvocationContext(permissions=("web:fetch",)), ["web_fetch", "web_pdf_fetch"]),
         (ToolInvocationContext(permissions=("knowledge_base:read", "web:search")), [*kb[:3], "web_search", *kb[3:]]),
-        (ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "web:search", "web:fetch", "mcp:github")), ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "get_chunk_text"]),
+        (ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "web:search", "web:fetch", "mcp:github")), ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "get_chunk_text", "get_chunk_context"]),
         (ToolInvocationContext(tool_mode=ToolMode.FULL, permissions=("knowledge_base:read", "web:search")), [*kb[:3], "web_search", *kb[3:]]),
     ]
     for context, expected in cases:
@@ -133,7 +133,7 @@ def test_rag_only_filters_even_registered_mcp_tools(monkeypatch, settings_factor
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     agent = build_framework_agent(settings, tools=[*framework_tools.get_local_tools(settings), external])
     stream(agent, ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "mcp:github")))
-    assert list(model.schemas[-1]) == ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "get_chunk_text"]
+    assert list(model.schemas[-1]) == ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "get_chunk_text", "get_chunk_context"]
 
 
 @pytest.mark.parametrize(("name", "args"), [
@@ -151,7 +151,7 @@ def test_rag_only_forged_calls_are_denied_before_handler(monkeypatch, settings_f
     output = stream(build_framework_agent(settings, tools=local_tools(specs, settings)), context)
     message = next(m for m in output["messages"] if isinstance(m, ToolMessage))
     result = json.loads(message.content)
-    assert all(list(schema) == ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "get_chunk_text"] for schema in model.schemas)
+    assert all(list(schema) == ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "get_chunk_text", "get_chunk_context"] for schema in model.schemas)
     assert result["error_code"] == "policy_denied"
     assert result["handler_executed"] is False
     assert result["governance"]["decision"] == "deny"

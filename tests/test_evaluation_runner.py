@@ -117,9 +117,12 @@ def test_core_evaluation_exposes_only_authorized_local_tools(
 
     assert visible_names == [
         "search_knowledge_base",
+        "find_documents",
+        "search_document",
         "compare_documents",
         "list_documents",
         "get_chunk_text",
+        "get_chunk_context",
     ]
 
 

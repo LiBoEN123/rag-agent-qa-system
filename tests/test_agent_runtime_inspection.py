@@ -145,6 +145,7 @@ def test_tool_contracts_use_model_facing_json_schema(
         "compare_documents",
         "list_documents",
         "get_chunk_text",
+        "get_chunk_context",
     }
     assert all(tool["args_schema"]["type"] == "object" for tool in tools)
     assert all("runtime" not in tool["args_schema"].get("properties", {}) for tool in tools)
@@ -157,6 +158,7 @@ def test_tool_contracts_use_model_facing_json_schema(
         "compare_documents",
         "list_documents",
         "get_chunk_text",
+        "get_chunk_context",
     ]
     web = next(tool for tool in tools if tool["name"] == "web_search")
     assert web["required_permissions"] == ["web:search"]

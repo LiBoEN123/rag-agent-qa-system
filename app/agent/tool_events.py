@@ -30,6 +30,8 @@ def summarize_tool_result(tool_name: str, tool_result: dict[str, Any]) -> str:
         return f"文档发现完成，找到 {count} 份候选文档"
     if tool_name == "search_document":
         return f"文档内检索完成，召回 {count} 个 chunk"
+    if tool_name == "get_chunk_context":
+        return f"上下文扩展完成，返回 {count} 个同文档 chunk"
     summaries = {
         "compare_documents": "双文档证据检索完成",
         "list_documents": "文档列表工具执行完成",

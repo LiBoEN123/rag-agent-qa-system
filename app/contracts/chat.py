@@ -16,6 +16,7 @@ class ToolMode(StrEnum):
 
 RAG_EVIDENCE_TOOL_NAMES = frozenset({
     "search_knowledge_base", "search_document", "compare_documents", "get_chunk_text",
+    "get_chunk_context",
 })
 RAG_DISCOVERY_TOOL_NAMES = frozenset({"find_documents"})
 RAG_TOOL_NAMES = RAG_EVIDENCE_TOOL_NAMES | RAG_DISCOVERY_TOOL_NAMES
