@@ -41,6 +41,14 @@ from app.tools.result import tool_error
 
 logger = get_logger("chat_service")
 MCP_BRIDGE_VERSION = "1.0.0"
+_FIRECRAWL_READ_ONLY_ARGS = frozenset(
+    {
+        "url",
+        "formats",
+        "onlyMainContent",
+        "removeBase64Images",
+    }
+)
 
 
 # 计算从指定计时起点经过的毫秒数，并保证结果非负。
@@ -244,6 +252,23 @@ class McpToolCallInterceptor:
         context = _runtime_context(request.runtime)
         server_config = self._server_configs.get(request.server_name)
         risk_level = _tool_risk_level(server_config, request.name)
+        if (
+            request.server_name == "firecrawl"
+            and request.name == "firecrawl_scrape"
+            and server_config is not None
+            and server_config.knowledge_promotion.get(request.name) == "firecrawl"
+        ):
+            allowed_args = {
+                "url",
+                "formats",
+                "onlyMainContent",
+                "removeBase64Images",
+            }
+
+            if not set(request.args).issubset(allowed_args):
+                return _error_result(
+                    "Firecrawl scrape only allows read-only URL fetching"
+                )
         try:
             args_fingerprint = build_tool_args_fingerprint(
                 tool_name=exposed_name,

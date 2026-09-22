@@ -96,7 +96,17 @@ async def discover_mcp_tools(
                 raise McpDiscoveryError(
                     f"MCP allowlist 工具不可用: {alias!r}/{remote_name!r}"
                 )
-            if not _annotations_allow_read_only(raw_tool) and not approval_required:
+            restricted_firecrawl_scrape = (
+                alias == "firecrawl"
+                and remote_name == "firecrawl_scrape"
+                and server.knowledge_promotion.get(remote_name) == "firecrawl"
+            )
+
+            if (
+                not _annotations_allow_read_only(raw_tool)
+                and not approval_required
+                and not restricted_firecrawl_scrape
+            ):
                 raise McpDiscoveryError(
                     f"MCP Tool 明确声明为非只读或 destructive: {exposed_name!r}"
                 )
