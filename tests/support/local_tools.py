@@ -27,7 +27,7 @@ def invoke_local_tool(
     settings: AppSettings | None = None,
     audit_sink: ToolAuditSink | None = None,
 ) -> dict[str, Any]:
-    """对独立声明集合调用原生 BaseTool.invoke，保持参数校验与项目执行。"""
+    """对独立声明集合调用原生 BaseTool.ainvoke，保持参数校验与项目执行。"""
     spec = next((item for item in registry if item.name == tool_name), None)
     if spec is None:
         raise LookupError(f"unknown local tool: {tool_name}")

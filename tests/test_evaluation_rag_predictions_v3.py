@@ -1,10 +1,11 @@
 """Prediction v3 通过真实 ChatService / create_agent / governed tools 的确定性验收。"""
 
+import asyncio
 import csv
 import json
 import time
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
@@ -19,7 +20,7 @@ from tests.support.agent_runtime import FakeToolCallingModel
 
 
 def chunk(cid, file="A.md"):
-    return {"chunk_id": cid, "file_name": file, "text": f"证据正文 {cid}", "hybrid_score": 0.9, "metadata": {"chunk_id": cid, "file_name": file}}
+    return {"chunk_id": cid, "file_name": file, "text": f"证据正文 {cid}", "hybrid_score": 0.9, "metadata": {"chunk_id": cid, "file_name": file, "source_id": file, "position": cid}}
 
 
 def call(name="search_knowledge_base", cid="a", **args):
@@ -41,9 +42,9 @@ def setup_prediction(monkeypatch):
     contexts = []
     original = framework_tools.execute_project_tool
 
-    def execute(**kwargs):
+    async def execute(**kwargs):
         contexts.append(kwargs["context"])
-        return original(**kwargs)
+        return await original(**kwargs)
 
     monkeypatch.setattr(framework_tools, "execute_project_tool", execute)
     monkeypatch.setattr(framework_tools, "list_mcp_tools_for_context", Mock(side_effect=AssertionError("MCP discovery forbidden")))
@@ -84,8 +85,8 @@ def test_multi_subquestion_observes_a_then_changes_query_and_top_k(monkeypatch, 
 
 @pytest.mark.parametrize("tool,args,expected", [
     ("search_knowledge_base", {"query": "申请条件", "top_k": 3}, (1, 2)),
-    ("search_document", {"query": "申请条件", "doc_a": "A.md", "doc_b": "B.md", "top_k": 3}, (1, 2, 3)),
-    ("get_chunk_context", {"chunk_id": 1}, (1,)),
+    ("search_document", {"query": "申请条件", "document": "A.md", "top_k": 3}, (1, 2)),
+    ("get_chunk_context", {"chunk_id": 1, "before": 0, "after": 0}, (1,)),
 ])
 def test_all_kb_evidence_tools_contribute(monkeypatch, setup_prediction, tool, args, expected):
     monkeypatch.setattr(pipeline, "search_relevant_chunks", lambda *a, **k: [chunk(1), chunk(2)])
@@ -229,11 +230,11 @@ def test_structural_error_on_error_status_still_aborts_batch(monkeypatch, tmp_pa
     from app.services.chat_models import ChatServiceOutcome
 
     monkeypatch.setattr(rag_predictions, "initialize_rag_for_predictions", lambda **k: None)
-    monkeypatch.setattr(framework_tools, "execute_project_tool", lambda **k: {
+    monkeypatch.setattr(framework_tools, "execute_project_tool", AsyncMock(return_value={
         "tool_call_id": "a", "ok": True, "output": {"evidence": [
             {"metadata": {"source_type": "knowledge_base", "chunk_id": None if damage == "chunk_id" else 1}},
         ]},
-    })
+    }))
     attempted = []
 
     def chat_turn(request, **kwargs):
@@ -242,7 +243,7 @@ def test_structural_error_on_error_status_still_aborts_batch(monkeypatch, tmp_pa
             result = {"status": "OK", "answer": "已完成"}
         else:
             for _ in range(2 if damage == "duplicate_calls" else 1):
-                framework_tools.execute_project_tool(spec=SimpleNamespace(name="search_knowledge_base"), tool_args={})
+                asyncio.run(framework_tools.execute_project_tool(spec=SimpleNamespace(name="search_knowledge_base"), tool_args={}))
             result = {"status": "MODEL_ERROR", "answer": "unsafe", "tool_trace": [
                 {"step": "tool_call", "tool_call_id": "missing" if damage == "alignment" else "a"},
             ]}
@@ -279,11 +280,11 @@ def test_capture_excludes_external_and_failed_evidence(monkeypatch):
         {"page_content": "private", "metadata": {"source_type": "web", "chunk_id": 8}},
         {"page_content": "private", "metadata": {"source_type": "knowledge_base", "chunk_id": 1}},
     ]}}
-    monkeypatch.setattr(framework_tools, "execute_project_tool", lambda **k: payload)
+    monkeypatch.setattr(framework_tools, "execute_project_tool", AsyncMock(return_value=payload))
     with capture_tool_output_keys() as records:
-        framework_tools.execute_project_tool(spec=SimpleNamespace(name="example"), tool_args={})
+        asyncio.run(framework_tools.execute_project_tool(spec=SimpleNamespace(name="example"), tool_args={}))
         payload["ok"] = False
-        framework_tools.execute_project_tool(spec=SimpleNamespace(name="example"), tool_args={})
+        asyncio.run(framework_tools.execute_project_tool(spec=SimpleNamespace(name="example"), tool_args={}))
     assert [r["kb_chunk_ids"] for r in records] == [[1], []]
     assert "private" not in str(records)
 

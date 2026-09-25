@@ -475,7 +475,8 @@ async def test_agent_searches_then_fetches_through_registry_runtime(monkeypatch)
     search_payload = json.loads(search_message.content)
     fetch_payload = json.loads(fetch_message.content)
     assert model.selected_url == search_payload["output"]["results"][0]["url"]
-    assert fetch_payload["tool_input"]["url"] == model.selected_url
+    assert "tool_input" not in fetch_payload
+    assert fetch_message.artifact["tool_input"]["url"] == model.selected_url
     assert fetch_payload["output"]["final_url"] == model.selected_url
     assert fetch_payload["output"]["content_is_untrusted"] is True
     assert "LangGraph 1.2 release details" in output["result"]["answer"]

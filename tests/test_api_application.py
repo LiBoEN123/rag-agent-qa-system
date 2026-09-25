@@ -603,10 +603,6 @@ def test_lifespan_awaits_mcp_startup_and_closes_it_before_other_runtimes(
     monkeypatch.setattr(api_application, "close_mcp_runtime", close_mcp)
     monkeypatch.setattr(
         api_application,
-            lambda: calls.append("tool_close"),
-    )
-    monkeypatch.setattr(
-        api_application,
         "aclose_agent_runtime",
         close_agent,
     )
@@ -622,7 +618,6 @@ def test_lifespan_awaits_mcp_startup_and_closes_it_before_other_runtimes(
         "mcp_start",
         "serve",
         "mcp_close",
-        "tool_close",
         "agent_close",
     ]
 

@@ -10,18 +10,19 @@ cached local StructuredTool 一起交给唯一的 LangChain
 ## 架构与治理边界
 
 ```text
-ToolSpec catalog → cached ProjectStructuredTool ───┐
-                                                   ├→ create_agent
-MultiServerMCPClient → governed StructuredTool ────┘
+ToolSpec catalog → cached StructuredTool ─────────┐
+                                                  ├→ create_agent
+MultiServerMCPClient → governed StructuredTool ───┘
 ```
 
-本地工具使用 `ToolSpec → ProjectStructuredTool → execute_project_tool`，MCP adapter 已经把远端
+本地工具使用 `ToolSpec → StructuredTool → ToolRuntime → execute_project_tool`，MCP adapter 已经把远端
 Schema 转换成 LangChain `StructuredTool`，因此不会把 MCP Tool 反向转换成
 `ToolSpec`。本地 StructuredTool 按配置缓存，并由 Model Middleware 按请求权限过滤；MCP 工具保留 Bridge 已生成的
 governed StructuredTool，不再经过 framework 二次 wrapper。两类 BaseTool 都由
-`create_agent` ToolNode 的原生
+`create_agent` ToolNode 经项目的
 `ProjectToolGovernanceMiddleware.awrap_tool_call` 截获，共用调用数、
-错误数、重复调用、累计耗时、同批 fail-closed 和 ToolMessage pairing；MCP Server
+错误数、重复调用、同批 fail-closed 和 ToolMessage pairing；整次 Agent 执行由外层
+`asyncio.timeout` 限时。MCP Server
 Access Policy、审批、远端超时、审计和序列化仍只在 MCP Bridge 内执行。
 
 MCP 保持独立 Bridge 治理；本地 KB 工具返回 Document evidence 给唯一 Agent。
