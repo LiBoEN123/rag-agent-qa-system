@@ -27,6 +27,8 @@ class McpSerializationProfile(str, Enum):
 _MAX_ERROR_TEXT_CHARS = 2_000
 _PROJECT_META_PREFIX = "__project_mcp_meta__:"
 MCP_INGESTION_MAX_TEXT_CHARS = 1_000_000
+# Transport 可同时包含 Markdown、HTML 和 metadata；最终正文仍由 ingestion policy 限制。
+MCP_INGESTION_MAX_STRUCTURED_CHARS = 2_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,8 +61,10 @@ def _truncate_text(value: str, limit: int) -> tuple[str, bool]:
     return value[: limit - len(TRUNCATED)] + TRUNCATED, True
 
 
-# 逐步收紧脱敏和裁剪限制，使结构化输出满足序列化长度上限。
-def _bounded_structured(value: Any, *, limit: int) -> tuple[Any, bool]:
+# Agent 逐步裁剪；入库在总预算内保留完整结构，两者复用同一脱敏路径。
+def _bounded_structured(
+    value: Any, *, limit: int, preserve_content: bool = False,
+) -> tuple[Any, bool]:
     try:
         raw = json.dumps(
             value,
@@ -69,22 +73,29 @@ def _bounded_structured(value: Any, *, limit: int) -> tuple[Any, bool]:
             separators=(",", ":"),
             allow_nan=False,
         )
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         return {"truncated": True, "unsupported_value": True}, True
-    for max_depth, max_items, max_string_chars in (
+    if preserve_content and len(raw) > limit:
+        return {"truncated": True}, True
+    # JSON 总长度已限制深度、项目数和字符串长度，无需再套用 Agent 摘要阈值。
+    bounds = ((limit, limit, limit),) if preserve_content else (
         (8, 100, 4000),
         (6, 50, 2000),
         (5, 20, 1000),
         (4, 10, 500),
         (3, 5, 200),
-    ):
-        sanitized = redact_sensitive_data(
-            value,
-            max_depth=max_depth,
-            max_items=max_items,
-            max_string_chars=min(max_string_chars, limit),
-            max_serialized_chars=max(limit * 4, limit + 1024),
-        )
+    )
+    for max_depth, max_items, max_string_chars in bounds:
+        try:
+            sanitized = redact_sensitive_data(
+                value,
+                max_depth=max_depth,
+                max_items=max_items,
+                max_string_chars=min(max_string_chars, limit),
+                max_serialized_chars=max(limit * 4, limit + 1024),
+            )
+        except RecursionError:
+            return {"truncated": True, "unsupported_value": True}, True
         serialized = json.dumps(
             sanitized,
             ensure_ascii=False,
@@ -214,6 +225,11 @@ def sanitize_mcp_call_result(
         if resolved_profile is McpSerializationProfile.AGENT
         else MCP_INGESTION_MAX_TEXT_CHARS
     )
+    structured_limit = (
+        settings.mcp_max_structured_chars
+        if resolved_profile is McpSerializationProfile.AGENT
+        else MCP_INGESTION_MAX_STRUCTURED_CHARS
+    )
     if value.isError:
         text_limit = min(text_limit, _MAX_ERROR_TEXT_CHARS)
     text, text_truncated = _truncate_text(
@@ -230,7 +246,8 @@ def sanitize_mcp_call_result(
     if value.structuredContent is not None:
         structured, structured_truncated = _bounded_structured(
             value.structuredContent,
-            limit=settings.mcp_max_structured_chars,
+            limit=structured_limit,
+            preserve_content=resolved_profile is McpSerializationProfile.INGESTION,
         )
     safe_result = value.model_copy(
         update={"content": safe_content, "structuredContent": structured}

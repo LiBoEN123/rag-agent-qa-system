@@ -35,6 +35,7 @@ from app.tools.mcp.serialization import (
     MCP_INGESTION_MAX_TEXT_CHARS,
     McpSerializationProfile,
     normalize_mcp_tool_message,
+    sanitize_mcp_call_result,
 )
 
 
@@ -670,6 +671,60 @@ def test_ingestion_profile_preserves_complete_text_without_changing_agent_profil
         [event.to_dict() for event in sink.events],
         ensure_ascii=False,
     )
+
+
+@pytest.mark.parametrize(("agent_limit", "body_chars"), [
+    (20_000, 4_100), (20_000, 24_000), (256, 1_000),
+])
+def test_structured_profiles_preserve_ingestion_content_and_agent_limits(
+    settings_factory, agent_limit, body_chars,
+):
+    settings = settings_factory(mcp_max_structured_chars=agent_limit)
+    nested = {"api_key": "nested-secret"}
+    for _ in range(10):
+        nested = {"child": nested}
+    payload = {
+        "markdown": "m" * body_chars,
+        "html": "<p>" + "h" * body_chars + "</p>",
+        "metadata": {"links": ["link"] * 101, "nested": nested},
+    }
+    raw = CallToolResult(content=[], structuredContent=payload)
+    agent = sanitize_mcp_call_result(
+        raw, settings=settings, server_alias="firecrawl", remote_tool_name="firecrawl_scrape",
+        profile=McpSerializationProfile.AGENT,
+    )
+    assert agent.ok is True
+    assert agent.truncated is True
+    assert agent.ingestion_output is None
+    assert agent.result.structuredContent.get("markdown") != payload["markdown"]
+    assert len(json.dumps(agent.result.structuredContent, ensure_ascii=False, separators=(",", ":"))) <= agent_limit
+
+    # 经 interceptor 验证完整结构交付，同时保留深层 metadata 的脱敏。
+    runtime = _runtime("mcp:weather")
+    runtime.mcp_serialization_profile = McpSerializationProfile.INGESTION
+
+    async def handler(request):
+        return raw
+
+    sink = RecordingSink()
+    asyncio.run(McpToolCallInterceptor(
+        settings, server_configs=_server_configs(), audit_sink=sink,
+    )(_request(runtime), handler))
+    output = runtime.mcp_ingestion_output
+    assert output is not None
+    assert output["truncated"] is False
+    structured = output["structured_content"]
+    assert structured["markdown"] == payload["markdown"]
+    assert structured["html"] == payload["html"]
+    assert structured["metadata"]["links"] == payload["metadata"]["links"]
+    nested = structured["metadata"]["nested"]
+    for _ in range(10):
+        nested = nested["child"]
+    assert nested == {"api_key": "***REDACTED***"}
+    assert "nested-secret" not in json.dumps(output)
+    audit = json.dumps([event.to_dict() for event in sink.events])
+    assert "nested-secret" not in audit
+    assert payload["markdown"] not in audit
 
 
 def test_oversized_ingestion_output_is_bounded_and_drops_block_body(settings_factory):
