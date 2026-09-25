@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import shlex
 import sys
 from collections import Counter
 from contextlib import contextmanager
@@ -296,6 +297,8 @@ def _reproduce_command(args: argparse.Namespace, output_dir: Path) -> str:
         parts.append("--allow-dirty")
     if args.force_rebuild:
         parts.append("--force-rebuild")
+    for case_id in args.case_ids:
+        parts.append(f"--case-id {shlex.quote(case_id)}")
     return " \\\n  ".join(parts)
 
 
@@ -321,6 +324,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="仅对 Agent 观察到的有序去重证据前 K 项评分，不控制工具 top_k",
     )
     parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument(
+        "--case-id", dest="case_ids", action="append", default=[],
+        help="仅运行指定的完整 Agent case，可重复；真实运行须同时使用 --agent-only",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--agent-only", action="store_true")
     mode.add_argument("--rag-only", action="store_true")
@@ -345,6 +352,24 @@ def main(argv: list[str] | None = None) -> int:
         args.agent_cases,
         settings,
     )
+    if args.case_ids:
+        if not args.agent_only and not args.validate_only:
+            parser.error("--case-id 需要 --agent-only，避免意外运行完整 RAG Evaluation")
+        if args.rag_only:
+            parser.error("--case-id 不适用于 --rag-only")
+        requested = set(args.case_ids)
+        unknown = requested - {case.id for case in dataset.cases}
+        if unknown:
+            parser.error(f"unknown case id: {', '.join(sorted(unknown))}")
+        selected_cases = [case for case in dataset.cases if case.id in requested]
+        unavailable = [
+            case.id for case in selected_cases
+            if case.disabled or case.suite not in _requested_suites(args)
+        ]
+        if unavailable:
+            parser.error(f"case 未启用（disabled 或 suite 开关缺失）: {', '.join(unavailable)}")
+        dataset = dataset.model_copy(update={"cases": selected_cases})
+        coverage = build_coverage_report(dataset, tool_names)
     if args.validate_only:
         print("Evaluation dataset validation passed.")
         print(
@@ -476,6 +501,9 @@ def main(argv: list[str] | None = None) -> int:
         judge_model=args.judge_model or settings.judge_model,
         rag_status=rag_status,
     )
+    if args.case_ids:
+        manifest["evaluation_type"] = "targeted_agent_check"
+        manifest["data"]["selected_case_ids"] = [case.id for case in dataset.cases]
     if manifest["code"]["git_dirty"] and not args.allow_dirty:
         parser.error("运行期间工作区变脏，拒绝写入正式 baseline")
 

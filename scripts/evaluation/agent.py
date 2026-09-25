@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from typing import Any, Iterator, Mapping
 
 from app.config import AppSettings
+from app.contracts.chat import RAG_EVIDENCE_TOOL_NAMES
 from app.services.chat_models import ChatServiceOutcome, ChatServiceRequest
 from scripts.evaluation.contracts import (
     AgentEvaluationCase,
@@ -255,6 +256,20 @@ def capture_tool_output_keys() -> Iterator[list[dict[str, Any]]]:
                 "tool_name": spec.name,
                 "tool_call_id": str(result.get("tool_call_id") or ""),
                 "has_evidence": isinstance(output, dict) and "evidence" in output,
+                "kb_evidence": [
+                    {
+                        "reference_id": document["id"],
+                        "file_name": document["metadata"].get("file_name", ""),
+                        "source_path": document["metadata"].get("source_path", ""),
+                    }
+                    for document in (output.get("evidence") or [])
+                    if isinstance(document, dict)
+                    and document.get("id")
+                    and str(document.get("page_content") or "").strip()
+                    and isinstance(document.get("metadata"), dict)
+                    and document["metadata"].get("source_type") == "knowledge_base"
+                ] if isinstance(output, dict) and result.get("ok") is True
+                and spec.name in RAG_EVIDENCE_TOOL_NAMES else [],
                 "kb_chunk_ids": [
                     int(value) if not isinstance(value := document["metadata"].get("chunk_id"), bool)
                     and str(value).isascii() and str(value).isdigit() else None
@@ -408,6 +423,67 @@ def _tool_calls(result: dict[str, Any]) -> list[dict[str, Any]]:
         for step in (result.get("tool_trace") or [])
         if isinstance(step, dict) and step.get("step") == "tool_call"
     ]
+
+
+def _check_kb_tool_paths(
+    expected: ExpectedOutcome,
+    result: dict[str, Any],
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """成功调用的有序子序列；正文路径还须有本轮真实输出及最终引用。"""
+    if not expected.valid_tool_paths:
+        return {"valid_tool_path_pass": True, "evidence_grounding_pass": True}
+    by_call = {
+        (record.get("tool_call_id"), record.get("tool_name")): record
+        for record in records
+        if record.get("tool_call_id") and record.get("ok") is True
+        and record.get("status") == "success"
+    }
+    successful = [
+        record
+        for call in _tool_calls(result)
+        if call.get("tool_status") == "success"
+        and (record := by_call.get((call.get("tool_call_id"), call.get("tool_name"))))
+        and (call.get("tool_name") not in RAG_EVIDENCE_TOOL_NAMES or record.get("kb_evidence"))
+    ]
+    matched_paths = []
+    for path in expected.valid_tool_paths:
+        names = iter(record["tool_name"] for record in successful)
+        if all(any(name == wanted for name in names) for wanted in path):
+            matched_paths.append(path)
+    evidence = {
+        item["reference_id"]: item
+        for record in successful
+        if record["tool_name"] in RAG_EVIDENCE_TOOL_NAMES
+        for item in record.get("kb_evidence", [])
+    }
+    references = result.get("references") or []
+    cited_ids = [item.get("reference_id") for item in references if isinstance(item, dict)]
+    # 目标来源必须由路径上的正文工具实际读到；比较要求两份目标均经 search_document。
+    path_sources_pass = any(
+        _check_sources(expected, {"references": [
+            item for record in successful if record["tool_name"] in path
+            for item in record.get("kb_evidence", [])
+        ]})["source_pass"]
+        for path in matched_paths
+    )
+    grounded = bool(
+        cited_ids and len(cited_ids) == len(references)
+        and all(evidence_id in evidence for evidence_id in cited_ids)
+        and path_sources_pass
+        and _check_sources(expected, {"references": [
+            evidence[evidence_id] for evidence_id in cited_ids if evidence_id in evidence
+        ]})["source_pass"]
+    )
+    return {
+        "valid_tool_path_pass": bool(matched_paths),
+        "evidence_grounding_pass": grounded,
+        "evidence_observations": [
+            {"tool_name": record["tool_name"], "tool_call_id": record["tool_call_id"],
+             "evidence": record["kb_evidence"]}
+            for record in successful if record.get("kb_evidence")
+        ],
+    }
 
 
 def _check_tool_output_schema(
@@ -605,6 +681,7 @@ def score_agent_turn(
         combined_output_records or None,
     )
     rewrite = _check_rewrite(expected, result)
+    kb_path = _check_kb_tool_paths(expected, result, tool_output_records or [])
 
     checks = {
         "decision": (
@@ -624,9 +701,11 @@ def score_agent_turn(
                 not expected.first_tool
                 and not expected.first_tool_any_of
             )
-            or actual["actual_tool"] == expected.first_tool
+            or bool(expected.first_tool and actual["actual_tool"] == expected.first_tool)
             or actual["actual_tool"] in expected.first_tool_any_of
         ),
+        "valid_tool_path": kb_path["valid_tool_path_pass"],
+        "evidence_grounding": kb_path["evidence_grounding_pass"],
         "tools_contains": tool_correctness(
             expected.tools_contains, actual_tools,
         ),
@@ -723,6 +802,10 @@ def score_agent_turn(
             failure_reasons.append("unexpected_no_evidence")
     if not checks["first_tool"]:
         failure_reasons.append("first_tool_mismatch")
+    if not checks["valid_tool_path"]:
+        failure_reasons.append("valid_tool_path_mismatch")
+    if not checks["evidence_grounding"]:
+        failure_reasons.append("evidence_grounding_mismatch")
     if not checks["tool_origin"]:
         failure_reasons.append("tool_origin_mismatch")
     if not checks["mcp_server"]:
@@ -791,6 +874,7 @@ def score_agent_turn(
     )
     selection_pass = bool(
         checks["first_tool"]
+        and checks["valid_tool_path"]
         and origin_selection_pass
         and not unexpected_tool_calls
     )
@@ -896,6 +980,7 @@ def score_agent_turn(
             "tool_output_keys_missing"
         ],
         "query_rewrite_pass": checks["query_rewrite"],
+        **kb_path,
         **rewrite,
         "answer": str(result.get("answer") or ""),
         "references": list(result.get("references") or []),
@@ -926,6 +1011,10 @@ def combine_case_turns(
         "turn_count": len(rows),
         "passed": all(row["passed"] for row in rows),
         "failure_reasons": reasons,
+        "classification": next(
+            (row["classification"] for row in rows if not row["passed"]),
+            last["classification"],
+        ),
         "latency_ms": round(
             sum(float(row["latency_ms"]) for row in rows),
             2,

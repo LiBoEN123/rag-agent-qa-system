@@ -47,6 +47,69 @@ def _settings(tmp_path: Path) -> AppSettings:
     )
 
 
+@pytest.mark.parametrize("ids", [["D008"], ["D001", "D008"], ["agent-followup-001"]])
+def test_case_filter_validate_only_never_initializes_runtime(ids, tmp_path, monkeypatch, capsys):
+    def forbidden(*args, **kwargs):
+        pytest.fail("validate-only must not initialize evaluation runtime")
+    monkeypatch.setattr(runner, "evaluation_runtime_scope", forbidden)
+    output = tmp_path / "not-created"
+    args = ["--validate-only", "--output-dir", str(output)]
+    for case_id in ids:
+        args.extend(["--case-id", case_id])
+    assert runner.main(args) == 0
+    report = json.loads(capsys.readouterr().out.split("\n", 1)[1])
+    assert report["total_cases"] == len(ids)
+    assert report["case_shape"]["multi_turn"] == int(ids == ["agent-followup-001"])
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("args", [
+    ["--agent-only", "--case-id", "unknown"],
+    ["--validate-only", "--case-id", "unknown"],
+    ["--case-id", "D008"],
+    ["--rag-only", "--case-id", "D008"],
+    ["--validate-only", "--case-id", "online-web-search-001"],
+])
+def test_case_filter_invalid_selection_fails_before_output_or_runtime(args, tmp_path, monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid selection must fail before runtime")
+    monkeypatch.setattr(runner, "evaluation_runtime_scope", forbidden)
+    output = tmp_path / "not-created"
+    with pytest.raises(SystemExit) as error:
+        runner.main([*args, "--output-dir", str(output)])
+    assert error.value.code == 2
+    assert not output.exists()
+
+
+def test_case_filter_executes_whole_cases_and_records_reproduction(tmp_path, monkeypatch):
+    selected = []
+    @contextmanager
+    def no_runtime(settings):
+        yield []
+    def run_cases(dataset, **kwargs):
+        selected.extend(dataset.cases)
+        return [], {}
+    def no_rag(**kwargs):
+        pytest.fail("case filter must not run RAG evaluation")
+    monkeypatch.setattr(runner, "evaluation_runtime_scope", no_runtime)
+    monkeypatch.setattr(runner, "run_agent_baseline", run_cases)
+    monkeypatch.setattr(runner, "run_rag_baseline", no_rag)
+    monkeypatch.setattr(runner, "build_manifest", lambda **kwargs: _fake_manifest(kwargs["run_id"]))
+    monkeypatch.setattr("app.rag.pipeline.get_rag_status", lambda: {})
+    output = tmp_path / "selected"
+    assert runner.main([
+        "--agent-only", "--allow-dirty", "--output-dir", str(output),
+        "--case-id", "D008", "--case-id", "agent-followup-001", "--case-id", "D008",
+    ]) == 0
+    assert [case.id for case in selected] == ["D008", "agent-followup-001"]
+    assert len(selected[1].turns) == 2
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["data"]["selected_case_ids"] == ["D008", "agent-followup-001"]
+    assert manifest["evaluation_type"] == "targeted_agent_check"
+    report = (output / "baseline_report.md").read_text()
+    assert "--case-id D008" in report and "--case-id agent-followup-001" in report
+
+
 def test_core_evaluation_snapshot_explicitly_disables_production_mcp(tmp_path):
     production = _settings(tmp_path).model_copy(
         update={"mcp_tools_enabled": True}
@@ -351,9 +414,35 @@ def test_capture_tool_output_keys_never_keeps_values(monkeypatch):
             "tool_call_id": "",
             "has_evidence": False,
             "kb_chunk_ids": [],
+            "kb_evidence": [],
         }
     ]
     assert "must-not-persist" not in repr(records)
+
+
+@pytest.mark.parametrize("tool,ok,body,expected_count", [
+    ("search_document", True, "private body must not persist", 1),
+    ("search_document", False, "private body must not persist", 0),
+    ("search_document", True, "", 0),
+    ("find_documents", True, "private body must not persist", 0),
+])
+def test_capture_retains_only_successful_body_identity(tool, ok, body, expected_count, monkeypatch):
+    async def execute(**kwargs):
+        return {"ok": ok, "status": "success" if ok else "error", "tool_call_id": "call",
+                "output": {"evidence": [{"id": "e1", "page_content": body, "metadata": {
+                    "source_type": "knowledge_base", "file_name": "rules.md", "chunk_id": 1,
+                    "source_path": "/kb/rules.md", "private_key": "must-not-persist",
+                }}]}}
+    monkeypatch.setattr(framework_tools, "execute_project_tool", execute)
+    spec = next(item for item in get_local_tool_specs(get_settings()) if item.name == tool)
+    with agent_evaluation.capture_tool_output_keys() as records:
+        asyncio.run(framework_tools.execute_project_tool(spec=spec, tool_args={}))
+    assert len(records[0]["kb_evidence"]) == expected_count
+    assert "private body" not in repr(records) and "must-not-persist" not in repr(records)
+    if expected_count:
+        assert records[0]["kb_evidence"] == [{
+            "reference_id": "e1", "file_name": "rules.md", "source_path": "/kb/rules.md",
+        }]
 
 
 def test_in_memory_multi_turn_uses_chat_service_history_and_isolation(

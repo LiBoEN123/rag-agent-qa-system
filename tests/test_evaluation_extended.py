@@ -171,7 +171,7 @@ def test_core_dataset_hash_and_remaining_28_cases_are_pinned():
     assert len(dataset.cases) == 28
     assert {case.suite for case in dataset.cases} == {"core", "online"}
     assert sha256_file(CORE_DATASET) == (
-        "f97eba47d3cf4963123b436f1d9ffa7872fc7df13fb18746f48baea50b6ca9b0"
+        "a581d603940681fb9d4b75e7a42c4dd075f5bc8507c01185b3dafd5b1b53732e"
     )
     validate_dataset(CORE_DATASET)
 

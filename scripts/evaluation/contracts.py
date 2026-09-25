@@ -16,7 +16,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.contracts.chat import AgentResultStatus
+from app.contracts.chat import AgentResultStatus, RAG_EVIDENCE_TOOL_NAMES
 
 
 SuiteName = Literal["core", "online", "mcp", "mixed"]
@@ -38,6 +38,7 @@ class ExpectedOutcome(BaseModel):
     status: AgentResultStatus | None = None
     first_tool: str = ""
     first_tool_any_of: list[str] = Field(default_factory=list)
+    valid_tool_paths: list[list[str]] = Field(default_factory=list)
     tools_contains: list[str] = Field(default_factory=list)
     tool_sequence: list[str] = Field(default_factory=list)
     tool_status_sequence: list[ToolCallStatus] = Field(default_factory=list)
@@ -81,7 +82,12 @@ class ExpectedOutcome(BaseModel):
             *self.first_tool_any_of,
             *self.tools_contains,
             *self.tool_sequence,
+            *(name for path in self.valid_tool_paths for name in path),
         ]
+        if any(not path or any(not name for name in path) for path in self.valid_tool_paths):
+            raise ValueError("valid_tool_paths 不允许空路径或空工具名")
+        if any(not RAG_EVIDENCE_TOOL_NAMES.intersection(path) for path in self.valid_tool_paths):
+            raise ValueError("valid_tool_paths 必须包含 KB 正文 evidence 工具")
         if any(
             name and not _SAFE_NAME_PATTERN.fullmatch(name)
             for name in tool_names
@@ -106,6 +112,7 @@ class ExpectedOutcome(BaseModel):
                 + self.first_tool_any_of
                 + self.tools_contains
                 + self.tool_sequence
+                + [name for path in self.valid_tool_paths for name in path]
             )
             if name
         }

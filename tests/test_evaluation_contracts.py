@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from scripts.evaluation.contracts import (
+    ExpectedOutcome,
     AgentEvaluationDataset,
     build_coverage_report,
     load_agent_evaluation_dataset,
@@ -28,6 +29,44 @@ KNOWN_TOOLS = {
     "find_documents",
     "search_knowledge_base",
 }
+
+
+@pytest.mark.parametrize("paths", [[[]], [[""]], [["find_documents"]], [["bad-name", "search_document"]]])
+def test_invalid_body_paths_are_rejected(paths):
+    with pytest.raises(ValueError):
+        ExpectedOutcome(valid_tool_paths=paths)
+
+
+def test_path_tools_participate_in_registration_validation():
+    dataset = load_agent_evaluation_dataset(FIXTURE)
+    dataset.cases[0].expected = ExpectedOutcome(
+        valid_tool_paths=[["unknown_tool", "search_document"]],
+    )
+    with pytest.raises(ValueError, match="unknown_tool"):
+        validate_tool_names(dataset, {"search_document"})
+
+
+def test_core_semantic_routes_and_strict_business_invariants():
+    dataset = load_agent_evaluation_dataset(
+        Path(__file__).parents[1] / "data/eval/agent_eval_cases_v2.json",
+    )
+    cases = {case.id: case for case in dataset.cases}
+    for case_id in [f"D{i:03d}" for i in range(1, 14)]:
+        expected = cases[case_id].expected
+        assert not expected.first_tool
+        assert expected.sources and expected.keywords
+        assert expected.valid_tool_paths == (
+            [["search_knowledge_base"], ["search_document"]]
+            if case_id == "D005" else
+            [["search_knowledge_base"], ["find_documents", "search_document"]]
+        )
+    for case_id, tool in [("T001", "find_documents"), ("T002", "find_documents"), ("T003", "get_chunk_context")]:
+        assert cases[case_id].expected.first_tool == tool
+    assert cases["D008"].expected.sources == ["内蒙古工业大学学籍管理办法（2018年修订）.md"]
+    compare = cases["compare_documents_explicit_001"].expected
+    assert compare.source_match == "all" and len(compare.sources) == 2
+    assert compare.valid_tool_paths == [["search_document", "search_document"]]
+    assert cases["agent-tool-recovery-001"].expected.tool_status_sequence == ["error", "success"]
 
 
 def _single_case(**changes):

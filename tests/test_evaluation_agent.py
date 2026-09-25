@@ -1,5 +1,7 @@
 """Agent v2 判分、失败原因和指标测试。"""
 
+import pytest
+
 from scripts.evaluation.agent import (
     calculate_agent_metrics,
     combine_case_turns,
@@ -562,9 +564,100 @@ def test_extended_metrics_keep_origin_server_and_confusion_separate():
     }
 
 
-def test_first_tool_any_of_empty_trace_keeps_existing_baseline_contract():
+def test_first_tool_any_of_rejects_empty_trace():
     row = _score(
         expected=ExpectedOutcome(first_tool_any_of=["a", "b"]),
         result={"status": "OK", "answer": "fixture", "tool_trace": []},
     )
-    assert "first_tool_mismatch" not in row["failure_reasons"]
+    assert "first_tool_mismatch" in row["failure_reasons"]
+
+
+def _kb_run(tools, sources=None):
+    sources = sources or ["rules.md"] * len(tools)
+    calls, records, references = [], [], []
+    for index, (tool, source) in enumerate(zip(tools, sources, strict=True)):
+        call_id = f"call-{index}"
+        evidence = [] if tool == "find_documents" else [{
+            "reference_id": f"evidence-{index}", "file_name": source,
+        }]
+        calls.append({"step": "tool_call", "tool_name": tool,
+                      "tool_call_id": call_id, "tool_status": "success"})
+        records.append({"tool_name": tool, "tool_call_id": call_id,
+                        "ok": True, "status": "success", "kb_evidence": evidence})
+        references.extend(evidence)
+    return {"status": "OK", "answer": "有依据的回答", "tool_trace": calls,
+            "references": references}, records
+
+
+@pytest.mark.parametrize("tools,passes", [
+    (["search_knowledge_base"], True),
+    (["find_documents", "search_document"], True),
+    (["find_documents", "search_document", "get_chunk_context"], True),
+    (["find_documents", "search_knowledge_base"], True),
+    (["find_documents"], False),
+    (["search_document", "find_documents"], False),
+    ([], False),
+])
+def test_valid_kb_paths_require_successful_body_evidence(tools, passes):
+    result, records = _kb_run(tools)
+    expected = ExpectedOutcome(valid_tool_paths=[
+        ["search_knowledge_base"], ["find_documents", "search_document"],
+    ], sources=["rules.md"])
+    row = _score(expected=expected, result=result, tool_output_records=records)
+    assert row["passed"] is passes
+
+
+@pytest.mark.parametrize("fault", [
+    "tool_error", "captured_error", "missing_capture", "wrong_call_id",
+    "no_body", "no_references", "unknown_evidence", "forged_source",
+])
+def test_path_cannot_pass_with_failed_empty_or_unavailable_evidence(fault):
+    result, records = _kb_run(["search_knowledge_base"])
+    if fault == "tool_error":
+        result["tool_trace"][0]["tool_status"] = "error"
+    elif fault == "captured_error":
+        records[0]["ok"] = False
+    elif fault == "missing_capture":
+        records.clear()
+    elif fault == "wrong_call_id":
+        records[0]["tool_call_id"] = "other-run"
+    elif fault == "no_body":
+        records[0]["kb_evidence"] = []
+    elif fault == "no_references":
+        result["references"] = []
+    elif fault == "unknown_evidence":
+        result["references"] = [{"reference_id": "invented", "file_name": "rules.md"}]
+    elif fault == "forged_source":
+        result["references"] = [{"reference_id": "evidence-0", "file_name": "rules.md"}]
+        records[0]["kb_evidence"][0]["file_name"] = "wrong.md"
+    row = _score(expected=ExpectedOutcome(
+        valid_tool_paths=[["search_knowledge_base"]], sources=["rules.md"],
+    ), result=result, tool_output_records=records)
+    assert row["passed"] is False
+    assert row["evidence_grounding_pass"] is False
+
+
+@pytest.mark.parametrize("fault", ["none", "same_document", "missing_citation", "wrong_tool"])
+def test_compare_requires_both_target_bodies_and_final_citations(fault):
+    tools = ["search_document", "search_document"]
+    if fault == "wrong_tool":
+        tools = ["search_document", "search_document", "get_chunk_context"]
+    sources = ["a.md", "a.md"] if fault == "same_document" else ["a.md", "b.md"]
+    if fault == "wrong_tool":
+        sources = ["a.md", "a.md", "b.md"]
+    result, records = _kb_run(tools, sources)
+    if fault == "missing_citation":
+        result["references"].pop()
+    row = _score(expected=ExpectedOutcome(
+        valid_tool_paths=[["search_document", "search_document"]],
+        sources=["a.md", "b.md"], source_match="all",
+    ), result=result, tool_output_records=records)
+    assert row["passed"] is (fault == "none")
+
+
+def test_multi_turn_failure_classification_is_not_taken_from_passing_last_turn():
+    first = _score(expected=_expected(first_tool="search_document"))
+    last = _score()
+    row = combine_case_turns("multi", [first, last])
+    assert not row["passed"]
+    assert row["classification"] == first["classification"] != "PASS"
