@@ -181,6 +181,11 @@ async def test_default_service_principal_sees_and_executes_config_authorized_ser
         tool_default_principal_id="chat_api",
         tool_default_permissions=("knowledge_base:read",),
     )
+    def forbidden(*args, **kwargs):
+        pytest.fail("ordinary MCP tool execution must not create ingestion candidates")
+
+    monkeypatch.setattr("app.ingestion.service.IngestionService.propose", forbidden)
+    monkeypatch.setattr("app.storage.ingestion.SQLiteCandidateRepository.__init__", forbidden)
     calls = []
     model = FakeToolCallingModel(_responses())
     graph, _ = _setup(
@@ -201,6 +206,7 @@ async def test_default_service_principal_sees_and_executes_config_authorized_ser
     output = [state async for state in graph.astream(_input(), context=context)][-1]
 
     _assert_success(output, model, calls)
+    assert not settings.sqlite_db_path.exists()
 
 
 @pytest.mark.asyncio

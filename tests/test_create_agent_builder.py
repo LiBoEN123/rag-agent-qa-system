@@ -124,8 +124,8 @@ async def test_structured_call_does_not_consume_business_tool_budget(
         FinalAgentResponse(outcome="answer", answer="列表为空"),
     ])
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
-    monkeypatch.setattr("app.rag.pipeline.chunks", [])
-    monkeypatch.setattr("app.rag.pipeline.RAG_READY", True)
+    monkeypatch.setattr("app.rag.runtime.chunks", [])
+    monkeypatch.setattr("app.rag.runtime.RAG_READY", True)
     observed_counts = []
     native_after = ToolCallLimitMiddleware.after_model
 

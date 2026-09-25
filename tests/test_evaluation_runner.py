@@ -95,7 +95,7 @@ def test_case_filter_executes_whole_cases_and_records_reproduction(tmp_path, mon
     monkeypatch.setattr(runner, "run_agent_baseline", run_cases)
     monkeypatch.setattr(runner, "run_rag_baseline", no_rag)
     monkeypatch.setattr(runner, "build_manifest", lambda **kwargs: _fake_manifest(kwargs["run_id"]))
-    monkeypatch.setattr("app.rag.pipeline.get_rag_status", lambda: {})
+    monkeypatch.setattr("app.rag.runtime.get_rag_status", lambda: {})
     output = tmp_path / "selected"
     assert runner.main([
         "--agent-only", "--allow-dirty", "--output-dir", str(output),
@@ -628,7 +628,7 @@ def test_runner_completes_reports_with_runtime_failures(tmp_path, monkeypatch, a
     monkeypatch.setattr(runner, "get_settings", lambda: _settings(tmp_path))
     monkeypatch.setattr(runner, "get_git_state", lambda: _fake_manifest("test")["code"])
     monkeypatch.setattr(runner, "build_manifest", lambda **kwargs: _fake_manifest(kwargs["run_id"]))
-    monkeypatch.setattr("app.rag.pipeline.get_rag_status", lambda: {})
+    monkeypatch.setattr("app.rag.runtime.get_rag_status", lambda: {})
 
     assert runner.main([
         "--rag-only", "--agent-cases", str(FIXTURE), "--rag-eval-file", str(eval_file),
@@ -730,7 +730,7 @@ def test_runner_writes_expected_output_structure(
         lambda **kwargs: _fake_manifest(kwargs["run_id"]),
     )
     monkeypatch.setattr(
-        "app.rag.pipeline.get_rag_status",
+        "app.rag.runtime.get_rag_status",
         lambda: {},
     )
 

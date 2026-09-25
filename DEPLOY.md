@@ -62,7 +62,14 @@ LLM_API_KEY=你的真实 key
 ## 5.启动服务
 推荐使用 docker compose 启动。`docker-compose.yml` 已经把知识库、ChromaDB 索引、manifest、日志和模型缓存挂载到了宿主机，重启容器不会丢缓存。
 
-第一次启动建议前台运行，方便直接看到下载模型、构建索引和启动完成日志：
+先缓存模型、显式同步知识索引，再启动 QA；启动过程只加载索引：
+
+```bash
+docker compose run --rm rag-api python scripts/cache_models.py
+docker compose run --rm rag-api python -m app.rebuild_kb
+```
+
+需要全量重建时给同步命令加 `--force-rebuild`。首次 QA 启动建议前台运行：
 ```bash
 docker compose up
 ```
@@ -112,7 +119,7 @@ docker run --rm --gpus all -p 8000:8000 --env-file .env \
   agent-rag-demo:latest
 ```
 
-注意：`--rm` 会删除容器本身，但不会删除镜像；只要上面的 volume 还在，索引和模型缓存仍会保留。第一次启动或知识库文件变化时会重建索引，这是正常的。
+注意：`--rm` 会删除容器本身，但不会删除镜像；只要上面的 volume 还在，索引和模型缓存仍会保留。知识库文件变化后，先显式执行 `python -m app.rebuild_kb`（使用相同 volumes），再重启 QA。
 
 ## 6.验证服务
 在浏览器输入以下网址并打开
@@ -140,7 +147,7 @@ docker compose exec rag-api python -c "import torch; print(torch.cuda.is_availab
 
 ## 7.常见问题
 - API Key不可用
-- 每次启动都重建索引：检查是否挂载了 `./data/chroma:/app/data/chroma` 和 `./data/manifest:/app/data/manifest`。
+- QA 显示空索引：先显式同步知识库，并检查是否挂载了 `./data/chroma:/app/data/chroma` 和 `./data/manifest:/app/data/manifest`。
 - 每次启动都重新下载 embedding/rerank 模型：检查是否挂载了 `agent-rag-model-cache:/cache`，并确认 `MODEL_CACHE_DIR=/cache/huggingface/hub`，或使用 `docker compose up -d`。
 - 容器内 `torch.cuda.is_available()` 是 `False`：确认启动命令包含 GPU 配置，宿主机能运行 `docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi`，并重新构建镜像确保安装的是 CUDA 版 PyTorch。
 - 修改知识库 `.txt`/`.md`、`CHUNK_SIZE`、`CHUNK_OVERLAP`、`EMBEDDING_MODEL_NAME`、`RERANK_MODEL_NAME` 后会触发重建索引，这是预期行为。

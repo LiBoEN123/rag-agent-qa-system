@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 
 from app.config import AppSettings
-from app.rag.indexing import create_vector_store
+from app.storage.vector import create_vector_store
 
 
 class ChromaUnavailableError(RuntimeError):

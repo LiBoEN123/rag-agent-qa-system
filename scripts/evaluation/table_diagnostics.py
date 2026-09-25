@@ -40,18 +40,18 @@ def relation_chunk_ids(question: dict, chunks: list[dict]) -> list[int]:
 
 def diagnose_questions(questions: list[dict], *, top_k: int = 5) -> list[dict[str, Any]]:
     """只运行生产 retrieve/rerank/diagnostic gate，并复用 scorer 计算固定 K 指标。"""
-    from app.rag import pipeline
+    from app.rag import runtime
     from app.rag.policy import should_refuse
 
-    index = chunks_to_index(pipeline.chunks, source="current-chroma")
+    index = chunks_to_index(runtime.chunks, source="current-chroma")
     results = []
     for question in questions:
         answerable = question["expected_behavior"] != "abstain"
         gold = resolve_gold_chunk_ids(question, index.chunk_text_map, index.chunk_doc_map)
-        relation_gold = relation_chunk_ids(question, pipeline.chunks)
-        retrieved = pipeline.retrieve(question["question"], top_k)
+        relation_gold = relation_chunk_ids(question, runtime.chunks)
+        retrieved = runtime.retrieve(question["question"], top_k)
         # 生产 rerank 会在候选字典上写 score；保留独立的原始召回快照。
-        reranked = pipeline.rerank(deepcopy(retrieved), question["question"])
+        reranked = runtime.rerank(deepcopy(retrieved), question["question"])
         final = reranked[:top_k]
         gate_passed = bool(final) and not should_refuse(final)
         selected = final if gate_passed else []
@@ -84,7 +84,7 @@ def diagnose_questions(questions: list[dict], *, top_k: int = 5) -> list[dict[st
             "expected_behavior": question["expected_behavior"], "notes": question["notes"],
             "gold_source": question["gold_doc_ids"], "gold_evidence": question["gold_evidence"],
             "resolved_gold_chunk_ids": gold, "relation_gold_chunk_ids": relation_gold,
-            "gold_chunks": [c for c in pipeline.chunks if c["metadata"]["chunk_id"] in gold],
+            "gold_chunks": [c for c in runtime.chunks if c["metadata"]["chunk_id"] in gold],
             "retrieve_top5": brief(retrieved[:5]), "rerank_top5": brief(final),
             "retrieve_candidate_ids": ids(retrieved), "candidate_count": len(retrieved),
             "rerank_all_ids": ids(reranked), "final_chunk_ids": ids(final),

@@ -30,3 +30,8 @@ def test_import_linter_configuration_has_all_boundaries_and_no_ignores():
     assert "contract:ingestion-domain-is-independent" in config
     assert "contract:http-framework-only-in-api" in config
     assert "contract:pydantic-settings-only-in-config" in config
+    for name in (
+        "rag-read-side-independence", "indexing-write-side-independence",
+        "sources-do-not-index", "agent-no-ingestion-side-effects", "chat-storage-is-independent",
+    ):
+        assert f"contract:{name}" in config

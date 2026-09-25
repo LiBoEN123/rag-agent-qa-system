@@ -10,7 +10,7 @@ from docling_core.types.doc import (
 )
 
 from app.ingestion.document_blocks import TableBlock, TextBlock, canonical_document_text
-from app.rag import parsing
+from app.ingestion import parsing
 from tests.support.structured_document import (
     ADMISSION_HTML, REGISTRATION_HTML, admission_structure, build_table_docx,
 )

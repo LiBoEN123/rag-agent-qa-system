@@ -5,8 +5,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from app.ingestion import IngestionRequester, IngestionService, build_knowledge_document
 from app.ingestion.document_blocks import ParsedDocument, TableBlock, TableCell, TextBlock
-from app.rag import indexing
-from app.rag.structured_chunking import chunk_structured_document
+from app.indexing import langchain as indexing
+from app.indexing.chunking import chunk_structured_document
 from tests.support.structured_document import (
     ADMISSION_ROWS, admission_structure, imut_admission_structure, registration_structure,
 )

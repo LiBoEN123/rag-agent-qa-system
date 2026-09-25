@@ -4,7 +4,7 @@
 """
 
 from app.config import get_settings
-from app.rag.scoring import safe_float
+from app.common.numeric import safe_float
 
 
 VECTOR_RELAX_RATIO = 0.70

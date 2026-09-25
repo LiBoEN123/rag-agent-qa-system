@@ -23,8 +23,8 @@ def test_minimal_agent_smoke(tool, settings_factory, monkeypatch, tmp_path):
     from app.tools.policy import ToolPolicyEngine
 
     settings = settings_factory(mcp_tools_enabled=False)
-    monkeypatch.setattr("app.rag.pipeline.chunks", [])
-    monkeypatch.setattr("app.rag.pipeline.RAG_READY", True)
+    monkeypatch.setattr("app.rag.runtime.chunks", [])
+    monkeypatch.setattr("app.rag.runtime.RAG_READY", True)
     base = chat_service.get_default_chat_service_dependencies()
     monkeypatch.setattr(chat_service, "get_default_chat_service_dependencies", lambda: replace(
         base, rewrite_query_with_history=lambda question, history, trace_id: {
@@ -75,7 +75,7 @@ def test_minimal_rag_smoke_judge_disabled(monkeypatch, tmp_path):
     monkeypatch.setattr(rag_predictions, "initialize_rag_for_predictions", lambda **kwargs: None)
     chunk = {"chunk_id": 1, "text": "评测规则", "metadata": {"source_file": "rules.md"}}
     from app.services.chat_models import ChatServiceOutcome
-    from app.rag import pipeline
+    from app.rag import runtime as pipeline
     monkeypatch.setattr(pipeline, "chunks", [chunk])
     def chat_turn(*args, **kwargs):
         from app.agent import framework_tools

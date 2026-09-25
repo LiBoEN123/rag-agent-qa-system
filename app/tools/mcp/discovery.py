@@ -96,16 +96,11 @@ async def discover_mcp_tools(
                 raise McpDiscoveryError(
                     f"MCP allowlist 工具不可用: {alias!r}/{remote_name!r}"
                 )
-            restricted_firecrawl_scrape = (
-                alias == "firecrawl"
-                and remote_name == "firecrawl_scrape"
-                and server.knowledge_promotion.get(remote_name) == "firecrawl"
-            )
-
             if (
                 not _annotations_allow_read_only(raw_tool)
                 and not approval_required
-                and not restricted_firecrawl_scrape
+                # Firecrawl 的显式 source fetch 受 bridge 的只读参数白名单约束。
+                and not (alias == "firecrawl" and remote_name == "firecrawl_scrape")
             ):
                 raise McpDiscoveryError(
                     f"MCP Tool 明确声明为非只读或 destructive: {exposed_name!r}"
@@ -130,7 +125,6 @@ async def discover_mcp_tools(
                         remote_tool_name=remote_name,
                         description=_safe_description(raw_tool.description),
                         approval_required=approval_required,
-                        knowledge_promotion=server.knowledge_promotion.get(remote_name),
                     ),
                 )
             )

@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, SecretStr, StrictStr, field_validator
 
+from app.indexing.service import IndexingError, IndexingService
 from app.config import secret_value
 from app.ingestion import (
     CandidateNotFoundError,
@@ -99,9 +100,11 @@ class CandidateDetailResponse(_StrictAPIModel):
 class IngestionOperationsDependencies:
     ingestion_service: IngestionService
     source_service: ExternalKnowledgeSourceService
+    indexing_service: IndexingService
     index_runs: SQLiteIndexRunRepository
     requester: IngestionRequester
     admin_api_key: SecretStr
+    on_index_changed: Callable[[], None] | None = None
 
 
 class IngestionAPIError(Exception):
@@ -142,7 +145,7 @@ def _context(permission: str) -> ToolInvocationContext:
 
 
 # 将外部来源错误映射为对外可用的 HTTP 状态码和固定错误消息。
-def _source_error(exc: SourceIngestionError) -> IngestionAPIError:
+def _source_error(exc: SourceIngestionError | IndexingError) -> IngestionAPIError:
     code = exc.code
     mappings = {
         "SOURCE_CANDIDATE_NOT_FOUND": (404, "CANDIDATE_NOT_FOUND", "candidate 不存在"),
@@ -154,7 +157,6 @@ def _source_error(exc: SourceIngestionError) -> IngestionAPIError:
         "SOURCE_FETCH_FAILED": (502, code, "external source operation 失败"),
         "SOURCE_PAYLOAD_INVALID": (502, code, "external source operation 失败"),
         "SOURCE_CONTENT_TRUNCATED": (502, code, "external source operation 失败"),
-        "SOURCE_RUNTIME_RELOAD_FAILED": (502, code, "external source operation 失败"),
     }
     return _error(*mappings.get(
         code,
@@ -392,20 +394,24 @@ def create_ingestion_router(deps: IngestionOperationsDependencies) -> APIRouter:
         )
         try:
             execute = (
-                deps.source_service.index_approved
+                deps.indexing_service.index_approved
                 if operation is IndexRunOperation.INDEX
-                else deps.source_service.remove_indexed
+                else deps.indexing_service.remove_indexed
             )
-            return deps.index_runs.succeed(
+            completed = deps.index_runs.succeed(
                 run.id, **_counts(execute(candidate.candidate_id)),
             )
-        except SourceIngestionError as exc:
+        except (SourceIngestionError, IndexingError) as exc:
             error = _source_error(exc)
         except Exception:
             error = _error(
                 500, f"{operation.value.upper()}_OPERATION_FAILED",
                 f"{operation.value} operation 失败",
             )
+        else:
+            if deps.on_index_changed is not None:
+                deps.on_index_changed()
+            return completed
         try:
             deps.index_runs.fail(
                 run.id,

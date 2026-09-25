@@ -1,5 +1,31 @@
 # 当前系统架构
 
+## 知识写入与问答读取边界
+
+`app.ingestion` 拥有候选、审批、identity 和共享文件解析；`app.sources` 只做
+GitHub/Firecrawl/Upload 抓取、校验和 proposal。批准不等于索引。
+`app.indexing.service.IndexingService` 独立取得 embedding，负责 approved candidate
+索引、按来源撤库、Local corpus 同步及成功历史恢复。
+
+```text
+CLI / FastAPI composition root
+  ├─ Sources → Ingestion → IndexingService → Chroma + SQLRecordManager
+  └─ ChatService → Agent → KB tools → rag.runtime → Chroma
+```
+
+Persistent index 是 write/read 边界，两侧不共享 orchestration/runtime state。
+QA startup 只初始化 Chat session storage、加载已有 Chroma 构建 BM25，再初始化
+Agent/可选 MCP；不扫描、解析或同步本地文件。首次部署先执行
+`python -m app.rebuild_kb`，配置变化由写侧判断重建，显式全量重建使用 `--force-rebuild`。
+运行中的 QA 在独立 CLI 同步后需要重启以读取新快照；组合应用的 admin INDEX/REMOVE
+成功后由 `app.api.application` 注入的回调刷新查询 runtime。刷新失败会记录日志，
+不将已成功的持久操作改为失败。该刷新只属于组合应用，不属于 IndexingService。
+
+普通 Agent MCP tool result 直接返回 Agent，不创建 ingestion candidate。
+永久入库须调用显式 `/admin/ingestion/sources/github`、`firecrawl`、`upload` 入口。
+SQLite 文件仍可共用；`storage.database` 只管理连接，`storage.memory` 只建 sessions/messages，
+`storage.ingestion` 自己拥有 candidate/index-run schema 和兼容迁移。
+
 本文是 `rag-agent-qa-system` 当前实现的主要架构入口。历史演进和已经删除的设计见
 [2026 年 Agent 演进归档](../history/agent-evolution-2026.md)，可执行依赖规则见
 [模块依赖边界](module-boundaries.md)。

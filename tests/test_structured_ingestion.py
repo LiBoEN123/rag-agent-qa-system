@@ -15,7 +15,7 @@ from app.ingestion.document_blocks import ParsedDocument, TableBlock, TableCell,
 from app.ingestion.factory import build_knowledge_document
 from app.ingestion.identity import build_content_hash, build_structure_hash
 from app.ingestion.normalization import prepare_structured_content
-from app.rag.indexing import candidate_to_langchain_documents
+from app.indexing.langchain import candidate_to_langchain_documents
 from app.storage.database import clear_storage_engine_cache
 from app.storage.ingestion import CandidatePersistenceError, SQLiteCandidateRepository, SQLiteIndexRunRepository
 
@@ -112,9 +112,10 @@ def test_sqlite_reload_and_successful_rebuild_input_keep_complete_structure(tmp_
     [restored] = repository.load_latest_successfully_indexed()
     assert restored.document.structured_content == candidate.document.structured_content
     [chunk] = candidate_to_langchain_documents(restored, chunk_size=1000, chunk_overlap=0)
-    assert chunk.page_content == "[表格]\n表头：列1；列2\n列1 / 列2：value。\n[/表格]"
+    assert chunk.page_content == "[表格]\n表头：列1；列2\n说明：value\n[/表格]"
     assert chunk.metadata["element_type"] == "table"
-    assert chunk.metadata["row_start"] == chunk.metadata["row_end"] == 0
+    # 全宽合并说明行不是 data row；结构本身仍完整保留在 candidate。
+    assert "row_start" not in chunk.metadata and "row_end" not in chunk.metadata
     with sqlite3.connect(path) as connection:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert not {"document_structure", "table_cells", "parsed_documents"} & tables

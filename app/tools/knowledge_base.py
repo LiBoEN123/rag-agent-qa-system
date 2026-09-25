@@ -20,11 +20,11 @@ def get_chunk_context(
     """按已有 source_id + position 扩展上下文，不检索或修改 runtime chunks。"""
     tool_name = "get_chunk_context"
     try:
-        from app.rag import pipeline
+        from app.rag import runtime
         from app.rag.debug import get_chunk_full_text
 
         # anchor 与邻居使用同一 runtime 快照；复用原文工具底层的唯一查找逻辑。
-        chunks = pipeline.chunks
+        chunks = runtime.chunks
         chunk_id = args["chunk_id"]
         anchor = get_chunk_full_text(chunks, chunk_id)
         if not anchor.get("found"):
@@ -123,7 +123,7 @@ def search_knowledge_base(
     """按本轮工具参数混合召回、重排，只返回候选证据。"""
     tool_name = "search_knowledge_base"
     try:
-        from app.rag.pipeline import get_rag_status, rerank, search_relevant_chunks
+        from app.rag.runtime import get_rag_status, rerank, search_relevant_chunks
 
         if not get_rag_status()["ready"]:
             raise ToolExecutionError(

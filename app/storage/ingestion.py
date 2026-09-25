@@ -7,16 +7,102 @@ from enum import Enum
 from pathlib import Path
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import Index, Integer, Text, func, select
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.ingestion import IngestionCandidate, IngestionCandidateStatus, KnowledgeSourceType
-from app.storage.database import (
-    _IngestionCandidateRecord,
-    _IngestionIndexRunRecord,
-    get_session_factory,
-    init_db,
-)
+from app.storage.database import get_engine, get_session_factory
+
+
+class Base(DeclarativeBase): ...
+
+
+# 映射入库候选表，保存查询字段和完整的候选契约 JSON。
+class _IngestionCandidateRecord(Base):
+    __tablename__ = "ingestion_candidates"
+
+    candidate_id: Mapped[str] = mapped_column(Text, primary_key=True, nullable=True)
+    status: Mapped[str] = mapped_column(Text)
+    source_type: Mapped[str] = mapped_column(Text)
+    source_uri: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str] = mapped_column(Text)
+    requested_at: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[str] = mapped_column(Text)
+    candidate_json: Mapped[str] = mapped_column(Text)
+    __table_args__ = (
+        Index("idx_ingestion_candidates_status_requested", status, requested_at.desc()),
+        Index("idx_ingestion_candidates_source_requested", source_type, requested_at.desc()),
+    )
+
+
+# 映射索引运行表，保存执行状态、时间、变更计数和错误信息。
+class _IngestionIndexRunRecord(Base):
+    __tablename__ = "ingestion_index_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, nullable=True)
+    candidate_id: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(Text)
+    started_at: Mapped[str] = mapped_column(Text)
+    completed_at: Mapped[str | None] = mapped_column(Text)
+    added: Mapped[int | None] = mapped_column(Integer)
+    updated: Mapped[int | None] = mapped_column(Integer)
+    deleted: Mapped[int | None] = mapped_column(Integer)
+    skipped: Mapped[int | None] = mapped_column(Integer)
+    error_code: Mapped[str | None] = mapped_column(Text)
+    error_message: Mapped[str | None] = mapped_column(Text)
+    operation: Mapped[str] = mapped_column(Text, server_default="index")
+    # 兼容旧库的 NULL；新 operation 必须由 repository 显式提供来源身份。
+    source_id: Mapped[str | None] = mapped_column(Text)
+    __table_args__ = (
+        Index("idx_ingestion_index_runs_candidate_id", candidate_id, id.desc()),
+        Index("idx_ingestion_index_runs_status_id", status, id.desc()),
+        {"sqlite_autoincrement": True},
+    )
+
+
+def init_ingestion_storage(db_path: Path | None = None) -> None:
+    """保留已有数据建表，幂等补充 operation 并回填运行记录的来源身份。"""
+    engine = get_engine(db_path)
+    with engine.begin() as connection:
+        if engine.dialect.name == "sqlite":
+            # 串行检查与 ADD COLUMN，避免并发初始化重复添加字段。
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+        Base.metadata.create_all(connection)
+        if engine.dialect.name == "sqlite":
+            columns = {row[1] for row in connection.exec_driver_sql(
+                "PRAGMA table_info(ingestion_index_runs)"
+            )}
+            if "operation" not in columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE ingestion_index_runs "
+                    "ADD COLUMN operation TEXT NOT NULL DEFAULT 'index'"
+                )
+            if "source_id" not in columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE ingestion_index_runs ADD COLUMN source_id TEXT"
+                )
+        with Session(bind=connection) as session:
+            for run in session.scalars(select(_IngestionIndexRunRecord).where(
+                _IngestionIndexRunRecord.source_id.is_(None)
+            )):
+                record = session.get(_IngestionCandidateRecord, run.candidate_id)
+                if record is None:
+                    raise ValueError("历史 corpus operation 缺失 candidate，无法回填 source_id")
+                try:
+                    candidate = IngestionCandidate.model_validate_json(record.candidate_json)
+                except ValueError:
+                    raise ValueError("历史 candidate 未通过 domain contract 校验，无法回填 source_id") from None
+                if (record.candidate_id, record.status, record.source_type) != (
+                    candidate.candidate_id, candidate.status.value,
+                    candidate.document.source_type.value,
+                ):
+                    raise ValueError("历史 candidate 查询字段与 JSON 不一致")
+                run.source_id = candidate.document.source_id
+            session.flush()
+
+
+
 
 
 class CandidatePersistenceError(RuntimeError):
@@ -71,7 +157,7 @@ class SQLiteCandidateRepository:
 
     # 初始化数据库表结构，并取得候选仓库使用的共享会话工厂。
     def __init__(self, db_path: Path | None = None) -> None:
-        init_db(db_path)
+        init_ingestion_storage(db_path)
         self._sessions = get_session_factory(db_path)
 
     # 将候选转换为数据库字段，同时保存完整契约 JSON 和更新时间。
@@ -218,7 +304,7 @@ class SQLiteIndexRunRepository:
 
     # 初始化数据库表结构，并取得索引运行仓库使用的共享会话工厂。
     def __init__(self, db_path: Path | None = None) -> None:
-        init_db(db_path)
+        init_ingestion_storage(db_path)
         self._sessions = get_session_factory(db_path)
 
     # 将索引运行 ORM 记录校验并转换为领域返回模型。

@@ -5,10 +5,12 @@ import pytest
 
 def test_init_db_creates_tables(tmp_path):
     """验证初始化数据库会创建全部持久化表。"""
-    from app.storage.database import init_db
+    from app.storage.ingestion import init_ingestion_storage
 
     db_path = tmp_path / "test.sqlite"
-    init_db(db_path)
+    from app.storage.memory import init_session_storage
+    init_session_storage(db_path)
+    init_ingestion_storage(db_path)
 
     with sqlite3.connect(db_path) as conn:
         rows = conn.execute(

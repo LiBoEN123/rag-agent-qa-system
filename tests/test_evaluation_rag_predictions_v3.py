@@ -13,7 +13,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from app.agent import framework_agent, framework_tools
 from app.agent.final_response import FinalAgentResponse
 from app.contracts.chat import ToolMode
-from app.rag import pipeline
+from app.rag import runtime as pipeline
 from scripts.evaluation import rag_predictions, runner
 from scripts.evaluation.agent import capture_tool_output_keys
 from tests.support.agent_runtime import FakeToolCallingModel

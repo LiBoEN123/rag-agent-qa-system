@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from docling_core.types.doc import DoclingDocument, TableItem, TextItem
+if TYPE_CHECKING:
+    from docling_core.types.doc import DoclingDocument
 
 from app.ingestion.document_blocks import ParsedDocument, TableBlock, TableCell, TextBlock
 
@@ -40,6 +42,8 @@ def _document_converter():
 
 def adapt_docling_document(document: DoclingDocument, *, page_count: int | None = None) -> ParsedDocument:
     """保留官方 reading order、cell offsets/spans、header、caption 和起始页。"""
+    from docling_core.types.doc import TableItem, TextItem
+
     blocks: list[TextBlock | TableBlock] = []
     caption_refs = {ref.cref for table in document.tables for ref in table.captions}
     table_level: int | None = None

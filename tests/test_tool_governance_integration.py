@@ -13,8 +13,8 @@ from tests.support.local_tools import invoke_local_tool
 
 
 def test_execution_entry_runs_default_registry_tool(monkeypatch):
-    monkeypatch.setattr("app.rag.pipeline.chunks", [])
-    monkeypatch.setattr("app.rag.pipeline.RAG_READY", True)
+    monkeypatch.setattr("app.rag.runtime.chunks", [])
+    monkeypatch.setattr("app.rag.runtime.RAG_READY", True)
     result = invoke_local_tool(
         registry=get_local_tool_specs(get_settings()),
         tool_name="find_documents",

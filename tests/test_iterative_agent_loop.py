@@ -30,8 +30,8 @@ def _grounded_answer(text):
 def isolate_tool_audit(settings_env, monkeypatch):
     """Agent loop 测试不写生产工具审计文件。"""
     settings_env(tool_audit_enabled=False)
-    monkeypatch.setattr("app.rag.pipeline.RAG_READY", True)
-    monkeypatch.setattr("app.rag.pipeline.chunks", [
+    monkeypatch.setattr("app.rag.runtime.RAG_READY", True)
+    monkeypatch.setattr("app.rag.runtime.chunks", [
         {"text": f"正文 {i}", "metadata": {"chunk_id": i, "source_id": f"s-{i}", "position": 1, "file_name": f"{i}.md"}}
         for i in (1, 2, 382, 383, 387)
     ])

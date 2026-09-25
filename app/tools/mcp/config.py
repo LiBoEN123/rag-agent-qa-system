@@ -106,9 +106,6 @@ class McpServerConfig(BaseModel):
     url: str
     allowed_tools: tuple[str, ...]
     approval_required_tools: tuple[str, ...] = ()
-    knowledge_promotion: dict[str, Literal["github", "firecrawl"]] = Field(
-        default_factory=dict
-    )
     enabled_for_default_principal: bool = False
     headers: dict[str, SecretStr] = Field(default_factory=dict)
     headers_env: dict[str, str] = Field(default_factory=dict)
@@ -222,19 +219,6 @@ class McpServerConfig(BaseModel):
         )
         if unknown_approval_tools:
             raise ValueError("approval_required_tools 必须是 allowed_tools 的子集")
-        for name, source in self.knowledge_promotion.items():
-            expected = {
-                "github": "get_file_contents",
-                "firecrawl": "firecrawl_scrape",
-            }[source]
-            if (
-                name != expected
-                or name not in self.allowed_tools
-                or name in self.approval_required_tools
-            ):
-                raise ValueError(
-                    "knowledge_promotion 仅允许白名单中的 GitHub file / Firecrawl scrape 只读工具"
-                )
         direct_names = {header.casefold() for header in self.headers}
         env_names = {header.casefold() for header in self.headers_env}
         if direct_names & env_names:
@@ -262,13 +246,6 @@ class McpConfig(BaseModel):
         for alias in self.servers:
             if not _SERVER_ALIAS_PATTERN.fullmatch(alias):
                 raise ValueError("MCP Server alias 必须匹配 ^[a-z][a-z0-9_]*$")
-            if any(
-                source != alias
-                for source in self.servers[alias].knowledge_promotion.values()
-            ):
-                raise ValueError(
-                    "knowledge_promotion 必须使用对应的 github / firecrawl Server alias"
-                )
         return self
 
 

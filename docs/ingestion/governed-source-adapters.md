@@ -9,10 +9,13 @@ cached governed MCP tool
   → pure Source Adapter
   → KnowledgeDocument
   → IngestionService.propose() = pending
-  → explicit approve()
-  → candidate_to_langchain_documents()
+
+Explicit IngestionService.approve()
+  → IndexingService.index_approved()
   → LangChain index(cleanup="incremental")
-  → existing load_index_cache() runtime reload
+  → persistent index
+
+Combined FastAPI composition root → optional query runtime refresh
 ```
 
 `GitHubFileSourceAdapter` 只消费已验证的 `GitHubFilePayload`。GitHub fetch 固定使用
@@ -22,7 +25,7 @@ cached governed MCP tool
 `None`。source identity 固定为 `github://owner/repository/path`。
 
 `FirecrawlPageSourceAdapter` 只消费已验证的 `FirecrawlPagePayload`。fetch 固定使用
-`firecrawl_firecrawl_scrape` 和 markdown format；当前真实响应的 `markdown` 是权威正文，
+`firecrawl_firecrawl_scrape` 和 markdown + html formats；当前真实响应的 `markdown` 是权威正文，
 metadata 只保留 final URL、status、MIME 和 language。用户显式选择的 canonical requested
 URL 是 source identity，redirect URL 只作 metadata。Search 只可用于未来 discovery，
 Crawl、scheduled sync 和 remote delete detection 均不在本阶段。
@@ -40,5 +43,5 @@ tool、字段、字符数、截断和状态摘要，不保存正文、base64、H
 GitHub 与 Firecrawl 分别使用 `rag-agent/github/v1` 和
 `rag-agent/firecrawl/v1` SQLRecordManager namespace，共用 `mini_rag_chunks_v2`。external
 sync 使用 incremental cleanup；Local 继续使用自己的 namespace 和 full cleanup。候选仍由
-`InMemoryCandidateRepository` 管理，没有新增 source registry、candidate database、自定义
-MCP client、GitHub/Firecrawl HTTP client 或 Vector writer。
+领域 repository 管理；正式 API 使用 `SQLiteCandidateRepository` 持久化。Source service
+只做 fetch/validation/proposal，不持有 embedding、索引依赖或 QA runtime。

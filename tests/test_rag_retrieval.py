@@ -5,7 +5,8 @@ from langchain_core.embeddings import DeterministicFakeEmbedding
 from app.rag import retrieval
 from app.rag.policy import should_refuse
 from app.ingestion import IngestionRequester, IngestionService, build_knowledge_document
-from app.rag import indexing, store
+from app.indexing import langchain as indexing
+from app.rag import runtime as store
 from tests.support.structured_document import admission_structure, imut_admission_structure, registration_structure
 
 
@@ -23,7 +24,7 @@ def test_table_semantics_reach_real_chroma_bm25_retrieval(tmp_path, monkeypatch)
     documents = [table_chunk, *indexing.load_local_langchain_documents(str(tmp_path))]
     embeddings = DeterministicFakeEmbedding(size=32)
     indexing.sync_documents(documents, embeddings)
-    bundle = store.load_index_cache(model=embeddings, rerank_model=object())
+    bundle = store._load_index_bundle(model=embeddings, rerank_model=object())
     assert bundle["ok"], bundle["message"]
 
     def no_fallback(*args, **kwargs):
@@ -71,7 +72,7 @@ def test_admission_section_semantics_reach_real_chroma_bm25(
         (tmp_path / f"distractor-{number}.txt").write_text(f"校园图书馆开放时间：周一至周五。分馆编号{number}。")
     embeddings = DeterministicFakeEmbedding(size=32)
     indexing.sync_documents([*table_chunks, *indexing.load_local_langchain_documents(str(tmp_path))], embeddings)
-    bundle = store.load_index_cache(model=embeddings, rerank_model=object())
+    bundle = store._load_index_bundle(model=embeddings, rerank_model=object())
     assert bundle["ok"], bundle["message"]
 
     def forbidden(*args, **kwargs):

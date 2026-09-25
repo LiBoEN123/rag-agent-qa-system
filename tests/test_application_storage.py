@@ -16,14 +16,8 @@ from app.ingestion import (
     IngestionService,
     build_knowledge_document,
 )
-from app.storage.database import (
-    Base,
-    clear_storage_engine_cache,
-    get_engine,
-    get_session_factory,
-    init_db,
-    now_iso,
-)
+from app.storage.ingestion import Base, init_ingestion_storage
+from app.storage.database import clear_storage_engine_cache, get_engine, get_session_factory, now_iso
 from app.storage.ingestion import (
     IndexRunOperation,
     IndexRunStatus,
@@ -31,6 +25,8 @@ from app.storage.ingestion import (
     SQLiteIndexRunRepository,
 )
 from app.storage.memory import (
+    messages,
+    init_session_storage,
     append_message_sqlite,
     clear_session_sqlite,
     get_history_sqlite,
@@ -45,6 +41,32 @@ REQUESTER = IngestionRequester(
     principal_type=IngestionPrincipalType.SERVICE,
     source="pytest",
 )
+
+
+def test_chat_storage_never_migrates_or_parses_ingestion_history(tmp_path):
+    path = tmp_path / "independent.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE ingestion_index_runs(id INTEGER PRIMARY KEY, candidate_id TEXT)")
+        connection.execute("INSERT INTO ingestion_index_runs VALUES(1, 'missing-corrupt-candidate')")
+    before = _schema(path)["ingestion_index_runs"]
+    append_message_sqlite("s", "user", "hello", path)
+    assert get_history_sqlite("s", db_path=path) == [{"role": "user", "content": "hello"}]
+    assert _schema(path)["ingestion_index_runs"] == before
+    assert "ingestion_candidates" not in _schema(path)
+
+
+def test_ingestion_storage_does_not_create_chat_tables(tmp_path):
+    path = tmp_path / "ingestion-only.sqlite3"
+    init_ingestion_storage(path)
+    assert set(_schema(path)) == {"ingestion_candidates", "ingestion_index_runs"}
+
+
+def test_concurrent_first_chat_writes_initialize_only_session_schema(tmp_path):
+    path = tmp_path / "concurrent.sqlite3"
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(lambda i: append_message_sqlite("s", "user", str(i), path), range(8)))
+    assert len(get_history_sqlite("s", limit=20, db_path=path)) == 8
+    assert set(_schema(path)) == {"sessions", "messages"}
 
 
 def _candidate(uri="https://example.com/legacy"):
@@ -125,7 +147,8 @@ def legacy_db(tmp_path):
 
 def test_fresh_schema_matches_frozen_raw_sql_and_shared_metadata(tmp_path, legacy_db):
     path = tmp_path / "fresh.sqlite3"
-    init_db(path)
+    init_session_storage(path)
+    init_ingestion_storage(path)
     retained_schema = {
         name: table for name, table in _schema(legacy_db[0]).items()
         if name not in {"agent_runs", "agent_steps"}
@@ -134,13 +157,14 @@ def test_fresh_schema_matches_frozen_raw_sql_and_shared_metadata(tmp_path, legac
     columns.append((len(columns), "operation", "TEXT", 1, "'index'", 0))
     columns.append((len(columns), "source_id", "TEXT", 0, None, 0))
     assert _schema(path) == retained_schema
-    assert set(_schema(path)) == set(Base.metadata.tables) == {
+    assert set(_schema(path)) == set(Base.metadata.tables) | {"sessions", "messages"} == {
         "sessions", "messages",
         "ingestion_candidates", "ingestion_index_runs",
     }
     assert sum(len(table["indexes"]) for table in _schema(path).values()) == 7
     metadata_only = tmp_path / "metadata-only.sqlite3"
     Base.metadata.create_all(get_engine(metadata_only))
+    init_session_storage(metadata_only)
     assert _schema(metadata_only) == retained_schema
 
 
@@ -152,7 +176,8 @@ def test_legacy_reads_and_repeated_init_preserve_all_existing_rows_and_schema(le
     columns.append((len(columns), "operation", "TEXT", 1, "'index'", 0))
     columns.append((len(columns), "source_id", "TEXT", 0, None, 0))
     for _ in range(3):
-        init_db(path)
+        init_session_storage(path)
+        init_ingestion_storage(path)
     assert get_history_sqlite("s1", db_path=path) == [
         {"role": "user", "content": "旧问题"}, {"role": "assistant", "content": "旧回答"},
     ]
@@ -170,7 +195,8 @@ def test_legacy_writes_replace_delete_and_restart_without_migration(legacy_db):
     columns = schema_before["ingestion_index_runs"]["columns"]
     columns.append((len(columns), "operation", "TEXT", 1, "'index'", 0))
     columns.append((len(columns), "source_id", "TEXT", 0, None, 0))
-    init_db(path)
+    init_session_storage(path)
+    init_ingestion_storage(path)
     append_message_sqlite("s1", "user", "追加", path)
     append_message_sqlite("s2", "user", "保留", path)
     candidates, runs = SQLiteCandidateRepository(path), SQLiteIndexRunRepository(path)
@@ -210,7 +236,8 @@ def test_legacy_success_defaults_to_index_and_remains_authoritative(legacy_db):
     remove = runs.create_running(candidate.candidate_id, source_id=candidate.document.source_id, operation=IndexRunOperation.REMOVE)
     runs.succeed(remove.id, deleted=1)
     for _ in range(3):
-        init_db(path)
+        init_session_storage(path)
+        init_ingestion_storage(path)
     assert SQLiteCandidateRepository(path).load_latest_successfully_indexed() == []
     assert runs.latest(candidate.candidate_id).operation is IndexRunOperation.REMOVE
 
@@ -299,8 +326,9 @@ def test_shared_engine_factory_paths_threads_and_dispose(tmp_path, monkeypatch, 
 @pytest.mark.parametrize("legacy", [False, True])
 def test_autoincrement_never_reuses_deleted_maximum_id(tmp_path, legacy_db, table, values, legacy):
     path = legacy_db[0] if legacy else tmp_path / "fresh.sqlite3"
-    init_db(path)
-    table = Base.metadata.tables[table]
+    init_session_storage(path)
+    init_ingestion_storage(path)
+    table = messages if table == "messages" else Base.metadata.tables[table]
     with get_session_factory(path).begin() as session:
         previous = session.execute(table.insert().values(**values)).inserted_primary_key[0]
         session.execute(table.delete().where(table.c.id == previous))

@@ -6,12 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.api.lifecycle import StartupDependencies, initialize_rag
 from app.config import AppSettings
 from app.contracts.chat import ToolMode
-from app.rag import pipeline
-from app.rag.pipeline import get_rag_status, rebuild_and_persist_index
-from app.rag.store import needs_rebuild
+from app.rag import runtime
+from app.rag.runtime import get_rag_status, load_index_cache
 from app.services.chat_models import ChatServiceRequest
 from scripts.evaluation.agent import capture_tool_output_keys, run_evaluation_chat_turn
 
@@ -52,20 +50,10 @@ def initialize_rag_for_predictions(force_rebuild: bool = False) -> None:
 
     settings = get_settings()
     if force_rebuild:
-        ok, message = rebuild_and_persist_index(
-            str(settings.rag_file_path),
-            force_rebuild=True,
-        )
-        if not ok:
-            raise RuntimeError(f"RAG 强制重建失败：{message}")
-    else:
-        initialize_rag(
-            StartupDependencies(
-                settings=settings,
-                needs_rebuild=needs_rebuild,
-                rebuild_and_persist_index=rebuild_and_persist_index,
-            )
-        )
+        from app.indexing.service import IndexingService
+
+        IndexingService(settings=settings).sync_local_corpus(force_rebuild=True)
+    load_index_cache()
     status = get_rag_status()
     if not status.get("ready"):
         raise RuntimeError(f"RAG 未准备好：{status}")
@@ -116,7 +104,7 @@ def _run_rag_once(
         raise ValueError(f"Invalid RAG prediction status: {status}")
     valid_ids = {
         int(value)
-        for chunk in pipeline.chunks
+        for chunk in runtime.chunks
         if (value := (chunk.get("metadata") or {}).get("chunk_id", chunk.get("chunk_id"))) is not None
         and not isinstance(value, bool) and str(value).isascii() and str(value).isdigit()
     }

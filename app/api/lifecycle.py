@@ -1,45 +1,12 @@
 """应用启动生命周期模块。
 
-启动时增量同步知识库索引，并管理 Agent 等运行时资源。
+管理 Agent/MCP 初始化与关闭；索引读取由 application 组合根协调。
 """
-
-from dataclasses import dataclass
-from typing import Callable
-
 from app.common.logging import get_logger
 from app.config import AppSettings
 
 
 logger = get_logger("chat_service")
-
-
-# 保存启动阶段使用的配置、索引重建判断和重建执行依赖。
-@dataclass(frozen=True)
-class StartupDependencies:
-    settings: AppSettings
-    needs_rebuild: Callable
-    rebuild_and_persist_index: Callable
-
-
-def initialize_rag(deps: StartupDependencies) -> None:
-    """启动时始终执行增量 sync；仅配置/存储变化触发 force rebuild。"""
-    data_dir = str(deps.settings.rag_file_path)
-    needs_force_rebuild, reason = deps.needs_rebuild(data_dir)
-    force_rebuild = needs_force_rebuild or deps.settings.auto_rebuild_on_startup
-    logger.info(
-        "[startup] force_rebuild=%s reason=%s",
-        force_rebuild,
-        reason,
-    )
-    ok, message = deps.rebuild_and_persist_index(
-        data_dir=data_dir,
-        chunk_size=deps.settings.chunk_size,
-        chunk_overlap=deps.settings.chunk_overlap,
-        force_rebuild=force_rebuild,
-    )
-    logger.info("[startup] %s", message)
-    if not ok:
-        logger.warning("[startup] 增量同步失败，保留原 RAG runtime")
 
 
 def initialize_agent_runtime(settings: AppSettings) -> None:
@@ -86,5 +53,4 @@ async def close_mcp_runtime() -> None:
             "[shutdown] mcp_runtime_close_failed error_type=%s",
             type(exc).__name__,
         )
-
 

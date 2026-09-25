@@ -256,19 +256,12 @@ class McpToolCallInterceptor:
             request.server_name == "firecrawl"
             and request.name == "firecrawl_scrape"
             and server_config is not None
-            and server_config.knowledge_promotion.get(request.name) == "firecrawl"
+            and request.name not in server_config.approval_required_tools
         ):
-            allowed_args = {
-                "url",
-                "formats",
-                "onlyMainContent",
-                "removeBase64Images",
-            }
-
+            # 显式来源入库也使用此工具；只读例外不再依赖自动候选配置。
+            allowed_args = {"url", "formats", "onlyMainContent", "removeBase64Images"}
             if not set(request.args).issubset(allowed_args):
-                return _error_result(
-                    "Firecrawl scrape only allows read-only URL fetching"
-                )
+                return _error_result("Firecrawl scrape only allows read-only URL fetching")
         try:
             args_fingerprint = build_tool_args_fingerprint(
                 tool_name=exposed_name,
@@ -423,7 +416,6 @@ class McpToolCallInterceptor:
                 server_alias=request.server_name,
                 remote_tool_name=request.name,
                 profile=profile,
-                preserve_source_content=request.name in server_config.knowledge_promotion,
             )
             if not outcome.ok or outcome.result is None:
                 error = outcome.error
@@ -452,10 +444,7 @@ class McpToolCallInterceptor:
                     event_type = ToolAuditEventType.FAILED
                 else:
                     event_type = ToolAuditEventType.SUCCEEDED
-                    if outcome.ingestion_output is not None and (
-                        hasattr(request.runtime, "mcp_ingestion_output")
-                        or request.name in server_config.knowledge_promotion
-                    ):
+                    if outcome.ingestion_output is not None and hasattr(request.runtime, "mcp_ingestion_output"):
                         request.runtime.mcp_ingestion_output = outcome.ingestion_output
 
         final_written = self._audit(
@@ -515,7 +504,6 @@ def build_governed_mcp_tool(
     remote_tool_name: str,
     description: str,
     approval_required: bool = False,
-    knowledge_promotion: str | None = None,
 ) -> BaseTool:
     """在官方 tool 本身补充描述与项目 metadata，保留原生 coroutine。"""
     exposed_name = f"{server_alias}_{remote_tool_name}"
@@ -535,8 +523,6 @@ def build_governed_mcp_tool(
         ),
         "approval_required": approval_required,
     }
-    if knowledge_promotion is not None:
-        raw_tool.metadata["knowledge_promotion"] = knowledge_promotion
     return raw_tool
 
 

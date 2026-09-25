@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from app.config import AppSettings, get_settings
-from app.rag.scoring import safe_float
+from app.common.numeric import safe_float
 from app.tools.contracts import ToolAuditOutputMode, ToolSpec
 from app.common.redaction import (
     DEFAULT_SENSITIVE_KEYS,

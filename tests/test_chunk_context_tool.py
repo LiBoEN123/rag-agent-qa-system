@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from app.agent import framework_agent
 from app.agent.final_response import collect_evidence_from_messages
 from app.contracts.chat import RAG_DISCOVERY_TOOL_NAMES, RAG_EVIDENCE_TOOL_NAMES, ToolMode
-from app.rag import debug, pipeline
+from app.rag import debug, runtime as pipeline
 from app.tools.catalog import get_local_tool_specs
 from app.tools.context import ToolInvocationContext
 from app.tools.knowledge_base import chunk_to_evidence_document

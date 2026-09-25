@@ -16,7 +16,7 @@ from app.agent import framework_agent, framework_tools
 from app.agent import runtime as agent_runtime
 from app.agent.runtime import reset_agent_runtime
 from app.contracts.chat import ToolMode
-from app.rag import pipeline as rag_pipeline
+from app.rag import runtime as rag_pipeline
 from app.services.chat_service import (
     ChatService,
     ChatServiceDependencies,

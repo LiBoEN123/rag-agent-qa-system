@@ -230,12 +230,16 @@ mcp:<server_alias>
 ## 风险审批与不可信输出
 
 本地精确 allowlist 是部署者批准工具的主边界。MCP annotations 只作为辅助信息：
-`destructiveHint=true` 或 `readOnlyHint=false` 默认会拒绝启动。只有当部署者同时把该
+`destructiveHint=true` 或 `readOnlyHint=false` 默认会拒绝启动。普通工具需由部署者把该
 精确工具名写入 `approval_required_tools` 时，discovery 才会接受它；它会被标记为
 `external_write`，每次调用只产生 `requested` 和 `approval_required` 审计事件，
 不进入远端 handler。Server 自己声明的
 `readOnlyHint=true` 不是安全证明，不能替代对 Server 的运维信任、只读凭据和最小权限
 部署。
+
+既有 Firecrawl `firecrawl_scrape` 只读例外继续支持显式来源抓取：bridge 限制
+参数为 `url/formats/onlyMainContent/removeBase64Images`，拒绝浏览器 actions 等参数。
+该限制独立于 candidate 流程，普通 Agent 调用也不产生候选；显式配置审批仍优先。
 
 例如 Firecrawl 只对 Crawl 开启待审批门：
 
@@ -279,9 +283,7 @@ timeout、transport、脱敏和审计，但文本上限为 1,000,000 字符，�
 `EmbeddedResource(TextResourceContents)` 正文。普通 Agent 调用仍默认使用 12,000 字符
 profile，工具参数 schema 中不存在 profile 字段，完整正文不会进入 Agent context。
 
-部署者也可为 GitHub file / Firecrawl scrape 显式开启
-[Agent candidate promotion](../ingestion/operations-api.md#agent-工具结果提出候选默认关闭)。
-它保留普通 Agent 上限，只使用本次完整的 source 内容块提出 pending 候选，仍须人工审批和显式索引。
+Agent 工具结果不会创建 candidate。永久入库仅通过显式 [Ingestion Operations API](../ingestion/operations-api.md)。
 
 ingestion 结果一旦 `truncated=true` 就不能产生可索引文档；超过 1,000,000 字符同样
 fail closed。截断结果的 `content_blocks` 不保留正文，只保留类型、MIME、URI 和字符数等

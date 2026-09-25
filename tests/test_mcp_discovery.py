@@ -74,6 +74,20 @@ class FakeClient:
         return list(self.tools_by_server[server_name])
 
 
+def test_firecrawl_source_scrape_keeps_restricted_read_only_discovery(settings_factory):
+    config = McpConfig.model_validate({"version": 1, "servers": {"firecrawl": {
+        "transport": "http", "url": "https://firecrawl.example.com/mcp",
+        "allowed_tools": ["firecrawl_scrape"],
+    }}})
+    client = FakeClient({"firecrawl": [_raw_tool(
+        "firecrawl", "firecrawl_scrape", metadata={"readOnlyHint": False},
+    )]})
+    [entry] = asyncio.run(discover_mcp_tools(
+        client, config=config, settings=settings_factory(), local_tool_names=set(),
+    ))
+    assert entry.tool.metadata["risk_level"] == "read_only"
+
+
 def test_discovery_filters_extras_prefixes_names_and_limits_metadata(
     settings_factory,
 ):

@@ -589,8 +589,8 @@ def test_real_structured_agent_stream_matches_public_final_and_metrics(
         final,
     ])
     monkeypatch.setattr("app.agent.framework_agent.get_answer_model", lambda: model)
-    monkeypatch.setattr("app.rag.pipeline.chunks", [])
-    monkeypatch.setattr("app.rag.pipeline.RAG_READY", True)
+    monkeypatch.setattr("app.rag.runtime.chunks", [])
+    monkeypatch.setattr("app.rag.runtime.RAG_READY", True)
     service, calls = _build_service([], stream_agent=stream_agent)
     events = _collect(service)
     outcome = next(event.data["outcome"] for event in events if event.event == "final")

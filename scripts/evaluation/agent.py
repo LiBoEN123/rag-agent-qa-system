@@ -33,30 +33,18 @@ def safe_lower(text: Any) -> str:
 
 
 def init_rag_for_eval(force_rebuild: bool = False) -> None:
-    """保留 Agent-only baseline 原有的 RAG 初始化语义。"""
+    """读取已有索引；仅显式 force 参数允许写入。"""
     from app.config import get_settings, validate_startup_environment
-    from app.rag.pipeline import (
-        get_rag_status,
-        rebuild_and_persist_index,
-    )
-    from app.rag.store import needs_rebuild
+    from app.rag.runtime import get_rag_status, load_index_cache
 
     settings = get_settings()
     validate_startup_environment(settings)
-    data_dir = str(settings.rag_file_path)
     if force_rebuild:
-        ok, message = rebuild_and_persist_index(data_dir, force_rebuild=True)
-        print(f"[init] force_rebuild=True, ok={ok}, msg={message}")
-    else:
-        need, reason = needs_rebuild(data_dir)
-        ok, message = rebuild_and_persist_index(
-            data_dir,
-            force_rebuild=need,
-        )
-        print(
-            f"[init] sync, force_rebuild={need}, reason={reason}, "
-            f"ok={ok}, msg={message}"
-        )
+        from app.indexing.service import IndexingService
+
+        IndexingService(settings=settings).sync_local_corpus(force_rebuild=True)
+    ok, message = load_index_cache()
+    print(f"[init] load index, ok={ok}, msg={message}")
     status = get_rag_status()
     print(
         "[init] RAG status:",

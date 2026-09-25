@@ -84,13 +84,13 @@ def _resolve_document(documents: list[DocumentSearchItem], locator: str) -> Docu
 
 
 def _ready_chunks() -> list[dict]:
-    from app.rag import pipeline
+    from app.rag import runtime
 
-    if not pipeline.get_rag_status()["ready"]:
+    if not runtime.get_rag_status()["ready"]:
         raise ToolExecutionError(
             "知识库尚未准备完成", code=ToolErrorCode.DEPENDENCY_UNAVAILABLE, retryable=False,
         )
-    return pipeline.chunks
+    return runtime.chunks
 
 
 def find_documents(args: dict, context: ToolInvocationContext | None = None) -> dict:
@@ -118,7 +118,7 @@ def find_documents(args: dict, context: ToolInvocationContext | None = None) -> 
 def search_document(args: dict, context: ToolInvocationContext | None = None) -> dict:
     """先固定 runtime chunk 快照并按来源筛选，再复用现有重排与 evidence identity。"""
     try:
-        from app.rag.pipeline import rerank
+        from app.rag.runtime import rerank
 
         chunks = _ready_chunks()
         document = _resolve_document(_documents_from_chunks(chunks), args["document"])

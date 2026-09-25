@@ -224,8 +224,8 @@ def test_stream_executes_create_agent_and_returns_authoritative_result(
 
 def test_stream_projects_native_command_tool_completion(monkeypatch):
     """原生 Command tools update 仍产生一次开始和一次完成事件。"""
-    monkeypatch.setattr("app.rag.pipeline.chunks", [])
-    monkeypatch.setattr("app.rag.pipeline.RAG_READY", True)
+    monkeypatch.setattr("app.rag.runtime.chunks", [])
+    monkeypatch.setattr("app.rag.runtime.RAG_READY", True)
     model = FakeToolCallingModel([
         AIMessage(content="", tool_calls=[{
             "name": "find_documents", "args": {}, "id": "stream-list-call",

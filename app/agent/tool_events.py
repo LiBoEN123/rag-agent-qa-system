@@ -10,7 +10,7 @@ from app.tools.audit import (
 )
 from app.common.redaction import redact_sensitive_data
 from app.config import get_settings
-from app.rag.scoring import safe_float
+from app.common.numeric import safe_float
 from app.tools.catalog import get_local_tool_specs
 
 

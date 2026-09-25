@@ -16,7 +16,8 @@ from app.ingestion import (
     KnowledgeSourceType,
 )
 from app.sources import FirecrawlPagePayload, FirecrawlPageSourceAdapter
-from app.storage.database import _IngestionIndexRunRecord, get_session_factory, init_db
+from app.storage.ingestion import _IngestionIndexRunRecord, init_ingestion_storage
+from app.storage.database import get_session_factory
 from app.storage.ingestion import (
     CandidatePersistenceError,
     IndexRunOperation,
@@ -354,7 +355,7 @@ def test_legacy_source_id_backfill_is_idempotent(tmp_path, operation):
     with sqlite3.connect(path) as connection:
         connection.execute("ALTER TABLE ingestion_index_runs DROP COLUMN source_id")
     for _ in range(3):
-        init_db(path)
+        init_ingestion_storage(path)
     with get_session_factory(path)() as session:
         for run in history:
             assert session.get(_IngestionIndexRunRecord, run.id).source_id == candidate.document.source_id
@@ -378,7 +379,7 @@ def test_legacy_backfill_fails_closed_and_does_not_invent_source_id(tmp_path, da
         else:
             connection.execute("UPDATE ingestion_candidates SET source_type = 'github'")
     with pytest.raises(ValueError):
-        init_db(path)
+        init_ingestion_storage(path)
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT source_id FROM ingestion_index_runs").fetchone() == (None,)
 
@@ -431,7 +432,7 @@ def test_init_db_upgrades_existing_database_without_changing_old_rows(tmp_path):
     connection.commit()
     connection.close()
 
-    init_db(db_path)
+    init_ingestion_storage(db_path)
 
     with sqlite3.connect(db_path) as upgraded:
         tables = {

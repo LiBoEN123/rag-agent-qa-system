@@ -105,7 +105,7 @@ def test_builtin_tools_publish_v2_contract_metadata(tool_registry):
 
 def test_invoke_local_tool_runs_search_and_rerank(monkeypatch, tool_registry):
     """真实工具保留参数规范化、重排分数及 metadata 字段回退。"""
-    from app.rag import pipeline
+    from app.rag import runtime as pipeline
 
     candidates = [
         {"chunk_id": "a", "text": "候选 A", "hybrid_score": 0.87654},
@@ -145,7 +145,7 @@ def test_invoke_local_tool_runs_search_and_rerank(monkeypatch, tool_registry):
 
 
 def test_search_knowledge_base_applies_tool_top_k_after_rerank(monkeypatch, tool_registry):
-    from app.rag import pipeline
+    from app.rag import runtime as pipeline
 
     chunks = [
         {"chunk_id": "a", "text": "候选 A", "hybrid_score": 0.9},
@@ -224,7 +224,7 @@ def test_search_knowledge_base_rejects_invalid_args_in_structured_tool(
 def test_retrieval_and_real_chunk_lookup_share_identity_and_provenance(
     monkeypatch, tool_registry, source_id,
 ):
-    from app.rag import pipeline
+    from app.rag import runtime as pipeline
 
     metadata = {
         "chunk_id": 382, "source_path": "data/policy.pdf", "position": 2,
@@ -385,8 +385,8 @@ def test_execution_entry_uses_structured_tool_validation_before_handler():
 
 def test_execution_entry_accepts_explicit_context(tool_registry, monkeypatch):
     """验证唯一执行入口保留显式请求上下文。"""
-    monkeypatch.setattr("app.rag.pipeline.chunks", [])
-    monkeypatch.setattr("app.rag.pipeline.RAG_READY", True)
+    monkeypatch.setattr("app.rag.runtime.chunks", [])
+    monkeypatch.setattr("app.rag.runtime.RAG_READY", True)
     context = ToolInvocationContext(trace_id="test-trace", permissions=("knowledge_base:read",))
     result = invoke_local_tool(
         registry=tool_registry,

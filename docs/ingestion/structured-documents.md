@@ -2,7 +2,7 @@
 
 ```text
 Local PDF/DOCX ─┐
-               ├→ app.rag.parsing.parse_document()
+               ├→ app.ingestion.parsing.parse_document()
 Upload PDF/DOCX ┘       → Docling DocumentConverter
 Firecrawl cleaned HTML → 同一 converter.convert_string(..., InputFormat.HTML)
                        → app.ingestion.document_blocks.ParsedDocument
@@ -80,7 +80,7 @@ Upload 保留 filename 校验、分块字节上限、PDF header 校验、DOCX ZI
 ## TABLE-AWARE-1C：进入现有索引的 chunks
 
 `candidate_to_langchain_documents()` 优先判断 `structured_content is not None`，
-与文件扩展名和来源类型无关。有结构时交给 `app.rag.structured_chunking`：
+与文件扩展名和来源类型无关。有结构时交给 `app.indexing.chunking`：
 
 - 连续同页的 TextBlock 用双换行组成文本 segment，再交给现有 LangChain
   `RecursiveCharacterTextSplitter`，保留 `chunk_size`、`chunk_overlap` 和
@@ -152,7 +152,7 @@ Focused retrieval smoke 使用真实 Chroma/SQLRecordManager/BM25 和确定性 f
 正文、HTML、metadata 均取自同一个经过验证的 response payload。
 
 `FirecrawlPageSourceAdapter` 在非空 HTML 且 MIME 为 `text/html` 或
-`application/xhtml+xml` 时调用同一 `app.rag.parsing.parse_html_document()`，忽略
+`application/xhtml+xml` 时调用同一 `app.ingestion.parsing.parse_html_document()`，忽略
 MIME 的 charset 参数并规范大小写。MIME 缺失时，受验证的非空 cleaned HTML 也启用
 结构解析；HTML 缺失/空白或 MIME 明确为 PDF/octet-stream 等其他类型时保留旧正文路径。
 明确失败或部分成功的 HTML conversion 会拒绝提案，返回固定的
@@ -182,10 +182,7 @@ Firecrawl 或 HTML parser。历史 Firecrawl candidate 没有已保存结构，f
 **不会自动升级**；必须显式重新抓取 URL、生成新候选、审批并索引。
 `pipeline_version` **3 → 3**：本阶段只增加结构来源，未改变 chunk/index algorithm。
 
-Agent promotion 兼容 `formats=["markdown"]`（保持 plain）和
-`["markdown", "html"]`（两种顺序均可，按上述 MIME 规则解析）；其他格式组合不沉淀。
-部署 opt-in、MCP identity、read-only、governance allow、audit success、完整结果检查保持。
-解析失败只使 promotion 失败，不改变成功的只读 ToolResult。
+普通 Agent MCP 结果不创建候选；结构化永久知识只通过显式来源入库入口产生。
 
 双 format 共享既有大小预算，**没有提高上限**：显式 ingestion 的 JSON text blocks
 合计超过 1,000,000 字符会截断并拒绝；Agent text 默认上限 12,000。

@@ -4,14 +4,12 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from langchain_chroma import Chroma
 from langchain_core.embeddings import Embeddings
 
-from app.api.lifecycle import StartupDependencies, initialize_rag
 from app.config import get_settings
 from app.ingestion import (
     IngestionCandidateStatus,
@@ -21,7 +19,10 @@ from app.ingestion import (
     KnowledgeSourceType,
     build_knowledge_document,
 )
-from app.rag import indexing, pipeline, store
+from app.indexing import langchain as indexing, manifest as store
+from app.rag import runtime as pipeline
+from app.indexing.service import IndexingService
+from app.indexing import service as writer
 from app.rag.chroma import load_index_from_chroma
 from app.sources.upload import load_upload_document
 from tests.support.structured_document import build_table_docx, registration_structure
@@ -315,58 +316,30 @@ def test_real_langchain_incremental_add_skip_modify_add_delete(tmp_path):
     assert matrix.shape == (2, 2)
 
 
-def test_force_rebuild_preserves_legacy_collection(tmp_path, monkeypatch):
-    settings = get_settings()
+def test_force_rebuild_preserves_legacy_collection(tmp_path):
+    settings = get_settings().model_copy(update={"rag_file_path": tmp_path})
     embeddings = CountingEmbeddings()
-    legacy = Chroma(
-        collection_name=settings.chroma_collection_name,
-        persist_directory=str(settings.chroma_persist_dir),
-        embedding_function=embeddings,
-    )
+    legacy = Chroma(collection_name=settings.chroma_collection_name,
+                    persist_directory=str(settings.chroma_persist_dir), embedding_function=embeddings)
     legacy.add_texts(["legacy"], ids=["legacy-record"])
     (tmp_path / "current.txt").write_text("current", encoding="utf-8")
-    monkeypatch.setattr(pipeline, "_load_embedding_model", lambda: embeddings)
-    monkeypatch.setattr(pipeline, "rerank_model", object())
-    published = []
-    monkeypatch.setattr(pipeline, "_publish_runtime_bundle", published.append)
-    ok, message = pipeline.rebuild_and_persist_index(str(tmp_path), force_rebuild=True)
-
-    assert ok, message
-    assert published[0]["texts"] == ["current"]
-    assert len(legacy.get(include=[])["ids"]) == 1
-    current = indexing.create_vector_store(
-        None,
-        settings,
-        create_collection_if_not_exists=False,
-    )
-    assert len(current.get(include=[])["ids"]) == 1
+    result = IndexingService(settings=settings, embeddings=embeddings).sync_local_corpus(force_rebuild=True)
+    assert result["num_added"] == 1
+    assert legacy.get(include=[])["ids"] == ["legacy-record"]
+    assert indexing.create_vector_store(None, settings).get()["documents"] == ["current"]
 
 
 @pytest.mark.parametrize("force_rebuild", [False, True])
-def test_rebuild_publishes_empty_only_after_shared_collection_is_empty(
-    tmp_path, monkeypatch, force_rebuild,
-):
-    embeddings = CountingEmbeddings()
-    monkeypatch.setattr(pipeline, "model", embeddings)
-    monkeypatch.setattr(pipeline, "_load_embedding_model", lambda: embeddings)
-    published = []
-    monkeypatch.setattr(pipeline, "_publish_runtime_bundle", published.append)
+def test_local_sync_clears_only_owned_namespace_unless_force(tmp_path, force_rebuild):
+    settings = get_settings().model_copy(update={"rag_file_path": tmp_path})
+    service = IndexingService(settings=settings, embeddings=CountingEmbeddings())
     path = tmp_path / "removed.txt"
     path.write_text("old local content", encoding="utf-8")
-    indexing.sync_documents(
-        indexing.load_local_langchain_documents(str(tmp_path)), embeddings,
-    )
+    service.sync_local_corpus()
     for namespace in indexing.EXTERNAL_RECORD_NAMESPACE_BY_SOURCE_TYPE.values():
         indexing.create_record_manager(namespace=namespace).update(["stale-external-key"])
     path.unlink()
-
-    ok, message = pipeline.rebuild_and_persist_index(
-        str(tmp_path), force_rebuild=force_rebuild,
-    )
-
-    assert ok, message
-    assert published[0]["chunks"] == []
-    assert published[0]["bm25"] is None
+    service.sync_local_corpus(force_rebuild=force_rebuild)
     assert indexing.create_vector_store(None).get(include=[])["ids"] == []
     assert indexing.create_record_manager().list_keys() == []
     for namespace in indexing.EXTERNAL_RECORD_NAMESPACE_BY_SOURCE_TYPE.values():
@@ -375,29 +348,14 @@ def test_rebuild_publishes_empty_only_after_shared_collection_is_empty(
         )
 
 
-def test_empty_local_does_not_hide_collection_read_failure(tmp_path, monkeypatch):
-    monkeypatch.setattr(pipeline, "model", CountingEmbeddings())
-    sentinel_chunks = [{"text": "old external runtime"}]
-    monkeypatch.setattr(pipeline, "chunks", sentinel_chunks)
-    monkeypatch.setattr(pipeline, "RAG_READY", True)
 
-    def fail(*_args, **_kwargs):
-        raise RuntimeError("collection read failed")
-
-    monkeypatch.setattr(pipeline, "create_vector_store", fail)
-    ok, message = pipeline.rebuild_and_persist_index(str(tmp_path))
-
-    assert ok is False
-    assert "collection read failed" in message
-    assert pipeline.chunks is sentinel_chunks
-    assert pipeline.RAG_READY is True
 
 
 def test_empty_reload_does_not_publish_on_collection_read_failure(monkeypatch):
     old_chunks = [{"text": "retained runtime"}]
     monkeypatch.setattr(pipeline, "chunks", old_chunks)
     monkeypatch.setattr(pipeline, "RAG_READY", True)
-    monkeypatch.setattr(pipeline, "load_index_cache_impl", lambda **kwargs: {
+    monkeypatch.setattr(pipeline, "_load_index_bundle", lambda **kwargs: {
         "ok": False, "chunks": [], "message": "read failed",
     })
     def fail(*args, **kwargs):
@@ -408,60 +366,24 @@ def test_empty_reload_does_not_publish_on_collection_read_failure(monkeypatch):
     assert pipeline.RAG_READY is True
 
 
-@pytest.mark.parametrize("needs_force_rebuild", [False, True])
-@pytest.mark.parametrize("auto_rebuild", [False, True])
-def test_startup_always_syncs_and_propagates_force_rebuild(
-    needs_force_rebuild, auto_rebuild,
-):
-    calls = []
-    settings = SimpleNamespace(
-        rag_file_path="/tmp/kb",
-        chunk_size=100,
-        chunk_overlap=10,
-        auto_rebuild_on_startup=auto_rebuild,
-    )
-
-    def sync(**kwargs):
-        calls.append(kwargs)
-        return True, "ok"
-
-    initialize_rag(
-        StartupDependencies(
-            settings=settings,
-            needs_rebuild=lambda _data_dir: (needs_force_rebuild, "manifest check"),
-            rebuild_and_persist_index=sync,
-        )
-    )
-
-    assert calls == [
-        {
-            "data_dir": "/tmp/kb",
-            "chunk_size": 100,
-            "chunk_overlap": 10,
-            "force_rebuild": needs_force_rebuild or auto_rebuild,
-        }
-    ]
 
 
-def test_sync_failure_does_not_publish_new_runtime(monkeypatch):
+
+def test_sync_failure_keeps_manifest_and_query_runtime(tmp_path, monkeypatch):
+    settings = get_settings().model_copy(update={"rag_file_path": tmp_path})
+    service = IndexingService(settings=settings, embeddings=CountingEmbeddings())
+    (tmp_path / "one.txt").write_text("original", encoding="utf-8")
+    service.sync_local_corpus()
+    manifest = (settings.index_store_dir / "index_manifest.json").read_bytes()
     sentinel_chunks = [{"text": "old", "metadata": {"chunk_id": 1}}]
     monkeypatch.setattr(pipeline, "chunks", sentinel_chunks)
     monkeypatch.setattr(pipeline, "RAG_READY", True)
-    monkeypatch.setattr(pipeline, "model", CountingEmbeddings())
-    monkeypatch.setattr(
-        pipeline,
-        "load_local_langchain_documents",
-        lambda *_args, **_kwargs: [SimpleNamespace()],
-    )
-
     def fail(*_args, **_kwargs):
         raise RuntimeError("index failed")
-
-    monkeypatch.setattr(pipeline, "sync_documents", fail)
-    ok, message = pipeline.rebuild_and_persist_index("/tmp/kb")
-
-    assert ok is False
-    assert "index failed" in message
+    monkeypatch.setattr(writer, "sync_documents", fail)
+    with pytest.raises(RuntimeError, match="index failed"):
+        service.sync_local_corpus()
+    assert (settings.index_store_dir / "index_manifest.json").read_bytes() == manifest
     assert pipeline.chunks is sentinel_chunks
     assert pipeline.RAG_READY is True
 
@@ -521,11 +443,11 @@ def test_pipeline_version_change_requires_force_rebuild_without_renaming_index(t
     assert current["pipeline_version"] == 5
     assert current["chroma_collection"] == get_settings().chroma_index_collection_name
     assert current["record_manager_namespace"] == indexing.LOCAL_RECORD_NAMESPACE
-    monkeypatch.setattr(store, "load_manifest", lambda: {**current, "pipeline_version": old_version})
+    monkeypatch.setattr(store, "load_manifest", lambda *_args: {**current, "pipeline_version": old_version})
     assert store.needs_rebuild(str(tmp_path)) == (True, "pipeline_version 变化，需要 force rebuild")
     indexing.create_record_manager()
-    monkeypatch.setattr(store, "chroma_collection_has_chunks", lambda: True)
-    monkeypatch.setattr(store, "load_manifest", lambda: current)
+    monkeypatch.setattr(store, "create_vector_store", lambda *args, **kwargs: object())
+    monkeypatch.setattr(store, "load_manifest", lambda *_args: current)
     assert store.needs_rebuild(str(tmp_path))[0] is False
 
 

@@ -4,6 +4,8 @@ import asyncio
 import json
 from dataclasses import dataclass
 
+import pytest
+
 from langchain_core.messages import ToolMessage
 from langchain_mcp_adapters.interceptors import MCPToolCallRequest
 from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool
@@ -132,6 +134,28 @@ def _server_configs(**overrides):
     }
     payload.update(overrides)
     return {"weather": McpServerConfig.model_validate(payload)}
+
+
+@pytest.mark.parametrize("extra", [{}, {"actions": [{"type": "click"}]}])
+def test_firecrawl_source_scrape_only_allows_read_only_arguments(settings_factory, extra):
+    interceptor = McpToolCallInterceptor(
+        settings_factory(), server_configs={"firecrawl": McpServerConfig(
+            transport="http", url="https://firecrawl.example.com/mcp",
+            allowed_tools=("firecrawl_scrape",),
+        )}, audit_sink=RecordingSink(),
+    )
+    calls = []
+
+    async def handler(request):
+        calls.append(request.args)
+        return CallToolResult(content=[TextContent(type="text", text="page")])
+
+    result = asyncio.run(interceptor(MCPToolCallRequest(
+        name="firecrawl_scrape", server_name="firecrawl", runtime=_runtime("mcp:firecrawl"),
+        args={"url": "https://example.com/page", "formats": ["markdown", "html"], **extra},
+    ), handler))
+    assert bool(calls) is (not extra)
+    assert result.isError is bool(extra)
 
 
 def test_async_success_is_standard_untrusted_redacted_and_audited(

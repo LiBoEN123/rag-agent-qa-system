@@ -11,7 +11,7 @@ from langchain_core.tools import StructuredTool
 
 from app.agent import framework_agent, framework_tools
 from app.agent.final_response import FinalAgentResponse
-from app.rag import pipeline
+from app.rag import runtime as pipeline
 from app.tools.catalog import get_local_tool_specs
 from app.tools.context import ToolInvocationContext
 from app.tools.knowledge_base import search_knowledge_base

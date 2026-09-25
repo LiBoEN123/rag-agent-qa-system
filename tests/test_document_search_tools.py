@@ -11,8 +11,8 @@ from pydantic import ValidationError
 from app.agent import framework_agent, framework_tools
 from app.agent.final_response import collect_evidence_from_messages
 from app.contracts.chat import RAG_DISCOVERY_TOOL_NAMES, RAG_EVIDENCE_TOOL_NAMES, ToolMode
-from app.rag import pipeline
-from app.rag.store import build_docs_registry_from_chunks
+from app.rag import runtime as pipeline
+from app.rag.runtime import build_docs_registry_from_chunks
 from app.tools.catalog import get_local_tool_specs
 from app.tools.context import ToolInvocationContext
 from app.tools.schemas import (

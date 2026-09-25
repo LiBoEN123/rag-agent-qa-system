@@ -11,8 +11,8 @@ from zipfile import ZipFile
 
 from app.ingestion import KnowledgeDocument, KnowledgeSourceType, build_knowledge_document
 from app.ingestion.document_blocks import ParsedDocument, canonical_document_text
-from app.rag.ingest import read_txt_auto
-from app.rag.parsing import parse_document
+from app.ingestion.files import read_txt_auto
+from app.ingestion.parsing import parse_document
 
 
 _MIME_TYPES = {

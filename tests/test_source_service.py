@@ -130,7 +130,7 @@ def test_github_fetch_uses_exact_tool_resource_body_and_stops_pending(
     assert candidate.status is IngestionCandidateStatus.PENDING
     assert candidate.approval.status is ApprovalStatus.PENDING
 
-    approved = service.approve(candidate.candidate_id, reason="operator approved")
+    approved = service.ingestion_service.approve(candidate.candidate_id, decided_by=_requester(), reason="operator approved")
     assert approved.status is IngestionCandidateStatus.APPROVED
     assert approved.approval.status is ApprovalStatus.APPROVED
 

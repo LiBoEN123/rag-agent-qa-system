@@ -391,8 +391,11 @@ def test_startup_validation_is_explicit_and_checks_external_paths(tmp_path):
         validate_startup_environment(
             settings.model_copy(update={"llm_api_key": None})
         )
+    # QA 只读持久索引，不要求原 corpus 仍然存在。
+    validate_startup_environment(settings.model_copy(update={"rag_file_path": tmp_path / "missing"}))
+    from app.config import validate_rag_environment
     with pytest.raises(ValueError, match="RAG_FILE_PATH"):
-        validate_startup_environment(
+        validate_rag_environment(
             settings.model_copy(update={"rag_file_path": tmp_path / "missing"})
         )
 

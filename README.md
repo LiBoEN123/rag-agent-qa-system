@@ -122,7 +122,7 @@ Phase 6B 的 Model private marker 是已接受设计，不是待迁移 TODO。�
 - `.importlinter` 使用 Import Linter 2.13 固化应用包的单向依赖、顶层无环、基础层、HTTP 框架和 Settings 框架边界；CI 在 Ruff 后执行全量 `lint-imports`。
 - 支持 embedding / rerank 模型本地缓存，默认缓存目录为 `./.cache/huggingface/hub`，也可通过 `MODEL_CACHE_DIR`、`HF_HOME` 等环境变量调整。
 - 支持 ChromaDB 持久化，默认将向量、chunk 文本、metadata 和文档注册信息保存到 `data/chroma/`。
-- 启动时基于 manifest 判断是否需要重建索引；知识库文件、chunk 参数、embedding/rerank 模型或 pipeline 版本变化会触发重建。
+- 显式知识同步由写侧基于 manifest 判断重建；QA 启动只加载索引。文件变化增量处理，chunk/embedding/索引版本变化触发重建。
 - 多轮会话历史保存在 `SQLITE_DB_PATH` 指定的 SQLite 数据库中，每个 `session_id` 默认读取最近 6 条 user/assistant 消息，服务重启后仍可继续使用。
 - Agent trace 通过 `AgentRunResult.tool_trace` 返回，供 API、Evaluation 和运行时诊断使用。旧数据库可能保留历史 `agent_runs`、`agent_steps` 表；应用不再读写或删除这些表，新数据库不再创建它们。
 - `/chat/stream` 请求支持继承或生成 `trace_id`，响应头返回 `X-Trace-Id`，真实总耗时位于 `final.data.total_cost_ms`。
@@ -296,9 +296,11 @@ copy .env.example .env
 `trafilatura==2.1.0` 基础包；未安装这些依赖的 dev、docs、eval、all、MCP
 等 extras，也不需要 `langchain-community` 包装。
 
-将知识库文档放到 `data/kb/`，然后编辑 `.env` 中的模型配置。启动服务：
+将知识库文档放到 `data/kb/`，然后编辑 `.env` 中的模型配置。先缓存模型并同步索引，再启动服务：
 
 ```bash
+python scripts/cache_models.py
+python -m app.rebuild_kb
 uvicorn app.main:app --reload
 ```
 
@@ -309,7 +311,7 @@ Swagger: http://127.0.0.1:8000/docs
 Health:  http://127.0.0.1:8000/health
 ```
 
-首次启动可能会下载 embedding / rerank 模型权重并构建索引；后续如果知识库文件和索引参数没有变化，会复用本地 ChromaDB 和 manifest 缓存。
+QA 启动只读取已有 Chroma 索引和本地模型缓存，不扫描或解析知识文件。修改本地知识后再次执行同步命令，并重启 QA 加载新快照。
 
 ## Vue 前端
 
@@ -345,7 +347,7 @@ Upload、GitHub、Firecrawl 可在候选详情确认「移出知识库」，撤�
 扫描 PDF 暂不支持 OCR，原始文件解析后删除，候选持久化全文与表格结构；
 历史纯文本 PDF/DOCX 候选继续按正文切分，重新上传才能获得结构。有 `structured_content`
 时，连续文本复用 LangChain splitter，表格保留标题/表头并按完整连续行分组；
-`pipeline_version` 从 2 升至 3，旧索引在启动时通过现有 force rebuild 迁移。
+`pipeline_version` 从 2 升至 3，旧索引在显式同步时通过写侧 force rebuild 迁移。
 Firecrawl 显式提案请求 Markdown + cleaned HTML，经同一 Docling parser 得到
 `ParsedDocument`，直接复用现有 table-aware chunks；禁用二次抓取、图片读取与渲染。
 HTML 原文不保存，结构随 candidate_json 持久化。历史 Firecrawl 候选保持纯文本，
@@ -376,7 +378,7 @@ API key、路径或创建任何目录。配置来源优先级为：
 测试和一次性脚本应显式构造
 `AppSettings(_env_file=None, ...)`，并把实例传给现有依赖边界，以免维护者本地
 `.env`、代理或权限污染结果。配置模型只负责解析和纯校验；真实
-API key、知识库目录及可写持久化路径等外部前提由 FastAPI lifespan 在启动时通过
+API key 及可写持久化路径等外部前提由 FastAPI lifespan 在启动时通过
 `validate_startup_environment()` 检查。
 
 `get_settings()` 的结果不会随环境变量或 `.env` 动态变化。受控刷新必须先调用
@@ -450,7 +452,6 @@ Tool Runtime 与 Agent Runtime 缓存；生产服务通常直接重启进程。�
 | `QUERY_REWRITE_MAX_TOKENS` | 追问改写模型最大输出 token |
 | `QUERY_REWRITE_TEMPERATURE` | 追问改写模型温度 |
 | `VECTOR_THRESHOLD` | 召回证据不足时拒答的向量分数阈值 |
-| `AUTO_REBUILD_ON_STARTUP` | 是否启动时强制重建索引 |
 
 ### DeepSeek 示例
 
@@ -460,7 +461,6 @@ INDEX_STORE_DIR=./data/manifest
 CHROMA_PERSIST_DIR=./data/chroma
 CHROMA_COLLECTION_NAME=mini_rag_chunks
 CHROMA_INDEX_COLLECTION_NAME=mini_rag_chunks_v2
-AUTO_REBUILD_ON_STARTUP=false
 
 TOP_K=5
 CHUNK_SIZE=600
@@ -629,36 +629,22 @@ Router 不调用独立模型，也不解析具体工具 action。普通问题进
 
 ## 索引构建与缓存
 
-服务启动时会同步当前 Local Knowledge corpus：
+知识索引写入与 RAG 查询独立运行，持久 Chroma 是共享边界：
 
 ```text
-启动服务
-  -> get_settings()
-  -> validate_startup_environment(settings)
-  -> 检查 manifest、SQLRecordManager 和 v2 ChromaDB
-  -> 加载 Local 文件并经过 Phase 9 approved-only boundary
-  -> LangChain index(cleanup="full")
-  -> 未变化 chunks skip；新增/修改/删除增量写入
-  -> 从最终 corpus 全量重建 BM25 并发布 runtime
+python -m app.rebuild_kb [--force-rebuild]
+→ IndexingService → LangChain Indexing API → Chroma + SQLRecordManager
+
+启动 QA → 读取已有 Chroma → BM25 / embedding query / CrossEncoder → Agent KB tools
 ```
 
-缓存分为两部分：
-
-- `data/chroma/`：`mini_rag_chunks_v2` 保存增量向量索引；旧 `mini_rag_chunks` 保留。
-- `data/manifest/record_manager.sqlite3`：官方 SQLRecordManager 的 hash/cleanup 记录。
-- `data/manifest/index_manifest.json`：判断配置变化是否需要 force rebuild。
-
-新增/删除/修改知识库文件走增量 sync。修改 `CHUNK_SIZE`、`CHUNK_OVERLAP`、embedding 模型或索引版本会 force rebuild v2；只修改 reranker 不重新 embedding。修改 `TOP_K`、Prompt、回答模型名称、温度等不需要重建向量索引。
-
-设置 `AUTO_REBUILD_ON_STARTUP=true` 会在启动时强制重建 v2；默认 `false` 仍会执行增量 sync，相同 corpus 全部 skip。详细设计见 [LangChain-native Incremental Indexing](docs/ingestion/langchain-indexing.md)。
-
-受保护的持久 proposal、审批与显式索引接口见 [Persistent Ingestion Operations API](docs/ingestion/operations-api.md)。
-
-如需在启动 API 前先下载模型权重，可以运行：
-
-```bash
-python scripts/cache_models.py
-```
+Local/GitHub/Firecrawl/Upload 共用 `mini_rag_chunks_v2`，各有独立 RecordManager namespace。
+Local 文件变化通过显式同步增量处理；chunk 参数、embedding 或索引版本变化触发重建。
+`--force-rebuild` 恢复最新成功 INDEX 对应候选，排除最新成功 REMOVE 来源；不重新抓取外部内容。
+Reranker、Prompt 和回答模型变更不要求重建向量索引。独立 CLI 同步后需重启 QA。
+组合应用 admin INDEX/REMOVE 成功后由 API composition root 刷新查询 runtime。
+Agent MCP 调用只返回工具结果，永久入库必须经过显式 proposal、approval 和 index。
+详见 [LangChain-native Incremental Indexing](docs/ingestion/langchain-indexing.md)。
 
 ## 日志与可观测性
 
@@ -809,15 +795,12 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   │   ├── guardrails.py        # 治理规则、预算、错误分类、Stop Reason 与指纹
 │   │   ├── runtime.py           # 请求准备、Router 与 Agent 缓存
 │   │   └── streaming.py         # 直接 astream 与安全 Agent 事件投影
+│   ├── indexing/               # 独立索引写侧：service/langchain/chunking/manifest
 │   ├── rag/
 │   │   ├── __init__.py          # RAG 包说明
-│   │   ├── pipeline.py          # 索引状态、生命周期与检索门面
-│   │   ├── ingest.py            # Local 文档读取与清洗
-│   │   ├── indexing.py          # approved candidate 切分与 LangChain 增量索引
+│   │   ├── runtime.py           # 只读索引加载、查询状态与检索 API
 │   │   ├── retrieval.py         # 混合召回与重排
 │   │   ├── policy.py            # 诊断检索分数门
-│   │   ├── scoring.py           # 分数安全转换
-│   │   ├── store.py             # 索引缓存、manifest、模型加载
 │   │   ├── chroma.py            # ChromaDB 持久化
 │   │   └── debug.py             # 文档和 chunk 调试查询
 │   ├── tools/

@@ -109,7 +109,6 @@ class AppSettings(BaseSettings):
     chunk_size: int = 600
     chunk_overlap: int = 120
     vector_threshold: float = 0.35
-    auto_rebuild_on_startup: bool = False
 
     # 嵌入与重排
     embedding_model_name: str = (
@@ -557,7 +556,7 @@ def ensure_model_cache_dir(settings: AppSettings) -> Path:
 
 
 def validate_rag_environment(settings: AppSettings) -> None:
-    """校验 RAG 启动所需的外部路径，但不创建任何资源。"""
+    """校验显式 Local 索引命令的 corpus 路径，但不创建任何资源。"""
     if not settings.rag_file_path.exists():
         raise ValueError(f"RAG_FILE_PATH 不存在: {settings.rag_file_path}")
 
@@ -574,7 +573,6 @@ def validate_startup_environment(settings: AppSettings) -> None:
             "INGESTION_ADMIN_API_ENABLED=true 时必须配置 "
             "INGESTION_ADMIN_API_KEY"
         )
-    validate_rag_environment(settings)
 
     file_paths = [("SQLITE_DB_PATH", settings.sqlite_db_path)]
     if settings.tool_audit_enabled:

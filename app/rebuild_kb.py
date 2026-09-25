@@ -1,25 +1,23 @@
-"""知识库重建命令入口。
+"""显式同步知识索引；不导入或初始化 QA runtime。"""
 
-读取当前配置并触发文档索引的完整重建与持久化流程。
-"""
+import argparse
+import json
 
 from app.config import get_settings, validate_rag_environment
-from app.rag.pipeline import rebuild_and_persist_index
+from app.indexing.service import IndexingService
 
 
 def main():
-    """命令行重建知识库索引并在失败时退出非零状态。"""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--force-rebuild", action="store_true", help="从持久候选历史重建所有来源")
+    args = parser.parse_args()
     settings = get_settings()
     validate_rag_environment(settings)
-    ok, msg = rebuild_and_persist_index(
-        data_dir=str(settings.rag_file_path),
-        chunk_size=settings.chunk_size,
-        chunk_overlap=settings.chunk_overlap,
-        force_rebuild=True,
-    )
-    print(msg)
-    if not ok:
-        raise SystemExit(1)
+    try:
+        result = IndexingService(settings=settings).sync_local_corpus(force_rebuild=args.force_rebuild)
+    except Exception as exc:
+        parser.exit(1, f"索引同步失败：{exc}\n")
+    print(json.dumps(result, ensure_ascii=False))
 
 
 if __name__ == "__main__":

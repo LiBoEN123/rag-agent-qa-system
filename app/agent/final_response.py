@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.contracts.chat import RAG_EVIDENCE_TOOL_NAMES
 from app.rag.retrieval import make_snippet
-from app.rag.scoring import safe_float
+from app.common.numeric import safe_float
 from app.tools.evidence import validate_evidence_documents
 
 
