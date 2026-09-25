@@ -18,7 +18,7 @@ def test_minimal_agent_smoke(tool, settings_factory, monkeypatch, tmp_path):
     from app.agent.results import create_agent_result
     from app.contracts.chat import AgentResultStatus
     from app.services import chat_service
-    from app.tools.audit import NullToolAuditSink
+    from tests.support.local_tools import NoOpAuditSink
     from app.tools.catalog import get_local_tool_specs
     from app.tools.policy import ToolPolicyEngine
 
@@ -38,7 +38,7 @@ def test_minimal_agent_smoke(tool, settings_factory, monkeypatch, tmp_path):
             spec = next(s for s in get_local_tool_specs(settings) if s.name == tool)
             output = await framework_tools.execute_project_tool(
                 spec=spec, tool_args={}, context=kwargs["tool_context"],
-                settings=settings, policy_engine=ToolPolicyEngine(), audit_sink=NullToolAuditSink(),
+                settings=settings, policy_engine=ToolPolicyEngine(), audit_sink=NoOpAuditSink(),
             )
             assert output["ok"] and output["output"] == {"query": None, "count": 0, "total": 0, "documents": []}
             calls.append({"step": "tool_call", "tool_name": tool, "tool_status": "success"})

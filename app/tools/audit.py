@@ -82,14 +82,6 @@ class ToolAuditSink(Protocol):
         ...
 
 
-class NullToolAuditSink:
-    """显式关闭审计时使用的无副作用写入器。"""
-
-    def write(self, event: ToolAuditEvent) -> None:
-        """接收事件但不持久化。"""
-        del event
-
-
 class DisabledToolAuditSink:
     """配置关闭审计时保持只读 fail-open、写工具 fail-closed。"""
 
@@ -264,7 +256,6 @@ def summarize_tool_output(
 __all__ = [
     "JsonlToolAuditSink",
     "DisabledToolAuditSink",
-    "NullToolAuditSink",
     "ToolAuditEvent",
     "ToolAuditEventType",
     "ToolAuditSink",

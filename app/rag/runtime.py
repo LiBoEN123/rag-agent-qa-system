@@ -96,7 +96,6 @@ def _load_index_bundle(model=None, rerank_model=None):
             "message": "未找到 ChromaDB 索引缓存",
             "source": "none",
             "chunks": [],
-            "texts": [],
             "docs_registry": [],
             "doc_embeddings": None,
             "bm25": None,
@@ -130,7 +129,6 @@ def _load_index_bundle(model=None, rerank_model=None):
             "message": "已从 ChromaDB 加载索引",
             "source": "chroma",
             "chunks": chunks,
-            "texts": texts,
             "docs_registry": docs_registry,
             "doc_embeddings": doc_embeddings,
             "bm25": bm25,
@@ -143,7 +141,6 @@ def _load_index_bundle(model=None, rerank_model=None):
             "message": f"加载 ChromaDB 索引缓存失败：{e}",
             "source": "none",
             "chunks": [],
-            "texts": [],
             "docs_registry": [],
             "doc_embeddings": None,
             "bm25": None,
@@ -154,7 +151,6 @@ def _load_index_bundle(model=None, rerank_model=None):
 
 # 进程内索引状态。
 chunks: list[dict] = []
-texts: list[str] = []
 docs_registry: list[dict] = []
 
 bm25 = None
@@ -187,10 +183,9 @@ def get_rag_status():
 # =========================
 def _publish_runtime_bundle(bundle: dict) -> None:
     """只在索引读取和 runtime 验证成功后替换进程状态。"""
-    global chunks, texts, docs_registry, bm25, model, rerank_model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE, INDEX_SOURCE
+    global chunks, docs_registry, bm25, model, rerank_model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE, INDEX_SOURCE
 
     chunks = bundle["chunks"]
-    texts = bundle["texts"]
     docs_registry = bundle["docs_registry"]
     doc_embeddings = bundle["doc_embeddings"]
     bm25 = bundle["bm25"]
@@ -203,7 +198,7 @@ def _publish_runtime_bundle(bundle: dict) -> None:
 
 def load_index_cache(*, allow_empty: bool = False) -> tuple[bool, str]:
     """恢复全局 RAG 状态；来源操作可在严格确认空库后发布空 runtime。"""
-    global chunks, texts, docs_registry, bm25, model, rerank_model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE, INDEX_SOURCE
+    global chunks, docs_registry, bm25, model, rerank_model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE, INDEX_SOURCE
 
     result = _load_index_bundle(model=model)
 

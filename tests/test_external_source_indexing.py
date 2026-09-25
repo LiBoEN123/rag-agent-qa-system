@@ -291,7 +291,7 @@ def persisted_runtime(tmp_path, monkeypatch):
     settings = get_settings()
     embeddings = CountingEmbeddings()
     for name in (
-        "chunks", "texts", "docs_registry", "doc_embeddings", "bm25", "model",
+        "chunks", "docs_registry", "doc_embeddings", "bm25", "model",
         "rerank_model", "RAG_READY", "RAG_INIT_MESSAGE", "INDEX_SOURCE",
     ):
         monkeypatch.setattr(pipeline, name, getattr(pipeline, name))
@@ -375,7 +375,7 @@ def test_remove_clears_source_runtime_and_history_survives_rebuild_and_reindex(p
     assert runtime.embeddings.document_texts == []
     assert manager.list_keys(group_ids=[candidate.document.source_id]) == []
     assert indexing.create_vector_store(None).get(where={"source_id": candidate.document.source_id})["ids"] == []
-    assert set(pipeline.texts) == {"local durable content", "other external retained"}
+    assert {chunk["text"] for chunk in pipeline.chunks} == {"local durable content", "other external retained"}
     assert pipeline.bm25.corpus_size == len(pipeline.chunks) == 2
     assert len(pipeline.doc_embeddings) == len(pipeline.docs_registry) == 2
     assert all("REMOVE_UNIQUE_KEYWORD_9271" not in hit["text"] for hit in pipeline.search_relevant_chunks("REMOVE_UNIQUE_KEYWORD_9271", top_k=10))
@@ -384,7 +384,7 @@ def test_remove_clears_source_runtime_and_history_survives_rebuild_and_reindex(p
     for _ in range(2):
         ok, message = _sync_and_load(str(runtime.local_dir), force_rebuild=True)
         assert ok, message
-        assert set(pipeline.texts) == {"local durable content", "other external retained"}
+        assert {chunk["text"] for chunk in pipeline.chunks} == {"local durable content", "other external retained"}
         assert manager.list_keys(group_ids=[candidate.document.source_id]) == []
     # 已清除 RecordManager keys，同一 approved candidate 再入库必须 added，而非 skipped。
     indexed = client.post(f"{path}/index")
@@ -394,7 +394,7 @@ def test_remove_clears_source_runtime_and_history_survives_rebuild_and_reindex(p
     assert indexed.json()["skipped"] == 0
     ok, message = _sync_and_load(str(runtime.local_dir), force_rebuild=True)
     assert ok, message
-    assert "REMOVE_UNIQUE_KEYWORD_9271" in pipeline.texts
+    assert "REMOVE_UNIQUE_KEYWORD_9271" in [chunk["text"] for chunk in pipeline.chunks]
 
 
 @pytest.mark.parametrize("factory", [_github_document, _firecrawl_document])
@@ -410,7 +410,7 @@ def test_remove_from_old_candidate_removes_current_source_version(persisted_runt
     assert runtime.domain.repository.load_latest_successfully_indexed() == []
     ok, message = _sync_and_load(str(runtime.local_dir), force_rebuild=True)
     assert ok, message
-    assert pipeline.texts == ["local durable content"]
+    assert [chunk["text"] for chunk in pipeline.chunks] == ["local durable content"]
 
 
 def test_force_rebuild_after_deleting_all_removed_candidate_versions(persisted_runtime):
@@ -426,7 +426,7 @@ def test_force_rebuild_after_deleting_all_removed_candidate_versions(persisted_r
     for _ in range(2):
         ok, message = _sync_and_load(str(runtime.local_dir), force_rebuild=True)
         assert ok, message
-        assert pipeline.texts == ["local durable content"]
+        assert [chunk["text"] for chunk in pipeline.chunks] == ["local durable content"]
         assert indexing.create_vector_store(None).get(where={"source_id": versions[0].document.source_id})["ids"] == []
     assert runtime.runs.list() == history
 
@@ -447,7 +447,7 @@ def test_remove_repairs_partial_persistent_state(persisted_runtime, missing):
     assert response.json()["deleted"] == (0 if missing == "chroma" else 1)
     assert manager.list_keys() == []
     assert vector_store.get(where={"source_id": candidate.document.source_id})["ids"] == []
-    assert pipeline.texts == ["local durable content"]
+    assert [chunk["text"] for chunk in pipeline.chunks] == ["local durable content"]
 
 
 @pytest.mark.parametrize("failure", ["chroma", "record_manager"])
@@ -471,7 +471,7 @@ def test_failed_remove_retains_authoritative_index_for_rebuild(persisted_runtime
     assert runtime.domain.repository.load_latest_successfully_indexed() == [candidate]
     ok, message = _sync_and_load(str(runtime.local_dir), force_rebuild=True)
     assert ok, message
-    assert set(pipeline.texts) == {"local durable content", "restore after failed remove"}
+    assert {chunk["text"] for chunk in pipeline.chunks} == {"local durable content", "restore after failed remove"}
 
 
 @pytest.mark.parametrize("raise_error", [False, True])
@@ -493,7 +493,7 @@ def test_refresh_failure_keeps_successful_remove_authoritative(persisted_runtime
     assert runtime.domain.repository.load_latest_successfully_indexed() == []
     ok, message = _sync_and_load(str(runtime.local_dir), force_rebuild=True)
     assert ok, message
-    assert pipeline.texts == ["local durable content"]
+    assert [chunk["text"] for chunk in pipeline.chunks] == ["local durable content"]
 
 
 def test_remove_last_source_publishes_empty_runtime(persisted_runtime):
@@ -506,7 +506,7 @@ def test_remove_last_source_publishes_empty_runtime(persisted_runtime):
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "success"
     assert pipeline.RAG_READY is False
-    assert pipeline.chunks == pipeline.texts == pipeline.docs_registry == []
+    assert pipeline.chunks == pipeline.docs_registry == []
     assert pipeline.doc_embeddings is pipeline.bm25 is None
     assert pipeline.search_relevant_chunks("last external") == []
     assert _sync_and_load(str(runtime.local_dir), force_rebuild=True)[0]
@@ -538,12 +538,12 @@ def test_force_rebuild_preserves_external_records_runtime_and_success_history(pe
         "local durable content", f"github {keyword}", "firecrawl preserved",
     }
     assert set(runtime.embeddings.document_texts) == set(persisted["documents"])
-    assert set(pipeline.texts) == set(persisted["documents"])
+    assert {chunk["text"] for chunk in pipeline.chunks} == set(persisted["documents"])
     assert pipeline.RAG_READY is True
     assert len(pipeline.docs_registry) == 3
     assert pipeline.doc_embeddings.shape == (3, 2)
     assert pipeline.bm25.corpus_size == 3
-    github_position = pipeline.texts.index(f"github {keyword}")
+    github_position = [chunk["text"] for chunk in pipeline.chunks].index(f"github {keyword}")
     assert all(
         pipeline.bm25.doc_freqs[github_position].get(token, 0) > 0
         for token in tokenize(keyword)
@@ -596,7 +596,7 @@ def test_force_rebuild_restores_latest_successful_source_version(
     expected = "new version" if newer_status == "success" else "successful old version"
     persisted, _ = load_index_from_chroma()
     assert {chunk["text"] for chunk in persisted} == {"local durable content", expected}
-    assert set(pipeline.texts) == {"local durable content", expected}
+    assert {chunk["text"] for chunk in pipeline.chunks} == {"local durable content", expected}
     assert runtime.runs.list() == history
 
 
@@ -625,7 +625,7 @@ def test_local_sync_retains_external_and_builds_complete_runtime(persisted_runti
     sources = {chunk["metadata"]["source_type"] for chunk in pipeline.chunks}
     assert {"github", "firecrawl"} <= sources
     assert pipeline.bm25.corpus_size == len(pipeline.chunks)
-    assert pipeline.texts.count("external durable content") == 2
+    assert [chunk["text"] for chunk in pipeline.chunks].count("external durable content") == 2
     if local_change == "modified":
         assert runtime.embeddings.document_texts == ["local changed content"]
     else:
@@ -701,7 +701,7 @@ def test_upload_approve_index_retrieve_and_force_rebuild(persisted_runtime, monk
     path = f"/admin/ingestion/candidates/{candidate_id}"
     assert response.json()["status"] == "pending"
     assert client.post(f"{path}/index", headers=headers).status_code == 409
-    assert pipeline.texts == ["local durable content"]
+    assert [chunk["text"] for chunk in pipeline.chunks] == ["local durable content"]
     assert keyword not in indexing.create_vector_store(None).get()["documents"]
     assert client.post(f"{path}/approve", headers=headers, json={}).status_code == 200
     assert runtime.runs.list() == []
@@ -733,7 +733,7 @@ def test_upload_approve_index_retrieve_and_force_rebuild(persisted_runtime, monk
             assert ok, message
             assert runtime.runs.list() == history
         assert pipeline.bm25.corpus_size == len(pipeline.chunks) == 2
-        upload_position = pipeline.texts.index(keyword)
+        upload_position = [chunk["text"] for chunk in pipeline.chunks].index(keyword)
         assert all(pipeline.bm25.doc_freqs[upload_position].get(token, 0) for token in tokenize(keyword))
         # 禁止 Chroma 查询失败被本地向量 fallback 掩盖。
         def no_fallback(*args, **kwargs):
@@ -919,7 +919,7 @@ def test_firecrawl_html_sqlite_index_retrieval_and_rebuild_keep_legacy(persisted
     ))
     candidate = runtime.domain.approve(pending.candidate_id, decided_by=_requester())
     assert runtime.runs.list() == []
-    assert all("企业注册" not in text for text in pipeline.texts)
+    assert all("企业注册" not in chunk["text"] for chunk in pipeline.chunks)
     chunks = indexing.candidate_to_langchain_documents(candidate)
     [table] = [chunk for chunk in chunks if chunk.metadata.get("element_type") == "table"]
     expected = "事项：企业注册；条件：年满18岁；材料：身份证、申请表。"

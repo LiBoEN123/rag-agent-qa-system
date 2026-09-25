@@ -24,7 +24,7 @@ async def initialize_mcp_runtime(settings: AppSettings) -> None:
     await initialize(settings)
 
 
-def close_agent_runtime() -> None:
+async def aclose_agent_runtime() -> None:
     """失效 Agent Runtime 缓存；关闭异常不阻塞其他清理。"""
     try:
         from app.agent.runtime import reset_agent_runtime
@@ -37,13 +37,8 @@ def close_agent_runtime() -> None:
         )
 
 
-async def aclose_agent_runtime() -> None:
-    """为 FastAPI lifespan 提供一致的异步关闭入口。"""
-    close_agent_runtime()
-
-
 async def close_mcp_runtime() -> None:
-    """清理 MCP client 引用和 Tool cache；失败不阻塞其他资源关闭。"""
+    """清理 MCP Tool cache；失败不阻塞其他资源关闭。"""
     try:
         from app.tools.mcp.client import close_mcp_runtime as close_runtime
 

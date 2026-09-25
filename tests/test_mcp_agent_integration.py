@@ -10,7 +10,6 @@ from mcp.types import CallToolResult, TextContent, Tool
 
 from app.agent import framework_agent, framework_tools
 from app.agent.streaming import project_agent_stream_part
-from app.tools.audit import NullToolAuditSink
 from app.tools.context import ToolInvocationContext
 from app.tools.mcp.bridge import (
     McpToolCallInterceptor,
@@ -23,7 +22,7 @@ from app.tools.mcp.provider import (
     McpToolProvider,
     install_mcp_tool_provider,
 )
-from tests.support.local_tools import local_tools
+from tests.support.local_tools import NoOpAuditSink, local_tools
 from app.agent.final_response import FinalAgentResponse
 from tests.support.agent_runtime import FakeToolCallingModel, build_agent_harness
 
@@ -42,7 +41,7 @@ def _mcp_tool(settings, calls, server_config):
     interceptor = McpToolCallInterceptor(
         settings,
         server_configs={"weather": server_config},
-        audit_sink=NullToolAuditSink(),
+        audit_sink=NoOpAuditSink(),
     )
 
     class WeatherSession:

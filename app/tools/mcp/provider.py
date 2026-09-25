@@ -84,11 +84,13 @@ _provider_lock = threading.Lock()
 _provider: McpToolProvider | None = None
 
 
-def install_mcp_tool_provider(provider: McpToolProvider) -> None:
-    """在 discovery 全部成功后原子安装进程级 cache。"""
+def install_mcp_tool_provider(provider: McpToolProvider) -> McpToolProvider:
+    """在 discovery 全部成功后原子安装 cache；并发初始化复用首次安装结果。"""
     global _provider
     with _provider_lock:
-        _provider = provider
+        if _provider is None:
+            _provider = provider
+        return _provider
 
 
 def clear_mcp_tool_provider() -> None:

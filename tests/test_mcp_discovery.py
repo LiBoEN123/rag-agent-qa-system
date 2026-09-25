@@ -582,6 +582,7 @@ def test_initialize_uses_official_client_options_and_caches_discovery(
     second = asyncio.run(mcp_client.initialize_mcp_runtime(settings))
 
     assert first is second
+    assert first is mcp_provider.get_mcp_tool_provider()
     assert len(local_settings) == 1
     assert local_settings[0] is settings
     assert len(instances) == 1
@@ -692,13 +693,13 @@ def test_initialize_all_disabled_servers_builds_empty_cache_without_client(
         mcp_servers_config_path=path,
     )
 
-    runtime = asyncio.run(mcp_client.initialize_mcp_runtime(settings))
+    provider = asyncio.run(mcp_client.initialize_mcp_runtime(settings))
 
-    assert runtime is not None
-    assert runtime.client is None
-    assert runtime.provider.catalog() == []
+    assert provider is not None
+    assert provider is mcp_provider.get_mcp_tool_provider()
+    assert provider.catalog() == []
     assert (
-        runtime.provider.list_tools(
+        provider.list_tools(
             context=ToolInvocationContext(permissions=("mcp:weather",))
         )
         == []

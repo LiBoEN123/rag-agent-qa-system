@@ -14,6 +14,11 @@ from app.tools.context import ToolInvocationContext, build_default_tool_context
 from app.tools.contracts import ToolSpec
 
 
+class NoOpAuditSink:
+    def write(self, event) -> None:
+        pass
+
+
 def tool_runtime(context: ToolInvocationContext) -> ToolRuntime[ToolInvocationContext]:
     return ToolRuntime(state={}, context=context, config={}, stream_writer=lambda _: None, tool_call_id="", store=None)
 
