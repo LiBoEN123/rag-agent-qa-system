@@ -19,10 +19,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.contracts.chat import AgentResultStatus, RAG_EVIDENCE_TOOL_NAMES
 
 
-SuiteName = Literal["core", "online", "mcp", "mixed"]
+SuiteName = Literal["core", "online"]
 SourceMatch = Literal["any", "all", "none"]
 ToolCallStatus = Literal["success", "error"]
-ToolOrigin = Literal["local", "web", "mcp"]
 
 
 _SAFE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -52,11 +51,6 @@ class ExpectedOutcome(BaseModel):
     min_rewrite_keyword_hits: int = Field(default=0, ge=0)
     rewritten: bool | None = None
     rewrite_llm_used: bool | None = None
-    tool_origin: ToolOrigin | None = None
-    mcp_server: str = ""
-    approval_required: bool | None = None
-    content_is_untrusted: bool | None = None
-    external_output_nonempty: bool | None = None
 
     @model_validator(mode="after")
     def validate_hit_bounds(self) -> ExpectedOutcome:
@@ -86,14 +80,6 @@ class ExpectedOutcome(BaseModel):
             for name in self.expected_tools()
         ):
             raise ValueError("expected tool name 必须使用安全名称格式")
-        if self.mcp_server and not _SAFE_NAME_PATTERN.fullmatch(
-            self.mcp_server
-        ):
-            raise ValueError("mcp_server 必须使用安全 Server alias 格式")
-        if self.mcp_server and self.tool_origin != "mcp":
-            raise ValueError("mcp_server 只能与 tool_origin=mcp 一起使用")
-        if self.tool_origin == "mcp" and not self.mcp_server:
-            raise ValueError("tool_origin=mcp 时必须声明 mcp_server")
         return self
 
     def expected_tools(self) -> set[str]:
@@ -138,7 +124,6 @@ class AgentEvaluationCase(BaseModel):
     legacy_id: str = ""
     disabled: bool = False
     disabled_reason: str = ""
-    mcp_servers: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_case_shape(self) -> AgentEvaluationCase:
@@ -156,25 +141,6 @@ class AgentEvaluationCase(BaseModel):
             raise ValueError("多轮 case 的 turns 至少包含两轮")
         if self.disabled and not self.disabled_reason.strip():
             raise ValueError("disabled case 必须提供 disabled_reason")
-        if len(self.mcp_servers) != len(set(self.mcp_servers)):
-            raise ValueError("mcp_servers 不允许重复")
-        if any(
-            not _SAFE_NAME_PATTERN.fullmatch(alias)
-            for alias in self.mcp_servers
-        ):
-            raise ValueError("mcp_servers 必须使用安全 Server alias 格式")
-        if self.suite in {"core", "online"} and self.mcp_servers:
-            raise ValueError("core/online case 的 mcp_servers 必须为空")
-        if self.suite == "mcp" and not self.mcp_servers:
-            raise ValueError("mcp case 的 mcp_servers 必须非空")
-        for expected in self.iter_expected():
-            if (
-                expected.mcp_server
-                and expected.mcp_server not in self.mcp_servers
-            ):
-                raise ValueError(
-                    "expected.mcp_server 必须包含在 case.mcp_servers 中"
-                )
         return self
 
     def iter_expected(self) -> list[ExpectedOutcome]:
@@ -241,15 +207,7 @@ def validate_tool_names(
         names = set().union(
             *(expected.expected_tools() for expected in case.iter_expected())
         )
-        runtime_names = set().union(
-            *(
-                expected.expected_tools()
-                if expected.tool_origin == "mcp"
-                else set()
-                for expected in case.iter_expected()
-            )
-        )
-        missing = sorted(names - runtime_names - known)
+        missing = sorted(names - known)
         if missing:
             unknown[case.id] = missing
     if unknown:
@@ -328,9 +286,6 @@ def build_coverage_report(
         "decision": _counter(decisions),
         "first_tool": _counter(first_tools),
         "expected_tools": _counter(all_tools),
-        "mcp_servers": _counter(
-            [alias for case in active for alias in case.mcp_servers]
-        ),
         "case_shape": {
             "single_turn": sum(case.turns is None for case in active),
             "multi_turn": sum(case.turns is not None for case in active),

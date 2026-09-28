@@ -29,12 +29,6 @@ FIXTURE = (
     / "evaluation"
     / "minimal_agent_cases_v2.json"
 )
-EXTENDED_DATASET = (
-    Path(__file__).parents[1]
-    / "data"
-    / "eval"
-    / "agent_eval_cases_extended_v2.json"
-)
 
 
 def _settings(tmp_path: Path) -> AppSettings:
@@ -51,7 +45,7 @@ def _settings(tmp_path: Path) -> AppSettings:
 def test_case_filter_validate_only_never_initializes_runtime(ids, tmp_path, monkeypatch, capsys):
     def forbidden(*args, **kwargs):
         pytest.fail("validate-only must not initialize evaluation runtime")
-    monkeypatch.setattr(runner, "evaluation_runtime_scope", forbidden)
+    monkeypatch.setattr(runner, "evaluation_settings_scope", forbidden)
     output = tmp_path / "not-created"
     args = ["--validate-only", "--output-dir", str(output)]
     for case_id in ids:
@@ -73,7 +67,7 @@ def test_case_filter_validate_only_never_initializes_runtime(ids, tmp_path, monk
 def test_case_filter_invalid_selection_fails_before_output_or_runtime(args, tmp_path, monkeypatch):
     def forbidden(*args, **kwargs):
         pytest.fail("invalid selection must fail before runtime")
-    monkeypatch.setattr(runner, "evaluation_runtime_scope", forbidden)
+    monkeypatch.setattr(runner, "evaluation_settings_scope", forbidden)
     output = tmp_path / "not-created"
     with pytest.raises(SystemExit) as error:
         runner.main([*args, "--output-dir", str(output)])
@@ -91,7 +85,7 @@ def test_case_filter_executes_whole_cases_and_records_reproduction(tmp_path, mon
         return [], {}
     def no_rag(**kwargs):
         pytest.fail("case filter must not run RAG evaluation")
-    monkeypatch.setattr(runner, "evaluation_runtime_scope", no_runtime)
+    monkeypatch.setattr(runner, "evaluation_settings_scope", no_runtime)
     monkeypatch.setattr(runner, "run_agent_baseline", run_cases)
     monkeypatch.setattr(runner, "run_rag_baseline", no_rag)
     monkeypatch.setattr(runner, "build_manifest", lambda **kwargs: _fake_manifest(kwargs["run_id"]))
@@ -218,34 +212,12 @@ def test_validate_only_never_runs_agent_rag_or_creates_output(
 
     assert code == 0
     assert not output.exists()
-    assert "validation passed" in capsys.readouterr().out
+    output_text = capsys.readouterr().out
+    assert "validation passed" in output_text
+    assert json.loads(output_text.split("\n", 1)[1])["rag_questions"] == 65
 
 
-def test_extended_validate_only_never_initializes_mcp(
-    tmp_path,
-    monkeypatch,
-):
-    monkeypatch.setattr(runner, "get_settings", lambda: _settings(tmp_path))
-    monkeypatch.setattr(
-        runner,
-        "evaluation_runtime_scope",
-        lambda *args, **kwargs: pytest.fail("MCP runtime 不应初始化"),
-    )
-
-    code = runner.main(
-        [
-            "--validate-only",
-            "--include-mcp",
-            "--include-mixed",
-            "--agent-cases",
-            str(EXTENDED_DATASET),
-        ]
-    )
-
-    assert code == 0
-
-
-def test_suite_permissions_are_case_specific_and_mixed_adds_web():
+def test_core_and_online_permissions_are_separate():
     permissions = agent_evaluation._permissions_for_suite
 
     assert permissions("core") == ("knowledge_base:read",)
@@ -253,17 +225,6 @@ def test_suite_permissions_are_case_specific_and_mixed_adds_web():
         "knowledge_base:read",
         "web:search",
         "web:fetch",
-    )
-    assert permissions("mcp", ("github",)) == (
-        "knowledge_base:read",
-        "mcp:github",
-    )
-    assert permissions("mixed", ("github", "firecrawl")) == (
-        "knowledge_base:read",
-        "web:search",
-        "web:fetch",
-        "mcp:github",
-        "mcp:firecrawl",
     )
 
 
@@ -276,7 +237,6 @@ def test_online_runtime_scope_does_not_initialize_mcp(
     settings = runner.build_evaluation_settings(
         _settings(tmp_path).model_copy(update={"mcp_tools_enabled": True}),
         tmp_path / "online",
-        mcp_enabled=False,
     )
 
     async def forbidden_initialize(_settings):
@@ -284,101 +244,8 @@ def test_online_runtime_scope_does_not_initialize_mcp(
 
     monkeypatch.setattr(mcp_client, "initialize_mcp_runtime", forbidden_initialize)
 
-    with runner.evaluation_runtime_scope(settings) as catalog:
-        assert catalog == []
-
-
-def test_mcp_runtime_initialize_and_close_are_paired_after_failure(
-    tmp_path,
-    monkeypatch,
-):
-    from app.tools.mcp import client as mcp_client
-    from app.tools.mcp import provider as mcp_provider
-
-    events = []
-    settings = runner.build_evaluation_settings(
-        _settings(tmp_path),
-        tmp_path / "mcp",
-        mcp_enabled=True,
-    )
-
-    @contextmanager
-    def no_scope(_settings):
-        yield
-
-    async def fake_initialize(_settings):
-        events.append("initialize")
-
-    async def fake_close():
-        events.append("close")
-
-    monkeypatch.setattr(runner, "evaluation_settings_scope", no_scope)
-    monkeypatch.setattr(mcp_client, "initialize_mcp_runtime", fake_initialize)
-    monkeypatch.setattr(mcp_client, "close_mcp_runtime", fake_close)
-    monkeypatch.setattr(
-        mcp_provider,
-        "get_mcp_tool_catalog",
-        lambda: [
-            {
-                "server": "github",
-                "tool_name": "github_get_file_contents",
-                "remote_tool": "get_file_contents",
-                "risk_level": "read_only",
-                "approval_required": False,
-                "enabled": True,
-                "enabled_for_default_principal": False,
-            }
-        ],
-    )
-
-    with pytest.raises(RuntimeError, match="case failed"):
-        with runner.evaluation_runtime_scope(settings) as catalog:
-            assert catalog[0]["server"] == "github"
-            raise RuntimeError("case failed")
-
-    assert events == ["initialize", "close"]
-
-
-@pytest.mark.parametrize(
-    "profiles",
-    [
-        (("core", False), ("mcp", True)),
-        (("mcp", True), ("core", False)),
-        (("mcp", True), ("online", False)),
-        (("mixed", True), ("core", False)),
-    ],
-    ids=["core-to-mcp", "mcp-to-core", "mcp-to-online", "mixed-to-core"],
-)
-def test_evaluation_profiles_do_not_share_mcp_provider_cache(
-    profiles,
-    tmp_path,
-    monkeypatch,
-):
-    from app.tools.mcp import client as mcp_client
-    from app.tools.mcp.provider import (
-        McpToolProvider,
-        get_mcp_tool_provider,
-        install_mcp_tool_provider,
-    )
-
-    async def fake_initialize(settings):
-        install_mcp_tool_provider(McpToolProvider([], settings=settings))
-
-    async def fake_close():
-        mcp_client.reset_mcp_runtime()
-
-    monkeypatch.setattr(mcp_client, "initialize_mcp_runtime", fake_initialize)
-    monkeypatch.setattr(mcp_client, "close_mcp_runtime", fake_close)
-
-    for suite, enabled in profiles:
-        settings = runner.build_evaluation_settings(
-            _settings(tmp_path),
-            tmp_path / f"profile-{suite}",
-            mcp_enabled=enabled,
-        )
-        with runner.evaluation_runtime_scope(settings):
-            assert (get_mcp_tool_provider() is not None) is enabled
-        assert get_mcp_tool_provider() is None
+    with runner.evaluation_settings_scope(settings):
+        assert get_settings().mcp_tools_enabled is False
 
 
 def test_capture_tool_output_keys_never_keeps_values(monkeypatch):
@@ -764,8 +631,8 @@ def test_runner_writes_expected_output_structure(
     }
     report = (output / "baseline_report.md").read_text(encoding="utf-8")
     assert "LLM Judge skipped" in report
-    assert "Raw scores are not strictly comparable" in report
-    assert "Context metrics: unavailable / not applicable" in report
+    assert "Prediction Schema v3" in report
+    assert "Context" not in report
     assert rag_call["retrieval_k"] == 3
     assert "top_k" not in agent_call
     assert "decompose_top_k" not in agent_call

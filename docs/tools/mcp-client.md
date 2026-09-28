@@ -63,9 +63,8 @@ MCP_MAX_STRUCTURED_CHARS=20000
 ```
 
 关闭时不会读取 MCP JSON、构造 `MultiServerMCPClient`、连接 Server、执行 discovery
-或改变默认本地工具集合。Evaluation Core 和 Online profile 会显式保持该关闭语义；
-只有 Extended Evaluation 的 `--include-mcp` / `--include-mixed` 才在隔离 Settings
-scope 内初始化并清理 MCP runtime。
+或改变默认本地工具集合。Evaluation 的 Core、RAG 和 Online 运行均在隔离 Settings
+中固定禁用 MCP；生产 Source/ingestion 的 MCP 配置与生命周期保持独立。
 `MCP_SERVERS_CONFIG_PATH` 的代码默认值已经是
 `config/mcp_servers.local.json`，所以正常本地使用只需设置
 `MCP_TOOLS_ENABLED=true`。部署者仍可用项目内相对路径或绝对路径覆盖它。

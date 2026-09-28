@@ -288,7 +288,7 @@ def test_evaluate_uses_llm_judge_fields(monkeypatch):
         "gold_key_points": [{"point": "其他时间不予办理。", "aliases": ["其他时间不予办理。"]}],
         "forbidden_points": ["具体面试题目"],
     }
-    preds = {"q-test": {"answer": "学生证补办仅在每学期第 14 周办理，不是随时都能补办。"}}
+    preds = {"q-test": {"prediction_schema_version": 3, "retrieved_chunk_ids": [], "reference_chunk_ids": [], "answer": "学生证补办仅在每学期第 14 周办理，不是随时都能补办。"}}
 
     rows, summary, details = evaluate(
         [question],

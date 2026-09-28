@@ -13,7 +13,8 @@ from app.rag.runtime import get_rag_status, load_index_cache
 from app.services.chat_models import ChatServiceRequest
 from scripts.evaluation.agent import capture_tool_output_keys, run_evaluation_chat_turn
 
-PREDICTION_SCHEMA_VERSION = 3
+from scripts.evaluation.rag.common import PREDICTION_SCHEMA_VERSION, load_eval
+
 ERROR_STATUSES = frozenset({"MODEL_ERROR", "MODEL_BAD_OUTPUT", "TOOL_ERROR", "INTERNAL_ERROR"})
 PREDICTION_FIELDNAMES = [
     "prediction_schema_version", "qid", "question", "answer", "status",
@@ -57,28 +58,6 @@ def initialize_rag_for_predictions(force_rebuild: bool = False) -> None:
     status = get_rag_status()
     if not status.get("ready"):
         raise RuntimeError(f"RAG 未准备好：{status}")
-
-
-def load_eval_questions(eval_file):
-    """读取评测题列表，兼容 list 和带 items 的 JSON 对象。"""
-    with open(eval_file, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    if isinstance(data, dict) and "items" in data:
-        data = data["items"]
-    if not isinstance(data, list) or not data:
-        raise ValueError("评测文件必须包含非空题目列表")
-    qids = set()
-    for item in data:
-        if not isinstance(item, dict) or any(
-            not isinstance(item.get(key), str) or not item[key].strip()
-            for key in ("qid", "question")
-        ):
-            raise ValueError("评测题必须包含非空 qid 和 question")
-        if item["qid"] in qids:
-            raise ValueError(f"评测题 qid 重复：{item['qid']}")
-        qids.add(item["qid"])
-    return data
 
 
 def _run_rag_once(
@@ -180,7 +159,7 @@ def run_predictions(
     force_rebuild: bool = False,
 ) -> list[dict[str, Any]]:
     """逐题落盘；Agent 错误状态仅记录失败，评测结构异常仍中止整批。"""
-    questions = load_eval_questions(eval_file)
+    questions = load_eval(eval_file)
     initialize_rag_for_predictions(force_rebuild=force_rebuild)
     rows = []
     failure_count = 0

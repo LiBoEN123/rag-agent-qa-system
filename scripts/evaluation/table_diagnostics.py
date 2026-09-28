@@ -1,4 +1,4 @@
-"""表格评估的少量胶水：复用生产检索、重排、诊断分数门及现有 evidence scorer。
+"""专项表格 diagnostics：不参与统一 Runner 或主 Baseline。
 
 调用前由评估方加载隔离索引。本模块不初始化、不写索引、不调用回答模型。
 单查询诊断选择不代表 Agent 的 ToolMessage 上下文。

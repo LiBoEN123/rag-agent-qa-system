@@ -682,7 +682,8 @@ python scripts/inspect_agent_runtime.py --check
 python -m pytest -q
 ```
 
-Evaluation Baseline v2 首先支持不调用模型、RAG 或网络的数据校验：
+Evaluation Baseline v2 支持 Core Agent、RAG 和可选 Online Web 评测。离线校验同时检查
+Agent 数据合同与当前 65 题 RAG 数据，不调用模型、索引或网络：
 
 ```bash
 python scripts/run_evaluation_baseline.py --validate-only
@@ -701,8 +702,8 @@ python scripts/run_evaluation_baseline.py \
 `retrieval-k` 只控制 RAG 指标的评分 cutoff，不传入 Agent Tool Call。
 
 每次运行会生成 commit/数据/索引/模型/Prompt/工具合同 manifest、Prediction v3 与评分 cutoff、Agent/RAG 指标、覆盖矩阵、多原因失败报告和 Markdown 摘要。RAG 报告
-分别展示 Observed Evidence Recall@k 和 Grounded Reference Recall；
-Context 指标对 v3 不适用，Final Score 原有权重保持。工作区不干净时默认拒绝正式
+headline 指标为 prediction coverage、retrieval Gold Recall@K、reference Gold Recall
+及可选 Judge 的 key point recall；behavior/final score 保留为诊断，权重不变。工作区不干净时默认拒绝正式
 运行；实验运行必须显式使用 `--allow-dirty` 并会被标记。两轮结果可比较：
 
 ```bash
@@ -723,10 +724,11 @@ python scripts/run_evaluation_baseline.py \
   --judge-model deepseek-chat
 ```
 
-RAG 输出包括 `predictions.csv`、`per_question_report.csv`、`summary_report.csv`、
-`summary_report.json` 和 `llm_judge_details.jsonl`。Prediction v2 分别保存 Final、
-Context 和 Reference chunk IDs 及安全计数，不保存完整 Context/chunk 正文；旧 v1
-文件仍可读取，缺失的新指标显示 unavailable。Judge Prompt 和 Final Score 公式不变。
+RAG 输出包括 `predictions.csv`、`prediction_failures.jsonl`、`per_question_report.csv`、
+`summary_report.csv`、`summary_report.json` 和 `llm_judge_details.jsonl`。
+正式 Prediction 只接受 Schema v3，保存观察/引用 chunk IDs 与安全计数；旧 v1/v2 输入
+不再读取。Runtime 失败写入 sidecar，缺失预测计零且降低 coverage。
+专项表格题集和 `table_diagnostics.py` 属于 diagnostics，不参与主 Baseline。
 
 Core 不评测真实联网能力；Judge 关闭时不具备完整语义答案质量判断；Online 结果受
 外部服务和内容变化影响，不适合作为稳定 CI 门禁。
@@ -930,9 +932,9 @@ docker run --rm -p 8000:8000 --env-file .env \
 ### Agentic RAG 评估合同（v3）
 
 RAG 预测经 `ChatService.stream → stream_agent → create_agent` 执行，使用 `RAG_ONLY` 与
-`knowledge_base:read`，开放检索、比较、chunk 原文三种 KB 证据工具。每题空 session；
+`knowledge_base:read`，通过 `search_knowledge_base`、`search_document`、`get_chunk_context` 获取 KB 证据。每题空 session；
 Agent 自主决定每轮 query/top_k。`retrieved_chunk_ids` 是按观察顺序去重的全部 KB 证据，
 `reference_chunk_ids` 是最终通过 grounding 的引用。`--retrieval-k` 仅是评分 cutoff。
-Context 指标对 v3 不适用；Judge 与评分权重保留。
+正式评分只保留 v3 观察/引用 Recall；Judge 与评分权重保留。
 Prediction Schema v3 is a new baseline generation contract.
 Raw scores are not strictly comparable to historical v2 workflow scores.

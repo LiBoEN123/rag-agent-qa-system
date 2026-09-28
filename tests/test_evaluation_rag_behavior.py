@@ -72,7 +72,7 @@ def test_missing_prediction_scores_zero_and_never_calls_judge(expected, with_gol
     forbidden = Mock(return_value=unavailable_forbidden_result(["臆造"], "fake judge"))
     rows, summary, details = evaluate(
         questions,
-        {"q1": {"prediction_schema_version": 3, "answer": "政策", "retrieved_chunk_ids": "1"}},
+        {"q1": {"prediction_schema_version": 3, "answer": "政策", "retrieved_chunk_ids": "1", "reference_chunk_ids": "1"}},
         ChunkIndex({1: "gold.md"}, {}, "test"), k=5,
         judge_config=LLMJudgeConfig(judge_enabled, "fake", "", "", 0, 0, 0),
         key_point_evaluator=key_point, forbidden_evaluator=forbidden,
@@ -81,8 +81,8 @@ def test_missing_prediction_scores_zero_and_never_calls_judge(expected, with_gol
     assert missing["has_prediction"] is False
     assert missing["behavior_label"] == "runtime_error"
     for field in (
-        "final_score", "behavior_score", "key_point_recall", "retrieval_gold_chunk_hit_at_k",
-        "retrieval_gold_chunk_recall_at_k", "retrieval_all_gold_hit_at_k", "retrieval_doc_hit_at_k",
+        "final_score", "behavior_score", "key_point_recall",
+        "retrieval_gold_chunk_recall_at_k", "reference_gold_chunk_recall",
     ):
         assert missing[field] == 0
     assert missing["retrieved_chunk_ids"] == "[]"

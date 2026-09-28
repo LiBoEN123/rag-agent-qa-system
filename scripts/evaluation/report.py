@@ -60,12 +60,7 @@ def write_agent_csv(
         "actual_status",
         "expected_first_tool",
         "actual_first_tool",
-        "expected_tool_origin",
-        "actual_tool_origin",
-        "expected_mcp_server",
-        "actual_mcp_server",
         "classification",
-        "unnecessary_tool_call_count",
         "actual_tools",
         "tool_call_count",
         "llm_call_count",
@@ -96,27 +91,7 @@ def write_agent_csv(
                         "actual_first_tool",
                         "",
                     ),
-                    "expected_tool_origin": row.get(
-                        "expected_tool_origin",
-                        "",
-                    ),
-                    "actual_tool_origin": row.get(
-                        "actual_tool_origin",
-                        "",
-                    ),
-                    "expected_mcp_server": row.get(
-                        "expected_mcp_server",
-                        "",
-                    ),
-                    "actual_mcp_server": row.get(
-                        "actual_mcp_server",
-                        "",
-                    ),
                     "classification": row.get("classification", ""),
-                    "unnecessary_tool_call_count": row.get(
-                        "unnecessary_tool_call_count",
-                        0,
-                    ),
                     "actual_tools": " -> ".join(
                         row.get("actual_tools") or []
                     ),
@@ -139,25 +114,14 @@ def classify_rag_failures(
             reasons.append("runtime_error")
         else:
             if (
-                row.get("expected_behavior") != "abstain"
-                and float(row.get("retrieval_doc_hit_at_k", 0) or 0) == 0
-            ):
-                reasons.append("rag_document_miss")
-            if (
                 row.get("gold_chunk_ids") not in ("", "[]", None)
                 and float(
-                    row.get("retrieval_gold_chunk_hit_at_k", 0) or 0
+                    row.get("retrieval_gold_chunk_recall_at_k", 0) or 0
                 )
                 == 0
             ):
                 reasons.append("rag_chunk_miss")
-            if row.get(
-                "gold_present_in_final_but_missing_in_context"
-            ) is True:
-                reasons.append("rag_context_gold_miss")
-            if row.get(
-                "gold_present_in_context_but_not_referenced"
-            ) is True or row.get("gold_observed_but_not_referenced") is True:
+            if row.get("gold_observed_but_not_referenced") is True:
                 reasons.append("rag_reference_gold_miss")
             if (
                 row.get("key_point_judge_used")
@@ -178,20 +142,8 @@ def classify_rag_failures(
                     "question": str(row.get("question") or ""),
                     "failure_reasons": list(dict.fromkeys(reasons)),
                     "metrics": {
-                        "doc_hit_at_k": row.get(
-                            "retrieval_doc_hit_at_k",
-                            0,
-                        ),
-                        "gold_chunk_hit_at_k": row.get(
-                            "retrieval_gold_chunk_hit_at_k",
-                            0,
-                        ),
-                        "context_gold_chunk_hit": row.get(
-                            "context_gold_chunk_hit"
-                        ),
-                        "reference_gold_chunk_hit": row.get(
-                            "reference_gold_chunk_hit"
-                        ),
+                        "retrieval_gold_chunk_recall_at_k": row.get("retrieval_gold_chunk_recall_at_k", 0),
+                        "reference_gold_chunk_recall": row.get("reference_gold_chunk_recall", 0),
                         "key_point_recall": row.get(
                             "key_point_recall",
                             0,
@@ -208,17 +160,6 @@ def _format_rate(value: Any) -> str:
         return f"{float(value):.2%}"
     except (TypeError, ValueError):
         return "n/a"
-
-
-def _format_number(value: Any) -> str:
-    """渲染计数或均值；不可用指标不伪造为零。"""
-    if value is None:
-        return "n/a"
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return "n/a"
-    return str(int(number)) if number.is_integer() else f"{number:.2f}"
 
 
 def build_markdown_report(
@@ -321,63 +262,23 @@ def build_markdown_report(
         )
     else:
         lines.append("- skipped: `--include-online` 未启用")
-    lines.extend(["", "## Extended Tool 指标", ""])
-    extended_suites = {
-        name: (
-            (agent or {}).get("groups", {})
-            .get("suite", {})
-            .get(name)
-        )
-        for name in ("mcp", "mixed")
-    }
-    if any(extended_suites.values()):
-        for name, values in extended_suites.items():
-            if values:
-                lines.append(
-                    f"- {name} pass rate: "
-                    f"{_format_rate(values.get('pass_rate', 0))}"
-                )
-        for name in (
-            "tool_origin_accuracy",
-            "mcp_server_accuracy",
-            "external_tool_success_rate",
-            "mcp_tool_success_rate",
-            "web_tool_success_rate",
-            "permission_boundary_pass_rate",
-            "approval_gate_pass_rate",
-            "recovery_pass_rate",
-            "cross_tool_selection_accuracy",
-        ):
-            lines.append(
-                f"- {name}: {_format_rate((agent or {}).get(name, 0))}"
-            )
-        lines.extend(["", "### Cross-Tool Confusion", ""])
-        confusion = (agent or {}).get("cross_tool_confusion", {})
-        lines.extend(
-            f"- `{route}`: {count}"
-            for route, count in confusion.items()
-        )
-        if not confusion:
-            lines.append("- 无可统计路由")
-    else:
-        lines.append("- skipped: MCP/Mixed 显式开关未启用")
     lines.extend(["", "## RAG 指标", ""])
     if rag and not rag.get("skipped"):
         overall = rag.get("overall", {})
         for name in (
             "prediction_coverage",
-            "avg_final_score",
-            "avg_behavior_score",
             "avg_key_point_recall",
-            "gold_chunk_hit_at_k",
-            "gold_chunk_recall_at_k",
-            "all_gold_hit_at_k",
-            "doc_hit_at_k",
-            "forbidden_rate",
-            "llm_judge_coverage",
+            "retrieval_gold_chunk_recall_at_k",
+            "reference_gold_chunk_recall",
         ):
             if name in overall:
                 lines.append(f"- {name}: {_format_rate(overall[name])}")
+        lines.append(
+            "- 保留诊断："
+            + "; ".join(f"{name}={_format_rate(overall.get(name))}" for name in (
+                "avg_final_score", "avg_behavior_score", "forbidden_rate", "llm_judge_coverage",
+            ))
+        )
         lines.append(
             "- 口径来源：`scripts/evaluation/rag/evaluation.py`；"
             "答案关键点与 forbidden 语义判断仅在 Judge 启用时有效。"
@@ -386,67 +287,12 @@ def build_markdown_report(
             lines.append(
                 "- LLM Judge skipped: `--use-llm-judge` 未启用"
             )
-        if manifest.get("rag", {}).get("prediction_schema_version", 1) >= 3:
-            lines.extend([
-                "",
-                "Prediction Schema v3 is a new baseline generation contract.",
-                "Raw scores are not strictly comparable to historical v2 workflow scores.",
-                "",
-                "| Evidence | Gold hit | Gold recall | Doc hit | Average chunks |",
-                "| --- | ---: | ---: | ---: | ---: |",
-                f"| Observed KB evidence @K | {_format_rate(overall.get('gold_chunk_hit_at_k'))} | "
-                f"{_format_rate(overall.get('gold_chunk_recall_at_k'))} | "
-                f"{_format_rate(overall.get('doc_hit_at_k'))} | "
-                f"{_format_number(overall.get('avg_retrieved_chunk_count'))} |",
-                f"| Grounded references | {_format_rate(overall.get('reference_gold_chunk_hit'))} | "
-                f"{_format_rate(overall.get('reference_gold_chunk_recall'))} | "
-                f"{_format_rate(overall.get('reference_doc_hit'))} | "
-                f"{_format_number(overall.get('avg_reference_chunk_count'))} |",
-                "",
-                "- retrieved_chunk_ids：成功 KB 工具输出按观察顺序稳定去重；平均数量为完整观察数量。",
-                "- retrieval-k 仅对观察到的前 K 项评分，不控制 Agent 工具 top_k。",
-                "- Context metrics: unavailable / not applicable；不计为零。",
-                "- Final Score 权重不变；Reference 指标仅用于诊断。",
-            ])
-        else:
-            lines.extend(
-                [
-                    "",
-                    "## RAG Evidence Funnel",
-                    "",
-                    "Final-ranked evidence → Prompt context evidence → "
-                    "Final cited evidence",
-                    "",
-                    "| Evidence stage | Gold hit | Gold recall | Doc hit | "
-                    "Average chunks | Lost cases |",
-                    "| --- | ---: | ---: | ---: | ---: | ---: |",
-                    "| Final-ranked Recall@k | "
-                    f"{_format_rate(overall.get('gold_chunk_hit_at_k'))} | "
-                    f"{_format_rate(overall.get('gold_chunk_recall_at_k'))} | "
-                    f"{_format_rate(overall.get('doc_hit_at_k'))} | "
-                    f"{_format_number(overall.get('avg_final_chunk_count'))} | "
-                    "n/a |",
-                    "| Prompt context | "
-                    f"{_format_rate(overall.get('context_gold_chunk_hit'))} | "
-                    f"{_format_rate(overall.get('context_gold_chunk_recall'))} | "
-                    f"{_format_rate(overall.get('context_doc_hit'))} | "
-                    f"{_format_number(overall.get('avg_context_chunk_count'))} | "
-                    f"{_format_number(overall.get('gold_lost_by_context_count'))} |",
-                    "| Final cited | "
-                    f"{_format_rate(overall.get('reference_gold_chunk_hit'))} | "
-                    f"{_format_rate(overall.get('reference_gold_chunk_recall'))} | "
-                    f"{_format_rate(overall.get('reference_doc_hit'))} | "
-                    f"{_format_number(overall.get('avg_reference_chunk_count'))} | "
-                    f"{_format_number(overall.get('gold_lost_by_reference_count'))} |",
-                    "",
-                    "- Retrieval Recall@k 只评价最终排序 chunks 的前 k 个，"
-                    "不等于 Prompt Context Recall。",
-                    "- Prompt Context Recall 评价字符预算后进入回答上下文的 chunks，"
-                    "不等于最终 Reference Recall。",
-                    "- Context 与 Reference 指标是诊断指标，"
-                    "不参与 Evaluation Baseline v2 Final Score。",
-                ]
-            )
+        lines.extend([
+            "",
+            "- Prediction Schema v3：仅评价实际观察的 KB 证据与最终引用。",
+            "- retrieved_chunk_ids 按首次观察顺序去重；retrieval-k 仅为离线评分 cutoff。",
+            "- Reference Recall 对全部最终引用评分；Final Score 权重保持不变。",
+        ])
     else:
         lines.append(f"- skipped: {rag.get('reason', '') if rag else 'not run'}")
     lines.extend(

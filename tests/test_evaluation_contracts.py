@@ -13,10 +13,6 @@ from scripts.evaluation.contracts import (
     load_agent_evaluation_dataset,
     validate_tool_names,
 )
-from scripts.evaluation.external import (
-    McpPreflightError,
-    validate_mcp_runtime_catalog,
-)
 
 
 FIXTURE = (
@@ -235,58 +231,12 @@ def test_first_tool_any_of_is_exclusive_with_first_tool():
         AgentEvaluationDataset.model_validate(raw)
 
 
-@pytest.mark.parametrize(
-    ("suite", "servers", "match"),
-    [
-        ("core", ["github"], "必须为空"),
-        ("online", ["firecrawl"], "必须为空"),
-        ("mcp", [], "必须非空"),
-    ],
-)
-def test_suite_mcp_server_contract_is_fail_closed(suite, servers, match):
-    with pytest.raises(ValidationError, match=match):
-        AgentEvaluationDataset.model_validate(
-            _single_case(suite=suite, mcp_servers=servers)
-        )
 
 
-def test_mcp_tool_name_is_deferred_to_runtime_catalog_validation():
-    dataset = AgentEvaluationDataset.model_validate(
-        _single_case(
-            suite="mcp",
-            mcp_servers=["github"],
-            expected={
-                "status": "OK",
-                "first_tool": "github_get_file_contents",
-                "tool_origin": "mcp",
-                "mcp_server": "github",
-            },
-        )
-    )
-    validate_tool_names(dataset, KNOWN_TOOLS)
-
-    with pytest.raises(
-        McpPreflightError,
-        match="REQUIRED_MCP_TOOL_NOT_AVAILABLE",
-    ):
-        validate_mcp_runtime_catalog(
-            dataset,
-            [],
-            selected_suites={"mcp"},
-        )
-
-    validate_mcp_runtime_catalog(
-        dataset,
-        [
-            {
-                "server": "github",
-                "tool_name": "github_get_file_contents",
-                "remote_tool": "get_file_contents",
-                "risk_level": "read_only",
-                "approval_required": False,
-                "enabled": True,
-                "enabled_for_default_principal": False,
-            }
-        ],
-        selected_suites={"mcp"},
-    )
+@pytest.mark.parametrize("changes", [
+    {"suite": "mcp"}, {"suite": "mixed"}, {"mcp_servers": ["github"]},
+    {"expected": {"mcp_server": "github"}},
+])
+def test_removed_evaluation_contracts_are_rejected(changes):
+    with pytest.raises(ValidationError):
+        AgentEvaluationDataset.model_validate(_single_case(**changes))

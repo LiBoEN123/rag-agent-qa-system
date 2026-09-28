@@ -10,7 +10,6 @@ from scripts.evaluation.comparison import (
     evaluate_regressions,
     load_thresholds,
     main,
-    render_markdown,
 )
 
 
@@ -50,9 +49,9 @@ def _write_run(
         },
         "rag": {
             "overall": {
-                "gold_chunk_hit_at_k": 0.8,
-                "gold_chunk_recall_at_k": 0.7,
-                "doc_hit_at_k": 0.9,
+                "prediction_coverage": 1.0,
+                "retrieval_gold_chunk_recall_at_k": 0.7,
+                "reference_gold_chunk_recall": 0.6,
                 "avg_final_score": 0.75,
             }
         },
@@ -198,48 +197,7 @@ def test_default_comparison_reports_without_failure_exit(tmp_path):
     )
 
 
-def test_comparison_marks_new_metrics_unavailable_for_old_schema(tmp_path):
-    baseline = tmp_path / "baseline"
-    candidate = tmp_path / "candidate"
-    for path in (baseline, candidate):
-        _write_run(
-            path,
-            cases=[],
-            pass_rate=1,
-            first_tool=1,
-            source=1,
-            p95=10,
-        )
-    candidate_summary_path = candidate / "baseline_summary.json"
-    candidate_summary = json.loads(
-        candidate_summary_path.read_text(encoding="utf-8")
-    )
-    candidate_summary["rag"]["overall"].update(
-        {
-            "context_gold_chunk_recall": 0.8,
-            "reference_gold_chunk_recall": 0.6,
-            "context_truncation_rate": 0.2,
-            "gold_lost_by_context_count": 2,
-            "gold_lost_by_reference_count": 3,
-        }
-    )
-    candidate_summary_path.write_text(
-        json.dumps(candidate_summary),
-        encoding="utf-8",
-    )
-
-    comparison = compare_runs(baseline, candidate)
-
-    metric = comparison["metrics"]["context_gold_chunk_recall"]
-    assert metric == {
-        "baseline": None,
-        "candidate": 0.8,
-        "delta": None,
-    }
-    assert "unavailable" in render_markdown(comparison)
-
-
-def test_comparison_calculates_new_metric_delta_for_two_v2_runs(tmp_path):
+def test_comparison_calculates_reference_recall_delta(tmp_path):
     baseline = tmp_path / "baseline"
     candidate = tmp_path / "candidate"
     for path, value in ((baseline, 0.7), (candidate, 0.8)):
@@ -254,13 +212,13 @@ def test_comparison_calculates_new_metric_delta_for_two_v2_runs(tmp_path):
         summary_path = path / "baseline_summary.json"
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         summary["rag"]["overall"][
-            "context_gold_chunk_recall"
+            "reference_gold_chunk_recall"
         ] = value
         summary_path.write_text(json.dumps(summary), encoding="utf-8")
 
     comparison = compare_runs(baseline, candidate)
 
-    assert comparison["metrics"]["context_gold_chunk_recall"] == {
+    assert comparison["metrics"]["reference_gold_chunk_recall"] == {
         "baseline": 0.7,
         "candidate": 0.8,
         "delta": 0.1,

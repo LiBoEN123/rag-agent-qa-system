@@ -57,7 +57,7 @@ def _metric(
     summary: dict[str, Any],
     path: tuple[str, ...],
 ) -> float | None:
-    """读取嵌套数值指标；旧 Schema 缺失时明确返回 None。"""
+    """读取嵌套数值指标；未运行的评测层或可选指标返回 None。"""
     value: Any = summary
     for key in path:
         if not isinstance(value, dict) or key not in value:
@@ -169,50 +169,13 @@ def compare_runs(
             "agent",
             "average_tool_call_count",
         ),
-        "rag_gold_chunk_hit_at_k": (
-            "rag",
-            "overall",
-            "gold_chunk_hit_at_k",
-        ),
-        "rag_gold_chunk_recall_at_k": (
-            "rag",
-            "overall",
-            "gold_chunk_recall_at_k",
-        ),
-        "rag_doc_hit_at_k": (
-            "rag",
-            "overall",
-            "doc_hit_at_k",
-        ),
+        "rag_prediction_coverage": ("rag", "overall", "prediction_coverage"),
+        "rag_retrieval_gold_chunk_recall_at_k": ("rag", "overall", "retrieval_gold_chunk_recall_at_k"),
+        "reference_gold_chunk_recall": ("rag", "overall", "reference_gold_chunk_recall"),
         "rag_avg_final_score": (
             "rag",
             "overall",
             "avg_final_score",
-        ),
-        "context_gold_chunk_recall": (
-            "rag",
-            "overall",
-            "context_gold_chunk_recall",
-        ),
-        "reference_gold_chunk_recall": (
-            "rag",
-            "overall",
-            "reference_gold_chunk_recall",
-        ),
-        "context_truncation_rate": (
-            "rag",
-            "overall",
-            "context_truncation_rate",
-        ),
-        "gold_lost_by_context_count": (
-            "rag",
-            "overall",
-            "gold_lost_by_context_count",
-        ),
-        "gold_lost_by_reference_count": (
-            "rag",
-            "overall",
-            "gold_lost_by_reference_count",
         ),
     }
     before_categories = _category_rates(baseline)

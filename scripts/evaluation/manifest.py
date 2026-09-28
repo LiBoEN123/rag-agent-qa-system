@@ -21,6 +21,7 @@ from typing import Any
 from pydantic import SecretStr
 
 from app.config import AppSettings
+from scripts.evaluation.rag.common import PREDICTION_SCHEMA_VERSION
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -36,8 +37,6 @@ AGENT_PROMPT_INPUT_FILES = (
     "app/agent/query_rewrite.py",
     "app/tools/catalog.py",
 )
-PREDICTION_SCHEMA_VERSION = 3
-CORE_EVALUATION_MCP_MODE = "core_disabled"
 
 
 def sha256_file(path: str | Path | None) -> str:
@@ -207,7 +206,6 @@ def build_manifest(
     *,
     run_id: str,
     settings: AppSettings,
-    production_mcp_tools_enabled: bool,
     agent_cases_path: Path | None,
     rag_eval_path: Path | None,
     coverage_report: dict[str, Any],
@@ -216,47 +214,20 @@ def build_manifest(
     use_llm_judge: bool,
     judge_model: str,
     selected_suites: list[str] | tuple[str, ...] | None = None,
-    mcp_catalog: list[dict[str, str | bool]] | None = None,
-    selected_mcp_servers: list[str] | tuple[str, ...] = (),
     rag_status: dict[str, Any] | None = None,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     """用显式白名单生成 manifest，绝不 dump 完整 Settings。"""
     tool_names, _, contract_hash = build_tool_contract(settings)
     git_state = get_git_state()
-    explicit_suites = selected_suites is not None
     suites = sorted(
         set(
             selected_suites
             or (["core", "online"] if include_online else ["core"])
         )
     )
-    mcp_extended = bool({"mcp", "mixed"} & set(suites))
-    web_enabled = bool({"online", "mixed"} & set(suites))
-    external_network_enabled = bool(web_enabled or mcp_extended)
-    if mcp_extended:
-        evaluation_type = "extended_tool_evaluation"
-    elif web_enabled:
-        evaluation_type = "online_web_evaluation"
-    else:
-        evaluation_type = "core_baseline"
-    safe_mcp_catalog = list(mcp_catalog or [])
-    mcp_metadata: dict[str, Any] = {
-        "production_enabled": bool(production_mcp_tools_enabled),
-        "evaluation_enabled": bool(settings.mcp_tools_enabled),
-        "mode": "extended_live" if mcp_extended else CORE_EVALUATION_MCP_MODE,
-    }
-    if explicit_suites:
-        mcp_metadata.update(
-            {
-                "discovered_server_count": len(
-                    {str(row.get("server") or "") for row in safe_mcp_catalog}
-                ),
-                "discovered_tool_count": len(safe_mcp_catalog),
-                "selected_servers": sorted(set(selected_mcp_servers)),
-                "tools": safe_mcp_catalog,
-            }
-        )
+    web_enabled = "online" in suites
+    evaluation_type = "online_web_evaluation" if web_enabled else "core_baseline"
     agent_prompt_hashes = _prompt_hashes(AGENT_PROMPT_INPUT_FILES)
     manifest = {
         "schema_version": 2,
@@ -264,7 +235,7 @@ def build_manifest(
         "generated_at": generated_at or datetime.now(UTC).isoformat(),
         "evaluation_type": evaluation_type,
         "selected_suites": suites,
-        "external_network_enabled": external_network_enabled,
+        "external_network_enabled": web_enabled,
         "web": {"enabled": web_enabled},
         "code": {
             **git_state,
@@ -323,7 +294,6 @@ def build_manifest(
             "tool_contract_sha256": contract_hash,
             "include_online": include_online,
         },
-        "mcp": mcp_metadata,
         "prompts": {
             "agent": {
                 "files": agent_prompt_hashes,
