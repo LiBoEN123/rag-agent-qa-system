@@ -55,11 +55,7 @@ def build_tool_origin_catalog(
 ) -> dict[str, dict[str, str | bool]]:
     """从本地 Registry 和 MCP Provider 构造名称到来源的安全映射。"""
     catalog: dict[str, dict[str, str | bool]] = {}
-    registry = get_local_tool_specs(get_settings())
-    for name in [item.name for item in registry]:
-        spec = next((item for item in registry if item.name == name), None)
-        if spec is None:
-            continue
+    for spec in get_local_tool_specs(get_settings()):
         origin = (
             "web"
             if any(
@@ -68,8 +64,8 @@ def build_tool_origin_catalog(
             )
             else "local"
         )
-        catalog[name] = {
-            "tool_name": name,
+        catalog[spec.name] = {
+            "tool_name": spec.name,
             "origin": origin,
             "server": "",
             "remote_tool": "",

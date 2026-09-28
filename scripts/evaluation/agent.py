@@ -480,9 +480,8 @@ def _check_tool_output_schema(
     tool_output_records: list[dict[str, Any]] | None,
 ) -> dict[str, Any]:
     """优先检查评测边界捕获的真实字段名，兼容旧完整输出。"""
-    legacy = check_tool_output_keys(expected, result)
     if not expected.tool_output_keys or tool_output_records is None:
-        return legacy
+        return check_tool_output_keys(expected, result)
 
     expected_tools = expected.expected_tools()
     actual_keys = {
@@ -1092,7 +1091,6 @@ def calculate_agent_metrics(
             "decision": "actual_decision",
             "action": "actual_action",
             "status": "actual_status",
-            "first_tool": "actual_first_tool",
             "tool_sequence": "actual_tools",
         }[key]
         return _rate(

@@ -21,7 +21,6 @@ from scripts.evaluation.rag.common import (
     json_dumps,
     mean,
     parse_chunk_ids_field,
-    parse_chunk_ids,
     prediction_schema_version,
 )
 from scripts.evaluation.rag.judge import (
@@ -141,7 +140,6 @@ def evaluate(
                 retrieval[metric] = 0.0
         schema_version = prediction_schema_version(pred)
         final_chunk_ids = retrieval["retrieved_chunk_ids"]
-        observed_ids = parse_chunk_ids(pred) if schema_version >= 3 else final_chunk_ids
         context_chunk_ids: List[int] | None = None
         reference_chunk_ids: List[int] | None = None
         context_scored: Dict[str, Any] | None = None
@@ -150,26 +148,19 @@ def evaluate(
         final_to_context_drop_count: int | None = None
         gold_lost_by_context: bool | None = None
         gold_lost_by_reference: bool | None = None
+        if schema_version >= 2:
+            reference_chunk_ids = parse_chunk_ids_field(pred, "reference_chunk_ids")
+            reference_scored = score_evidence_chunks(
+                reference_chunk_ids, q, chunk_index.chunk_doc_map, chunk_index.chunk_text_map,
+                scored_gold_chunk_ids=retrieval["scored_gold_chunk_ids"],
+            )
         if schema_version == 2:
             context_chunk_ids = parse_chunk_ids_field(
                 pred,
                 "context_chunk_ids",
             )
-            reference_chunk_ids = parse_chunk_ids_field(
-                pred,
-                "reference_chunk_ids",
-            )
             context_scored = score_evidence_chunks(
                 context_chunk_ids,
-                q,
-                chunk_index.chunk_doc_map,
-                chunk_index.chunk_text_map,
-                scored_gold_chunk_ids=retrieval[
-                    "scored_gold_chunk_ids"
-                ],
-            )
-            reference_scored = score_evidence_chunks(
-                reference_chunk_ids,
                 q,
                 chunk_index.chunk_doc_map,
                 chunk_index.chunk_text_map,
@@ -194,12 +185,6 @@ def evaluate(
             )
             gold_lost_by_reference = (
                 gold_in_context and not gold_in_reference
-            )
-        if schema_version >= 3:
-            reference_chunk_ids = parse_chunk_ids_field(pred, "reference_chunk_ids")
-            reference_scored = score_evidence_chunks(
-                reference_chunk_ids, q, chunk_index.chunk_doc_map, chunk_index.chunk_text_map,
-                scored_gold_chunk_ids=retrieval["scored_gold_chunk_ids"],
             )
         judge_evidence = collect_retrieved_evidence(retrieval, chunk_index)
 
@@ -354,7 +339,7 @@ def evaluate(
             "gold_chunk_ids": json.dumps(retrieval["scored_gold_chunk_ids"], ensure_ascii=False),
             "hit_chunk_ids": json.dumps(retrieval["hit_chunk_ids"], ensure_ascii=False),
             "missing_gold_chunk_ids": json.dumps(retrieval["missing_gold_chunk_ids"], ensure_ascii=False),
-            "retrieved_chunk_ids": json.dumps(observed_ids, ensure_ascii=False),
+            "retrieved_chunk_ids": json.dumps(final_chunk_ids, ensure_ascii=False),
             "prediction_schema_version": schema_version,
             "final_chunk_ids": json.dumps(
                 final_chunk_ids,
@@ -415,7 +400,7 @@ def evaluate(
                 if reference_chunk_ids is not None
                 else None
             ),
-            "retrieved_chunk_count": len(observed_ids),
+            "retrieved_chunk_count": len(final_chunk_ids),
             "retrieval_call_count": _optional_int(pred.get("retrieval_call_count")),
             "tool_call_count": _optional_int(pred.get("tool_call_count")),
             "llm_call_count": _optional_int(pred.get("llm_call_count")),
@@ -423,7 +408,7 @@ def evaluate(
             "context_truncated": context_truncated,
             "final_to_context_drop_count": final_to_context_drop_count,
             "gold_observed_but_not_referenced": (
-                bool(set(retrieval["scored_gold_chunk_ids"]) & set(observed_ids))
+                bool(set(retrieval["scored_gold_chunk_ids"]) & set(final_chunk_ids))
                 and not bool(set(retrieval["scored_gold_chunk_ids"]) & set(reference_chunk_ids or []))
                 if schema_version >= 3 else None
             ),

@@ -9,4 +9,3 @@ target-version = "py312"
 "scripts/run_evaluation_baseline.py" = ["E402"]
 "scripts/smoke_test_online_tools.py" = ["E402"]
 "tests/test_api.py" = ["E731"]
-"tests/test_rag_eval_retrieval.py" = ["E402"]

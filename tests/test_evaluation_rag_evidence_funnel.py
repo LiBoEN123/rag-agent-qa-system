@@ -260,6 +260,8 @@ def test_v3_observation_cutoff_and_reference_metrics_without_context():
                                 ChunkIndex({1: "gold.md", 2: "other.md", 3: "gold.md"}, {}, "test"), k=2)
     row = rows[0]
     assert row["retrieval_gold_chunk_recall_at_k"] == 0.0
+    assert row["retrieved_chunk_ids"] == "[2, 1, 3]"
+    assert row["retrieved_chunk_count"] == 3
     assert row["reference_gold_chunk_recall"] == 1.0
     assert row["context_gold_chunk_recall"] is None
     assert row["context_chunk_ids"] is None

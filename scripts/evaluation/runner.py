@@ -97,14 +97,12 @@ def evaluation_settings_scope(
         """向评测调用链返回当前隔离的 Settings 快照。"""
         return settings
 
-    patched: list[tuple[ModuleType, Any]] = []
     for name, module in list(sys.modules.items()):
         if (
             name.startswith("app.")
             and isinstance(module, ModuleType)
             and getattr(module, "get_settings", None) is original
         ):
-            patched.append((module, original))
             setattr(module, "get_settings", provider)
     config_module.get_settings = provider
     _clear_runtime_caches()

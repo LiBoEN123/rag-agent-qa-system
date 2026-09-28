@@ -77,20 +77,13 @@ class ExpectedOutcome(BaseModel):
             raise ValueError(
                 "first_tool 与 first_tool_any_of 只能使用一个"
             )
-        tool_names = [
-            self.first_tool,
-            *self.first_tool_any_of,
-            *self.tools_contains,
-            *self.tool_sequence,
-            *(name for path in self.valid_tool_paths for name in path),
-        ]
         if any(not path or any(not name for name in path) for path in self.valid_tool_paths):
             raise ValueError("valid_tool_paths 不允许空路径或空工具名")
         if any(not RAG_EVIDENCE_TOOL_NAMES.intersection(path) for path in self.valid_tool_paths):
             raise ValueError("valid_tool_paths 必须包含 KB 正文 evidence 工具")
         if any(
-            name and not _SAFE_NAME_PATTERN.fullmatch(name)
-            for name in tool_names
+            not _SAFE_NAME_PATTERN.fullmatch(name)
+            for name in self.expected_tools()
         ):
             raise ValueError("expected tool name 必须使用安全名称格式")
         if self.mcp_server and not _SAFE_NAME_PATTERN.fullmatch(
