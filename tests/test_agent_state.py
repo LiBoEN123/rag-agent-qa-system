@@ -1,28 +1,12 @@
-"""无 Parent Graph 后的 Agent 状态与输入合同测试。"""
-
-from pathlib import Path
+"""Agent Runtime 输入与工具 trace 数值约束测试。"""
 
 import pytest
 from langchain_core.messages import HumanMessage
 
-from app.agent.framework_agent import FrameworkAgentState
 from app.agent.runtime import (
     prepare_agent_runtime_invocation,
 )
 from app.agent.tool_events import build_tool_trace
-
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-
-def test_parent_agent_graph_state_module_is_removed():
-    """生产状态只剩 create_agent 内部 Schema 与最终 Result。"""
-    assert not (PROJECT_ROOT / "app" / "graph" / "state.py").is_file()
-    fields = FrameworkAgentState.__annotations__
-    assert "knowledge_base_result" not in fields
-    assert "framework_events_applied" not in fields
-    assert "pending_rag_result" not in fields
-    assert "decision" not in fields
 
 
 def test_runtime_input_uses_effective_question_and_governance_context():

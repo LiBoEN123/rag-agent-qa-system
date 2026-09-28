@@ -1,15 +1,15 @@
-"""直接 ``create_agent`` 构建与无 Parent Graph 架构测试。"""
+"""``create_agent`` 构建、原生 middleware 与 Runtime 缓存契约。"""
 
-from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from langchain.agents.middleware import ToolCallLimitMiddleware
+from langchain.agents.middleware import AgentMiddleware, ToolCallLimitMiddleware
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.messages import AIMessage, HumanMessage
 
 from app.agent.final_response import FinalAgentResponse
 from app.agent import framework_agent
+from app.agent.framework_middleware import ProjectToolGovernanceMiddleware
 from app.tools.context import build_default_tool_context
 from tests.support.agent_runtime import FakeToolCallingModel
 from app.prompts import AGENT_SYSTEM_PROMPT
@@ -19,9 +19,6 @@ from app.agent.runtime import (
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-
 @pytest.fixture(autouse=True)
 def clear_runtime_cache():
     reset_agent_runtime()
@@ -29,29 +26,26 @@ def clear_runtime_cache():
     reset_agent_runtime()
 
 
-def test_create_agent_is_the_only_agent_graph():
+def test_create_agent_runtime_has_model_tools_and_call_limits():
     node_names = set(get_compiled_agent_runtime().get_graph().nodes)
 
-    assert {"__start__", "model", "tools", "__end__"} <= node_names
     assert {
-        "route",
-        "initialize",
-        "framework_agent",
-        "adapt_framework",
-        "rag_subgraph",
-        "compose",
-        "finalize",
-    }.isdisjoint(node_names)
+        "__start__", "model", "tools", "__end__",
+        "ModelCallLimitMiddleware.before_model",
+        "ProjectToolCallLimitMiddleware.after_model",
+    } <= node_names
+
+
+def test_project_governance_uses_native_tool_middleware_hooks():
+    """工具治理通过 LangChain 的异步工具与状态 hook 接入。"""
+    assert ProjectToolGovernanceMiddleware.wrap_tool_call is AgentMiddleware.wrap_tool_call
+    assert ProjectToolGovernanceMiddleware.awrap_tool_call is not AgentMiddleware.awrap_tool_call
+    for hook in ("abefore_model", "aafter_model", "aafter_agent"):
+        assert hook in ProjectToolGovernanceMiddleware.__dict__
 
 
 def test_compiled_create_agent_is_reused_for_same_settings():
     assert get_compiled_agent_runtime() is get_compiled_agent_runtime()
-
-
-def test_parent_graph_modules_are_removed():
-    graph_root = PROJECT_ROOT / "app" / "graph"
-
-    assert list(graph_root.rglob("*.py")) == []
 
 
 def test_builder_passes_retrieval_guidance_through_native_system_prompt(monkeypatch):

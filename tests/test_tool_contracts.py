@@ -1,18 +1,111 @@
-"""Tool Contract V2 契约校验测试。"""
+"""工具声明、调用上下文与输入输出模型的契约校验。"""
 
 import json
+from dataclasses import fields
 from typing import Any
 
 import pytest
 from langchain_core.documents import Document
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from app.agent.framework_tools import local_tool_contract
-from app.tools.context import ToolInvocationContext
+from app.contracts.chat import ToolMode
+from app.tools.context import PrincipalType, ToolInvocationContext
 from app.tools.contracts import (
     ToolSpec,
 )
-from app.tools.schemas import SearchDocumentOutput, SearchKnowledgeBaseOutput
+from app.tools.schemas import (
+    GetChunkContextArgs,
+    SearchDocumentOutput,
+    SearchKnowledgeBaseArgs,
+    SearchKnowledgeBaseOutput,
+)
+
+
+def test_context_normalizes_and_freezes_request_fields():
+    context = ToolInvocationContext(
+        trace_id=" trace-1 ",
+        session_id=" session-1 ",
+        principal_id=" service-1 ",
+        principal_type="service",
+        permissions=(
+            " knowledge_base:read ",
+            "knowledge_base:read",
+            "ticket:create",
+        ),
+        source=" test ",
+    )
+
+    assert context.trace_id == "trace-1"
+    assert context.session_id == "session-1"
+    assert context.principal_id == "service-1"
+    assert context.source == "test"
+    assert context.principal_type is PrincipalType.SERVICE
+    assert context.permissions == (
+        "knowledge_base:read",
+        "ticket:create",
+    )
+    assert {field.name for field in fields(ToolInvocationContext)} == {
+        "trace_id",
+        "session_id",
+        "principal_id",
+        "principal_type",
+        "permissions",
+        "source",
+        "effective_question",
+        "tool_mode",
+    }
+    assert context.tool_mode is ToolMode.FULL
+    assert ToolInvocationContext(tool_mode="rag_only").tool_mode is ToolMode.RAG_ONLY
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("permissions", "knowledge_base:read"),
+        ("permissions", ("knowledge_base:*",)),
+        ("tool_mode", "invalid"),
+        ("tool_mode", None),
+    ],
+)
+def test_context_rejects_invalid_permissions(field_name, value):
+    with pytest.raises(ValueError):
+        ToolInvocationContext(**{field_name: value})
+
+
+def test_search_knowledge_base_args_rejects_invalid_top_k():
+    with pytest.raises(ValidationError):
+        SearchKnowledgeBaseArgs(query="测试问题", top_k=0)
+
+    with pytest.raises(ValidationError):
+        SearchKnowledgeBaseArgs(query="测试问题", top_k=11)
+
+
+@pytest.mark.parametrize("query", ["", "   "])
+def test_search_knowledge_base_args_rejects_blank_query(query):
+    """空字符串和纯空白查询都在参数模型边界拒绝。"""
+    with pytest.raises(ValidationError):
+        SearchKnowledgeBaseArgs(query=query)
+
+
+def test_search_knowledge_base_args_normalizes_query_and_top_k():
+    """查询 trim 与数字字符串转换只由参数模型负责。"""
+    args = SearchKnowledgeBaseArgs(query="  测试问题  ", top_k="5")
+
+    assert args.model_dump(mode="json") == {"query": "测试问题", "top_k": 5}
+
+
+def test_get_chunk_context_args_parses_positive_integer_locator():
+    assert GetChunkContextArgs(chunk_id=1).chunk_id == 1
+    assert GetChunkContextArgs(chunk_id=382).chunk_id == 382
+    assert GetChunkContextArgs(chunk_id="382").chunk_id == 382
+
+
+@pytest.mark.parametrize("chunk_id", [0, -1, "", "   ", "abc", "knowledge_base:ef463ed6"])
+def test_get_chunk_context_args_rejects_invalid_locator(chunk_id):
+    """拒绝非正整数与 evidence identity。"""
+    with pytest.raises(ValidationError):
+        GetChunkContextArgs(chunk_id=chunk_id)
 
 
 def test_knowledge_output_contains_only_retrieval_evidence():
@@ -275,5 +368,4 @@ def test_tool_spec_rejects_invalid_base_field_types(
 
     error = str(exc_info.value)
     assert field_name in error
-
 
