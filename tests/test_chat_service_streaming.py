@@ -13,6 +13,7 @@ from app.contracts.chat import AgentResultStatus
 from app.agent.streaming import AgentRuntimeStreamEvent, stream_agent
 from app.agent.final_response import FinalAgentResponse
 from tests.support.agent_runtime import FakeToolCallingModel
+from tests.support.answer_streaming import ControlledAnswerModel, install_evidence_agent
 from langchain_core.messages import AIMessage
 from app.services.chat_models import ChatServiceRequest
 from app.services.chat_service import ChatService, ChatServiceDependencies
@@ -609,3 +610,80 @@ def test_real_structured_agent_stream_matches_public_final_and_metrics(
     assert model.structured_tool_name not in repr(events)
     assert "UNSUPPORTED" not in repr(events)
     assert events[-2].event == "final" and events[-1].event == "done"
+
+
+@pytest.mark.asyncio
+async def test_native_answer_stream_reaches_service_before_model_finishes(monkeypatch):
+    composer = ControlledAnswerModel()
+    install_evidence_agent(monkeypatch, composer)
+    service, calls = _build_service([], stream_agent=stream_agent, rewrite_llm_used=True)
+    stream = service.stream(_request())
+    events = []
+    async with asyncio.timeout(2):
+        async for event in stream:
+            events.append(event)
+            if event.event == "answer_delta":
+                break
+        assert events[-1].data["text"] == " 已确认"
+        assert not composer.completed.is_set()
+        assert not any(event.event == "final" for event in events)
+        assert calls["messages"] == calls["metrics"] == []
+        composer.release.set()
+        events.extend([event async for event in stream])
+    outcome = events[-2].data["outcome"]
+    response = build_chat_response_from_outcome(outcome, trace_id="trace-1")
+    answer = "".join(event.data["text"] for event in events if event.event == "answer_delta")
+    assert answer == response.data.answer == " 已确认的回答。\n"
+    assert response.data.llm_call_count == 4
+    assert all(event.event != "llm_usage" for event in events)
+    assert calls["messages"] == [("session-1", "user", "测试问题"), ("session-1", "assistant", answer)]
+    assert len(calls["metrics"]) == 1
+    assert calls["metrics"][0]["llm_call_count"] == 4
+    assert calls["metrics"][0]["streamed_answer_matches_final"] is True
+    assert events[-1].event == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_pending", [False, True])
+async def test_service_close_or_cancel_stops_native_composer_without_saving_partial(monkeypatch, cancel_pending):
+    composer = ControlledAnswerModel()
+    install_evidence_agent(monkeypatch, composer)
+    service, calls = _build_service([], stream_agent=stream_agent)
+    stream = service.stream(_request())
+    seen = []
+    async with asyncio.timeout(2):
+        async for event in stream:
+            seen.append(event)
+            if event.event == "answer_delta":
+                break
+        if cancel_pending:
+            pending = asyncio.create_task(anext(stream))
+            await composer.waiting.wait()
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+        else:
+            await stream.aclose()
+        await composer.closed.wait()
+    assert not composer.completed.is_set()
+    assert all(event.event not in {"final", "done"} for event in seen)
+    assert calls["messages"] == calls["bad_cases"] == []
+    assert len(calls["metrics"]) == 1
+    assert calls["metrics"][0]["status"] == "client_disconnected"
+    assert calls["metrics"][0]["llm_call_count"] == 3
+    assert calls["metrics"][0]["answer_llm_used"] is True
+
+
+@pytest.mark.asyncio
+async def test_composer_error_after_delta_persists_only_authoritative_error(monkeypatch):
+    composer = ControlledAnswerModel(fail=True)
+    composer.release.set()
+    install_evidence_agent(monkeypatch, composer)
+    service, calls = _build_service([], stream_agent=stream_agent)
+    events = [event async for event in service.stream(_request())]
+    outcome = events[-2].data["outcome"]
+    assert outcome.code == "MODEL_ERROR"
+    assert calls["metrics"][0]["llm_call_count"] == 3
+    assert calls["metrics"][0]["streamed_answer_matches_final"] is False
+    assert all("已确认" not in content for _, _, content in calls["messages"])
+    assert "PRIVATE PROVIDER FAILURE" not in repr(events)

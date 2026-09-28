@@ -227,6 +227,14 @@ class ChatService:
                     ),
                 )
                 async for runtime_event in runtime_stream:
+                    if runtime_event.event == "llm_usage":
+                        # 内部进度只更新 telemetry，不新增公开 SSE 事件。
+                        context.metrics["llm_call_count"] = (
+                            runtime_event.data["llm_call_count"]
+                            + int(context.metrics["query_rewrite_llm_used"])
+                        )
+                        context.metrics["answer_llm_used"] = runtime_event.data["answer_llm_used"]
+                        continue
                     if runtime_event.event == "result":
                         runtime_result = runtime_event.data.get("result")
                         if not isinstance(runtime_result, dict):

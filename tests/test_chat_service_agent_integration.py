@@ -28,6 +28,7 @@ from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from tests.support.local_tools import local_tools
 from tests.support.agent_runtime import FakeToolCallingModel
+from tests.support.answer_streaming import ControlledAnswerModel
 from app.agent.final_response import FinalAgentResponse
 from app.tools.result import tool_success
 
@@ -111,10 +112,6 @@ class ChatWebSearchModel(ChatAgentModel):
         output = payload["output"]
         return self.final_response(
             outcome="answer", evidence_ids=[output["evidence"][0]["id"]],
-            answer=(
-                f"{output['title']}：{output['evidence'][0]['page_content']} "
-                f"来源：{output['final_url']}"
-            )
         )
 
 
@@ -168,10 +165,6 @@ class ChatWebPdfModel(ChatAgentModel):
         output = payload["output"]
         return self.final_response(
             outcome="answer", evidence_ids=[output["evidence"][0]["id"]],
-            answer=(
-                f"{output['title']}，相关页码 {output['page_numbers']}，"
-                f"来源：{output['final_url']}"
-            )
         )
 
 
@@ -461,6 +454,12 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
             return self.session
 
     model = ChatWebSearchModel()
+    composer = ControlledAnswerModel(
+        first_text="Python release news：A new Python release is available. ",
+        last_text="来源：https://example.com/python-news",
+    )
+    composer.release.set()
+    monkeypatch.setattr("app.agent.streaming.get_answer_model", lambda: composer)
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     monkeypatch.setattr(web_download_module, "Manager", FakeManager)
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
@@ -566,6 +565,7 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
     assert metric_writes[0]["tool_called"] is True
     assert metric_writes[0]["tool_success"] is True
     assert metric_writes[0]["tool_name"] == "web_fetch"
+    assert outcome.result["llm_call_count"] == metric_writes[0]["llm_call_count"] == 4
     assert [
         item["tool_name"]
         for item in outcome.result["tool_trace"]
@@ -642,6 +642,12 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
             return self.session
 
     model = ChatWebPdfModel()
+    composer = ControlledAnswerModel(
+        first_text="Governed Web PDF Fixture，相关页码 [1, 2]，",
+        last_text="来源：https://example.com/document.pdf",
+    )
+    composer.release.set()
+    monkeypatch.setattr("app.agent.streaming.get_answer_model", lambda: composer)
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     monkeypatch.setattr(web_download_module, "Manager", FakeManager)
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
@@ -739,6 +745,7 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
     assert metric_writes[0]["tool_called"] is True
     assert metric_writes[0]["tool_success"] is True
     assert metric_writes[0]["tool_name"] == "web_pdf_fetch"
+    assert outcome.result["llm_call_count"] == metric_writes[0]["llm_call_count"] == 4
     assert [
         item["tool_name"]
         for item in outcome.result["tool_trace"]

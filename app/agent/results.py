@@ -6,9 +6,9 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.agent.final_response import (
-    FinalAgentResponse,
-    collect_evidence_from_messages,
+    FinalResponseError,
     document_to_reference,
+    validate_final_response,
 )
 from app.agent.guardrails import AgentStopReason
 from app.agent.router import RouteDecision
@@ -240,6 +240,8 @@ def build_short_circuit_result(
 def build_framework_agent_result(
     invocation: AgentResultInvocation,
     framework_output: Mapping[str, Any],
+    *,
+    composed_answer: str | None = None,
 ) -> dict[str, Any]:
     """把 ``create_agent`` 最终状态一次性归一化为 AgentRunResult。"""
     raw_events = framework_output.get("governance_events")
@@ -266,40 +268,30 @@ def build_framework_agent_result(
         reason = stop_reason
         mode = "error"
     else:
-        final = framework_output.get("structured_response")
         status = AgentResultStatus.MODEL_ERROR
         answer = "模型未生成可用的最终回答。"
         reason = "Agent structured response is missing or invalid"
         mode = "error"
         try:
-            # 只接受框架已解析的 Pydantic 对象；不解析模型文本或未验证的 dict。
-            if not isinstance(final, FinalAgentResponse):
-                raise ValueError(reason)
-            final = FinalAgentResponse.model_validate(final)
-            evidence = collect_evidence_from_messages(framework_output.get("messages"))
-            if any(evidence_id not in evidence for evidence_id in final.evidence_ids):
-                reason = "Agent structured response referenced unavailable evidence"
-                grounding_diagnostics = {
-                    "requested_evidence_ids": list(final.evidence_ids),
-                    "available_evidence_ids": list(evidence),
-                    "unavailable_evidence_ids": [
-                        evidence_id for evidence_id in final.evidence_ids
-                        if evidence_id not in evidence
-                    ],
-                }
-                raise ValueError(reason)
-            if final.outcome == "answer" and evidence and not final.evidence_ids:
-                reason = "Agent structured answer did not cite available evidence"
-                raise ValueError(reason)
+            final, evidence = validate_final_response(framework_output)
+            final_answer = composed_answer if composed_answer is not None else final.answer
+            if final.outcome == "answer" and not final_answer.strip():
+                raise FinalResponseError("Agent answer composition is missing or empty")
+        except FinalResponseError as exc:
+            reason = str(exc)
+            grounding_diagnostics = exc.diagnostics
         except (ValueError, TypeError):
             pass
         else:
             mode = "agent_loop"
             if final.outcome == "answer":
                 status = AgentResultStatus.OK
-                answer = final.answer
-                reason = "Agent model produced structured answer"
-                references = [document_to_reference(evidence[key]) for key in final.evidence_ids]
+                answer = final_answer
+                reason = (
+                    "Agent model streamed answer from verified evidence"
+                    if composed_answer is not None else "Agent model produced structured answer"
+                )
+                references = [document_to_reference(document) for document in evidence]
             elif final.outcome == "no_evidence":
                 status = AgentResultStatus.NO_RELEVANT_INFO
                 answer = final.answer or "我无法根据当前取得的证据确定答案。"

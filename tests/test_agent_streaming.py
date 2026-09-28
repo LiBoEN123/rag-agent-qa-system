@@ -12,6 +12,7 @@ from app.agent import runtime as agent_runtime
 from app.agent import streaming as agent_streaming
 from app.agent.runtime import reset_agent_runtime
 from app.agent.streaming import project_agent_stream_part, stream_agent
+from tests.support.answer_streaming import ControlledAnswerModel, install_evidence_agent
 
 
 @pytest.fixture(autouse=True)
@@ -384,3 +385,131 @@ async def test_total_deadline_interrupts_model_or_sync_tool(monkeypatch, setting
     assert all(event.event != "answer_delta" for event in events)
     assert "private unfinished text" not in repr(events)
     assert calls == (["tool"] if slow_tool else [])
+
+
+def _evidence_stream():
+    return stream_agent(
+        write_bad_cases=None, trace_id="evidence-stream", session_id=None, bad_case=None,
+        original_question="原问题", effective_question="证据支持哪些事实？",
+    )
+
+
+@pytest.mark.asyncio
+async def test_first_delta_is_consumed_before_native_model_generation_finishes(monkeypatch):
+    model = ControlledAnswerModel()
+    _, documents, _ = install_evidence_agent(monkeypatch, model)
+    seen = []
+    stream = _evidence_stream()
+    async with asyncio.timeout(2):
+        async for event in stream:
+            seen.append(event)
+            if event.event == "answer_delta":
+                break
+        assert seen[-1].data == {"text": " 已确认"}
+        assert not model.completed.is_set()
+        assert not any(event.event == "result" for event in seen)
+        pending = asyncio.create_task(anext(stream))
+        await model.waiting.wait()
+        assert not pending.done()  # 第二个 chunk 尚未生成；第一个已经被消费。
+        model.release.set()
+        seen.append(await pending)
+        seen.extend([event async for event in stream])
+
+    result = seen[-1].data["result"]
+    assert result["status"] == "OK"
+    assert model.completed.is_set()
+    assert "".join(event.data["text"] for event in seen if event.event == "answer_delta") == result["answer"] == " 已确认的回答。\n"
+    assert result["llm_call_count"] == 3 and result["answer_llm_used"] is True
+    assert len([step for step in result["tool_trace"] if step["step"] == "agent_iteration"]) == 3
+    assert [ref["reference_id"] for ref in result["references"]] == [documents[0].id]
+    prompt = repr(model.received)
+    assert "证据支持哪些事实？" in prompt and documents[0].page_content in prompt
+    for private in ("UNSELECTED DOCUMENT BODY", "PRIVATE AGENT TEXT", "PRIVATE DOCUMENT METADATA", "ToolMessage"):
+        assert private not in prompt
+    for private in ("PRIVATE REASONING", "PRIVATE PROVIDER METADATA", "PRIVATE AGENT TEXT"):
+        assert private not in repr(seen)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("damage", ["unknown_id", "missing_ids", "invalid_document", "failed_tool", "missing_decision", "terminal"])
+async def test_evidence_gate_failure_never_starts_composer_or_emits_delta(monkeypatch, damage):
+    composer = ControlledAnswerModel()
+    model, documents, payload = install_evidence_agent(monkeypatch, composer)
+    if damage == "unknown_id":
+        model.responses[-1] = FinalAgentResponse(outcome="answer", evidence_ids=["invented"])
+    elif damage == "missing_ids":
+        model.responses[-1] = FinalAgentResponse(outcome="answer", answer="PRIVATE UNSUPPORTED")
+    elif damage == "invalid_document":
+        documents[0].metadata.pop("content_is_untrusted")
+    elif damage == "failed_tool":
+        payload.update(ok=False, status="error", error_code="execution_error")
+    elif damage == "missing_decision":
+        model.responses[-1] = AIMessage(content="PRIVATE UNSUPPORTED")
+    else:
+        payload.update(ok=False, status="error", error_code="permission_denied")
+    async with asyncio.timeout(2):
+        events = [event async for event in _evidence_stream()]
+    assert not composer.received
+    assert all(event.event != "answer_delta" for event in events)
+    assert events[-1].data["result"]["status"] in {"MODEL_ERROR", "TOOL_ERROR"}
+    assert "PRIVATE UNSUPPORTED" not in repr(events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("empty", [False, True])
+async def test_composer_failure_is_counted_and_never_returns_partial_success(monkeypatch, empty):
+    composer = ControlledAnswerModel(fail=True, empty=empty)
+    composer.release.set()
+    install_evidence_agent(monkeypatch, composer)
+    events = [event async for event in _evidence_stream()]
+    result = events[-1].data["result"]
+    assert result["status"] == "MODEL_ERROR"
+    assert result["reason"] == "agent_model_call_failed"
+    assert result["references"] == [] and "已确认" not in result["answer"]
+    assert result["llm_call_count"] == 3
+    assert composer.closed.is_set()
+    assert "PRIVATE PROVIDER FAILURE" not in repr(events)
+    if empty:
+        assert all(event.event != "answer_delta" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_composer_shares_total_deadline_and_counts_interrupted_call(monkeypatch, settings_env):
+    settings_env(agent_max_total_cost_ms=100)
+    composer = ControlledAnswerModel()
+    install_evidence_agent(monkeypatch, composer)
+    async with asyncio.timeout(2):
+        events = [event async for event in _evidence_stream()]
+    result = events[-1].data["result"]
+    assert composer.waiting.is_set() and composer.closed.is_set()
+    assert not composer.completed.is_set()
+    assert result["status"] == "MODEL_ERROR"
+    assert result["reason"] == "max_total_cost_reached"
+    assert result["llm_call_count"] == 3
+    assert "已确认" not in result["answer"]
+
+
+@pytest.mark.asyncio
+async def test_composer_cannot_exceed_existing_model_call_budget(monkeypatch, settings_env):
+    settings_env(agent_max_iterations=2)
+    composer = ControlledAnswerModel()
+    install_evidence_agent(monkeypatch, composer)
+    events = [event async for event in _evidence_stream()]
+    result = events[-1].data["result"]
+    assert not composer.received
+    assert all(event.event != "answer_delta" for event in events)
+    assert result["status"] == "MODEL_ERROR"
+    assert result["reason"] == "max_iterations_reached"
+    assert result["llm_call_count"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_name", ["search_document", "get_chunk_context", "web_fetch", "web_pdf_fetch"])
+async def test_recognized_document_tools_share_native_answer_stream(monkeypatch, tool_name):
+    composer = ControlledAnswerModel()
+    composer.release.set()
+    install_evidence_agent(monkeypatch, composer, tool_name=tool_name)
+    events = [event async for event in _evidence_stream()]
+    result = events[-1].data["result"]
+    assert result["status"] == "OK"
+    assert [event.data["text"] for event in events if event.event == "answer_delta"] == [" 已确认", "的回答。\n"]

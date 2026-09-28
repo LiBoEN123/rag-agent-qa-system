@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
-from app.agent.final_response import FinalAgentResponse
+from app.agent.final_response import (
+    FinalAgentResponse,
+    build_answer_messages,
+    validate_final_response,
+)
 from app.agent.guardrails import AgentStopReason
 from app.config import get_settings
 from app.agent.results import (
@@ -23,6 +28,7 @@ from app.agent.runtime import (
 )
 from app.common.logging import get_logger
 from app.contracts.chat import AgentResultStatus
+from app.llm.factory import get_answer_model
 from app.tools.context import ToolInvocationContext
 
 
@@ -266,8 +272,11 @@ async def stream_agent(
         )
         final_state: Mapping[str, Any] | None = None
         seen_event_keys: set[str] = set()
+        composed_answer: str | None = None
+        model_calls = 0
 
-        deadline = asyncio.timeout(get_settings().agent_max_total_cost_ms / 1000.0)
+        settings = get_settings()
+        deadline = asyncio.timeout(settings.agent_max_total_cost_ms / 1000.0)
         try:
             async with deadline:
                 async for part in agent_stream:
@@ -275,6 +284,16 @@ async def stream_agent(
                         value = part.get("data")
                         if isinstance(value, Mapping):
                             final_state = value
+                            model_events = [
+                                item for item in value.get("governance_events", [])
+                                if item.get("kind") == "model"
+                            ] 
+                            if len(model_events) != model_calls:
+                                model_calls = len(model_events)
+                                yield AgentRuntimeStreamEvent("llm_usage", {
+                                    "llm_call_count": model_calls,
+                                    "answer_llm_used": any(item.get("ok") for item in model_events),
+                                })
                         continue
                     for event in project_agent_stream_part(part):
                         if event.key and event.key in seen_event_keys:
@@ -297,6 +316,64 @@ async def stream_agent(
                                     seen_event_keys.add(progress.key)
                                     yield progress
 
+                agent_stream_completed = True
+                if final_state is None:
+                    raise RuntimeError("create_agent stream did not produce final state")
+                if final_state.get("stop_reason") in (None, "", AgentStopReason.COMPLETED.value):
+                    try:
+                        decision, evidence = validate_final_response(final_state)
+                    except (ValueError, TypeError):
+                        # 由共用 Result Builder 产生安全失败和 grounding diagnostics。
+                        pass
+                    else:
+                        if decision.outcome == "answer" and evidence:
+                            events = list(final_state.get("governance_events") or [])
+                            final_state = {**final_state, "governance_events": events}
+                            if model_calls >= settings.agent_max_iterations:
+                                final_state["stop_reason"] = AgentStopReason.MAX_ITERATIONS.value
+                            else:
+                                model_event = {"kind": "model", "ok": False, "cost_ms": 0}
+                                events.append(model_event)
+                                started = time.perf_counter()
+                                answer_stream = None
+                                try:
+                                    yield AgentRuntimeStreamEvent("llm_usage", {
+                                        "llm_call_count": model_calls + 1,
+                                        "answer_llm_used": any(
+                                            item.get("kind") == "model" and item.get("ok")
+                                            for item in events
+                                        ),
+                                    })
+                                    model = get_answer_model()
+                                    if model is None:
+                                        raise RuntimeError("Answer model is unavailable")
+                                    answer_stream = model.astream(build_answer_messages(
+                                        resolved_effective, evidence,
+                                    ))
+                                    parts: list[str] = []
+                                    async for chunk in answer_stream:
+                                        if not isinstance(chunk, AIMessageChunk):
+                                            raise TypeError("Answer model must stream AIMessageChunk")
+                                        text = chunk.text
+                                        if text:
+                                            parts.append(text)
+                                            yield AgentRuntimeStreamEvent(
+                                                event="answer_delta", data={"text": text},
+                                            )
+                                    composed_answer = "".join(parts)
+                                    if not composed_answer.strip():
+                                        raise ValueError("Answer model returned no text")
+                                    model_event["ok"] = True
+                                except Exception as exc:
+                                    model_event["error_type"] = type(exc).__name__
+                                    final_state["stop_reason"] = "agent_model_call_failed"
+                                finally:
+                                    model_event["cost_ms"] = max(
+                                        0, int((time.perf_counter() - started) * 1000),
+                                    )
+                                    if answer_stream is not None:
+                                        await _close_async_iterator(answer_stream)
+
         except TimeoutError:
             if not deadline.expired():
                 raise
@@ -306,8 +383,13 @@ async def stream_agent(
         agent_stream_completed = True
         if final_state is None:
             raise RuntimeError("create_agent stream did not produce final state")
-        result = build_framework_agent_result(invocation, final_state)
-        if result["status"] in {AgentResultStatus.OK, AgentResultStatus.NO_RELEVANT_INFO}:
+        result = build_framework_agent_result(
+            invocation, final_state, composed_answer=composed_answer,
+        )
+        # 无 Document 的操作结果及 no_evidence 保留单次交付；不重放 composer 文本。
+        if composed_answer is None and result["status"] in {
+            AgentResultStatus.OK, AgentResultStatus.NO_RELEVANT_INFO,
+        }:
             yield AgentRuntimeStreamEvent(
                 event="answer_delta",
                 data={"text": result["answer"]},

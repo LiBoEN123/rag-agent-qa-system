@@ -762,3 +762,22 @@ def test_get_chunk_context_reference_preserves_locator_and_safe_scores(chunk_id)
     assert reference.source_path == document.metadata["source_uri"]
     assert reference.position == 3
     assert reference.score == reference.rerank_score == 0.0
+
+
+def test_evidence_decision_requires_composition_and_preserves_streamed_whitespace():
+    output = _knowledge_output()
+    output["structured_response"] = FinalAgentResponse(
+        outcome="answer", evidence_ids=output["structured_response"].evidence_ids,
+    )
+    assert build_framework_agent_result(_invocation(), output)["status"] == "MODEL_ERROR"
+    result = build_framework_agent_result(_invocation(), output, composed_answer=" 答案\n")
+    assert result["status"] == "OK" and result["answer"] == " 答案\n"
+    output["structured_response"].evidence_ids = ["invented"]
+    result = build_framework_agent_result(_invocation(), output, composed_answer="PRIVATE ANSWER")
+    assert result["status"] == "MODEL_ERROR" and "PRIVATE ANSWER" not in repr(result)
+
+
+@pytest.mark.parametrize("answer", ["", " \n"])
+def test_empty_composition_never_falls_back_to_structured_draft(answer):
+    result = build_framework_agent_result(_invocation(), _knowledge_output(), composed_answer=answer)
+    assert result["status"] == "MODEL_ERROR"

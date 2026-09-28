@@ -58,23 +58,54 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
 | `start` | `session_id_present` | 第一条业务事件；只说明是否存在 session ID |
 | `progress` | `stage`、`status` | 高层阶段；stage 为 `query_rewrite/routing/agent/rag/finalizing` |
 | `tool` | `tool_name`、`phase`、`status`、完成时的 `cost_ms` | 安全工具开始/完成状态 |
-| `answer_delta` | `text` | 通过 structured-response 与 evidence-ID 校验的完整答案文本 |
+| `answer_delta` | `text` | Evidence Gate 通过后，正文模型实际生成的公开文本 chunk；非 Document 回答保留单次交付 |
 | `final` | `http_status`、完整 `response`、`total_cost_ms` | 唯一权威业务结果 |
 | `error` | 固定 `STREAM_ERROR` 和通用消息 | 仅表示 SSE 协议自身无法继续 |
 | `done` | `reason=completed/error` | 正常可发送结束事件 |
 
 客户端必须以 `final.data.response` 作为最终结果，不能只依赖拼接
-`answer_delta`。部分 RAG 请求可能没有 `answer_delta`，但仍会实时收到进度和工具
-事件，完整答案始终包含在 `final` 中。
+`answer_delta`。澄清、治理失败等请求可能没有 `answer_delta`，但仍会实时收到进度和工具
+事件。成功的 Document 回答保证 `"".join(answer_delta_parts) == final.data.response.data.answer`，
+包括正文首尾的空格、换行；收到部分文本不代表业务已成功。
+
+## 答案生成
+
+基于 `search_knowledge_base`、`search_document`、`get_chunk_context`、`web_fetch`、
+`web_pdf_fetch` 返回的有效 Document 的回答，在 `rag_only` / `full` 模式均使用
+**model chunk streaming**：
+
+```text
+create_agent.astream(updates/messages/values, version="v2")
+→ 完整 structured_response（outcome、evidence_ids）
+→ Evidence Gate
+→ get_answer_model().astream(问题 + 已验证、已选中的 Document)
+→ AIMessageChunk.text → answer_delta...
+→ AgentRunResult → final → done
+```
+
+沿用唯一 `FinalAgentResponse` schema：使用 Document 时 `answer` 留空，由结构化响应
+先决定依据什么回答；兼容模型仍填写正文的情况，但该正文不作为流式答案发送。
+正文模型只接收有效问题、选中证据的 ID/正文/来源和回答约束，不接收 Agent State、
+工具历史、原始工具 JSON 或未选中的证据。它不绑定工具，只根据已锁定证据生成回答。
+chunk 边界由模型/供应商决定，不保证每个 token 单独对应事件，也不会把完整答案切片重放。
+
+无 Document 的目录、SQL、普通 MCP 等操作结果，以及 `no_evidence`，保留结构化结果
+完成后的单次文本交付；不宣称这些场景已实现模型正文流式。`clarify`、错误和直接路由
+回复无需正文模型流。full 模式若混合使用多类工具且选择了 Document，正文仅依据选中的 Document。
 
 ## 安全投影
 
 `updates` 只投影工具名、状态和耗时；`values` 只在 Runtime 内捕获最终状态，不向 SSE
 序列化。`messages` 中的 `AIMessage`/`AIMessageChunk` 仅用于业务工具开始事件，
-普通模型文本和 ToolStrategy 合成调用均不直接发送。最终 `structured_response` 通过
-Result Builder 的 evidence-ID 校验后，answer/no_evidence 在 result 前发送一次完整
-`answer_delta`，与 `final.data.response.answer` 一致。当前不提供逐 token 答案流；
-治理失败、未知引用或缺少结构化响应不会提前泄漏候选答案。
+普通模型文本和 ToolStrategy 合成调用均不直接发送。首次正文 `answer_delta` 之前，
+Agent 已完成且没有终止治理错误，结构化 outcome 和 evidence_ids 已确定。Runtime 与
+Result Builder 复用同一 Evidence Gate：只从本次成功正文工具的 `ToolMessage` 恢复并
+验证 Document，拒绝未知 ID、重复 ID、缺少应声明的引用、无效 Document 和无效结构化响应。
+校验失败不会启动正文模型，也不会产生答案 delta。
+
+只有正文模型的 `AIMessageChunk.text` 进入增量事件，框架负责提取 text block，
+reasoning、工具调用和 metadata 不做文本投影。正文流失败、空输出或超时会形成
+安全的错误 `final`；已发出的部分文本不升级为成功答案，客户端以错误 final 覆盖临时显示。
 
 增量事件不会公开 reasoning/thinking、tool call JSON、工具参数、`ToolMessage` 正文、
 原始工具结果、RAG JSON、网页/PDF/chunk 正文、系统 Prompt、provider/usage
@@ -88,10 +119,20 @@ metrics；不会保存 delta、progress、tool event 或中间 State。流式 me
 之外记录事件数、delta 数/字符数、首事件/首 delta 耗时、客户端断开和 delta 与最终
 答案一致性；不会为每个 token 单独写 metrics。
 
+每次正文生成尝试追加一条现有 model governance event，成功、失败和总超时均计入
+`llm_call_count`；Query Rewrite 仍由 ChatService 单独合并一次。Agent 的原生模型调用
+限制继续生效，正文调用也必须有 `agent_max_iterations` 剩余名额；工具上限不受正文调用影响。
+`agent_max_total_cost_ms` 沿用 Runtime 同一个 `asyncio.timeout`，覆盖 Agent 循环、证据
+校验及正文流，不在第二阶段重新计时。模型工厂的 provider timeout/retry 设置继续有效，
+不增加额外重试层；流中途失败不会自动重试或重放已输出文本。
+Runtime 内部的 `llm_usage` 通知仅更新 Service telemetry，不进入公开 SSE；用户在
+正文生成中途取消时，已记录的 Agent 调用与正文生成尝试仍保留在 metrics 中。
+
 客户端断开后，HTTP adapter 停止读取并关闭 Service/Agent async generator，取消会
 尽可能向下传播。不再发送 `final`/`done`，不保存部分 assistant 文本，不把断开转换成
 `MODEL_ERROR`，也不写伪 bad case；metrics 记录 `client_disconnected=true`。已经进入
-第三方同步 handler 的调用不保证立刻终止，但断开后不会继续向客户端输出。
+第三方同步 handler 的调用以及 provider 请求采用 best-effort cancel，不保证立刻终止；
+Runtime 同时关闭正在读取的模型异步流，断开后不会继续向客户端输出。
 
 ## 手动冒烟
 
@@ -118,7 +159,7 @@ Pytest/CI 中运行。
 `frontend/src/views/ChatView.vue` 只使用本接口，POST SSE 由
 `@microsoft/fetch-event-source` 处理。页面展示 `progress` 和 `tool`，即时显示
 `answer_delta`，收到 `final.data.response` 后用完整 `ChatResponse` 覆盖本轮结果。
-没有 delta 的 RAG 请求继续显示进度并等待 `final`。中断、切换页面或取消生成不会
+没有 delta 的请求继续显示进度并等待 `final`。中断、切换页面或取消生成不会
 自动重发 POST；用户可显式重新发送。
 流收到 final 后若未正常 done，保留 final 并显示中断错误。新建对话会中止旧请求并清空消息。
 
