@@ -256,7 +256,7 @@ async def test_agent_discovers_searches_and_cites_in_rag_only(
         evidence = collect_evidence_from_messages(messages)
         assert len(evidence) == 1
         assert all(item.metadata["source_id"] == "source-1" for item in evidence.values())
-        return model.final_response(outcome="answer", answer="申请于九月开始。", evidence_ids=list(evidence))
+        return model.final_response(scope_match="matched", support_level="full", outcome="answer", answer="申请于九月开始。", evidence_ids=list(evidence))
 
     model = FakeToolCallingModel([
         AIMessage(content="", tool_calls=[{
@@ -302,7 +302,7 @@ async def test_agent_compares_two_scoped_searches(document_kb, settings_factory,
     def answer(model, messages):
         evidence = collect_evidence_from_messages(messages)
         assert {doc.metadata["source_id"] for doc in evidence.values()} == {"source-0", "source-1"}
-        return model.final_response(outcome="answer", answer="两份文档均要求提交成绩单。", evidence_ids=list(evidence))
+        return model.final_response(scope_match="matched", support_level="full", outcome="answer", answer="两份文档均要求提交成绩单。", evidence_ids=list(evidence))
 
     model = FakeToolCallingModel([
         AIMessage(content="", tool_calls=[{

@@ -21,6 +21,7 @@ from tests.support.agent_runtime import FakeToolCallingModel, build_agent_harnes
 def _grounded_answer(text):
     """显式声明此 fixture 实际收到的证据，通过框架结构化输出结束。"""
     return lambda model, messages: model.final_response(
+        scope_match="matched", support_level="full",
         outcome="answer", answer=text,
         evidence_ids=list(collect_evidence_from_messages(messages)),
     )

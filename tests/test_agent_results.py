@@ -150,6 +150,7 @@ def _knowledge_output():
             AIMessage(content="普通模型文本不是最终回答"),
         ],
         "structured_response": FinalAgentResponse(
+            scope_match="matched", support_level="full",
             outcome="answer", answer="最终模型回答", evidence_ids=[documents[1]["id"]],
         ),
     }
@@ -354,7 +355,7 @@ def test_framework_structured_answer_and_governance_trace_are_preserved(
             ToolMessage(content="工具输出", tool_call_id="call-1"),
         ],
         "stop_reason": stop_reason,
-        "structured_response": FinalAgentResponse(outcome="answer", answer="第一段\n第二段"),
+        "structured_response": FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="第一段\n第二段"),
         "governance_events": [
             {"kind": "model", "ok": True},
             {
@@ -434,7 +435,7 @@ def test_tool_stop_reasons_take_priority_over_final_ai_answer(stop_reason):
         {
             "stop_reason": stop_reason,
             "messages": [AIMessage(content="忽略此回答")],
-            "structured_response": FinalAgentResponse(outcome="answer", answer="忽略结构化回答"),
+            "structured_response": FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="忽略结构化回答"),
         },
     )
 
@@ -582,13 +583,52 @@ def test_tool_result_summary_reuses_redacted_public_summary():
 ])
 def test_final_response_schema_rejects_invalid_static_contract(fields):
     with pytest.raises(ValidationError):
+        FinalAgentResponse(
+            scope_match="matched",
+            support_level="full" if fields["outcome"] == "answer" else "none",
+            **fields,
+        )
+
+
+@pytest.mark.parametrize("support", ["none", "partial", "full"])
+@pytest.mark.parametrize("scope", ["matched", "mixed", "mismatched"])
+@pytest.mark.parametrize("outcome", ["answer", "no_evidence", "clarify"])
+def test_final_response_evidence_decision_consistency(support, scope, outcome):
+    fields = dict(
+        support_level=support, scope_match=scope, outcome=outcome,
+        evidence_ids=["document-a"] if outcome == "answer" else [],
+        clarification_question="请确认范围" if outcome == "clarify" else "",
+    )
+    valid = (
+        support in {"partial", "full"} and scope in {"matched", "mixed"}
+        if outcome == "answer" else support == "none" and scope != "mixed"
+    )
+    if valid:
+        response = FinalAgentResponse(**fields)
+        assert response.model_dump(include=set(fields)) == fields
+    else:
+        with pytest.raises(ValidationError):
+            FinalAgentResponse(**fields)
+
+
+@pytest.mark.parametrize("field", ["scope_match", "support_level"])
+def test_final_response_requires_explicit_scope_and_support(field):
+    fields = dict(scope_match="matched", support_level="partial", outcome="answer", evidence_ids=["a"])
+    del fields[field]
+    with pytest.raises(ValidationError, match=field):
         FinalAgentResponse(**fields)
+
+
+def test_supported_document_answer_requires_evidence_ids():
+    with pytest.raises(ValidationError, match="answer requires evidence_ids"):
+        FinalAgentResponse(scope_match="matched", support_level="partial", outcome="answer")
 
 
 @pytest.mark.parametrize("evidence_ids", [[], ["knowledge_base:fake"]])
 def test_evidence_answer_requires_real_cited_ids(evidence_ids):
     output = _knowledge_output()
     output["structured_response"] = FinalAgentResponse(
+        scope_match="matched", support_level="full",
         outcome="answer", answer="UNSUPPORTED PRIVATE ANSWER", evidence_ids=evidence_ids,
     )
     result = build_framework_agent_result(_invocation(), output)
@@ -609,6 +649,7 @@ def test_grounding_mismatch_diagnostics_only_expose_ids():
     output["messages"][0].content = json.dumps(payload)
     output["governance_events"][1]["result"] = payload
     output["structured_response"] = FinalAgentResponse(
+        scope_match="matched", support_level="full",
         outcome="answer", answer="UNSUPPORTED PRIVATE ANSWER",
         evidence_ids=[ids[0], "knowledge_base:fake"],
     )
@@ -635,6 +676,7 @@ def test_successful_results_do_not_include_grounding_diagnostics(outcome):
     output = _knowledge_output()
     if outcome != "answer":
         output["structured_response"] = FinalAgentResponse(
+            scope_match="matched", support_level="full" if outcome == "answer" else "none",
             outcome=outcome, clarification_question="请补充年份" if outcome == "clarify" else "",
         )
     result = build_framework_agent_result(_invocation(), output)
@@ -655,7 +697,7 @@ def test_unparsed_or_invalid_structured_response_never_falls_back_to_ai(value):
 @pytest.mark.parametrize("answer", ["", "已有资料不足以确定。"])
 def test_no_evidence_uses_existing_status_and_fallback(answer):
     output = _knowledge_output()
-    output["structured_response"] = FinalAgentResponse(outcome="no_evidence", answer=answer)
+    output["structured_response"] = FinalAgentResponse(scope_match="matched", support_level="none", outcome="no_evidence", answer=answer)
     result = build_framework_agent_result(_invocation(), output)
     assert result["status"] == "NO_RELEVANT_INFO"
     assert result["answer"] == (answer or "我无法根据当前取得的证据确定答案。")
@@ -667,6 +709,7 @@ def test_no_evidence_uses_existing_status_and_fallback(answer):
 def test_agent_clarification_preserves_real_tool_summary():
     output = _knowledge_output()
     output["structured_response"] = FinalAgentResponse(
+        scope_match="matched", support_level="none",
         outcome="clarify", clarification_question="请确认申请年份。",
     )
     result = build_framework_agent_result(_invocation(), output)
@@ -686,7 +729,7 @@ def test_non_evidence_tool_outputs_cannot_be_promoted_to_references(name):
     result = build_framework_agent_result(_invocation(), output)
     assert result["status"] == "MODEL_ERROR"
     assert result["references"] == []
-    output["structured_response"] = FinalAgentResponse(outcome="answer", answer="操作已完成")
+    output["structured_response"] = FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="操作已完成")
     assert build_framework_agent_result(_invocation(), output)["status"] == "OK"
 
 
@@ -724,6 +767,7 @@ def test_web_pdf_references_keep_declared_order_and_existing_api_contract():
     output = {
         "messages": [*messages, messages[0]],
         "structured_response": FinalAgentResponse(
+            scope_match="matched", support_level="full",
             outcome="answer", answer="参考网页及 PDF。",
             evidence_ids=[documents[1].id, documents[0].id],
         ),
@@ -752,6 +796,7 @@ def test_get_chunk_context_reference_preserves_locator_and_safe_scores(chunk_id)
             content=json.dumps(tool_success("get_chunk_context", {}, {"evidence": [document.model_dump()]})),
         )],
         "structured_response": FinalAgentResponse(
+            scope_match="matched", support_level="full",
             outcome="answer", answer="原文回答", evidence_ids=[document.id],
         ),
     })
@@ -767,6 +812,7 @@ def test_get_chunk_context_reference_preserves_locator_and_safe_scores(chunk_id)
 def test_evidence_decision_requires_composition_and_preserves_streamed_whitespace():
     output = _knowledge_output()
     output["structured_response"] = FinalAgentResponse(
+        scope_match="matched", support_level="full",
         outcome="answer", evidence_ids=output["structured_response"].evidence_ids,
     )
     assert build_framework_agent_result(_invocation(), output)["status"] == "MODEL_ERROR"

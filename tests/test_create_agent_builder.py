@@ -5,7 +5,7 @@ from unittest.mock import Mock
 import pytest
 from langchain.agents.middleware import AgentMiddleware, ToolCallLimitMiddleware
 from langchain.agents.structured_output import ToolStrategy
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agent.final_response import FinalAgentResponse
 from app.agent import framework_agent
@@ -64,6 +64,8 @@ def test_builder_passes_retrieval_guidance_through_native_system_prompt(monkeypa
     assert isinstance(strategy, ToolStrategy)
     assert strategy.schema is FinalAgentResponse
     assert strategy.handle_errors is True
+    assert FinalAgentResponse.model_json_schema()["required"] == ["scope_match", "support_level", "outcome"]
+    assert "仅范围适用的正文证据计入 support_level" in AGENT_SYSTEM_PROMPT
 
 
 def test_prompt_answers_materially_supported_parts_with_existing_answer_outcome():
@@ -115,7 +117,7 @@ async def test_structured_call_does_not_consume_business_tool_budget(
         AIMessage(content="", tool_calls=[{
             "name": "find_documents", "args": {}, "id": "list",
         }]),
-        FinalAgentResponse(outcome="answer", answer="列表为空"),
+        FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="列表为空"),
     ])
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr("app.rag.runtime.chunks", [])
@@ -145,6 +147,33 @@ async def test_structured_call_does_not_consume_business_tool_budget(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("scope,support,outcome", [
+    ("matched", "partial", "no_evidence"),
+    ("mismatched", "full", "answer"),
+])
+async def test_evidence_decision_error_uses_native_structured_retry(monkeypatch, scope, support, outcome):
+    model = FakeToolCallingModel([
+        lambda model, messages: model.final_response(
+            scope_match=scope, support_level=support, outcome=outcome,
+            evidence_ids=["document-a"] if outcome == "answer" else [],
+        ),
+        FinalAgentResponse(scope_match="mismatched", support_level="none", outcome="no_evidence"),
+    ])
+    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    output = await framework_agent.build_framework_agent().ainvoke(
+        {"messages": [HumanMessage(content="范围内有哪些已确认信息？")]},
+        context=build_default_tool_context(),
+    )
+    assert output["structured_response"].outcome == "no_evidence"
+    assert len(model.received_messages) == 2
+    assert any(
+        isinstance(message, ToolMessage) and "support_level" in message.content
+        for message in model.received_messages[1]
+    )
+    assert not any(event["kind"] == "tool" for event in output["governance_events"])
+
+
+@pytest.mark.asyncio
 async def test_schema_retries_remain_bounded_by_native_model_limit(monkeypatch, settings_factory):
     from types import SimpleNamespace
 
@@ -152,8 +181,8 @@ async def test_schema_retries_remain_bounded_by_native_model_limit(monkeypatch, 
 
     settings = settings_factory(agent_max_iterations=2, agent_max_tool_calls=1)
     model = FakeToolCallingModel([
-        lambda model, messages: model.final_response(outcome="answer", answer=""),
-        lambda model, messages: model.final_response(outcome="clarify", clarification_question=""),
+        lambda model, messages: model.final_response(scope_match="matched", support_level="full", outcome="answer", answer=""),
+        lambda model, messages: model.final_response(scope_match="matched", support_level="none", outcome="clarify", clarification_question=""),
     ])
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     output = await framework_agent.build_framework_agent(settings).ainvoke(
@@ -175,7 +204,7 @@ async def test_business_limit_overrides_same_turn_structured_response(monkeypatc
     settings = settings_factory(agent_max_tool_calls=1)
 
     def final_with_excess_call(model, messages):
-        final = model.final_response(outcome="answer", answer="不应返回")
+        final = model.final_response(scope_match="matched", support_level="full", outcome="answer", answer="不应返回")
         final.tool_calls.append({"name": "find_documents", "args": {}, "id": "excess"})
         return final
 

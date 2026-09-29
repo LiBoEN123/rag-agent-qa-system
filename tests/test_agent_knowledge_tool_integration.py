@@ -97,6 +97,7 @@ def _grounded_answer(answer, *, indexes=None):
             for document in (message.artifact or json.loads(message.content))["output"]["evidence"]
         ))
         return model.final_response(
+            scope_match="matched", support_level="full",
             outcome="answer", answer=answer,
             evidence_ids=ids if indexes is None else [ids[i] for i in indexes],
         )
@@ -214,7 +215,7 @@ async def test_zero_results_are_successful_evidence(monkeypatch, settings_factor
     search.side_effect = None
     search.return_value = []
     final = "无法根据当前证据确定奖学金申请时间。"
-    model = FakeToolCallingModel([_search(), FinalAgentResponse(outcome="no_evidence", answer=final)])
+    model = FakeToolCallingModel([_search(), FinalAgentResponse(scope_match="matched", support_level="none", outcome="no_evidence", answer=final)])
     output, _, _ = await _invoke(monkeypatch, model, settings_factory)
 
     assert len(model.received_messages) == 2
@@ -232,7 +233,7 @@ async def test_zero_results_are_successful_evidence(monkeypatch, settings_factor
 async def test_unavailable_kb_returns_error_and_agent_recovers(monkeypatch, settings_factory, retrieval):
     search, cross_encoder = retrieval
     monkeypatch.setattr(pipeline, "RAG_READY", False)
-    model = FakeToolCallingModel([_search(), FinalAgentResponse(outcome="answer", answer="知识库暂时不可用，请稍后重试。")])
+    model = FakeToolCallingModel([_search(), FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="知识库暂时不可用，请稍后重试。")])
     output, _, audit = await _invoke(monkeypatch, model, settings_factory)
 
     assert len(model.received_messages) == 2
@@ -309,7 +310,7 @@ async def test_native_schema_retry_does_not_execute_or_audit_synthetic_tool(
 ):
     model = FakeToolCallingModel([
         _search(),
-        lambda model, messages: model.final_response(outcome="answer", answer=""),
+        lambda model, messages: model.final_response(scope_match="matched", support_level="full", outcome="answer", answer=""),
         _grounded_answer("申请于九月开始。"),
     ])
     output, _, audit = await _invoke(monkeypatch, model, settings_factory, agent_max_tool_calls=1)
@@ -328,7 +329,7 @@ async def test_real_agent_rejects_ungrounded_structured_answer(
     monkeypatch, settings_factory, retrieval, ids,
 ):
     model = FakeToolCallingModel([
-        _search(), FinalAgentResponse(outcome="answer", answer="UNSUPPORTED", evidence_ids=ids),
+        _search(), FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="UNSUPPORTED", evidence_ids=ids),
     ])
     output, _, _ = await _invoke(monkeypatch, model, settings_factory)
     assert output["result"]["status"] == "MODEL_ERROR"

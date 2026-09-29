@@ -577,10 +577,10 @@ def test_internal_runtime_error_remains_redacted_in_final_response():
 
 
 @pytest.mark.parametrize("final, expected_status, expected_delta_count", [
-    (FinalAgentResponse(outcome="answer", answer="列表读取完成。"), "ok", 1),
-    (FinalAgentResponse(outcome="no_evidence"), "no_evidence", 1),
-    (FinalAgentResponse(outcome="clarify", clarification_question="需要哪份文档？"), "clarify", 0),
-    (FinalAgentResponse(outcome="answer", answer="UNSUPPORTED", evidence_ids=["fake"]), "error", 0),
+    (FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="列表读取完成。"), "ok", 1),
+    (FinalAgentResponse(scope_match="matched", support_level="none", outcome="no_evidence"), "no_evidence", 1),
+    (FinalAgentResponse(scope_match="matched", support_level="none", outcome="clarify", clarification_question="需要哪份文档？"), "clarify", 0),
+    (FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="UNSUPPORTED", evidence_ids=["fake"]), "error", 0),
 ])
 def test_real_structured_agent_stream_matches_public_final_and_metrics(
     monkeypatch, final, expected_status, expected_delta_count,

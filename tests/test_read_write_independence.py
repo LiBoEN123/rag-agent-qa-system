@@ -83,7 +83,7 @@ def answer(model, messages):
     message = next(m for m in reversed(messages) if isinstance(m, ToolMessage))
     evidence = message.artifact["output"]["evidence"]
     assert evidence[0]["page_content"] == "申请条件是年满十八岁。"
-    return model.final_response(outcome="answer", answer="申请条件是年满十八岁。", evidence_ids=[evidence[0]["id"]])
+    return model.final_response(scope_match="matched", support_level="full", outcome="answer", answer="申请条件是年满十八岁。", evidence_ids=[evidence[0]["id"]])
 
 model = FakeToolCallingModel([
     AIMessage(content="", tool_calls=[{"name": "search_knowledge_base", "args": {"query": "申请条件", "top_k": 1}, "id": "search", "type": "tool_call"}]),

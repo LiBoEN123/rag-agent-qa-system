@@ -69,6 +69,7 @@ class SearchFetchModel(FakeToolCallingModel):
             )
         self.fetch_output = payload["output"]
         return self.final_response(
+            scope_match="matched", support_level="full",
             outcome="answer", evidence_ids=[self.fetch_output["evidence"][0]["id"]],
             answer=(
                 f"{self.fetch_output['title']}：{self.fetch_output['evidence'][0]['page_content']} "
@@ -121,6 +122,7 @@ class SearchPdfModel(FakeToolCallingModel):
             )
         self.pdf_output = payload["output"]
         return self.final_response(
+            scope_match="matched", support_level="full",
             outcome="answer", evidence_ids=[self.pdf_output["evidence"][0]["id"]],
             answer=(
                 f"{self.pdf_output['title']}，相关页码 "
@@ -177,6 +179,7 @@ class FetchThenPdfModel(FakeToolCallingModel):
             )
         self.pdf_output = payload["output"]
         return self.final_response(
+            scope_match="matched", support_level="full",
             outcome="answer", evidence_ids=[self.pdf_output["evidence"][0]["id"]],
             answer=(
                 f"已改用 PDF 工具：{self.pdf_output['title']} "
@@ -312,11 +315,12 @@ async def test_consecutive_requests_keep_web_visibility_isolated_and_execute_gra
             ]
 
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
-    hidden_model = FakeToolCallingModel([FinalAgentResponse(outcome="answer", answer="无需外部搜索。")])
+    hidden_model = FakeToolCallingModel([FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="无需外部搜索。")])
     visible_model = FakeToolCallingModel(
         [
             AIMessage(content="", tool_calls=[_tool_call("web-call-graph")]),
             FinalAgentResponse(
+                scope_match="matched", support_level="full",
                 outcome="answer", answer=(
                     "LangGraph 有新版本；来源：LangGraph 1.2 released "
                     "https://example.com/langgraph-1-2"
@@ -404,7 +408,7 @@ async def test_forged_hidden_web_search_is_denied_without_ddgs_or_runtime(
     model = FakeToolCallingModel(
         [
             AIMessage(content="", tool_calls=[_tool_call("forged-web-call")]),
-            FinalAgentResponse(outcome="answer", answer="隐藏工具调用已安全处理。"),
+            FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="隐藏工具调用已安全处理。"),
         ]
     )
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
@@ -639,7 +643,7 @@ async def test_forged_hidden_web_fetch_is_denied_without_http_manager(monkeypatc
                     }
                 ],
             ),
-            FinalAgentResponse(outcome="answer", answer="隐藏正文工具调用已安全处理。"),
+            FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="隐藏正文工具调用已安全处理。"),
         ]
     )
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
@@ -695,7 +699,7 @@ async def test_forged_hidden_web_pdf_fetch_is_denied_without_dependencies(
                     }
                 ],
             ),
-            FinalAgentResponse(outcome="answer", answer="隐藏 PDF 工具调用已安全处理。"),
+            FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="隐藏 PDF 工具调用已安全处理。"),
         ]
     )
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)

@@ -79,7 +79,7 @@ def install_evidence_agent(monkeypatch, composer, *, tool_name="search_knowledge
         AIMessage(content="PRIVATE AGENT TEXT", tool_calls=[{
             "name": tool_name, "args": {}, "id": "evidence-read",
         }]),
-        FinalAgentResponse(outcome="answer", evidence_ids=[documents[0].id]),
+        FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", evidence_ids=[documents[0].id]),
     ])
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     monkeypatch.setattr(streaming, "get_answer_model", lambda: composer)

@@ -31,7 +31,7 @@ def call(name="search_knowledge_base", cid="a", **args):
 def finish(model, messages):
     docs = [doc for message in messages if isinstance(message, ToolMessage)
             for doc in (message.artifact or json.loads(message.content)).get("output", {}).get("evidence", [])]
-    return model.final_response(outcome="answer",
+    return model.final_response(scope_match="matched", support_level="full", outcome="answer",
                                 evidence_ids=[doc["id"] for doc in docs if doc["metadata"]["chunk_id"] in (1, 3)])
 
 
@@ -114,7 +114,7 @@ def test_parallel_completion_order_does_not_reorder_observations(monkeypatch, se
 
 def test_no_relevant_info_is_valid_prediction(monkeypatch, setup_prediction):
     monkeypatch.setattr(pipeline, "search_relevant_chunks", lambda *a, **k: [])
-    _, trace, _ = run(monkeypatch, [call(query="缺失资料", top_k=3), FinalAgentResponse(outcome="no_evidence", answer="文档没有相关信息。")])
+    _, trace, _ = run(monkeypatch, [call(query="缺失资料", top_k=3), FinalAgentResponse(scope_match="matched", support_level="none", outcome="no_evidence", answer="文档没有相关信息。")])
     assert trace.status == "NO_RELEVANT_INFO"
     assert trace.retrieved_chunk_ids == trace.reference_chunk_ids == ()
     assert trace.retrieval_call_count == 1
@@ -136,7 +136,7 @@ def test_invalid_or_unmapped_kb_id_fails_closed(monkeypatch, setup_prediction, c
     evidence = {**chunk(cid), "source_id": "stable", "position": 0}
     monkeypatch.setattr(pipeline, "search_relevant_chunks", lambda *a, **k: [evidence])
     with pytest.raises(ValueError, match="chunk_id"):
-        run(monkeypatch, [call(query="条件", top_k=3), FinalAgentResponse(outcome="no_evidence", answer="信息不足。")])
+        run(monkeypatch, [call(query="条件", top_k=3), FinalAgentResponse(scope_match="matched", support_level="none", outcome="no_evidence", answer="信息不足。")])
 
 
 @pytest.mark.parametrize("status", ["MODEL_ERROR", "MODEL_BAD_OUTPUT", "TOOL_ERROR", "INTERNAL_ERROR"])
@@ -186,7 +186,7 @@ def test_batch_isolates_grounding_failure_and_flushes_before_next_case(monkeypat
     monkeypatch.setattr(rag_predictions, "initialize_rag_for_predictions", lambda **k: None)
     models = [FakeToolCallingModel([call(query="条件", top_k=3), final]) for final in (
         finish,
-        FinalAgentResponse(outcome="answer", answer="unsafe", evidence_ids=["knowledge_base:fake"]),
+        FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="unsafe", evidence_ids=["knowledge_base:fake"]),
         finish,
     )]
     output = tmp_path / "predictions.csv"
@@ -320,6 +320,7 @@ def test_old_cli_parameters_are_rejected(option):
 
 def test_need_clarification_is_valid_prediction(monkeypatch, setup_prediction):
     _, trace, _ = run(monkeypatch, [FinalAgentResponse(
+        scope_match="matched", support_level="none",
         outcome="clarify", answer="请补充申请对象。", clarification_question="申请对象是 A 还是 B？",
     )])
     assert trace.status == "NEED_CLARIFICATION"
