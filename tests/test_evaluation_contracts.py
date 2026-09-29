@@ -7,7 +7,6 @@ import pytest
 from pydantic import ValidationError
 
 from scripts.evaluation.contracts import (
-    ExpectedOutcome,
     AgentEvaluationDataset,
     build_coverage_report,
     load_agent_evaluation_dataset,
@@ -27,41 +26,19 @@ KNOWN_TOOLS = {
 }
 
 
-@pytest.mark.parametrize("paths", [[[]], [[""]], [["find_documents"]], [["bad-name", "search_document"]]])
-def test_invalid_body_paths_are_rejected(paths):
-    with pytest.raises(ValueError):
-        ExpectedOutcome(valid_tool_paths=paths)
-
-
-def test_path_tools_participate_in_registration_validation():
-    dataset = load_agent_evaluation_dataset(FIXTURE)
-    dataset.cases[0].expected = ExpectedOutcome(
-        valid_tool_paths=[["unknown_tool", "search_document"]],
-    )
-    with pytest.raises(ValueError, match="unknown_tool"):
-        validate_tool_names(dataset, {"search_document"})
-
-
-def test_core_semantic_routes_and_strict_business_invariants():
+def test_core_outcomes_and_strict_business_invariants():
     dataset = load_agent_evaluation_dataset(
         Path(__file__).parents[1] / "data/eval/agent_eval_cases_v2.json",
     )
     cases = {case.id: case for case in dataset.cases}
     for case_id in [f"D{i:03d}" for i in range(1, 14)]:
         expected = cases[case_id].expected
-        assert not expected.first_tool
         assert expected.sources and expected.keywords
-        assert expected.valid_tool_paths == (
-            [["search_knowledge_base"], ["search_document"]]
-            if case_id == "D005" else
-            [["search_knowledge_base"], ["find_documents", "search_document"]]
-        )
     for case_id, tool in [("T001", "find_documents"), ("T002", "find_documents"), ("T003", "get_chunk_context")]:
-        assert cases[case_id].expected.first_tool == tool
+        assert tool in cases[case_id].expected.tools_contains
     assert cases["D008"].expected.sources == ["内蒙古工业大学学籍管理办法（2018年修订）.md"]
     compare = cases["compare_documents_explicit_001"].expected
     assert compare.source_match == "all" and len(compare.sources) == 2
-    assert compare.valid_tool_paths == [["search_document", "search_document"]]
     assert cases["agent-tool-recovery-001"].expected.tool_status_sequence == ["error", "success"]
 
 
@@ -102,8 +79,8 @@ def test_valid_multi_turn_case():
                 "question": "第二轮",
                 "expected": {
                     "status": "OK",
-                    "rewrite_keywords": ["第一轮"],
-                    "min_rewrite_keyword_hits": 1,
+                    "keywords": ["第一轮"],
+                    "min_keyword_hits": 1,
                 },
             },
         ],
@@ -141,6 +118,12 @@ def test_valid_multi_turn_case():
         ),
         (
             lambda raw: raw["cases"][0]["expected"].update(
+                {"tools_contains": ["bad-name"]}
+            ),
+            "安全名称格式",
+        ),
+        (
+            lambda raw: raw["cases"][0]["expected"].update(
                 {"keywords": ["a"], "min_keyword_hits": 2}
             ),
             "不能超过",
@@ -169,7 +152,7 @@ def test_unknown_tool_is_rejected():
         _single_case(
             expected={
                 "status": "OK",
-                "first_tool": "unknown_tool",
+                "tools_contains": ["unknown_tool"],
             }
         )
     )
@@ -195,6 +178,8 @@ def test_coverage_separates_suites_and_case_shapes():
         "multi_turn": 0,
     }
     assert "web_search" in report["gaps"]
+    assert report["capabilities"]["multi_turn"] is False
+    assert report["checks"]["tool_output_keys"] == 0
 
 
 def test_dataset_is_json_serializable_without_nan():
@@ -204,33 +189,6 @@ def test_dataset_is_json_serializable_without_nan():
         dataset.model_dump(mode="json"),
         allow_nan=False,
     )
-
-
-def test_first_tool_any_of_is_exclusive_with_first_tool():
-    valid = AgentEvaluationDataset.model_validate(
-        _single_case(
-            expected={
-                "status": "OK",
-                "first_tool_any_of": [
-                    "find_documents",
-                    "search_knowledge_base",
-                ],
-            }
-        )
-    )
-    validate_tool_names(valid, KNOWN_TOOLS)
-
-    raw = _single_case(
-        expected={
-            "status": "OK",
-            "first_tool": "find_documents",
-            "first_tool_any_of": ["search_knowledge_base"],
-        }
-    )
-    with pytest.raises(ValidationError, match="只能使用一个"):
-        AgentEvaluationDataset.model_validate(raw)
-
-
 
 
 @pytest.mark.parametrize("changes", [

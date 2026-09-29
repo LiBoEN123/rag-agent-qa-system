@@ -16,7 +16,6 @@ from typing import Any
 
 KNOWN_THRESHOLDS = {
     "core_agent_pass_rate_drop",
-    "first_tool_accuracy_drop",
     "source_pass_rate_drop",
     "p95_latency_increase_ratio",
 }
@@ -141,7 +140,7 @@ def compare_runs(
             for key in (
                 "passed",
                 "actual_status",
-                "actual_first_tool",
+                "actual_action",
                 "actual_tools",
                 "failure_reasons",
             )
@@ -156,10 +155,9 @@ def compare_runs(
             "core",
             "pass_rate",
         ),
-        "first_tool_accuracy": ("agent", "first_tool_accuracy"),
         "status_accuracy": ("agent", "status_accuracy"),
         "source_pass_rate": ("agent", "source_pass_rate"),
-        "p50_latency_ms": ("agent", "p50_latency_ms"),
+        "evidence_grounding_pass_rate": ("agent", "evidence_grounding_pass_rate"),
         "p95_latency_ms": ("agent", "p95_latency_ms"),
         "average_llm_call_count": (
             "agent",
@@ -250,7 +248,6 @@ def evaluate_regressions(
     regressions: list[dict[str, Any]] = []
     mappings = {
         "core_agent_pass_rate_drop": "core_agent_pass_rate",
-        "first_tool_accuracy_drop": "first_tool_accuracy",
         "source_pass_rate_drop": "source_pass_rate",
     }
     for threshold_name, metric_name in mappings.items():

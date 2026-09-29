@@ -56,6 +56,10 @@ validate-only 检查 schema、ID、工具名和覆盖率，不创建输出目录
 
 ## 评分与结果
 
+Agent 检查最终 action/status、必要工具、答案关键词、来源和本轮成功 KB evidence grounding；
+仅 multi-tool/recovery case 约束工具顺序。多轮按每轮最终结果评分，summary 只按
+suite/category 分组。指标定义与适用 turns 分母见 [Baseline 合同](../../docs/evaluation/baseline-v2.md)。
+
 RAG 正式输入只支持 Prediction v3：`retrieved_chunk_ids` 为有序去重 KB 观察，
 `reference_chunk_ids` 为最终 grounded 引用。`--retrieval-k` 仅截取观察前 K 项评分，
 不会变成 Agent 工具参数。

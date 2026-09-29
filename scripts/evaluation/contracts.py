@@ -16,7 +16,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.contracts.chat import AgentResultStatus, RAG_EVIDENCE_TOOL_NAMES
+from app.contracts.chat import AgentResultStatus
 
 
 SuiteName = Literal["core", "online"]
@@ -32,12 +32,8 @@ class ExpectedOutcome(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    decision: str = ""
     action: str = ""
     status: AgentResultStatus | None = None
-    first_tool: str = ""
-    first_tool_any_of: list[str] = Field(default_factory=list)
-    valid_tool_paths: list[list[str]] = Field(default_factory=list)
     tools_contains: list[str] = Field(default_factory=list)
     tool_sequence: list[str] = Field(default_factory=list)
     tool_status_sequence: list[ToolCallStatus] = Field(default_factory=list)
@@ -47,34 +43,18 @@ class ExpectedOutcome(BaseModel):
     sources: list[str] = Field(default_factory=list)
     source_match: SourceMatch = "any"
     tool_output_keys: list[str] = Field(default_factory=list)
-    rewrite_keywords: list[str] = Field(default_factory=list)
-    min_rewrite_keyword_hits: int = Field(default=0, ge=0)
-    rewritten: bool | None = None
-    rewrite_llm_used: bool | None = None
 
     @model_validator(mode="after")
     def validate_hit_bounds(self) -> ExpectedOutcome:
         """关键词最低命中数不能超过对应关键词数量。"""
         if self.min_keyword_hits > len(self.keywords):
             raise ValueError("min_keyword_hits 不能超过 keywords 数量")
-        if self.min_rewrite_keyword_hits > len(self.rewrite_keywords):
-            raise ValueError(
-                "min_rewrite_keyword_hits 不能超过 rewrite_keywords 数量"
-            )
         if self.tool_status_sequence and (
             len(self.tool_status_sequence) != len(self.tool_sequence)
         ):
             raise ValueError(
                 "tool_status_sequence 长度必须与 tool_sequence 一致"
             )
-        if self.first_tool and self.first_tool_any_of:
-            raise ValueError(
-                "first_tool 与 first_tool_any_of 只能使用一个"
-            )
-        if any(not path or any(not name for name in path) for path in self.valid_tool_paths):
-            raise ValueError("valid_tool_paths 不允许空路径或空工具名")
-        if any(not RAG_EVIDENCE_TOOL_NAMES.intersection(path) for path in self.valid_tool_paths):
-            raise ValueError("valid_tool_paths 必须包含 KB 正文 evidence 工具")
         if any(
             not _SAFE_NAME_PATTERN.fullmatch(name)
             for name in self.expected_tools()
@@ -84,17 +64,7 @@ class ExpectedOutcome(BaseModel):
 
     def expected_tools(self) -> set[str]:
         """返回本条期望引用的全部工具名。"""
-        return {
-            name
-            for name in (
-                [self.first_tool]
-                + self.first_tool_any_of
-                + self.tools_contains
-                + self.tool_sequence
-                + [name for path in self.valid_tool_paths for name in path]
-            )
-            if name
-        }
+        return set(self.tools_contains + self.tool_sequence)
 
 
 class EvaluationTurn(BaseModel):
@@ -239,30 +209,22 @@ def build_coverage_report(
         for _, expected in expected_items
         for tool in sorted(expected.expected_tools())
     ]
-    first_tools = [
-        expected.first_tool
-        or "|".join(expected.first_tool_any_of)
-        or "<none>"
-        for _, expected in expected_items
-    ]
     statuses = [
         expected.status.value if expected.status is not None else "<none>"
         for _, expected in expected_items
     ]
-    decisions = [
-        expected.decision or "<none>"
-        for _, expected in expected_items
-    ]
+    actions = [expected.action for _, expected in expected_items]
 
     capabilities = {
+        "knowledge_base_evidence": any(expected.sources for _, expected in expected_items),
         "search_knowledge_base": "search_knowledge_base" in all_tools,
         "search_document": "search_document" in all_tools,
         "find_documents": "find_documents" in all_tools,
         "get_chunk_context": "get_chunk_context" in all_tools,
-        "direct_answer": "direct_answer" in decisions,
-        "clarify": "clarify" in decisions,
+        "direct_answer": "direct_answer" in actions,
+        "clarify": "clarify" in actions,
         "NO_RELEVANT_INFO": "NO_RELEVANT_INFO" in statuses,
-        "query_rewrite": any(case.turns is not None for case in active),
+        "multi_turn": any(case.turns is not None for case in active),
         "multi_tool": any(
             len(expected.tool_sequence) > 1
             for _, expected in expected_items
@@ -283,8 +245,6 @@ def build_coverage_report(
         "suite": _counter([case.suite for case in active]),
         "category": _counter([case.category for case in active]),
         "status": _counter(statuses),
-        "decision": _counter(decisions),
-        "first_tool": _counter(first_tools),
         "expected_tools": _counter(all_tools),
         "case_shape": {
             "single_turn": sum(case.turns is None for case in active),
@@ -301,10 +261,8 @@ def build_coverage_report(
                 bool(expected.forbidden_keywords)
                 for _, expected in expected_items
             ),
-            "rewrite": sum(
-                bool(expected.rewrite_keywords)
-                or expected.rewritten is not None
-                or expected.rewrite_llm_used is not None
+            "tool_output_keys": sum(
+                bool(expected.tool_output_keys)
                 for _, expected in expected_items
             ),
         },

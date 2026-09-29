@@ -18,7 +18,6 @@ def _write_run(
     *,
     cases: list[dict],
     pass_rate: float,
-    first_tool: float,
     source: float,
     p95: float,
 ):
@@ -27,10 +26,9 @@ def _write_run(
         "run_id": path.name,
         "agent": {
             "pass_rate": pass_rate,
-            "first_tool_accuracy": first_tool,
             "status_accuracy": pass_rate,
             "source_pass_rate": source,
-            "p50_latency_ms": p95 / 2,
+            "evidence_grounding_pass_rate": source,
             "p95_latency_ms": p95,
             "average_llm_call_count": 2,
             "average_tool_call_count": 1,
@@ -80,9 +78,9 @@ def test_compare_detects_added_removed_new_and_fixed_failures(tmp_path):
             {"case_id": "fixed", "passed": False},
             {"case_id": "regressed", "passed": True},
             {"case_id": "removed", "passed": True},
+            {"case_id": "action", "passed": True, "actual_action": "agent"},
         ],
         pass_rate=0.8,
-        first_tool=0.9,
         source=0.9,
         p95=100,
     )
@@ -92,21 +90,23 @@ def test_compare_detects_added_removed_new_and_fixed_failures(tmp_path):
             {"case_id": "fixed", "passed": True},
             {"case_id": "regressed", "passed": False},
             {"case_id": "added", "passed": True},
+            {"case_id": "action", "passed": True, "actual_action": "direct_answer"},
         ],
         pass_rate=0.7,
-        first_tool=0.8,
         source=0.85,
         p95=140,
     )
 
     comparison = compare_runs(baseline, candidate)
 
+    assert comparison["case_changes"]["changed_cases"] == ["action", "fixed", "regressed"]
     assert comparison["case_changes"]["added"] == ["added"]
     assert comparison["case_changes"]["removed"] == ["removed"]
     assert comparison["case_changes"]["new_failures"] == ["regressed"]
     assert comparison["case_changes"]["fixed_failures"] == ["fixed"]
     assert comparison["metrics"]["core_agent_pass_rate"]["delta"] == -0.1
     assert comparison["category_pass_rate"]["tool"]["delta"] == -0.1
+    assert comparison["metrics"]["evidence_grounding_pass_rate"]["delta"] == -0.05
 
 
 def test_explicit_thresholds_control_regression_exit(tmp_path):
@@ -116,7 +116,6 @@ def test_explicit_thresholds_control_regression_exit(tmp_path):
         baseline,
         cases=[{"case_id": "one", "passed": True}],
         pass_rate=0.9,
-        first_tool=0.9,
         source=0.9,
         p95=100,
     )
@@ -124,7 +123,6 @@ def test_explicit_thresholds_control_regression_exit(tmp_path):
         candidate,
         cases=[{"case_id": "one", "passed": False}],
         pass_rate=0.8,
-        first_tool=0.8,
         source=0.8,
         p95=150,
     )
@@ -172,7 +170,6 @@ def test_default_comparison_reports_without_failure_exit(tmp_path):
         baseline,
         cases=[],
         pass_rate=1,
-        first_tool=1,
         source=1,
         p95=10,
     )
@@ -180,7 +177,6 @@ def test_default_comparison_reports_without_failure_exit(tmp_path):
         candidate,
         cases=[],
         pass_rate=0,
-        first_tool=0,
         source=0,
         p95=1000,
     )
@@ -206,7 +202,6 @@ def test_comparison_calculates_reference_recall_delta(tmp_path):
             path,
             cases=[],
             pass_rate=1,
-            first_tool=1,
             source=1,
             p95=10,
         )
@@ -248,7 +243,6 @@ def test_fail_on_regression_requires_threshold_file(tmp_path):
         baseline,
         cases=[],
         pass_rate=1,
-        first_tool=1,
         source=1,
         p95=10,
     )
@@ -256,7 +250,6 @@ def test_fail_on_regression_requires_threshold_file(tmp_path):
         candidate,
         cases=[],
         pass_rate=1,
-        first_tool=1,
         source=1,
         p95=10,
     )
@@ -282,7 +275,7 @@ def test_fail_on_regression_requires_threshold_file(tmp_path):
 def test_correctness_delta_requires_scores_and_equal_coverage(tmp_path, before, after, coverage, delta):
     baseline, candidate = tmp_path / "baseline", tmp_path / "candidate"
     for path, score, used in ((baseline, before, 1.0), (candidate, after, coverage)):
-        _write_run(path, cases=[], pass_rate=1, first_tool=1, source=1, p95=10)
+        _write_run(path, cases=[], pass_rate=1, source=1, p95=10)
         report = path / "baseline_summary.json"
         summary = json.loads(report.read_text())
         summary["rag"]["overall"].update(avg_answer_correctness=score, llm_judge_coverage=used)

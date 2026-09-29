@@ -20,6 +20,10 @@ Agent case 必须使用唯一 ID、`version: 2`、`core` 或 `online` suite、�
 单轮 `question` 和多轮 `turns` 只能选择一种。RAG 题目必须有非空且唯一的 qid 和问题。
 Ground truth 必须来自已核验文档或确定性生产合同。
 
+Agent ExpectedOutcome 保留 action/status、必要工具与特殊调用序列、答案关键词/禁止词、
+sources/source_match 和工具输出字段合同。声明 sources 自动检查本轮成功 KB evidence
+与最终引用；多轮 case 通过最终结果评测，不要求内部改写标志或固定证据获取路径。
+
 主指标为 prediction coverage、retrieval Gold Recall@K、reference Gold Recall 与可选
 DeepEval GEval 的 Answer Correctness；Gold Answer、关键点、Forbidden Points 和
 Expected Behavior 均保留为语义评价输入。运行与产物说明见

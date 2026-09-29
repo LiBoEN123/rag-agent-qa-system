@@ -56,11 +56,10 @@ def write_agent_csv(
         "category",
         "passed",
         "failure_reasons",
+        "expected_action",
+        "actual_action",
         "expected_status",
         "actual_status",
-        "expected_first_tool",
-        "actual_first_tool",
-        "classification",
         "actual_tools",
         "tool_call_count",
         "llm_call_count",
@@ -82,16 +81,10 @@ def write_agent_csv(
                     "failure_reasons": " | ".join(
                         row.get("failure_reasons") or []
                     ),
+                    "expected_action": expected.get("action") or "",
+                    "actual_action": row.get("actual_action", ""),
                     "expected_status": expected.get("status") or "",
                     "actual_status": row.get("actual_status", ""),
-                    "expected_first_tool": (
-                        expected.get("first_tool") or ""
-                    ),
-                    "actual_first_tool": row.get(
-                        "actual_first_tool",
-                        "",
-                    ),
-                    "classification": row.get("classification", ""),
                     "actual_tools": " -> ".join(
                         row.get("actual_tools") or []
                     ),
@@ -225,12 +218,14 @@ def build_markdown_report(
             lines.extend(
                 [
                     f"- Pass rate: {_format_rate(core.get('pass_rate', 0))}",
-                    f"- First tool accuracy: "
-                    f"{_format_rate(agent.get('first_tool_accuracy', 0))}",
                     f"- Status accuracy: "
                     f"{_format_rate(agent.get('status_accuracy', 0))}",
                     f"- Source pass rate: "
                     f"{_format_rate(agent.get('source_pass_rate', 0))}",
+                    f"- Evidence grounding pass rate: "
+                    f"{_format_rate(agent.get('evidence_grounding_pass_rate', 0))}",
+                    f"- Tool call success rate: "
+                    f"{_format_rate(agent.get('tool_call_success_rate', 0))}",
                 ]
             )
         else:
@@ -282,15 +277,9 @@ def build_markdown_report(
     lines.extend(
         [
             "",
-            "## 多轮 Query Rewrite 指标",
-            "",
-            f"- Multi-turn pass rate: "
-            f"{_format_rate((agent or {}).get('multi_turn_pass_rate', 0))}",
-            "",
             "## 延迟与调用成本",
             "",
-            f"- P50/P95 latency: "
-            f"`{(agent or {}).get('p50_latency_ms', 0)}` / "
+            f"- P95 latency: "
             f"`{(agent or {}).get('p95_latency_ms', 0)}` ms",
             f"- Average LLM calls: "
             f"`{(agent or {}).get('average_llm_call_count', 0)}`",
@@ -312,7 +301,7 @@ def build_markdown_report(
     if failures:
         lines.extend(
             [
-                "| case_id | category | question | expected | actual | class | reasons | latency |",
+                "| case_id | category | question | expected action/status | actual action/status | actual tools | reasons | latency |",
                 "| --- | --- | --- | --- | --- | --- | --- | ---: |",
             ]
         )
@@ -320,7 +309,7 @@ def build_markdown_report(
             expected = item.get("expected") or {}
             lines.append(
                 "| {case} | {category} | {question} | {expected} | "
-                "{actual} | {classification} | {reasons} | {latency} |".format(
+                "{actual} | {tools} | {reasons} | {latency} |".format(
                     case=str(item.get("case_id") or "").replace("|", "\\|"),
                     category=str(item.get("category") or "").replace("|", "\\|"),
                     question=str(item.get("question") or "")[:100].replace(
@@ -328,14 +317,14 @@ def build_markdown_report(
                         "\\|",
                     ),
                     expected=(
-                        f"{expected.get('status') or ''}/"
-                        f"{expected.get('first_tool') or ''}"
+                        f"{expected.get('action') or ''}/"
+                        f"{expected.get('status') or ''}"
                     ),
                     actual=(
-                        f"{item.get('actual_status') or ''}/"
-                        f"{','.join(item.get('actual_tools') or [])}"
+                        f"{item.get('actual_action') or ''}/"
+                        f"{item.get('actual_status') or ''}"
                     ),
-                    classification=item.get("classification", ""),
+                    tools=", ".join(item.get("actual_tools") or []),
                     reasons=",".join(item.get("failure_reasons") or []),
                     latency=item.get("latency_ms", ""),
                 )

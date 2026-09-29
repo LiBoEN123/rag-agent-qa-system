@@ -689,6 +689,9 @@ Agent 数据合同与当前 65 题 RAG 数据，不调用模型、索引或网�
 python scripts/run_evaluation_baseline.py --validate-only
 ```
 
+Agent Evaluation 检查最终 action/status、必要工具能力、答案关键信息、引用来源和本轮
+真实 evidence grounding；仅 multi-tool/recovery case 约束工具顺序，多轮按最终结果评测。
+
 默认真实运行 Core Agent 和本地 RAG；Online 工具与 LLM Judge 必须显式启用：
 
 ```bash

@@ -20,7 +20,7 @@ from tests.support.local_tools import visible_tools
 from app.tools.catalog import get_local_tool_specs
 from scripts.evaluation import agent as agent_evaluation
 from scripts.evaluation import runner
-from scripts.evaluation.contracts import AgentEvaluationDataset
+from scripts.evaluation.contracts import AgentEvaluationDataset, ExpectedOutcome
 
 
 FIXTURE = (
@@ -388,7 +388,6 @@ def test_in_memory_multi_turn_uses_chat_service_history_and_isolation(
                         {
                             "question": "第一轮",
                             "expected": {
-                                "decision": "use_agent",
                                 "action": "agent",
                                 "status": "OK",
                             },
@@ -396,12 +395,8 @@ def test_in_memory_multi_turn_uses_chat_service_history_and_isolation(
                         {
                             "question": "第二轮",
                             "expected": {
-                                "decision": "use_agent",
                                 "action": "agent",
                                 "status": "OK",
-                                "rewrite_keywords": ["第一轮"],
-                                "min_rewrite_keyword_hits": 1,
-                                "rewritten": True,
                             },
                         },
                     ],
@@ -541,26 +536,15 @@ def test_runner_writes_expected_output_structure(
     def no_scope(_settings):
         yield
 
-    agent_summary = {
-        "pass_rate": 1.0,
-        "first_tool_accuracy": 1.0,
-        "status_accuracy": 1.0,
-        "source_pass_rate": 1.0,
-        "multi_turn_pass_rate": 0.0,
-        "p50_latency_ms": 1,
-        "p95_latency_ms": 1,
-        "average_llm_call_count": 1,
-        "average_tool_call_count": 1,
-        "groups": {
-            "suite": {
-                "core": {
-                    "total_cases": 1,
-                    "passed_cases": 1,
-                    "pass_rate": 1.0,
-                }
-            }
+    agent_rows = [agent_evaluation.score_agent_turn(
+        case_id="wrong-action", category="tool_use", suite="core", tags=[],
+        turn_index=1, question="列出文档", expected=ExpectedOutcome(action="agent", status="OK"),
+        result={
+            "action": "clarify", "status": "NEED_CLARIFICATION", "answer": "请补充问题",
+            "tool_trace": [{"step": "tool_call", "tool_name": "find_documents", "tool_status": "success"}],
         },
-    }
+    )]
+    agent_summary = agent_evaluation.calculate_agent_metrics(agent_rows)
     monkeypatch.setattr(runner, "get_settings", lambda: settings)
     monkeypatch.setattr(
         runner,
@@ -575,7 +559,7 @@ def test_runner_writes_expected_output_structure(
     monkeypatch.setattr(
         runner,
         "run_agent_baseline",
-        lambda *args, **kwargs: (agent_call.update(kwargs) or [], agent_summary),
+        lambda *args, **kwargs: (agent_call.update(kwargs) or agent_rows, agent_summary),
     )
     def fake_rag_baseline(**kwargs):
         rag_call.update(kwargs)
@@ -632,6 +616,8 @@ def test_runner_writes_expected_output_structure(
     assert "LLM Judge skipped" in report
     assert "Prediction Schema v3" in report
     assert "Context" not in report
+    assert "agent/OK | clarify/NEED_CLARIFICATION | find_documents" in report
+    assert "action_mismatch,status_mismatch" in report
     assert rag_call["retrieval_k"] == 3
     assert "top_k" not in agent_call
     assert "decompose_top_k" not in agent_call

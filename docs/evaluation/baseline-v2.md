@@ -78,12 +78,26 @@ Core 权限只有 `knowledge_base:read`；Online case 额外获得 `web:search`�
 生产 MCP Source/ingestion 能力不受此评测边界影响。
 
 工具输出捕获只保留字段名、调用状态和安全证据身份；不把捕获的完整正文写入报告。
-正文题的 `valid_tool_paths` 必须包含成功返回正文 evidence 的工具，最终引用须来自本轮
-真实 evidence。发现文档目录不能替代正文证据。比较题仍核对双方正文和最终来源。
+Agent 检查最终 action/status、必要工具能力、答案关键词、引用来源和真实 evidence grounding。
+声明 `sources` 的 turn 自动要求非空最终引用：每个 reference_id 必须来自本轮成功 KB
+正文工具输出，引用和对应真实证据的来源都须满足 `source_match`（any/all/none）。
+未声明来源时 grounding 不适用。发现文档目录不能替代正文证据；比较题要求双方来源，
+证据获取顺序不受约束。
 
 工具包含关系和完整序列由固定的 `deepeval==3.9.6` `ToolCorrectnessMetric`
-确定性评分，不调用 Judge。首工具备选、状态、来源、关键词和 Query Rewrite 由项目检查。
+确定性评分，不调用 Judge。只有 multi-tool/recovery case 约束完整工具顺序。
 恢复 case 用等长的 `tool_sequence` / `tool_status_sequence` 明确预期失败与成功。
+`tool_output_keys` 检查成功工具观察的字段名；关键词只检查最终 answer，不从 trace 命中。
+多轮 case 检查每轮最终结果，不要求内部改写标志或特定工具路径。
+
+Agent headline 共 8 项：`pass_rate`、`status_accuracy`、`source_pass_rate`、
+`evidence_grounding_pass_rate`、`tool_call_success_rate`，以及运行成本
+`average_tool_call_count`、`average_llm_call_count`、`p95_latency_ms`。
+通过率与成本按 case 汇总；status 按声明状态的 turns 计算，source/grounding 按声明
+sources 的 turns 计算（含多轮 case 的每一轮）。空分母沿用 0；逐轮不适用检查记 pass。
+只预计算 suite/category groups，逐题保留 expected、tags、失败原因、诊断 trace 与安全证据身份。
+覆盖矩阵中的 expected_tools 仅统计显式必要工具/序列；KB evidence 与 multi-turn 单独记录
+能力覆盖，不把某条合法路径或某种内部实现当成必需能力。
 
 ## Prediction v3 与指标
 
@@ -162,7 +176,7 @@ outputs/evaluation_baseline_v2/<run_id>/
 Manifest 保留 Git/运行环境、数据/索引/Prompt/工具合同 hash、模型配置、Agent 预算、
 v3 版本、评分 K、评测权限和 Judge 配置。只写显式白名单；敏感字段和 SecretStr 被拒绝。
 
-Agent 按 suite/category/status/tool/tags 分组；Core 与 Online pass rate 分开解释。
+Agent 按 suite/category 分组；Core 与 Online pass rate 分开解释。
 RAG 确定性失败分类包括 `runtime_error`、`rag_chunk_miss`、`rag_reference_gold_miss`。
 答案语义问题通过逐题 correctness/reason 观察，不再用启发式规则生成拒答或关键点标签。
 

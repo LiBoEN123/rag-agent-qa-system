@@ -9,10 +9,8 @@
       "category": "documents",
       "question": "请列出知识库文档",
       "expected": {
-        "decision": "use_agent",
         "action": "agent",
         "status": "OK",
-        "first_tool": "find_documents",
         "tools_contains": [
           "find_documents"
         ],

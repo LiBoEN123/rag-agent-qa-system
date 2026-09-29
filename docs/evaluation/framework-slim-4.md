@@ -1,7 +1,7 @@
 # FRAMEWORK-SLIM-4 — DeepEval Tool Correctness
 
 此文是 FRAMEWORK-SLIM-4 的历史记录，保留该阶段的实现边界和版本选择依据。
-后续 EVALUATION-SLIM-2 已迁移 RAG Judge；当前 Evaluation 能力与运行方式以
+后续 EVALUATION-SLIM-2 已迁移 RAG Judge，SLIM-3 已移除首工具与路径等过程合同；当前能力与运行方式以
 [Baseline 合同](baseline-v2.md)为准。
 
 该阶段 `deepeval_adapter.py` 只转换实际/期望工具名称，使用 `ToolCorrectnessMetric`

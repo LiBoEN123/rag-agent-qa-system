@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 import json
+import csv
 import asyncio
 from unittest.mock import AsyncMock
 
@@ -51,7 +52,7 @@ def test_minimal_agent_smoke(tool, settings_factory, monkeypatch, tmp_path):
     case = AgentEvaluationCase.model_validate({
         "id": tool or "direct", "version": 2, "suite": "core", "category": "smoke",
         "question": "请列出知识库文档" if tool else "你好", "expected": {
-            "status": "OK", "first_tool": tool, "tool_sequence": [tool] if tool else [],
+            "action": "agent", "status": "OK", "tools_contains": [tool] if tool else [],
             "tool_output_keys": ["count", "documents"] if tool else [],
         },
     })
@@ -61,6 +62,10 @@ def test_minimal_agent_smoke(tool, settings_factory, monkeypatch, tmp_path):
     report.write_jsonl(tmp_path / "per_case.jsonl", [row])
     report.write_agent_csv(tmp_path / "per_case.csv", [row])
     assert json.loads((tmp_path / "per_case.jsonl").read_text())["passed"]
+    with (tmp_path / "per_case.csv").open(encoding="utf-8-sig") as file:
+        summary = next(csv.DictReader(file))
+    assert summary["expected_action"] == summary["actual_action"] == "agent"
+    assert summary["actual_tools"] == tool
     assert not settings.sqlite_db_path.exists()
 
 
