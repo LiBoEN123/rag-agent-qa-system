@@ -172,15 +172,22 @@ def compare_runs(
         "rag_prediction_coverage": ("rag", "overall", "prediction_coverage"),
         "rag_retrieval_gold_chunk_recall_at_k": ("rag", "overall", "retrieval_gold_chunk_recall_at_k"),
         "reference_gold_chunk_recall": ("rag", "overall", "reference_gold_chunk_recall"),
-        "rag_avg_final_score": (
+        "rag_llm_judge_coverage": ("rag", "overall", "llm_judge_coverage"),
+        "rag_avg_answer_correctness": (
             "rag",
             "overall",
-            "avg_final_score",
+            "avg_answer_correctness",
         ),
     }
     before_categories = _category_rates(baseline)
     after_categories = _category_rates(candidate)
     category_names = sorted(set(before_categories) | set(after_categories))
+    metrics = {name: _metric_delta(baseline, candidate, path) for name, path in metric_paths.items()}
+    coverage = metrics["rag_llm_judge_coverage"]
+    warnings = []
+    if coverage["baseline"] is None or coverage["baseline"] != coverage["candidate"]:
+        metrics["rag_avg_answer_correctness"]["delta"] = None
+        warnings.append("Judge coverage differs or is unavailable; correctness delta is unavailable.")
     return {
         "schema_version": 2,
         "baseline_run_id": baseline.get("run_id", baseline_dir.name),
@@ -195,10 +202,8 @@ def compare_runs(
             "fixed_failures": fixed_failures,
             "changed_cases": changed_cases,
         },
-        "metrics": {
-            name: _metric_delta(baseline, candidate, path)
-            for name, path in metric_paths.items()
-        },
+        "metrics": metrics,
+        "warnings": warnings,
         "category_pass_rate": {
             name: {
                 "baseline": before_categories.get(name),
@@ -323,6 +328,8 @@ def render_markdown(comparison: dict[str, Any]) -> str:
         lines.append(
             f"| {name} | {before} | {after} | {delta} |"
         )
+    lines.append("")
+    lines.extend(f"- {warning}" for warning in comparison.get("warnings", []))
     lines.extend(["", "## Threshold regressions", ""])
     regressions = comparison.get("regressions") or []
     if regressions:

@@ -52,7 +52,8 @@ def _write_run(
                 "prediction_coverage": 1.0,
                 "retrieval_gold_chunk_recall_at_k": 0.7,
                 "reference_gold_chunk_recall": 0.6,
-                "avg_final_score": 0.75,
+                "avg_answer_correctness": 0.75,
+                "llm_judge_coverage": 1.0,
             }
         },
     }
@@ -272,3 +273,23 @@ def test_fail_on_regression_requires_threshold_file(tmp_path):
         )
 
     assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("before,after,coverage,delta", [
+    (0.7, 0.8, 1.0, 0.1), (None, 0.8, 1.0, None),
+    (0.7, None, 1.0, None), (None, None, 0.0, None), (0.7, 0.8, 0.5, None),
+])
+def test_correctness_delta_requires_scores_and_equal_coverage(tmp_path, before, after, coverage, delta):
+    baseline, candidate = tmp_path / "baseline", tmp_path / "candidate"
+    for path, score, used in ((baseline, before, 1.0), (candidate, after, coverage)):
+        _write_run(path, cases=[], pass_rate=1, first_tool=1, source=1, p95=10)
+        report = path / "baseline_summary.json"
+        summary = json.loads(report.read_text())
+        summary["rag"]["overall"].update(avg_answer_correctness=score, llm_judge_coverage=used)
+        report.write_text(json.dumps(summary))
+    comparison = compare_runs(baseline, candidate)
+    assert comparison["metrics"]["rag_avg_answer_correctness"] == {
+        "baseline": before, "candidate": after, "delta": delta,
+    }
+    assert bool(comparison["warnings"]) is (coverage != 1.0)
+    assert evaluate_regressions(comparison, {}) == []

@@ -268,23 +268,3 @@ def score_retrieval(
         "hit_chunk_ids": scored["hit_chunk_ids"],
         "missing_gold_chunk_ids": scored["missing_gold_chunk_ids"],
     }
-
-
-def collect_retrieved_evidence(
-    retrieval: Dict[str, Any],
-    chunk_index: ChunkIndex,
-    max_items: int = 5,
-    max_chars_per_item: int = 800,
-) -> List[str]:
-    """收集 top-k 检索片段，作为 judge 的可选背景信息。"""
-    evidence = []
-    for chunk_id in retrieval.get("retrieved_chunk_ids_at_k", [])[:max_items]:
-        text = chunk_index.chunk_text_map.get(chunk_id, "")
-        if not text:
-            continue
-        doc = chunk_index.chunk_doc_map.get(chunk_id, "")
-        snippet = text.strip()
-        if len(snippet) > max_chars_per_item:
-            snippet = snippet[:max_chars_per_item] + "..."
-        evidence.append(f"chunk_id={chunk_id}; doc={doc}; text={snippet}")
-    return evidence

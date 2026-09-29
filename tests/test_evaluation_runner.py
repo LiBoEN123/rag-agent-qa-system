@@ -513,8 +513,7 @@ def test_runner_completes_reports_with_runtime_failures(tmp_path, monkeypatch, a
     assert summary["rag"]["prediction_failure_status_counts"] == {"MODEL_ERROR": failure_count}
     assert summary["rag"]["overall"]["prediction_coverage"] == (0 if all_failed else 0.6667)
     assert summary["rag"]["category:test"]["prediction_coverage"] == (0 if all_failed else 0.6667)
-    if all_failed:
-        assert summary["rag"]["overall"]["avg_final_score"] == 0
+    assert summary["rag"]["overall"]["avg_answer_correctness"] is None
     failures = [json.loads(line) for line in (output / "failure_cases.jsonl").read_text().splitlines()]
     runtime_failures = [row for row in failures if row["failure_reasons"] == ["runtime_error"]]
     assert len(runtime_failures) == failure_count

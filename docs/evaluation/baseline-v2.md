@@ -12,7 +12,7 @@ Agent、RAG、工具或 API 行为。Baseline/Agent 数据集版本仍为 v2；R
 | Core Agent | `data/eval/agent_eval_cases_v2.json` 中 25 个 Core case | 执行 |
 | RAG | `data/eval/rag_eval_questions_v2_semantic_fixed.json`，65 题 | 执行 |
 | Online Web | Agent 数据集中的 3 个 `web_search`、`web_fetch`、`web_pdf_fetch` case | 仅 `--include-online` 执行 |
-| 可选 LLM Judge | 当前 RAG 答案与 gold key points/forbidden points | 仅 `--use-llm-judge` 启用 |
+| 可选 LLM Judge | GEval Answer Correctness：答案与 Gold 规范 | 仅 `--use-llm-judge` 启用 |
 
 Agent case 必须有唯一 ID、`version: 2`，suite 只接受 `core` 或 `online`。
 单轮 `question` 和至少两轮的 `turns` 只能选择一种。状态来自 `AgentResultStatus`，
@@ -107,19 +107,35 @@ RAG Prediction 复用 `ChatService.stream → stream_agent → create_agent`，�
 | `prediction_coverage` | 成功生成预测的题数 / 全部题数 |
 | `retrieval_gold_chunk_recall_at_k` | 前 K 个去重观察覆盖的 Gold chunk 比例 |
 | `reference_gold_chunk_recall` | 全部最终引用覆盖的同一组 Gold chunk 比例 |
-| `avg_key_point_recall` | 可选 Judge 的关键点覆盖均值；仅 Judge 启用且成功判分时有语义意义 |
+| `avg_answer_correctness` | DeepEval GEval 答案正确性，只对成功判分记录求均值；无结果为 `None` |
 
 Gold 优先通过证据文本在当前索引对齐，找不到匹配时沿用题集 ID。
-`--retrieval-k` 仅为离线评分 cutoff，不控制工具 top_k。逐题保留命中/缺失 Gold IDs，
+`--retrieval-k` 仅为离线评分 cutoff，不控制工具 top_k。逐题保留 Gold、观察和引用 IDs，
 以便定位检索遗漏与观察到 Gold 后未引用的问题。
 
-`behavior_score`、`final_score` 原有公式与权重保留；Final Score 仍使用严格 Gold Recall。
-这些分数、forbidden rate、Judge coverage 与 contradiction 数量作为诊断输出。
-Judge 关闭时不能把语义指标的默认值解释为模型质量。Judge/cache 实现本阶段未重写。
+`llm_judge_coverage` 为成功判分题数 / 全部题数，是运行完整性指标，不是质量分。
+Judge 未启用、失败或缺少 prediction 时，`answer_correctness=None`、reason 为空、
+`judge_used=False`；失败原因保留在 `judge_error`。没有任何结果时均值为 `None`、coverage 为 0。
+
+GEval 使用固定 `evaluation_steps`，evaluation params 为 `INPUT`、`ACTUAL_OUTPUT`、
+`EXPECTED_OUTPUT`。Expected output 包含 expected behavior、gold answer、gold key points
+和 forbidden points。评价语义事实覆盖、遗漏、矛盾与错误断言；partial answer 要回答已知部分并
+说明限制，正确 abstain 不因拒答扣分，同义措辞不扣分。数据集内容与 schema 保持不变。
+项目只读取 GEval 的 score/reason，不维护逐关键点判分或综合权重。
+
+薄 `DeepEvalBaseLLM` 经 `get_judge_model()` 与 `ModelGateway.invoke_text()` 返回文本，
+由 DeepEval 3.9.6 负责解析。沿用 `JUDGE_*` 配置与项目模型默认值，Runner 支持
+`--use-llm-judge`、`--judge-model`。直接调用 metric.measure 并禁用云端记录；
+telemetry/tracing 关闭，框架文件系统只读，Core Tool Correctness 仍不调用模型。
+
+`run_rag_evaluation(judge_cache_report=...)` 可只读复用 `per_question_report.csv` 中的
+qid、answer、answer_correctness、reason。仅当前 qid 和完全一致的 answer 可复用；
+缺行、无分数或答案变化记录 judge_error，保持空分数，绝不回退调用 LLM。当前统一 CLI
+没有 cache 参数。复用前需由调用者确认 Gold 和 Judge 配置一致。
 
 批量生成遇到 `MODEL_ERROR`、`MODEL_BAD_OUTPUT`、`TOOL_ERROR` 或 `INTERNAL_ERROR`，
 将安全失败记录写到 `prediction_failures.jsonl`，继续后续题目；缺失预测计入 coverage 分母，
-评分为零，不调用 Judge。重复调用 ID、无法对齐的 KB ID 等结构错误仍中止生成。
+召回为零，语义分为 `None`，不调用 Judge。重复调用 ID、无法对齐的 KB ID 等结构错误仍中止生成。
 
 ## 产物与可复现性
 
@@ -139,8 +155,7 @@ outputs/evaluation_baseline_v2/<run_id>/
     ├── prediction_failures.jsonl
     ├── per_question_report.csv
     ├── summary_report.csv
-    ├── summary_report.json
-    └── llm_judge_details.jsonl
+    └── summary_report.json
 ```
 
 未运行的层可以没有子目录，summary 记录 skipped。
@@ -148,8 +163,8 @@ Manifest 保留 Git/运行环境、数据/索引/Prompt/工具合同 hash、模�
 v3 版本、评分 K、评测权限和 Judge 配置。只写显式白名单；敏感字段和 SecretStr 被拒绝。
 
 Agent 按 suite/category/status/tool/tags 分组；Core 与 Online pass rate 分开解释。
-RAG 失败分类包括 `runtime_error`、`rag_chunk_miss`、`rag_reference_gold_miss`、
-`rag_answer_keypoint_miss`、`rag_unexpected_refusal`、`rag_missing_refusal`。
+RAG 确定性失败分类包括 `runtime_error`、`rag_chunk_miss`、`rag_reference_gold_miss`。
+答案语义问题通过逐题 correctness/reason 观察，不再用启发式规则生成拒答或关键点标签。
 
 ## 比较运行
 
@@ -159,8 +174,10 @@ RAG 失败分类包括 `runtime_error`、`rag_chunk_miss`、`rag_reference_gold_
   --candidate outputs/evaluation_baseline_v2/run-b
 ```
 
-比较当前合同下的 Agent case 变化、覆盖率、检索/引用 Recall、Final Score、延迟和调用次数。
-未运行的层可显示 unavailable；不支持历史 Prediction 的兼容评分。比较前须核对数据、
+比较当前合同下的 Agent case 变化、覆盖率、检索/引用 Recall、Answer Correctness、延迟和调用次数。
+未运行的层可显示 unavailable；correctness 任一侧为空或 Judge coverage 不一致/缺失时，
+delta 为 `None`，不据此认定质量回退。coverage 相同也需人工核对判分题目集合。
+不支持历史 Prediction 的兼容评分。比较前须核对数据、
 工具、Prompt、模型、预算和索引是否一致，历史 workflow 分数不能直接归因于当前修改。
 
 默认只报告差异。只有同时指定 `--thresholds data/eval/evaluation_thresholds_v2.example.json`

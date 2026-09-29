@@ -65,13 +65,12 @@ def test_minimal_agent_smoke(tool, settings_factory, monkeypatch, tmp_path):
 
 
 def test_minimal_rag_smoke_judge_disabled(monkeypatch, tmp_path):
-    from scripts.evaluation.rag import judge
+    from scripts.evaluation import deepeval_adapter as judge
 
     def deny(*args, **kwargs):
         pytest.fail("judge must remain disabled")
 
     monkeypatch.setattr(judge, "get_judge_model", deny)
-    monkeypatch.setattr(judge, "call_judge_json", deny)
     monkeypatch.setattr(rag_predictions, "initialize_rag_for_predictions", lambda **kwargs: None)
     chunk = {"chunk_id": 1, "text": "评测规则", "metadata": {"source_file": "rules.md"}}
     from app.services.chat_models import ChatServiceOutcome
@@ -106,5 +105,5 @@ def test_minimal_rag_smoke_judge_disabled(monkeypatch, tmp_path):
     assert result["summary"]["overall"]["llm_judge_coverage"] == 0
     assert result["rows"][0]["retrieval_gold_chunk_recall_at_k"] == 1
     assert {p.name for p in (tmp_path / "rag").iterdir()} == {
-        "per_question_report.csv", "summary_report.csv", "summary_report.json", "llm_judge_details.jsonl",
+        "per_question_report.csv", "summary_report.csv", "summary_report.json",
     }

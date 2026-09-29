@@ -123,16 +123,6 @@ def classify_rag_failures(
                 reasons.append("rag_chunk_miss")
             if row.get("gold_observed_but_not_referenced") is True:
                 reasons.append("rag_reference_gold_miss")
-            if (
-                row.get("key_point_judge_used")
-                and int(row.get("missing_count", 0) or 0) > 0
-            ):
-                reasons.append("rag_answer_keypoint_miss")
-            behavior = str(row.get("behavior_label") or "")
-            if behavior == "should_answer_but_refused":
-                reasons.append("rag_unexpected_refusal")
-            if behavior == "should_abstain_but_answered":
-                reasons.append("rag_missing_refusal")
         if reasons:
             failures.append(
                 {
@@ -144,10 +134,7 @@ def classify_rag_failures(
                     "metrics": {
                         "retrieval_gold_chunk_recall_at_k": row.get("retrieval_gold_chunk_recall_at_k", 0),
                         "reference_gold_chunk_recall": row.get("reference_gold_chunk_recall", 0),
-                        "key_point_recall": row.get(
-                            "key_point_recall",
-                            0,
-                        ),
+                        "answer_correctness": row.get("answer_correctness"),
                     },
                 }
             )
@@ -267,21 +254,18 @@ def build_markdown_report(
         overall = rag.get("overall", {})
         for name in (
             "prediction_coverage",
-            "avg_key_point_recall",
             "retrieval_gold_chunk_recall_at_k",
             "reference_gold_chunk_recall",
+            "avg_answer_correctness",
         ):
             if name in overall:
                 lines.append(f"- {name}: {_format_rate(overall[name])}")
         lines.append(
-            "- 保留诊断："
-            + "; ".join(f"{name}={_format_rate(overall.get(name))}" for name in (
-                "avg_final_score", "avg_behavior_score", "forbidden_rate", "llm_judge_coverage",
-            ))
+            f"- Judge coverage（运行完整性）：{_format_rate(overall.get('llm_judge_coverage'))}"
         )
         lines.append(
             "- 口径来源：`scripts/evaluation/rag/evaluation.py`；"
-            "答案关键点与 forbidden 语义判断仅在 Judge 启用时有效。"
+            "GEval Answer Correctness 仅对成功判分的记录求均值，未评测时为 n/a。"
         )
         if summary.get("skipped", {}).get("llm_judge"):
             lines.append(
@@ -291,7 +275,7 @@ def build_markdown_report(
             "",
             "- Prediction Schema v3：仅评价实际观察的 KB 证据与最终引用。",
             "- retrieved_chunk_ids 按首次观察顺序去重；retrieval-k 仅为离线评分 cutoff。",
-            "- Reference Recall 对全部最终引用评分；Final Score 权重保持不变。",
+            "- Reference Recall 对全部最终引用评分；检索质量与答案质量独立观察。",
         ])
     else:
         lines.append(f"- skipped: {rag.get('reason', '') if rag else 'not run'}")

@@ -61,14 +61,18 @@ RAG 正式输入只支持 Prediction v3：`retrieved_chunk_ids` 为有序去重 
 不会变成 Agent 工具参数。
 
 headline 指标为 prediction coverage、retrieval Gold Recall@K、reference Gold Recall，
-以及启用 Judge 时的 key point recall。behavior/final score、forbidden 与 Judge coverage
-继续作为诊断；权重保持不变。旧 Prediction v1/v2 不再读取。
+以及可选的 `avg_answer_correctness`。`llm_judge_coverage` 单独表示判分覆盖率。
+旧 Prediction v1/v2 不再读取。
 
-批量 runtime failure 单独进入 `rag/prediction_failures.jsonl`；对应缺失预测计零并降低
-coverage，不调用 Judge。结构异常仍 fail closed。Judge 关闭时语义指标不能用于质量结论。
+批量 runtime failure 单独进入 `rag/prediction_failures.jsonl`；对应缺失预测降低
+coverage、召回计零，不调用 Judge。Judge 关闭、失败或 prediction 缺失时，
+`answer_correctness=None`；均值只计算成功判分的记录，无结果时为 `None`。结构异常仍 fail closed。
 
-`deepeval==3.9.6` 仅承担确定性 Tool Correctness，不要求 API key 或 Cloud 登录，
-不启动其 pytest runner。当前可选 RAG Judge 仍使用项目实现。
+`deepeval==3.9.6` 承担确定性 Tool Correctness 与可选 GEval Answer Correctness。
+Tool Correctness 使用禁用模型的占位，不调用模型；GEval 使用固定评价步骤，读取问题、
+实际回答与 Gold 规范（expected behavior、参考答案、关键点、forbidden claims），
+通过项目 Judge factory/Gateway 调用已配置模型。无需 Cloud 登录，telemetry/tracing 关闭，
+框架文件系统只读，不启动其 pytest runner。
 
 输出包括 manifest、覆盖矩阵、summary、逐题 JSONL/CSV、失败报告和 Markdown。
 数据、工具合同、Prompt 与索引 hash 用于审查可复现性。

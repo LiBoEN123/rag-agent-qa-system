@@ -21,5 +21,6 @@ Agent case 必须使用唯一 ID、`version: 2`、`core` 或 `online` suite、�
 Ground truth 必须来自已核验文档或确定性生产合同。
 
 主指标为 prediction coverage、retrieval Gold Recall@K、reference Gold Recall 与可选
-Judge 的 key point recall。运行与产物说明见
+DeepEval GEval 的 Answer Correctness；Gold Answer、关键点、Forbidden Points 和
+Expected Behavior 均保留为语义评价输入。运行与产物说明见
 [Evaluation Baseline](../../docs/evaluation/baseline-v2.md)。

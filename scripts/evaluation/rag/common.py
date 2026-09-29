@@ -1,6 +1,6 @@
 """RAG 评测使用的通用解析、归一化与数据加载工具。
 
-用途：读取当前题集与 Prediction v3，统一召回标识、拒答表达和关键点文本。
+用途：读取当前题集与 Prediction v3，统一召回标识和关键点文本。
 输入：评测 JSON、预测 CSV/JSON/JSONL，以及 Schema v3 预测记录。
 输出：规范化文本、题目/预测索引和轻量 ``ChunkIndex`` 数据视图。
 边界：本模块不计算最终分数、不调用模型或网络，也不改变原始评测文件。
@@ -21,25 +21,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 PREDICTION_SCHEMA_VERSION = 3
-
-REFUSAL_PATTERNS = [
-    # 强拒答
-    "无法确认", "不能确认", "无法确定", "无法回答", "不能回答", "不知道",
-    # 文档范围限制
-    "无法根据提供的文档确定", "无法根据当前文档确定", "无法根据提供的资料确定",
-    "根据提供的文档无法", "根据当前文档无法", "根据现有文档无法", "从给定文档无法",
-    "参考资料中未提供", "当前资料中未提供", "提供的资料中未提供",
-    "文档中未说明", "文档未说明", "文档没有说明", "文档没有提供",
-    "资料中未说明", "资料未说明", "没有相关信息", "无相关信息",
-    "未提到", "未提及", "没有提到", "没有提及", "不在文档中",
-]
-
-STANDALONE_REFUSAL_PATTERNS = [
-    "无法确认", "不能确认", "无法确定", "无法回答", "不能回答", "不知道",
-    "无法根据提供的文档确定", "无法根据当前文档确定", "无法根据提供的资料确定",
-    "根据提供的文档无法", "根据当前文档无法", "根据现有文档无法", "从给定文档无法",
-    "没有相关信息", "无相关信息",
-]
 
 CANONICAL_REPLACEMENTS = [
     ("无需", "不需要"),
@@ -83,41 +64,6 @@ def is_subsequence(short: str, long: str) -> bool:
         return False
     it = iter(long)
     return all(ch in it for ch in short)
-
-
-def has_any(text: str, aliases: Iterable[str]) -> bool:
-    """判断文本是否命中任一同义表达或宽松子序列。"""
-    norm = normalize_text(text)
-    for a in aliases:
-        na = normalize_text(a)
-        if not na:
-            continue
-        if na in norm:
-            return True
-        # 对中文短语做宽松匹配，避免“可以多个应用实例”与“可以创建多个 Vue 应用实例”这种同义表述漏判
-        if len(na) >= 5 and is_subsequence(na, norm):
-            return True
-    return False
-
-
-def is_refusal(answer: str) -> bool:
-    """判断答案是否属于拒答或无法回答。"""
-    return has_any(answer, REFUSAL_PATTERNS)
-
-
-def is_standalone_refusal(answer: str) -> bool:
-    """高精度识别整段拒答，避免把长答案中的局部限制误判为拒答。"""
-    normalized = normalize_text(answer)
-    if not normalized:
-        return False
-    for pattern in STANDALONE_REFUSAL_PATTERNS:
-        normalized_pattern = normalize_text(pattern)
-        if (
-            normalized_pattern in normalized
-            and len(normalized) <= max(48, len(normalized_pattern) * 3)
-        ):
-            return True
-    return False
 
 
 def parse_chunk_ids_field(pred: Dict[str, Any], field: str) -> List[int]:
@@ -209,11 +155,6 @@ def point_text(point: Any) -> str:
 def point_texts(points: Iterable[Any]) -> List[str]:
     """提取关键点文本列表并去掉空项。"""
     return [text for text in (point_text(p) for p in points or []) if text]
-
-
-def json_dumps(value: Any) -> str:
-    """统一 JSON 序列化，便于 CSV 和 JSONL 中保留中文。"""
-    return json.dumps(value, ensure_ascii=False)
 
 
 def mean(values: List[float]) -> float:

@@ -53,19 +53,17 @@ def _evaluate(pred, gold=(1,), k=5):
 
 
 def test_v3_observation_cutoff_and_reference_recall_are_independent():
-    rows, summary, _ = _evaluate(_prediction("2,1,2,3", "3"), gold=(3,), k=2)
+    rows, summary = _evaluate(_prediction("2,1,2,3", "3"), gold=(3,), k=2)
     row = rows[0]
     assert row["retrieval_gold_chunk_recall_at_k"] == 0.0
     assert row["retrieved_chunk_ids"] == "[2, 1, 3]"
-    assert row["hit_chunk_ids"] == "[]"
-    assert row["missing_gold_chunk_ids"] == "[3]"
+    assert row["gold_chunk_ids"] == "[3]"
     assert row["reference_gold_chunk_recall"] == 1.0
     assert summary["overall"]["reference_gold_chunk_recall"] == 1.0
     assert not any("context" in key or "final_chunk" in key for key in row)
     assert set(summary["overall"]) == {
         "num_questions", "prediction_coverage", "retrieval_gold_chunk_recall_at_k",
-        "reference_gold_chunk_recall", "avg_final_score", "avg_behavior_score",
-        "avg_key_point_recall", "forbidden_rate", "llm_judge_coverage", "avg_contradicted_count",
+        "reference_gold_chunk_recall", "avg_answer_correctness", "llm_judge_coverage",
     }
 
 
@@ -75,7 +73,7 @@ def test_v3_observation_cutoff_and_reference_recall_are_independent():
     ("3", "3", (1, 3), (0.5, 0.5), []),
 ])
 def test_recall_and_failure_classification(retrieved, referenced, gold, recalls, reasons):
-    rows, _, _ = _evaluate(_prediction(retrieved, referenced), gold)
+    rows, _ = _evaluate(_prediction(retrieved, referenced), gold)
     row = rows[0]
     assert (row["retrieval_gold_chunk_recall_at_k"], row["reference_gold_chunk_recall"]) == recalls
     failures = classify_rag_failures(rows)
@@ -100,9 +98,7 @@ def test_v3_rejects_incomplete_or_legacy_evidence_fields(field, value):
 
 
 def test_runtime_failure_has_no_secondary_retrieval_or_answer_classification():
-    rows, _, _ = _evaluate(None)
-    rows[0].update({"gold_observed_but_not_referenced": True,
-                    "key_point_judge_used": True, "missing_count": 1,
-                    "behavior_label": "should_answer_but_refused"})
+    rows, _ = _evaluate(None)
+    rows[0]["gold_observed_but_not_referenced"] = True
     failure, = classify_rag_failures(rows)
     assert failure["failure_reasons"] == ["runtime_error"]

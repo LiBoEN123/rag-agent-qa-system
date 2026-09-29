@@ -1,9 +1,10 @@
 # FRAMEWORK-SLIM-4 — DeepEval Tool Correctness
 
-此文保留引入 DeepEval 时的版本选择依据。当前 Evaluation 能力与运行方式以
+此文是 FRAMEWORK-SLIM-4 的历史记录，保留该阶段的实现边界和版本选择依据。
+后续 EVALUATION-SLIM-2 已迁移 RAG Judge；当前 Evaluation 能力与运行方式以
 [Baseline 合同](baseline-v2.md)为准。
 
-当前 `deepeval_adapter.py` 只转换实际/期望工具名称，使用 `ToolCorrectnessMetric`
+该阶段 `deepeval_adapter.py` 只转换实际/期望工具名称，使用 `ToolCorrectnessMetric`
 判断包含关系与完整有序序列。`first_tool_any_of`、正文证据、来源、状态与关键词
 仍由项目检查。既有可选 RAG Judge 未迁移到 GEval。
 
@@ -37,7 +38,7 @@ model。须使用拒绝生成的最小模型占位，避免默认 OpenAI client/
 禁用 DeepEval 自动 pytest 插件，避免它早于项目配置导入并接管普通测试。
 无第二套 LLM 配置；已有 RAG judge 继续使用项目 factory + ModelGateway。
 
-## 当前边界
+## 该阶段边界
 
 - `ToolCorrectnessMetric` 不接收工具正文、问题或答案；不调用真实 Judge。
 - Core Agent、RAG Prediction v3 与可选 Online Web 继续使用统一项目 Runner。

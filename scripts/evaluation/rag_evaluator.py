@@ -1,103 +1,33 @@
-"""Evaluation Baseline v2 的 RAG 语义评测编排层。
-
-用途：装配预测、当前 chunk 索引、确定性检索指标、可选 LLM judge 和报告写入。
-输入：RAG 评测集、预测文件、top-k、索引位置、judge 配置与可选只读缓存。
-输出：逐题指标、分组汇总、judge 明细，以及 CSV/JSONL 评测产物。
-边界：判分公式分别由 ``rag.evaluation`` 与 ``rag.retrieval`` 维护；本模块只负责编排。
-"""
+"""装配 Prediction v3、召回指标、可选 GEval/只读缓存与本地报告。"""
 
 from __future__ import annotations
 
 import csv
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
+from scripts.evaluation.deepeval_adapter import ProjectJudge, answer_correctness
+from scripts.evaluation.rag.common import load_eval, load_predictions, warn
 from scripts.evaluation.rag.evaluation import evaluate
-from scripts.evaluation.rag.common import (
-    load_eval,
-    load_predictions,
-    point_texts,
-    warn,
-)
-from scripts.evaluation.rag.judge import (
-    LLMJudgeConfig,
-    LLMJudgeError,
-    make_judge_config,
-    normalize_forbidden_judge_result,
-    normalize_key_point_judge_result,
-)
-from scripts.evaluation.rag.report import write_csv, write_jsonl, write_summary_csv
+from scripts.evaluation.rag.report import write_csv, write_summary_csv
 from scripts.evaluation.rag.retrieval import load_chunk_index
 
 
-def load_judge_cache_report(path: Path) -> Dict[str, Dict[str, Any]]:
-    """从旧 per_question_report.csv 读取 judge 结果，避免重复消耗 LLM judge token。"""
-    if not path.exists():
-        raise FileNotFoundError(f"judge cache report not found: {path}")
-
-    cache: Dict[str, Dict[str, Any]] = {}
-    with path.open("r", encoding="utf-8-sig", newline="") as f:
-        for row in csv.DictReader(f):
-            qid = str(row.get("qid", "")).strip()
-            if not qid:
-                continue
-            if "key_point_judgments_json" not in row or "forbidden_judgments_json" not in row:
-                raise ValueError("judge cache report must contain key_point_judgments_json and forbidden_judgments_json")
-            try:
-                json.loads(row.get("key_point_judgments_json") or "[]")
-                json.loads(row.get("forbidden_judgments_json") or "[]")
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"invalid judge JSON in cache for qid={qid}: {exc}") from exc
-            cache[qid] = row
-
-    if not cache:
-        raise ValueError(f"judge cache report has no rows: {path}")
+def load_judge_cache_report(path: Path) -> dict[str, dict[str, str]]:
+    """只读取当前分数合同；缓存不完整时绝不回退调用模型。"""
+    fields = {"qid", "answer", "answer_correctness", "answer_correctness_reason"}
+    cache = {}
+    with path.open("r", encoding="utf-8-sig", newline="") as file:
+        reader = csv.DictReader(file)
+        if not fields.issubset(reader.fieldnames or []):
+            raise ValueError("judge cache requires qid, answer, answer_correctness, answer_correctness_reason")
+        for row in reader:
+            qid = row["qid"]
+            if not qid or qid in cache:
+                raise ValueError("judge cache qid must be nonempty and unique")
+            cache[qid] = {key: row[key] for key in fields}
     return cache
-
-
-def make_cached_judge_evaluators(cache: Dict[str, Dict[str, Any]]) -> Tuple[Any, Any]:
-    """构造只读缓存的 evaluator；缓存缺失时失败，绝不回退调用 LLM。"""
-
-    def cached_key_point_evaluator(
-        question: str,
-        gold_answer: str,
-        gold_key_points: List[Any],
-        model_answer: str,
-        evidence: List[str] | None = None,
-        judge_config: LLMJudgeConfig | None = None,
-        category: str = "",
-        expected_behavior: str = "",
-        qid: str = "",
-    ) -> Dict[str, Any]:
-        """只从缓存恢复当前 qid 的关键点判断。"""
-        if qid not in cache:
-            raise LLMJudgeError(f"qid={qid} missing from judge cache")
-        row = cache[qid]
-        raw = {"key_point_judgments": json.loads(row.get("key_point_judgments_json") or "[]")}
-        result = normalize_key_point_judge_result(raw, point_texts(gold_key_points))
-        result["judge_raw_response"] = ""
-        return result
-
-    def cached_forbidden_evaluator(
-        question: str,
-        model_answer: str,
-        forbidden_points: List[Any],
-        evidence: List[str] | None = None,
-        judge_config: LLMJudgeConfig | None = None,
-        gold_answer: str = "",
-        qid: str = "",
-    ) -> Dict[str, Any]:
-        """只从缓存恢复当前 qid 的禁用信息判断。"""
-        if qid not in cache:
-            raise LLMJudgeError(f"qid={qid} missing from judge cache")
-        row = cache[qid]
-        raw = {"forbidden_judgments": json.loads(row.get("forbidden_judgments_json") or "[]")}
-        result = normalize_forbidden_judge_result(raw, point_texts(forbidden_points))
-        result["judge_raw_response"] = ""
-        return result
-
-    return cached_key_point_evaluator, cached_forbidden_evaluator
 
 
 def run_rag_evaluation(
@@ -116,100 +46,69 @@ def run_rag_evaluation(
     judge_api_url: str | None = None,
     judge_api_key: str | None = None,
 ) -> dict[str, Any]:
-    """运行现有 RAG evaluator 并返回结构化结果，供统一 Runner 复用。"""
-    eval_items = load_eval(eval_file)
-    preds = load_predictions(pred_file)
+    """运行离线评分；只有显式启用 Judge 才可能创建模型客户端。"""
+    from app.config import get_settings
+
+    eval_items, preds = load_eval(eval_file), load_predictions(pred_file)
     chunk_index = load_chunk_index(
-        chunks_file=chunks_file,
-        index_source=index_source,
-        chroma_persist_dir=chroma_persist_dir,
-        chroma_collection_name=chroma_collection_name,
+        chunks_file=chunks_file, index_source=index_source,
+        chroma_persist_dir=chroma_persist_dir, chroma_collection_name=chroma_collection_name,
     )
     if index_source != "none" and not chunk_index.chunk_text_map:
         warn("no chunk index loaded; gold alignment uses dataset chunk IDs")
 
-    judge_config = make_judge_config(
-        use_llm_judge=use_llm_judge,
-        judge_model=judge_model,
-        judge_api_url=judge_api_url,
-        judge_api_key=judge_api_key,
-    )
+    settings = get_settings()
+    enabled = settings.use_llm_judge if use_llm_judge is None else use_llm_judge
+    model_name = (settings.judge_model if judge_model is None else judge_model).strip()
+    api_url = settings.judge_api_url_resolved if judge_api_url is None else judge_api_url
+    answer_evaluator = None
+    if judge_cache_report is not None:
+        cache = load_judge_cache_report(judge_cache_report)
+        enabled, model_name = True, f"cached:{judge_cache_report.name}"
 
-    if judge_cache_report:
-        judge_cache = load_judge_cache_report(judge_cache_report)
-        missing_qids = sorted(str(q["qid"]) for q in eval_items if str(q["qid"]) not in judge_cache)
-        if missing_qids:
-            preview = ", ".join(missing_qids[:10])
-            more = "..." if len(missing_qids) > 10 else ""
-            raise ValueError(f"judge cache missing {len(missing_qids)} qid(s): {preview}{more}")
-        key_point_evaluator, forbidden_evaluator = make_cached_judge_evaluators(judge_cache)
-        judge_config = LLMJudgeConfig(
-            enabled=True,
-            model=f"cached:{judge_cache_report.name}",
-            api_url="cache://per_question_report",
-            api_key="",
-            timeout=0,
-            max_retries=0,
-            max_tokens=0,
-        )
-        rows, summary, judge_details = evaluate(
-            eval_items,
-            preds,
-            chunk_index,
-            k,
-            judge_config=judge_config,
-            key_point_evaluator=key_point_evaluator,
-            forbidden_evaluator=forbidden_evaluator,
-        )
-    else:
-        rows, summary, judge_details = evaluate(
-            eval_items,
-            preds,
-            chunk_index,
-            k,
-            judge_config=judge_config,
-        )
+        def answer_evaluator(question, answer):
+            row = cache.get(str(question["qid"]))
+            if row is None:
+                raise ValueError("qid missing from judge cache")
+            if row["answer"] != answer:
+                raise ValueError("answer changed; judge cache cannot be reused")
+            if not row["answer_correctness"]:
+                raise ValueError("judge cache has no answer correctness score")
+            score = float(row["answer_correctness"])
+            if not 0 <= score <= 1:
+                raise ValueError("judge cache score must be in [0, 1]")
+            return score, row["answer_correctness_reason"] or ""
+
+    elif enabled:
+        if not model_name or not api_url.strip():
+            warn("Judge model or URL is empty; answer_correctness remains unavailable")
+            enabled = False
+        else:
+            judge = None
+
+            def answer_evaluator(question, answer):
+                nonlocal judge
+                if judge is None:
+                    judge = ProjectJudge(model_name=model_name, api_url=api_url, api_key=judge_api_key)
+                return answer_correctness(question, answer, model=judge)
+
+    rows, summary = evaluate(eval_items, preds, chunk_index, k, answer_evaluator=answer_evaluator)
     out_dir.mkdir(parents=True, exist_ok=True)
-
     write_csv(out_dir / "per_question_report.csv", rows)
     write_summary_csv(out_dir / "summary_report.csv", summary)
-    write_jsonl(out_dir / "llm_judge_details.jsonl", judge_details)
     (out_dir / "summary_report.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+        json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8",
     )
-
-    overall = summary["overall"]
     print("=== RAG Evaluation Summary ===")
     print(f"Chunk index source: {chunk_index.source} ({len(chunk_index.chunk_text_map)} chunks)")
-    if judge_cache_report:
-        print(f"LLM judge: cached ({judge_cache_report})")
-    else:
-        print(f"LLM judge: {'enabled' if judge_config.enabled else 'disabled'}")
-    if judge_config.enabled:
-        print(f"Judge model: {judge_config.model}")
-    print(f"Questions: {overall['num_questions']}")
-    print(f"Prediction coverage: {overall['prediction_coverage']:.2%}")
-    print(f"Average final score: {overall['avg_final_score']:.2%}")
-    print(f"Average behavior score: {overall['avg_behavior_score']:.2%}")
-    print(f"Average key-point recall: {overall['avg_key_point_recall']:.2%}")
-    print(f"Retrieval gold chunk recall@{k}: {overall['retrieval_gold_chunk_recall_at_k']:.2%}")
-    print(f"Reference gold chunk recall: {overall['reference_gold_chunk_recall']:.2%}")
-    print(f"Forbidden/hallucination rate: {overall['forbidden_rate']:.2%}")
-    print(f"\nReports written to: {out_dir}")
+    print(f"LLM judge: {model_name if enabled else 'disabled'}")
+    for name, value in summary["overall"].items():
+        print(f"{name}: {value if value is not None else 'n/a'}")
+    print(f"Reports written to: {out_dir}")
     return {
-        "rows": rows,
-        "summary": summary,
-        "judge_details": judge_details,
+        "rows": rows, "summary": summary,
         "chunk_index_source": chunk_index.source,
         "chunk_index_count": len(chunk_index.chunk_text_map),
-        "judge_enabled": judge_config.enabled,
-        "judge_model": judge_config.model if judge_config.enabled else "",
+        "judge_enabled": enabled,
+        "judge_model": model_name if enabled else "",
     }
-
-
-__all__ = [
-    "load_judge_cache_report",
-    "make_cached_judge_evaluators",
-    "run_rag_evaluation",
-]

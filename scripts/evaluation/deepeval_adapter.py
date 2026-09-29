@@ -1,5 +1,6 @@
-"""只把工具名称交给 DeepEval；本地确定性评分，不创建模型客户端或云端 run。"""
+"""DeepEval 3.9.6：确定性工具评分与可选 GEval 答案评分，不创建云端 run。"""
 
+import asyncio
 import os
 
 # Must precede DeepEval imports, including its config and telemetry modules.
@@ -11,9 +12,63 @@ os.environ.update(
     CONFIDENT_TRACING_ENABLED="NO",
 )
 
-from deepeval.metrics import ToolCorrectnessMetric  # noqa: E402
+from deepeval.metrics import GEval, ToolCorrectnessMetric  # noqa: E402
 from deepeval.models import DeepEvalBaseLLM  # noqa: E402
-from deepeval.test_case import LLMTestCase, ToolCall  # noqa: E402
+from deepeval.test_case import LLMTestCase, LLMTestCaseParams, ToolCall  # noqa: E402
+
+from app.llm.factory import get_judge_model  # noqa: E402
+from app.llm.gateway import ModelGateway  # noqa: E402
+from scripts.evaluation.rag.common import point_texts  # noqa: E402
+
+
+class ProjectJudge(DeepEvalBaseLLM):
+    """只转发文本；配置、模型调用及错误由项目 Factory/Gateway 管理。"""
+
+    def __init__(self, **model_options):
+        self.model_options = model_options
+        super().__init__()
+
+    def load_model(self):
+        return ModelGateway(role="judge", langchain_model=get_judge_model(**self.model_options))
+
+    def generate(self, prompt: str) -> str:
+        return self.model.invoke_text([{"role": "user", "content": prompt}])
+
+    async def a_generate(self, prompt: str) -> str:
+        return await asyncio.to_thread(self.generate, prompt)
+
+    def get_model_name(self):
+        return getattr(self.model.langchain_model, "model_name", "judge")
+
+
+def answer_correctness(question: dict, answer: str, *, model: DeepEvalBaseLLM) -> tuple[float, str]:
+    """Gold 构成评价规范；GEval 独立负责提示词、响应解析与分数计算。"""
+    expected = "\n\n".join([
+        f"Expected behavior:\n{question.get('expected_behavior', 'answer')}",
+        f"Reference answer:\n{question.get('gold_answer', '')}",
+        "Required key points:\n" + "\n".join(f"- {p}" for p in point_texts(question.get("gold_key_points", []))),
+        "Forbidden claims:\n" + "\n".join(f"- {p}" for p in point_texts(question.get("forbidden_points", []))),
+    ])
+    metric = GEval(
+        name="answer_correctness",
+        evaluation_params=[LLMTestCaseParams.INPUT, LLMTestCaseParams.ACTUAL_OUTPUT, LLMTestCaseParams.EXPECTED_OUTPUT],
+        evaluation_steps=[
+            "Read the question and expected output as the evaluation specification; assess semantic correctness, not wording or style.",
+            "Check compliance with expected behavior (answer, partial_answer, abstain). For partial_answer, answer the known part and clearly state limits on the unknown part. For abstain, a justified refusal is correct and must not be penalized for lacking an answer.",
+            "Compare the actual output with the reference answer and required key points. Penalize important factual omissions and contradictions; accept semantically equivalent wording.",
+            "Penalize forbidden claims asserted as facts. Explicitly denying a forbidden claim or stating it is unknown is not an assertion of that claim.",
+            "Give one correctness score considering these requirements together, and explain the material errors or why the answer is correct.",
+        ],
+        model=model,
+        async_mode=False,
+    )
+    metric.measure(
+        LLMTestCase(input=question["question"], actual_output=answer, expected_output=expected),
+        _show_indicator=False, _log_metric_to_confident=False,
+    )
+    if metric.error or metric.score is None:
+        raise ValueError(metric.error or "GEval returned no score")
+    return metric.score, metric.reason or ""
 
 
 class _DisabledJudge(DeepEvalBaseLLM):
