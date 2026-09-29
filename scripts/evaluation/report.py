@@ -45,55 +45,15 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
             )
 
 
-def write_agent_csv(
-    path: Path,
-    rows: list[dict[str, Any]],
-) -> None:
-    """写入适合人工筛选的 Agent case 摘要 CSV。"""
-    fieldnames = [
-        "case_id",
-        "suite",
-        "category",
-        "passed",
-        "failure_reasons",
-        "expected_action",
-        "actual_action",
-        "expected_status",
-        "actual_status",
-        "actual_tools",
-        "tool_call_count",
-        "llm_call_count",
-        "latency_ms",
-        "question",
-    ]
+def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    """按首行字段写入带 BOM 的 CSV，保留逐题报告的缓存合同。"""
+    if not rows:
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8-sig", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer = csv.DictWriter(file, fieldnames=list(rows[0]))
         writer.writeheader()
-        for row in rows:
-            expected = row.get("expected") or {}
-            writer.writerow(
-                {
-                    "case_id": row.get("case_id", ""),
-                    "suite": row.get("suite", ""),
-                    "category": row.get("category", ""),
-                    "passed": row.get("passed", False),
-                    "failure_reasons": " | ".join(
-                        row.get("failure_reasons") or []
-                    ),
-                    "expected_action": expected.get("action") or "",
-                    "actual_action": row.get("actual_action", ""),
-                    "expected_status": expected.get("status") or "",
-                    "actual_status": row.get("actual_status", ""),
-                    "actual_tools": " -> ".join(
-                        row.get("actual_tools") or []
-                    ),
-                    "tool_call_count": row.get("tool_call_count", 0),
-                    "llm_call_count": row.get("llm_call_count", 0),
-                    "latency_ms": row.get("latency_ms", 0),
-                    "question": str(row.get("question") or "")[:300],
-                }
-            )
+        writer.writerows(rows)
 
 
 def classify_rag_failures(
@@ -354,7 +314,7 @@ def build_markdown_report(
 __all__ = [
     "build_markdown_report",
     "classify_rag_failures",
-    "write_agent_csv",
+    "write_csv",
     "write_json",
     "write_jsonl",
 ]

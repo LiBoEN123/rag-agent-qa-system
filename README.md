@@ -727,8 +727,11 @@ python scripts/run_evaluation_baseline.py \
   --judge-model deepseek-chat
 ```
 
-RAG 输出包括 `predictions.csv`、`prediction_failures.jsonl`、`per_question_report.csv`、
-`summary_report.csv` 和 `summary_report.json`。
+整次运行的唯一机器可读汇总为 `baseline_summary.json`；Agent 明细保留 `agent/per_case.jsonl`。
+RAG 输出保留 `predictions.csv`、`prediction_failures.jsonl` 和 `per_question_report.csv`
+（亦为 Judge 缓存来源），不再生成重复 summary。比较先检查 manifest 中的运行控制条件，
+缺失或不兼容默认失败；Git commit、Prompt 和工具合同变化允许比较。
+显式 `--allow-incompatible` 可强制比较，JSON 和 Markdown 会标记不兼容及原因。
 正式 Prediction 只接受 Schema v3，保存观察/引用 chunk IDs 与安全计数；旧 v1/v2 输入
 不再读取。Runtime 失败写入 sidecar，缺失预测降低 coverage、召回计零，Answer Correctness 保持 `None`。
 专项表格题集和 `table_diagnostics.py` 属于 diagnostics，不参与主 Baseline。

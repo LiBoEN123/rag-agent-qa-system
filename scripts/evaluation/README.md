@@ -78,7 +78,9 @@ Tool Correctness 使用禁用模型的占位，不调用模型；GEval 使用固
 通过项目 Judge factory/Gateway 调用已配置模型。无需 Cloud 登录，telemetry/tracing 关闭，
 框架文件系统只读，不启动其 pytest runner。
 
-输出包括 manifest、覆盖矩阵、summary、逐题 JSONL/CSV、失败报告和 Markdown。
+唯一机器可读汇总为 `baseline_summary.json`。输出保留 manifest、覆盖矩阵、失败索引、
+Markdown、`agent/per_case.jsonl`，以及 RAG predictions、prediction failures 和
+`per_question_report.csv`（也是 Judge cache source），不再重复写各层 summary 或 Agent CSV。
 数据、工具合同、Prompt 与索引 hash 用于审查可复现性。
 
 ```bash
@@ -86,6 +88,10 @@ Tool Correctness 使用禁用模型的占位，不调用模型；GEval 使用固
   --baseline outputs/evaluation_baseline_v2/run-a \
   --candidate outputs/evaluation_baseline_v2/run-b
 ```
+
+比较先检查两份 manifest 的运行形态、适用数据/索引/评分/模型/预算控制条件；缺失或不兼容
+默认返回非零，不生成 delta。Git commit、Prompt 与工具合同变化允许比较。
+只有显式 `--allow-incompatible` 才跳过拒绝，并在 JSON/Markdown 中标记强制比较及 mismatches。
 
 Online 内容与外部服务会变化，应与 Core 分开解释。模型运行失败时检查失败 sidecar；
 不能把部分结果作为完整正式基线，也不能用旧 workflow 分数直接归因当前改动。

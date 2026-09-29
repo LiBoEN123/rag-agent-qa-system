@@ -2,7 +2,6 @@
 
 from dataclasses import replace
 import json
-import csv
 import asyncio
 from unittest.mock import AsyncMock
 
@@ -60,12 +59,7 @@ def test_minimal_agent_smoke(tool, settings_factory, monkeypatch, tmp_path):
     assert row["passed"] and row["actual_tools"] == ([tool] if tool else [])
     assert row["tool_output_schema_pass"]
     report.write_jsonl(tmp_path / "per_case.jsonl", [row])
-    report.write_agent_csv(tmp_path / "per_case.csv", [row])
-    assert json.loads((tmp_path / "per_case.jsonl").read_text())["passed"]
-    with (tmp_path / "per_case.csv").open(encoding="utf-8-sig") as file:
-        summary = next(csv.DictReader(file))
-    assert summary["expected_action"] == summary["actual_action"] == "agent"
-    assert summary["actual_tools"] == tool
+    assert json.loads((tmp_path / "per_case.jsonl").read_text()) == row
     assert not settings.sqlite_db_path.exists()
 
 
@@ -110,5 +104,5 @@ def test_minimal_rag_smoke_judge_disabled(monkeypatch, tmp_path):
     assert result["summary"]["overall"]["llm_judge_coverage"] == 0
     assert result["rows"][0]["retrieval_gold_chunk_recall_at_k"] == 1
     assert {p.name for p in (tmp_path / "rag").iterdir()} == {
-        "per_question_report.csv", "summary_report.csv", "summary_report.json",
+        "per_question_report.csv",
     }

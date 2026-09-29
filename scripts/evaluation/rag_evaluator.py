@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 import csv
-import json
 from pathlib import Path
 from typing import Any
 
 from scripts.evaluation.deepeval_adapter import ProjectJudge, answer_correctness
 from scripts.evaluation.rag.common import load_eval, load_predictions, warn
 from scripts.evaluation.rag.evaluation import evaluate
-from scripts.evaluation.rag.report import write_csv, write_summary_csv
 from scripts.evaluation.rag.retrieval import load_chunk_index
+from scripts.evaluation.report import write_csv
 
 
 def load_judge_cache_report(path: Path) -> dict[str, dict[str, str]]:
@@ -95,10 +94,6 @@ def run_rag_evaluation(
     rows, summary = evaluate(eval_items, preds, chunk_index, k, answer_evaluator=answer_evaluator)
     out_dir.mkdir(parents=True, exist_ok=True)
     write_csv(out_dir / "per_question_report.csv", rows)
-    write_summary_csv(out_dir / "summary_report.csv", summary)
-    (out_dir / "summary_report.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8",
-    )
     print("=== RAG Evaluation Summary ===")
     print(f"Chunk index source: {chunk_index.source} ({len(chunk_index.chunk_text_map)} chunks)")
     print(f"LLM judge: {model_name if enabled else 'disabled'}")

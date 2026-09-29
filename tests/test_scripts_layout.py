@@ -37,7 +37,6 @@ def test_evaluation_internal_modules_are_importable():
         "scripts.evaluation.rag.common",
         "scripts.evaluation.rag.evaluation",
         "scripts.evaluation.deepeval_adapter",
-        "scripts.evaluation.rag.report",
         "scripts.evaluation.rag.retrieval",
     ]
 

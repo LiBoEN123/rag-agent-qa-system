@@ -59,6 +59,26 @@ def _write_run(
         json.dumps(summary),
         encoding="utf-8",
     )
+    manifest = {
+        "evaluation_type": "core_baseline", "selected_suites": ["core"],
+        "code": {"git_commit": "A", "git_branch": "branch", "git_dirty": False},
+        "data": {"agent_cases_sha256": "agent-data", "rag_eval_sha256": "rag-data"},
+        "rag": {
+            "prediction_schema_version": 3, "retrieval_metric_k": 5,
+            "index_manifest_sha256": "index", "index_manifest_path": "index/a.json",
+            "document_count": 2, "chunk_count": 10, "embedding_model": "embedding",
+            "rerank_model": "reranker", "chunk_size": 500, "chunk_overlap": 50,
+        },
+        "agent": {
+            "answer_model": "answer", "temperature": 0, "max_tokens": 1024,
+            "budget": {"max_iterations": 6, "max_tool_calls": 10},
+            "query_rewrite_enabled": True, "query_rewrite_model": "rewrite",
+            "tool_contract_sha256": "tools", "registered_tool_names": ["search_document"],
+        },
+        "prompts": {"agent": {"combined_sha256": "prompt"}},
+        "judge": {"enabled": True, "model": "judge"},
+    }
+    (path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     agent_dir = path / "agent"
     agent_dir.mkdir()
     with (agent_dir / "per_case.jsonl").open(
@@ -192,6 +212,9 @@ def test_default_comparison_reports_without_failure_exit(tmp_path):
         )
         == 0
     )
+    comparison = json.loads((candidate / "comparison.json").read_text())
+    assert comparison["compatibility"] == {"compatible": True, "overridden": False, "mismatches": []}
+    assert "Run controls are compatible." in (candidate / "comparison.md").read_text()
 
 
 def test_comparison_calculates_reference_recall_delta(tmp_path):
@@ -286,3 +309,139 @@ def test_correctness_delta_requires_scores_and_equal_coverage(tmp_path, before, 
     }
     assert bool(comparison["warnings"]) is (coverage != 1.0)
     assert evaluate_regressions(comparison, {}) == []
+
+
+@pytest.fixture
+def run_pair(tmp_path):
+    paths = tmp_path / "baseline", tmp_path / "candidate"
+    for path in paths:
+        _write_run(path, cases=[], pass_rate=1, source=1, p95=10)
+    return paths
+
+
+def _change(path, field, value):
+    document = json.loads(path.read_text())
+    parent = document
+    *keys, name = field.split(".")
+    for key in keys:
+        parent = parent[key]
+    parent[name] = value
+    path.write_text(json.dumps(document))
+
+
+@pytest.mark.parametrize("field,value", [
+    ("evaluation_type", "targeted_agent_check"), ("selected_suites", ["core", "online"]),
+    ("data.agent_cases_sha256", "other"), ("data.rag_eval_sha256", "other"),
+    ("rag.retrieval_metric_k", 10), ("rag.prediction_schema_version", 2),
+    ("rag.index_manifest_sha256", "other"), ("judge.model", "other"), ("judge.enabled", False),
+    ("agent.answer_model", "other"), ("agent.temperature", 0.5), ("agent.max_tokens", 2048),
+    ("agent.budget.max_tool_calls", 20), ("agent.query_rewrite_enabled", False),
+    ("agent.query_rewrite_model", "other"), ("data.agent_cases_sha256", ""),
+])
+def test_incompatible_controls_reject_before_thresholds_or_output(run_pair, tmp_path, capsys, field, value):
+    baseline, candidate = run_pair
+    _change(candidate / "manifest.json", field, value)
+    output = tmp_path / "comparison"
+    with pytest.raises(SystemExit) as error:
+        main(["--baseline", str(baseline), "--candidate", str(candidate), "--output-dir", str(output),
+              "--thresholds", str(tmp_path / "not-read.json"), "--fail-on-regression"])
+    assert error.value.code == 2
+    assert field.rsplit(".max_tool_calls", 1)[0] in capsys.readouterr().err
+    assert not output.exists()
+
+
+def test_system_under_test_changes_and_index_path_are_allowed(run_pair):
+    baseline, candidate = run_pair
+    for field, value in {
+        "code.git_commit": "B", "code.git_branch": "candidate", "code.git_dirty": True,
+        "code.sha256": "other-code", "prompts.agent.combined_sha256": "other-prompt",
+        "agent.tool_contract_sha256": "other-tools", "agent.registered_tool_names": ["find_documents"],
+        "rag.index_manifest_path": "/other/index.json",
+    }.items():
+        _change(candidate / "manifest.json", field, value)
+    assert compare_runs(baseline, candidate)["compatibility"]["compatible"]
+
+
+@pytest.mark.parametrize("missing", [[], [0], [1], [0, 1]])
+def test_explicit_override_marks_incompatible_and_missing_manifests(run_pair, missing):
+    baseline, candidate = run_pair
+    _change(candidate / "manifest.json", "rag.retrieval_metric_k", 10)
+    for index in missing:
+        (run_pair[index] / "manifest.json").unlink()
+    with pytest.raises(ValueError, match="Incompatible run controls"):
+        compare_runs(baseline, candidate)
+    args = ["--baseline", str(baseline), "--candidate", str(candidate)]
+    with pytest.raises(SystemExit) as error:
+        main(args)
+    assert error.value.code == 2
+    assert not (candidate / "comparison.json").exists()
+    assert main([*args, "--allow-incompatible"]) == 0
+    comparison = json.loads((candidate / "comparison.json").read_text())
+    compatibility = comparison["compatibility"]
+    assert not compatibility["compatible"] and compatibility["overridden"]
+    assert compatibility["mismatches"][0]["field"] == ("manifest.json" if missing else "rag.retrieval_metric_k")
+    assert comparison["metrics"]["rag_retrieval_gold_chunk_recall_at_k"]["delta"] == 0
+    assert "**Comparison was forced across incompatible run controls.**" in (candidate / "comparison.md").read_text()
+
+
+@pytest.mark.parametrize("layer,unused_dataset", [("rag", "rag_eval_sha256"), ("agent", "agent_cases_sha256")])
+def test_single_layer_runs_ignore_unused_controls_but_keep_runtime_controls(run_pair, layer, unused_dataset):
+    baseline, candidate = run_pair
+    for path in run_pair:
+        _change(path / "baseline_summary.json", layer, {"skipped": True})
+        _change(path / "manifest.json", f"data.{unused_dataset}", None)
+    _change(candidate / "manifest.json", f"data.{unused_dataset}", "unused")
+    if layer == "rag":
+        for field in ("rag.prediction_schema_version", "rag.retrieval_metric_k", "judge.model"):
+            _change(candidate / "manifest.json", field, None)
+    assert compare_runs(baseline, candidate)["compatibility"]["compatible"]
+    _change(candidate / "manifest.json", "agent.answer_model", "other")
+    with pytest.raises(ValueError, match="agent.answer_model"):
+        compare_runs(baseline, candidate)
+
+
+@pytest.mark.parametrize("layer", ["agent", "rag"])
+def test_run_shape_mismatch_rejected(run_pair, layer):
+    baseline, candidate = run_pair
+    _change(candidate / "baseline_summary.json", layer, {"skipped": True})
+    with pytest.raises(ValueError, match=rf"{layer}\.skipped"):
+        compare_runs(baseline, candidate)
+
+
+def test_targeted_cases_and_suites_compare_as_sets(run_pair):
+    baseline, candidate = run_pair
+    for path, ids, suites in ((baseline, ["A", "B"], ["core", "online"]),
+                             (candidate, ["B", "A"], ["online", "core"])):
+        _change(path / "baseline_summary.json", "rag", {"skipped": True})
+        _change(path / "manifest.json", "evaluation_type", "targeted_agent_check")
+        _change(path / "manifest.json", "data.selected_case_ids", ids)
+        _change(path / "manifest.json", "selected_suites", suites)
+    assert compare_runs(baseline, candidate)["compatibility"]["compatible"]
+    _change(candidate / "manifest.json", "data.selected_case_ids", ["A"])
+    with pytest.raises(ValueError, match="data.selected_case_ids"):
+        compare_runs(baseline, candidate)
+    _change(candidate / "manifest.json", "data.selected_case_ids", ["A", "B"])
+    _change(candidate / "manifest.json", "evaluation_type", "core_baseline")
+    with pytest.raises(ValueError, match="evaluation_type"):
+        compare_runs(baseline, candidate)
+
+
+@pytest.mark.parametrize("candidate_hash", ["", "index"])
+def test_index_fallback_uses_stable_metadata_when_either_hash_missing(run_pair, candidate_hash):
+    baseline, candidate = run_pair
+    _change(baseline / "manifest.json", "rag.index_manifest_sha256", "")
+    _change(candidate / "manifest.json", "rag.index_manifest_sha256", candidate_hash)
+    _change(candidate / "manifest.json", "rag.index_manifest_path", "/other/index.json")
+    assert compare_runs(baseline, candidate)["compatibility"]["compatible"]
+    _change(candidate / "manifest.json", "rag.chunk_count", 11)
+    with pytest.raises(ValueError, match="rag.chunk_count"):
+        compare_runs(baseline, candidate)
+
+
+def test_judge_config_is_ignored_when_correctness_is_unavailable(run_pair):
+    baseline, candidate = run_pair
+    _change(candidate / "baseline_summary.json", "rag.overall.avg_answer_correctness", None)
+    _change(candidate / "manifest.json", "judge", {"enabled": False, "model": ""})
+    comparison = compare_runs(baseline, candidate)
+    assert comparison["compatibility"]["compatible"]
+    assert comparison["metrics"]["rag_avg_answer_correctness"]["delta"] is None

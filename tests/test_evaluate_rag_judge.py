@@ -1,6 +1,7 @@
 """GEval、空值和只读缓存合同；使用原生 metric 与 fake 项目模型，禁止网络。"""
 
 import asyncio
+import csv
 import json
 import socket
 from types import SimpleNamespace
@@ -12,7 +13,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from scripts.evaluation import deepeval_adapter as adapter, rag_evaluator
 from scripts.evaluation.rag.common import ChunkIndex
 from scripts.evaluation.rag.evaluation import evaluate
-from scripts.evaluation.rag.report import write_csv
+from scripts.evaluation.report import write_csv
 
 
 @pytest.fixture(autouse=True)
@@ -114,7 +115,7 @@ def test_cache_reuses_only_matching_answer_without_model(tmp_path, cache_qid, ca
     assert row["answer_correctness_reason"] == ("" if error else "cached reason")
     assert error in row["judge_error"] and cache.read_bytes() == before
     assert set(p.name for p in (tmp_path / "out").iterdir()) == {
-        "per_question_report.csv", "summary_report.csv", "summary_report.json",
+        "per_question_report.csv",
     }
 
 
@@ -132,6 +133,10 @@ def test_runner_judge_configuration_and_nullable_reports(tmp_path, monkeypatch, 
     )
     expected = 0.9 if enabled and model_name else None
     assert result["rows"][0]["answer_correctness"] == expected
-    summary = json.loads((tmp_path / "out/summary_report.json").read_text())["overall"]
+    summary = result["summary"]["overall"]
     assert summary["avg_answer_correctness"] == expected
     assert summary["llm_judge_coverage"] == int(expected is not None)
+    with (tmp_path / "out/per_question_report.csv").open(encoding="utf-8-sig", newline="") as file:
+        row = next(csv.DictReader(file))
+    assert row["answer_correctness"] == ("" if expected is None else str(expected))
+    assert row["answer_correctness_reason"] == ("" if expected is None else "correct")

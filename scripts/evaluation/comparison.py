@@ -1,8 +1,8 @@
 """比较两次 Evaluation Baseline v2 运行。
 
 用途：定位候选运行相对基线运行的整体回归、分组变化与逐题状态变化。
-输入：两个运行目录中的 ``summary.json``、Agent 逐题结果和可选阈值 JSON。
-输出：``comparison.json``、``comparison.md``，并通过退出码标记阈值失败。
+输入：两份 ``manifest.json``、``baseline_summary.json``、Agent 逐题结果和可选阈值。
+输出：``comparison.json``、``comparison.md``；不兼容默认拒绝，也可显式检查回归阈值。
 边界：只读取既有评测产物，不重新调用 Agent、RAG、模型或网络服务。
 """
 
@@ -12,6 +12,8 @@ import argparse
 import json
 from pathlib import Path
 from typing import Any
+
+from scripts.evaluation.report import write_json
 
 
 KNOWN_THRESHOLDS = {
@@ -103,13 +105,89 @@ def _metric_delta(
     }
 
 
+def find_manifest_mismatches(
+    baseline: dict[str, Any] | None,
+    candidate: dict[str, Any] | None,
+    baseline_summary: dict[str, Any],
+    candidate_summary: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """仅检查实际运行层的实验控制条件，不限制被测代码、Prompt 或工具合同。"""
+    if baseline is None or candidate is None:
+        return [{"field": "manifest.json", "baseline": "missing" if baseline is None else "present",
+                 "candidate": "missing" if candidate is None else "present"}]
+    mismatches = []
+
+    def check(field, before, after):
+        missing = any(value is None or value == "" for value in (before, after))
+        if before != after or missing:
+            mismatches.append({"field": field, "baseline": before, "candidate": after})
+
+    def value(manifest, field):
+        result = manifest
+        for key in field.split("."):
+            result = result.get(key) if isinstance(result, dict) else None
+        return result
+
+    fields = ["evaluation_type"]
+    check("selected_suites", *[
+        sorted(set(m["selected_suites"])) if m.get("selected_suites") is not None else None
+        for m in (baseline, candidate)
+    ])
+    check("data.selected_case_ids", *[
+        sorted(set(value(m, "data.selected_case_ids") or []))
+        or (None if m.get("evaluation_type") == "targeted_agent_check" else [])
+        for m in (baseline, candidate)
+    ])
+    active = {}
+    for layer, dataset in (("agent", "agent_cases_sha256"), ("rag", "rag_eval_sha256")):
+        before, after = [bool(s.get(layer)) and not s[layer].get("skipped", False)
+                         for s in (baseline_summary, candidate_summary)]
+        check(f"{layer}.skipped", not before, not after)
+        active[layer] = before and after
+        if active[layer]:
+            fields.append(f"data.{dataset}")
+    if active["rag"]:
+        fields.extend(["rag.prediction_schema_version", "rag.retrieval_metric_k"])
+        if all(_metric(s, ("rag", "overall", "avg_answer_correctness")) is not None
+               for s in (baseline_summary, candidate_summary)):
+            fields.extend(["judge.enabled", "judge.model"])
+    if any(active.values()):
+        fields.extend(f"agent.{key}" for key in (
+            "answer_model", "temperature", "max_tokens", "budget",
+            "query_rewrite_enabled", "query_rewrite_model",
+        ))
+        # Agent-only 也会检索。无完整 hash 时只比较稳定元数据，不比较存储路径。
+        if all(value(m, "rag.index_manifest_sha256") for m in (baseline, candidate)):
+            fields.append("rag.index_manifest_sha256")
+        else:
+            fields.extend(f"rag.{key}" for key in (
+                "document_count", "chunk_count", "embedding_model", "rerank_model",
+                "chunk_size", "chunk_overlap",
+            ))
+    for field in fields:
+        check(field, value(baseline, field), value(candidate, field))
+    return mismatches
+
+
 def compare_runs(
     baseline_dir: Path,
     candidate_dir: Path,
+    *,
+    allow_incompatible: bool = False,
 ) -> dict[str, Any]:
-    """构造两次运行的结构化差异。"""
+    """先验证运行控制条件，再构造差异；强制比较必须在产物中标记。"""
     baseline = _load_json(baseline_dir / "baseline_summary.json")
     candidate = _load_json(candidate_dir / "baseline_summary.json")
+    manifests = [
+        _load_json(path) if path.is_file() else None
+        for path in (baseline_dir / "manifest.json", candidate_dir / "manifest.json")
+    ]
+    mismatches = find_manifest_mismatches(*manifests, baseline, candidate)
+    if mismatches and not allow_incompatible:
+        raise ValueError(
+            "Incompatible run controls; use --allow-incompatible to force comparison:\n"
+            + json.dumps(mismatches, ensure_ascii=False, indent=2)
+        )
     before_cases = _load_jsonl_by_case(
         baseline_dir / "agent" / "per_case.jsonl"
     )
@@ -188,6 +266,11 @@ def compare_runs(
         warnings.append("Judge coverage differs or is unavailable; correctness delta is unavailable.")
     return {
         "schema_version": 2,
+        "compatibility": {
+            "compatible": not mismatches,
+            "overridden": bool(mismatches and allow_incompatible),
+            "mismatches": mismatches,
+        },
         "baseline_run_id": baseline.get("run_id", baseline_dir.name),
         "candidate_run_id": candidate.get(
             "run_id",
@@ -284,11 +367,20 @@ def evaluate_regressions(
 def render_markdown(comparison: dict[str, Any]) -> str:
     """渲染紧凑的比较报告。"""
     changes = comparison["case_changes"]
+    compatibility = comparison["compatibility"]
     lines = [
         "# Evaluation Run Comparison",
         "",
         f"- Baseline: `{comparison['baseline_run_id']}`",
         f"- Candidate: `{comparison['candidate_run_id']}`",
+        "",
+        "## Compatibility",
+        "",
+        ("**Comparison was forced across incompatible run controls.**"
+         if compatibility["overridden"] else "Run controls are compatible."),
+        *[f"- `{item['field']}`: baseline={json.dumps(item['baseline'], ensure_ascii=False)}, "
+          f"candidate={json.dumps(item['candidate'], ensure_ascii=False)}"
+          for item in compatibility["mismatches"]],
         "",
         "## Case changes",
         "",
@@ -350,18 +442,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--thresholds", type=Path, default=None)
     parser.add_argument("--fail-on-regression", action="store_true")
+    parser.add_argument("--allow-incompatible", action="store_true",
+                        help="Force comparison across incompatible or missing run controls")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    """比较运行；默认永远只报告差异。"""
+    """默认拒绝不兼容输入；兼容时仅按显式阈值判断回归。"""
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.fail_on_regression and args.thresholds is None:
         parser.error(
             "--fail-on-regression 必须与显式 --thresholds 一起使用"
         )
-    comparison = compare_runs(args.baseline, args.candidate)
+    try:
+        comparison = compare_runs(args.baseline, args.candidate, allow_incompatible=args.allow_incompatible)
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
     thresholds = (
         load_thresholds(args.thresholds)
         if args.thresholds is not None
@@ -372,16 +469,7 @@ def main(argv: list[str] | None = None) -> int:
     comparison["regressions"] = regressions
     output_dir = args.output_dir or args.candidate
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "comparison.json").write_text(
-        json.dumps(
-            comparison,
-            ensure_ascii=False,
-            indent=2,
-            allow_nan=False,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    write_json(output_dir / "comparison.json", comparison)
     (output_dir / "comparison.md").write_text(
         render_markdown(comparison),
         encoding="utf-8",

@@ -161,18 +161,20 @@ outputs/evaluation_baseline_v2/<run_id>/
 ├── coverage_report.json
 ├── failure_cases.jsonl
 ├── agent/
-│   ├── per_case.jsonl
-│   ├── per_case.csv
-│   └── summary.json
+│   └── per_case.jsonl
 └── rag/
     ├── predictions.csv
     ├── prediction_failures.jsonl
-    ├── per_question_report.csv
-    ├── summary_report.csv
-    └── summary_report.json
+    └── per_question_report.csv
 ```
 
 未运行的层可以没有子目录，summary 记录 skipped。
+`baseline_summary.json` 是唯一机器可读 run summary，保留 Agent/RAG 指标、失败数、
+skipped 和运行元数据。`baseline_report.md` 供人工复核；`coverage_report.json` 记录
+数据集/能力覆盖；`failure_cases.jsonl` 是快速失败索引。
+Agent 逐 case 完整结构只写 JSONL；RAG 逐题 CSV 继续作为 Judge cache source。
+Prediction CSV 与 generation failure sidecar 保留为输入和运行失败审计证据。
+不再生成 `agent/summary.json`、`agent/per_case.csv` 或 `rag/summary_report.{csv,json}`。
 Manifest 保留 Git/运行环境、数据/索引/Prompt/工具合同 hash、模型配置、Agent 预算、
 v3 版本、评分 K、评测权限和 Judge 配置。只写显式白名单；敏感字段和 SecretStr 被拒绝。
 
@@ -189,12 +191,30 @@ RAG 确定性失败分类包括 `runtime_error`、`rag_chunk_miss`、`rag_refere
 ```
 
 比较当前合同下的 Agent case 变化、覆盖率、检索/引用 Recall、Answer Correctness、延迟和调用次数。
+比较先读取两份 manifest，在计算 delta 和检查阈值之前验证控制条件。不兼容或缺少 manifest
+时默认打印具体 mismatch、返回非零，不写 comparison 产物；不为旧目录推断配置。
+
+硬性控制条件包括 evaluation type、实际 Agent/RAG skipped 形态、selected suites 和
+selected case IDs（按集合比较）；只检查实际运行层的数据集 hash。RAG 层额外检查
+Prediction Schema 与 retrieval K。Agent-only 同样可能检索，仍检查索引和运行配置：
+优先比较两边非空的 index manifest hash；任一缺失时比较 document/chunk count、
+embedding/rerank model、chunk size/overlap，不比较 index path。运行配置包括 answer model、
+temperature、max tokens、Agent budget、query rewrite enabled/model。适用的控制字段缺失
+同样拒绝默认比较。两边 Answer Correctness 都存在时，检查 Judge enabled/model。
+
+Git commit/branch/dirty、代码 hash、Prompt hash、tool contract hash 和 registered tool names
+属于被测系统，差异允许比较。若有意比较不同模型、索引、数据或 K，可显式追加
+`--allow-incompatible`；此时 `comparison.json` 中的 `compatibility` 标记
+`compatible=false`、`overridden=true` 并列出 mismatches，Markdown 醒目标明
+“Comparison was forced across incompatible run controls.”。兼容时为 true/false/空列表。
+该开关也适用于缺失 manifest 的历史目录，不生成额外兼容报告文件。
+
 未运行的层可显示 unavailable；correctness 任一侧为空或 Judge coverage 不一致/缺失时，
 delta 为 `None`，不据此认定质量回退。coverage 相同也需人工核对判分题目集合。
-不支持历史 Prediction 的兼容评分。比较前须核对数据、
-工具、Prompt、模型、预算和索引是否一致，历史 workflow 分数不能直接归因于当前修改。
+不支持历史 Prediction 的兼容评分；历史 workflow 分数不能直接归因于当前修改。
 
-默认只报告差异。只有同时指定 `--thresholds data/eval/evaluation_thresholds_v2.example.json`
+通过兼容性检查（或显式 override）后，默认只报告差异。只有同时指定
+`--thresholds data/eval/evaluation_thresholds_v2.example.json`
 与 `--fail-on-regression` 才按显式阈值返回非零；示例阈值不是正式 CI 门禁。
 
 性能测试、在线连通性 smoke 与模型 Tool Calling smoke 是其他入口，不参与主 Baseline。

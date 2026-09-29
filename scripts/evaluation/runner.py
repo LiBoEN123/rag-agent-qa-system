@@ -36,7 +36,6 @@ from scripts.evaluation.rag.common import load_eval
 from scripts.evaluation.report import (
     build_markdown_report,
     classify_rag_failures,
-    write_agent_csv,
     write_json,
     write_jsonl,
 )
@@ -447,8 +446,6 @@ def main(argv: list[str] | None = None) -> int:
     write_jsonl(output_dir / "failure_cases.jsonl", failures)
     if not args.rag_only:
         write_jsonl(output_dir / "agent" / "per_case.jsonl", agent_rows)
-        write_agent_csv(output_dir / "agent" / "per_case.csv", agent_rows)
-        write_json(output_dir / "agent" / "summary.json", agent_summary)
     reproduce = _reproduce_command(args, output_dir)
     report = build_markdown_report(
         manifest=manifest,

@@ -463,7 +463,8 @@ def _fake_manifest(run_id: str):
 
 
 @pytest.mark.parametrize("all_failed", [False, True])
-def test_runner_completes_reports_with_runtime_failures(tmp_path, monkeypatch, all_failed):
+@pytest.mark.parametrize("rag_only", [False, True])
+def test_runner_completes_reports_with_runtime_failures(tmp_path, monkeypatch, all_failed, rag_only):
     from app.services.chat_models import ChatServiceOutcome
     from scripts.evaluation import rag_evaluator, rag_predictions
     from scripts.evaluation.rag.common import ChunkIndex
@@ -490,10 +491,12 @@ def test_runner_completes_reports_with_runtime_failures(tmp_path, monkeypatch, a
     monkeypatch.setattr(runner, "get_settings", lambda: _settings(tmp_path))
     monkeypatch.setattr(runner, "get_git_state", lambda: _fake_manifest("test")["code"])
     monkeypatch.setattr(runner, "build_manifest", lambda **kwargs: _fake_manifest(kwargs["run_id"]))
+    monkeypatch.setattr(runner, "run_agent_baseline", lambda *a, **k: ([], {"total_cases": 0}))
     monkeypatch.setattr("app.rag.runtime.get_rag_status", lambda: {})
 
     assert runner.main([
-        "--rag-only", "--agent-cases", str(FIXTURE), "--rag-eval-file", str(eval_file),
+        *(["--rag-only"] if rag_only else []),
+        "--agent-cases", str(FIXTURE), "--rag-eval-file", str(eval_file),
         "--output-dir", str(output),
     ]) == 0
 
@@ -514,10 +517,15 @@ def test_runner_completes_reports_with_runtime_failures(tmp_path, monkeypatch, a
     assert len(runtime_failures) == failure_count
     sidecar = [json.loads(line) for line in (output / "rag/prediction_failures.jsonl").read_text().splitlines()]
     assert {row["qid"] for row in sidecar} == {row["case_id"] for row in runtime_failures}
-    assert (output / "manifest.json").exists()
-    assert (output / "baseline_report.md").exists()
-    assert (output / "rag/per_question_report.csv").exists()
-    assert (output / "rag/summary_report.json").exists()
+    expected_files = {
+        "manifest.json", "baseline_summary.json", "coverage_report.json",
+        "failure_cases.jsonl", "baseline_report.md", "rag/predictions.csv",
+        "rag/prediction_failures.jsonl", "rag/per_question_report.csv",
+    } | (set() if rag_only else {"agent/per_case.jsonl"})
+    assert {path.relative_to(output).as_posix() for path in output.rglob("*") if path.is_file()} == expected_files
+    assert summary["schema_version"] == 2
+    assert summary["skipped"]["agent"] is rag_only
+    assert summary["failure_case_count"] == len(failures)
     for path in output.rglob("*"):
         if path.is_file():
             assert "unsafe" not in path.read_text(encoding="utf-8-sig")
@@ -605,9 +613,7 @@ def test_runner_writes_expected_output_structure(
         "coverage_report.json",
         "failure_cases.jsonl",
         "agent/per_case.jsonl",
-        "agent/per_case.csv",
-        "agent/summary.json",
-    } <= {
+    } == {
         path.relative_to(output).as_posix()
         for path in output.rglob("*")
         if path.is_file()
