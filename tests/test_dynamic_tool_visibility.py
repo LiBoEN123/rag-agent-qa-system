@@ -35,7 +35,7 @@ class SchemaModel(FakeToolCallingModel):
     async def ainvoke(self, messages):
         if self.forced_call and not any(isinstance(m, ToolMessage) for m in messages):
             return AIMessage(content="", tool_calls=[self.forced_call])
-        return self.final_response(scope_match="matched", support_level="full", outcome="answer", answer="done")
+        return self.final_response(outcome="answer", answer="done")
 
 
 def stream(agent, context):

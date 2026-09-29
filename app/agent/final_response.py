@@ -22,21 +22,9 @@ class FinalAgentResponse(BaseModel):
         extra="forbid", str_strip_whitespace=True, revalidate_instances="always",
     )
 
-    scope_match: Literal["matched", "mixed", "mismatched"] = Field(description=(
-        "先检查证据是否适用于问题的对象、学历层次、人员类别、年份、时间、政策版本及制度范围。"
-        "matched 表示范围一致；mixed 表示观察中同时有适用与不适用或范围不确定的证据，"
-        "但适用证据仍支持回答；mismatched 表示仅有相近规定且不能确认适用。"
-    ))
-    support_level: Literal["none", "partial", "full"] = Field(description=(
-        "范围检查后，仅计入适用的正文证据：none 表示不能支持问题的任何实质性部分；"
-        "partial 表示至少支持一个实质性部分，其他部分未知；full 表示足以支持主要答案。"
-        "目录、标题或不适用规定不算正文支持；无 Document 的操作回答按实际工具结果判断。"
-    ))
     outcome: Literal["answer", "no_evidence", "clarify"]
     answer: str = Field(default="", description="有 evidence_ids 时留空；无 Document 的操作结果可填写回答。")
-    evidence_ids: list[str] = Field(default_factory=list, description=(
-        "仅填写本轮成功 ToolMessage 中范围适用、实际支持回答内容的 Document.id，按引用顺序且不重复。"
-    ))
+    evidence_ids: list[str] = Field(default_factory=list)
     clarification_question: str = ""
 
     @model_validator(mode="after")
@@ -44,25 +32,14 @@ class FinalAgentResponse(BaseModel):
         """仅校验静态规则；本次 Run 的证据存在性由 Result Builder 检查。"""
         if len(self.evidence_ids) != len(set(self.evidence_ids)):
             raise ValueError("evidence_ids must be unique")
-        if self.scope_match == "mismatched" and self.support_level != "none":
-            raise ValueError("mismatched scope requires support_level=none")
-        if self.scope_match == "mixed" and self.support_level == "none":
-            raise ValueError("mixed scope requires partial or full support from applicable evidence")
         if self.outcome == "answer":
-            if self.support_level == "none":
-                raise ValueError("answer requires partial or full support within matched or mixed scope")
             if (not self.answer and not self.evidence_ids) or self.clarification_question:
                 raise ValueError("answer requires evidence_ids or text and no clarification_question")
         elif self.outcome == "no_evidence":
-            if self.support_level != "none":
-                raise ValueError("no_evidence requires support_level=none; partial or full support requires answer")
             if self.evidence_ids or self.clarification_question:
                 raise ValueError("no_evidence must not cite evidence or ask clarification")
-        else:
-            if self.support_level != "none":
-                raise ValueError("clarify requires support_level=none; partial or full support requires answer")
-            if self.evidence_ids or not self.clarification_question:
-                raise ValueError("clarify requires a question and no evidence_ids")
+        elif self.evidence_ids or not self.clarification_question:
+            raise ValueError("clarify requires a question and no evidence_ids")
         return self
 
 

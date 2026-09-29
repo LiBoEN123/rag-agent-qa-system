@@ -234,7 +234,6 @@ async def test_agent_explicitly_expands_search_hit_and_cites_neighbors(
         assert len(collected) == 3  # 重复 anchor 按既有 Document.id 去重。
         assert set(collected) == {doc["id"] for doc in evidence}
         return model.final_response(
-            scope_match="matched", support_level="full",
             outcome="answer", answer="相邻正文见第 2、4 段。",
             evidence_ids=[evidence[0]["id"], evidence[2]["id"]],
         )

@@ -178,7 +178,7 @@ async def test_agent_discovers_and_calls_echo_without_core_tool_mapping(monkeypa
                     }
                 ],
             ),
-            FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="echo complete"),
+            FinalAgentResponse(outcome="answer", answer="echo complete"),
         ]
     )
     context = ToolInvocationContext(
@@ -229,7 +229,7 @@ async def test_new_tool_request_reaches_agent_without_router_changes(monkeypatch
                     }
                 ],
             ),
-            FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="任意新口吻"),
+            FinalAgentResponse(outcome="answer", answer="任意新口吻"),
         ]
     )
     context = ToolInvocationContext(
@@ -272,7 +272,7 @@ async def test_agent_binds_different_dynamic_args_schema(monkeypatch):
                     }
                 ],
             ),
-            FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="registry driven"),
+            FinalAgentResponse(outcome="answer", answer="registry driven"),
         ]
     )
     context = ToolInvocationContext(
@@ -314,7 +314,7 @@ async def test_unknown_model_tool_call_is_structured_and_recoverable(monkeypatch
                     }
                 ],
             ),
-            FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="unknown tool handled"),
+            FinalAgentResponse(outcome="answer", answer="unknown tool handled"),
         ]
     )
 
@@ -373,7 +373,7 @@ async def test_provider_request_isolation(monkeypatch):
                         }
                     ],
                 ),
-                FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer=trace_id),
+                FinalAgentResponse(outcome="answer", answer=trace_id),
             ]
         )
         await _invoke_dynamic_graph(

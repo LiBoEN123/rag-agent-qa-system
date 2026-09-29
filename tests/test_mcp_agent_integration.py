@@ -140,7 +140,7 @@ def _responses():
                 }
             ],
         ),
-        FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="北京晴，20 摄氏度。"),
+        FinalAgentResponse(outcome="answer", answer="北京晴，20 摄氏度。"),
     ]
 
 

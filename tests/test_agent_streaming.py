@@ -173,7 +173,7 @@ def test_stream_executes_create_agent_and_returns_authoritative_result(
     monkeypatch, failure,
 ):
     model = FakeToolCallingModel([
-        RuntimeError("provider secret") if failure else FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="异步完整回答"),
+        RuntimeError("provider secret") if failure else FinalAgentResponse(outcome="answer", answer="异步完整回答"),
     ])
     questions = []
     route = agent_runtime.route_agent_action
@@ -231,7 +231,7 @@ def test_stream_projects_native_command_tool_completion(monkeypatch):
         AIMessage(content="", tool_calls=[{
             "name": "find_documents", "args": {}, "id": "stream-list-call",
         }]),
-        FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="文档列表读取完成。"),
+        FinalAgentResponse(outcome="answer", answer="文档列表读取完成。"),
     ])
     monkeypatch.setattr(
         framework_agent,
@@ -304,7 +304,6 @@ def test_stream_runtime_converts_exception_to_internal_result(monkeypatch):
 async def test_stream_withholds_model_text_until_grounding_passes(monkeypatch, invalid_id):
     def respond(model, messages):
         message = model.final_response(
-            scope_match="matched", support_level="full",
             outcome="answer", answer="最终回答",
             evidence_ids=["knowledge_base:fake"] if invalid_id else [],
         )
@@ -437,9 +436,9 @@ async def test_evidence_gate_failure_never_starts_composer_or_emits_delta(monkey
     composer = ControlledAnswerModel()
     model, documents, payload = install_evidence_agent(monkeypatch, composer)
     if damage == "unknown_id":
-        model.responses[-1] = FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", evidence_ids=["invented"])
+        model.responses[-1] = FinalAgentResponse(outcome="answer", evidence_ids=["invented"])
     elif damage == "missing_ids":
-        model.responses[-1] = FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="PRIVATE UNSUPPORTED")
+        model.responses[-1] = FinalAgentResponse(outcome="answer", answer="PRIVATE UNSUPPORTED")
     elif damage == "invalid_document":
         documents[0].metadata.pop("content_is_untrusted")
     elif damage == "failed_tool":

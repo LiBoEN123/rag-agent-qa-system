@@ -66,7 +66,7 @@ class ChatAgentModel(FakeToolCallingModel):
                     }
                 ],
             )
-        return self.final_response(scope_match="matched", support_level="full", outcome="answer", answer="ChatService 主路径完成。")
+        return self.final_response(outcome="answer", answer="ChatService 主路径完成。")
 
 
 class ChatWebSearchModel(ChatAgentModel):
@@ -111,7 +111,6 @@ class ChatWebSearchModel(ChatAgentModel):
             )
         output = payload["output"]
         return self.final_response(
-            scope_match="matched", support_level="full",
             outcome="answer", evidence_ids=[output["evidence"][0]["id"]],
         )
 
@@ -165,7 +164,6 @@ class ChatWebPdfModel(ChatAgentModel):
             )
         output = payload["output"]
         return self.final_response(
-            scope_match="matched", support_level="full",
             outcome="answer", evidence_ids=[output["evidence"][0]["id"]],
         )
 
@@ -343,7 +341,7 @@ def test_chat_service_returns_kb_evidence_to_agent_with_request_tool_mode(monkey
             "name": "search_knowledge_base", "args": {"query": "学习年限", "top_k": 8},
             "id": "kb-mode-call", "type": "tool_call",
         }]),
-        FinalAgentResponse(scope_match="matched", support_level="none", outcome="no_evidence", answer="无法根据当前证据确定学习年限。"),
+        FinalAgentResponse(outcome="no_evidence", answer="无法根据当前证据确定学习年限。"),
     ])
     monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
     search, rerank = Mock(return_value=[]), Mock(return_value=[])

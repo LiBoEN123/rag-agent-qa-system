@@ -192,7 +192,7 @@ async def test_agent_binds_visible_tools_and_executes_authorized_tool(monkeypatc
                 content="",
                 tool_calls=[_call("private_tool", "allowed", "private-call")],
             ),
-            FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="authorized tool complete"),
+            FinalAgentResponse(outcome="answer", answer="authorized tool complete"),
         ]
     )
     context = ToolInvocationContext(
@@ -232,7 +232,7 @@ async def test_forged_hidden_tool_is_denied_by_execution_policy(monkeypatch):
                 content="",
                 tool_calls=[_call("private_tool", "forged", "hidden-call")],
             ),
-            FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="hidden tool handled safely"),
+            FinalAgentResponse(outcome="answer", answer="hidden tool handled safely"),
         ]
     )
     context = ToolInvocationContext(trace_id="trace-hidden")

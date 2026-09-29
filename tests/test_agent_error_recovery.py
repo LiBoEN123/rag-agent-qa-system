@@ -196,7 +196,7 @@ async def test_same_tool_with_different_arguments_does_not_trigger_call_guard(
         [
             AIMessage(content="", tool_calls=[_call("varying_tool", 1, "v1")]),
             AIMessage(content="", tool_calls=[_call("varying_tool", 2, "v2")]),
-            FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="done"),
+            FinalAgentResponse(outcome="answer", answer="done"),
         ]
     )
 
@@ -264,7 +264,7 @@ async def test_same_error_code_with_different_arguments_is_not_same_error_loop(
                 content="",
                 tool_calls=[_call("different_error_calls", 2, "d2")],
             ),
-            FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="handled"),
+            FinalAgentResponse(outcome="answer", answer="handled"),
         ]
     )
 
@@ -308,7 +308,7 @@ async def test_hidden_tool_is_denied_and_public_batch_call_is_aborted(monkeypatc
                     _call("normal_tool", 2, "normal"),
                 ],
             ),
-            FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="hidden tool handled"),
+            FinalAgentResponse(outcome="answer", answer="hidden tool handled"),
         ]
     )
     context = ToolInvocationContext(
@@ -349,7 +349,7 @@ async def test_structured_tool_validation_error_is_corrected_next_round(monkeypa
         [
             AIMessage(content="", tool_calls=[_call("validated_tool", None, "bad")]),
             AIMessage(content="", tool_calls=[_call("validated_tool", 7, "fixed")]),
-            FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="corrected"),
+            FinalAgentResponse(outcome="answer", answer="corrected"),
         ]
     )
 
@@ -388,7 +388,7 @@ async def test_execution_error_can_switch_tools(monkeypatch):
         [
             AIMessage(content="", tool_calls=[_call("first_tool", 1, "first")]),
             AIMessage(content="", tool_calls=[_call("second_tool", 2, "second")]),
-            FinalAgentResponse(scope_match="matched", support_level="full", outcome="answer", answer="used fallback tool"),
+            FinalAgentResponse(outcome="answer", answer="used fallback tool"),
         ]
     )
 
