@@ -271,13 +271,21 @@ def build_manifest(
             "permissions": ["knowledge_base:read"],
         },
         "agent": {
+            "agent_model": settings.agent_model_name_resolved,
+            "agent_temperature": settings.agent_temperature_resolved,
+            "agent_max_tokens": settings.agent_llm_max_tokens_resolved,
+            "agent_enable_thinking": (
+                "provider_default"
+                if settings.agent_enable_thinking is None
+                else settings.agent_enable_thinking
+            ),
             "answer_model": settings.model_name,
+            "answer_temperature": settings.temperature,
+            "answer_max_tokens": settings.llm_max_tokens,
             "query_rewrite_enabled": settings.enable_query_rewrite,
             "query_rewrite_model": (
                 settings.query_rewrite_model_name_resolved
             ),
-            "temperature": settings.temperature,
-            "max_tokens": settings.llm_max_tokens,
             "budget": {
                 "max_iterations": settings.agent_max_iterations,
                 "max_tool_calls": settings.agent_max_tool_calls,

@@ -153,7 +153,9 @@ def find_manifest_mismatches(
             fields.extend(["judge.enabled", "judge.model"])
     if any(active.values()):
         fields.extend(f"agent.{key}" for key in (
-            "answer_model", "temperature", "max_tokens", "budget",
+            "agent_model", "agent_temperature", "agent_max_tokens",
+            "agent_enable_thinking",
+            "answer_model", "answer_temperature", "answer_max_tokens", "budget",
             "query_rewrite_enabled", "query_rewrite_model",
         ))
         # Agent-only 也会检索。无完整 hash 时只比较稳定元数据，不比较存储路径。

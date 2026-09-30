@@ -266,7 +266,7 @@ async def test_agent_discovers_searches_and_cites_in_rag_only(
         search_found_document, answer,
     ])
     monkeypatch.setattr(framework_tools, "get_default_tool_audit_sink", lambda settings: Sink())
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     context = ToolInvocationContext(
         permissions=("knowledge_base:read", "web:search"), tool_mode=ToolMode.RAG_ONLY,
     )
@@ -311,7 +311,7 @@ async def test_agent_compares_two_scoped_searches(document_kb, settings_factory,
         } for source in ("source-0", "source-1")]),
         answer,
     ])
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     context = ToolInvocationContext(permissions=("knowledge_base:read",))
     output = [state async for state in build_agent_harness(settings_factory()).astream({
         "original_question": "比较两份文档的申请要求", "effective_question": "比较两份文档的申请要求",

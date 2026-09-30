@@ -81,6 +81,6 @@ def install_evidence_agent(monkeypatch, composer, *, tool_name="search_knowledge
         }]),
         FinalAgentResponse(outcome="answer", evidence_ids=[documents[0].id]),
     ])
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     monkeypatch.setattr(streaming, "get_answer_model", lambda: composer)
     return model, documents, payload

@@ -55,7 +55,7 @@ def _call(name: str, text: str, call_id: str) -> dict:
 
 
 async def _invoke_graph(monkeypatch, registry, model, context):
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
         "get_local_tools",

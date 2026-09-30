@@ -327,7 +327,7 @@ async def test_consecutive_requests_keep_web_visibility_isolated_and_execute_gra
     current_model = {"value": hidden_model}
     monkeypatch.setattr(
         framework_agent,
-        "get_answer_model",
+        "get_agent_model",
         lambda: current_model["value"],
     )
 
@@ -407,7 +407,7 @@ async def test_forged_hidden_web_search_is_denied_without_ddgs_or_runtime(
             FinalAgentResponse(outcome="answer", answer="隐藏工具调用已安全处理。"),
         ]
     )
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
 
     output = await _invoke(
         model,
@@ -449,7 +449,7 @@ async def test_agent_searches_then_fetches_through_registry_runtime(monkeypatch)
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     monkeypatch.setattr(web_download_module, "Manager", FakeFetchManager)
     model = SearchFetchModel()
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     output = await _invoke(
         model,
         ToolInvocationContext(
@@ -521,7 +521,7 @@ async def test_agent_searches_then_reads_pdf_through_project_tool(monkeypatch):
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     monkeypatch.setattr(web_download_module, "Manager", FakePdfManager)
     model = SearchPdfModel()
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     output = await _invoke(
         model,
         ToolInvocationContext(
@@ -579,7 +579,7 @@ async def test_agent_recovers_from_web_fetch_pdf_content_type_error(monkeypatch)
     FakePdfManager.sessions = []
     monkeypatch.setattr(web_download_module, "Manager", FakePdfManager)
     model = FetchThenPdfModel()
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     output = await _invoke(
         model,
         ToolInvocationContext(
@@ -642,7 +642,7 @@ async def test_forged_hidden_web_fetch_is_denied_without_http_manager(monkeypatc
             FinalAgentResponse(outcome="answer", answer="隐藏正文工具调用已安全处理。"),
         ]
     )
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     output = await _invoke(
         model,
         ToolInvocationContext(
@@ -698,7 +698,7 @@ async def test_forged_hidden_web_pdf_fetch_is_denied_without_dependencies(
             FinalAgentResponse(outcome="answer", answer="隐藏 PDF 工具调用已安全处理。"),
         ]
     )
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
 
     output = await _invoke(
         model,

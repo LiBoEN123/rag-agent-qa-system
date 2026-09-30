@@ -89,7 +89,7 @@ model = FakeToolCallingModel([
     AIMessage(content="", tool_calls=[{"name": "search_knowledge_base", "args": {"query": "申请条件", "top_k": 1}, "id": "search", "type": "tool_call"}]),
     answer,
 ])
-framework_agent.get_answer_model = lambda: model
+framework_agent.get_agent_model = lambda: model
 context = ToolInvocationContext(principal_id="qa", permissions=("knowledge_base:read",), trace_id="independent", source="test")
 async def run():
     states = [s async for s in build_agent_harness(settings).astream({

@@ -47,7 +47,7 @@ async def _invoke_graph(
     context=None,
 ):
     """使用确定性模型和独立图执行一次 Agent 请求。"""
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     settings = get_settings().model_copy(
         update={
             "agent_max_iterations": max_iterations,

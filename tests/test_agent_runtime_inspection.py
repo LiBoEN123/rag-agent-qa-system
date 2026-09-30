@@ -285,7 +285,7 @@ def test_inspection_does_not_initialize_model_or_handler(
             args_model=ProbeArgs,
         )
     )
-    monkeypatch.setattr(framework_agent, "get_answer_model", forbidden)
+    monkeypatch.setattr(framework_agent, "get_agent_model", forbidden)
     monkeypatch.setattr(
         import_module("app.tools.web_download"),
         "Manager",

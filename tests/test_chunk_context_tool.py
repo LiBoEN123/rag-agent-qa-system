@@ -247,7 +247,7 @@ async def test_agent_explicitly_expands_search_hit_and_cites_neighbors(
         }]),
         expand, answer,
     ])
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     context = ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read",))
     output = [state async for state in build_agent_harness(settings_factory()).astream({
         "original_question": "上下文是什么？", "effective_question": "上下文是什么？",

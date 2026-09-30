@@ -37,11 +37,22 @@ def test_sha256_file_is_stable(tmp_path):
     )
 
 
+@pytest.mark.parametrize("independent_agent", [False, True])
 def test_build_manifest_records_commit_dirty_hashes_and_safe_whitelist(
     tmp_path,
     monkeypatch,
+    independent_agent,
 ):
     settings = _settings(tmp_path)
+    if independent_agent:
+        settings = settings.model_copy(update={
+            "agent_model_name": "independent-agent",
+            "agent_temperature": 0.3,
+            "agent_llm_max_tokens": 543,
+            "agent_enable_thinking": False,
+            "agent_llm_api_key": SecretStr("agent-do-not-leak"),
+            "agent_llm_api_url": "https://user:url-credential@agent.example/v1",
+        })
     cases = tmp_path / "cases.json"
     rag = tmp_path / "rag.json"
     cases.write_text("[]", encoding="utf-8")
@@ -83,6 +94,22 @@ def test_build_manifest_records_commit_dirty_hashes_and_safe_whitelist(
     assert manifest["code"]["git_dirty"] is True
     assert manifest["data"]["agent_cases_sha256"]
     assert manifest["agent"]["tool_contract_sha256"] == "contract-hash"
+    assert manifest["agent"]["agent_model"] == (
+        "independent-agent" if independent_agent else settings.model_name
+    )
+    assert manifest["agent"]["agent_temperature"] == (
+        0.3 if independent_agent else settings.temperature
+    )
+    assert manifest["agent"]["agent_max_tokens"] == (
+        543 if independent_agent else settings.llm_max_tokens
+    )
+    assert manifest["agent"]["answer_model"] == settings.model_name
+    assert manifest["agent"]["agent_enable_thinking"] == (
+        False if independent_agent else "provider_default"
+    )
+    assert manifest["agent"]["answer_temperature"] == settings.temperature
+    assert manifest["agent"]["answer_max_tokens"] == settings.llm_max_tokens
+    assert not {"temperature", "max_tokens"} & manifest["agent"].keys()
     assert not {"top_k", "decompose_top_k", "decompose_enabled", "decompose_model"} & manifest["agent"].keys()
     assert set(manifest["prompts"]["agent"]["files"]) == set(evaluation_manifest.AGENT_PROMPT_INPUT_FILES)
     assert "legacy_rag" not in manifest["prompts"]
@@ -96,6 +123,9 @@ def test_build_manifest_records_commit_dirty_hashes_and_safe_whitelist(
     assert not any(key.startswith(("requested_", "effective_", "decompose_", "context_")) for key in manifest["rag"])
     assert "do-not-leak" not in serialized
     assert "rewrite-do-not-leak" not in serialized
+    assert "agent-do-not-leak" not in serialized
+    assert "url-credential" not in serialized
+    assert "agent.example" not in serialized
 
 
 def test_manifest_reads_index_manifest_without_loading_rag(

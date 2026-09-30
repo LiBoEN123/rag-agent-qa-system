@@ -117,7 +117,7 @@ async def test_structured_call_does_not_consume_business_tool_budget(
         }]),
         FinalAgentResponse(outcome="answer", answer="列表为空"),
     ])
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     monkeypatch.setattr("app.rag.runtime.chunks", [])
     monkeypatch.setattr("app.rag.runtime.RAG_READY", True)
     observed_counts = []
@@ -155,7 +155,7 @@ async def test_schema_retries_remain_bounded_by_native_model_limit(monkeypatch, 
         lambda model, messages: model.final_response(outcome="answer", answer=""),
         lambda model, messages: model.final_response(outcome="clarify", clarification_question=""),
     ])
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     output = await framework_agent.build_framework_agent(settings).ainvoke(
         {"messages": [HumanMessage(content="测试问题")]},
         context=build_default_tool_context(settings=settings),
@@ -183,7 +183,7 @@ async def test_business_limit_overrides_same_turn_structured_response(monkeypatc
         AIMessage(content="", tool_calls=[{"name": "find_documents", "args": {}, "id": "first"}]),
         final_with_excess_call,
     ])
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     handler = Mock(return_value=[])
     monkeypatch.setattr("app.tools.document_search._ready_chunks", handler)
     output = await framework_agent.build_framework_agent(settings).ainvoke(

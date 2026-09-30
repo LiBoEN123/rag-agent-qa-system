@@ -112,7 +112,7 @@ def invoke_with_framework(
             AIMessage(content="done"),
         ]
     )
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     tool = build_local_tool(
         spec,
         settings=settings,

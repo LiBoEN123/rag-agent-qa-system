@@ -123,7 +123,7 @@ class AppSettings(BaseSettings):
     hf_home: Path | None = None
     sentence_transformers_home: Path | None = None
 
-    # 主回答模型
+    # 最终回答 / Composer 模型
     llm_api_key: SecretStr | None = Field(
         default=None,
         validation_alias=AliasChoices("LLM_API_KEY", "DEEPSEEK_API_KEY"),
@@ -134,6 +134,17 @@ class AppSettings(BaseSettings):
     llm_max_tokens: int = 1024
     llm_timeout: int = 60
     llm_max_retries: int = 2
+
+    # Agent 模型；未配置的字段分别回退到 Composer。
+    agent_llm_api_key: SecretStr | None = None
+    agent_model_name: str | None = None
+    agent_llm_api_url: str | None = None
+    agent_temperature: float | None = None
+    agent_llm_max_tokens: int | None = None
+    agent_llm_timeout: int | None = None
+    agent_llm_max_retries: int | None = None
+    # Agent 专用；未配置时不发送参数，使用服务商默认行为。
+    agent_enable_thinking: bool | None = None
 
     # 查询改写
     enable_query_rewrite: bool = True
@@ -314,6 +325,7 @@ class AppSettings(BaseSettings):
 
     @field_validator(
         "llm_api_key",
+        "agent_llm_api_key",
         "query_rewrite_api_key",
         "judge_api_key",
         "ingestion_admin_api_key",
@@ -330,6 +342,14 @@ class AppSettings(BaseSettings):
         return value
 
     @field_validator(
+        "agent_model_name", "agent_llm_api_url", "agent_enable_thinking", mode="before",
+    )
+    @classmethod
+    def _normalize_optional_agent_value(cls, value: object) -> object:
+        """Agent 可选配置中的空字符串视为未配置。"""
+        return None if value == "" else value
+
+    @field_validator(
         "top_k",
         "chunk_size",
         "chunk_overlap",
@@ -338,6 +358,10 @@ class AppSettings(BaseSettings):
         "llm_max_tokens",
         "llm_timeout",
         "llm_max_retries",
+        "agent_temperature",
+        "agent_llm_max_tokens",
+        "agent_llm_timeout",
+        "agent_llm_max_retries",
         "query_rewrite_timeout",
         "query_rewrite_max_tokens",
         "query_rewrite_temperature",
@@ -480,6 +504,55 @@ class AppSettings(BaseSettings):
         if self.sentence_transformers_home is not None:
             return self.sentence_transformers_home
         return BASE_DIR / ".cache" / "huggingface" / "hub"
+
+    @property
+    def agent_llm_api_key_resolved(self) -> SecretStr | None:
+        """返回 Agent 密钥，未配置时回退到 Composer。"""
+        if self.agent_llm_api_key is None:
+            return self.llm_api_key
+        return self.agent_llm_api_key
+
+    @property
+    def agent_model_name_resolved(self) -> str:
+        """返回 Agent 模型名，未配置时回退到 Composer。"""
+        if self.agent_model_name is None:
+            return self.model_name
+        return self.agent_model_name
+
+    @property
+    def agent_llm_api_url_resolved(self) -> str:
+        """返回 Agent 接口地址，未配置时回退到 Composer。"""
+        if self.agent_llm_api_url is None:
+            return self.llm_api_url
+        return self.agent_llm_api_url
+
+    @property
+    def agent_temperature_resolved(self) -> float:
+        """返回 Agent 温度，保留显式零值。"""
+        if self.agent_temperature is None:
+            return self.temperature
+        return self.agent_temperature
+
+    @property
+    def agent_llm_max_tokens_resolved(self) -> int:
+        """返回 Agent token 上限，未配置时回退到 Composer。"""
+        if self.agent_llm_max_tokens is None:
+            return self.llm_max_tokens
+        return self.agent_llm_max_tokens
+
+    @property
+    def agent_llm_timeout_resolved(self) -> int:
+        """返回 Agent 超时，未配置时回退到 Composer。"""
+        if self.agent_llm_timeout is None:
+            return self.llm_timeout
+        return self.agent_llm_timeout
+
+    @property
+    def agent_llm_max_retries_resolved(self) -> int:
+        """返回 Agent 重试次数，保留显式零值。"""
+        if self.agent_llm_max_retries is None:
+            return self.llm_max_retries
+        return self.agent_llm_max_retries
 
     @property
     def query_rewrite_api_key_resolved(self) -> SecretStr | None:

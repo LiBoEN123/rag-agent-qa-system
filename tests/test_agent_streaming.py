@@ -185,7 +185,7 @@ def test_stream_executes_create_agent_and_returns_authoritative_result(
     monkeypatch.setattr(agent_runtime, "route_agent_action", recording_route)
     monkeypatch.setattr(
         framework_agent,
-        "get_answer_model",
+        "get_agent_model",
         lambda: model,
     )
 
@@ -235,7 +235,7 @@ def test_stream_projects_native_command_tool_completion(monkeypatch):
     ])
     monkeypatch.setattr(
         framework_agent,
-        "get_answer_model",
+        "get_agent_model",
         lambda: model,
     )
 
@@ -310,7 +310,7 @@ async def test_stream_withholds_model_text_until_grounding_passes(monkeypatch, i
         return message.model_copy(update={"content": "未经校验的模型文本"})
 
     model = FakeToolCallingModel([respond])
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     events = [event async for event in stream_agent(
         write_bad_cases=None, original_question="测试事实问题", effective_question="测试事实问题",
         trace_id="grounding-stream", session_id=None, bad_case=None,
@@ -372,7 +372,7 @@ async def test_total_deadline_interrupts_model_or_sync_tool(monkeypatch, setting
                 "name": "slow_read", "args": {}, "id": "slow-call",
             }])
 
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: Model([]))
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: Model([]))
     started = time.perf_counter()
     events = [event async for event in stream_agent(
         write_bad_cases=None, trace_id="deadline", session_id=None, bad_case=None,

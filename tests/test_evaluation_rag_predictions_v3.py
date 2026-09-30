@@ -57,7 +57,7 @@ def setup_prediction(monkeypatch):
 
 def run(monkeypatch, responses, question="比较 A 和 B 的申请条件、材料及办理时间"):
     model = FakeToolCallingModel(responses)
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     result, trace = rag_predictions.run_rag_once_with_result(question)
     return result, trace, model
 
@@ -168,7 +168,7 @@ def test_v3_csv_uses_safe_metadata(monkeypatch, tmp_path, setup_prediction):
     monkeypatch.setattr(pipeline, "search_relevant_chunks", lambda *a, **k: [chunk(1), chunk(2)])
     monkeypatch.setattr(rag_predictions, "initialize_rag_for_predictions", lambda **k: None)
     model = FakeToolCallingModel([call(query="条件", top_k=3), finish])
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     eval_file = tmp_path / "questions.json"
     eval_file.write_text(json.dumps([{"qid": "q", "question": "申请条件是什么"}]))
     output = tmp_path / "prediction.csv"
@@ -203,7 +203,7 @@ def test_batch_isolates_grounding_failure_and_flushes_before_next_case(monkeypat
         return original_chat_turn(request, **kwargs)
 
     monkeypatch.setattr(rag_predictions, "run_evaluation_chat_turn", chat_turn)
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: models[len(attempted) - 1])
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: models[len(attempted) - 1])
     eval_file = tmp_path / "questions.json"
     eval_file.write_text(json.dumps([
         {"qid": f"q{i}", "question": f"申请条件是什么，场景 {i}"} for i in (1, 2, 3)

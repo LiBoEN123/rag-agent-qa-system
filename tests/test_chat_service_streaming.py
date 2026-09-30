@@ -589,7 +589,7 @@ def test_real_structured_agent_stream_matches_public_final_and_metrics(
         AIMessage(content="", tool_calls=[{"name": "find_documents", "args": {}, "id": "list"}]),
         final,
     ])
-    monkeypatch.setattr("app.agent.framework_agent.get_answer_model", lambda: model)
+    monkeypatch.setattr("app.agent.framework_agent.get_agent_model", lambda: model)
     monkeypatch.setattr("app.rag.runtime.chunks", [])
     monkeypatch.setattr("app.rag.runtime.RAG_READY", True)
     service, calls = _build_service([], stream_agent=stream_agent)

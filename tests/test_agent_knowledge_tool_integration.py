@@ -55,7 +55,7 @@ async def _invoke(monkeypatch, model, settings_factory, **settings_overrides):
     monkeypatch.setattr(framework_tools, "get_default_tool_audit_sink", lambda settings: Sink())
     tools = local_tools([spec.model_copy(update={"handler": handler})], settings)
     monkeypatch.setattr(framework_tools, "get_local_tools", lambda settings: tools)
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     context = ToolInvocationContext(
         trace_id="trace-kb", session_id="session-kb", principal_id="kb-test",
         permissions=("knowledge_base:read",), source="knowledge_tool_integration_test",

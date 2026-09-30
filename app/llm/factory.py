@@ -36,6 +36,7 @@ def _create_model(
     max_tokens: int,
     timeout: int | float,
     max_retries: int,
+    enable_thinking: bool | None = None,
 ) -> Any | None:
     """创建单个角色的 ChatOpenAI；缺少模型或 URL 时明确返回 None。"""
     api_url = (api_url or "").strip()
@@ -52,6 +53,8 @@ def _create_model(
         "timeout": timeout,
         "max_retries": max(0, int(max_retries)),
     }
+    if enable_thinking is not None:
+        kwargs["extra_body"] = {"enable_thinking": enable_thinking}
     try:
         return ChatOpenAI(**kwargs)
     except Exception as exc:
@@ -65,8 +68,25 @@ def _create_model(
 
 
 @lru_cache(maxsize=1)
+def get_agent_model() -> Any | None:
+    """返回负责工具调用与结构化决策的 Agent 模型。"""
+    settings = get_settings()
+    return _create_model(
+        role="agent",
+        api_key=secret_value(settings.agent_llm_api_key_resolved),
+        api_url=settings.agent_llm_api_url_resolved,
+        model_name=settings.agent_model_name_resolved,
+        temperature=settings.agent_temperature_resolved,
+        max_tokens=settings.agent_llm_max_tokens_resolved,
+        timeout=settings.agent_llm_timeout_resolved,
+        max_retries=settings.agent_llm_max_retries_resolved,
+        enable_thinking=settings.agent_enable_thinking,
+    )
+
+
+@lru_cache(maxsize=1)
 def get_answer_model() -> Any | None:
-    """返回唯一 Agent 主模型。"""
+    """返回最终答案 Composer 模型。"""
     settings = get_settings()
     return _create_model(
         role="answer",
@@ -133,6 +153,7 @@ def get_judge_model(
 
 def clear_model_factory_cache() -> None:
     """清理全部角色的模型缓存，供测试或配置刷新使用。"""
+    get_agent_model.cache_clear()
     get_answer_model.cache_clear()
     get_query_rewrite_model.cache_clear()
     get_judge_model.cache_clear()

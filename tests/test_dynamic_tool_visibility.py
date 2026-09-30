@@ -53,7 +53,7 @@ def test_native_agent_binds_exact_schemas_for_each_context(monkeypatch, settings
     settings = settings_factory()
     tools = framework_tools.get_local_tools(settings)
     model = SchemaModel()
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     agent = build_framework_agent(settings, tools=tools)
     kb = ["search_knowledge_base", "find_documents", "search_document", "get_chunk_context"]
     cases = [
@@ -85,7 +85,7 @@ def test_hidden_registered_tool_cannot_execute(monkeypatch, settings_factory):
     hidden = ToolSpec(name="hidden_tool", version="1.0.0", description="private description", args_model=Args, output_model=RootModel[dict], required_permissions=("a:read",), handler=lambda args, context: calls.append(context))
     public = hidden.model_copy(update={"name": "public_tool", "required_permissions": ()})
     model = SchemaModel({"name": "hidden_tool", "args": {"value": "forged"}, "id": "hidden-call", "type": "tool_call"})
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     settings = settings_factory()
     output = stream(build_framework_agent(settings, tools=local_tools([hidden, public], settings)), ToolInvocationContext())
     message = next(m for m in output["messages"] if isinstance(m, ToolMessage))
@@ -105,7 +105,7 @@ def test_mcp_base_tool_survives_local_filter(monkeypatch, settings_factory, serv
     context = ToolInvocationContext(permissions=(f"mcp:{server}",))
     tools = framework_tools.resolve_agent_tools(context, settings)
     model = SchemaModel()
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     stream(build_framework_agent(settings, tools=tools), context)
     assert list(model.schemas[-1]) == [external.name]
     assert tools[-1] is external
@@ -130,7 +130,7 @@ def test_rag_only_filters_even_registered_mcp_tools(monkeypatch, settings_factor
     settings = settings_factory()
     external = StructuredTool.from_function(lambda value: value, name="github_read", description="MCP fixture")
     model = SchemaModel()
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     agent = build_framework_agent(settings, tools=[*framework_tools.get_local_tools(settings), external])
     stream(agent, ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "mcp:github")))
     assert list(model.schemas[-1]) == ["search_knowledge_base", "find_documents", "search_document", "get_chunk_context"]
@@ -145,7 +145,7 @@ def test_rag_only_forged_calls_are_denied_before_handler(monkeypatch, settings_f
     specs = [spec.model_copy(update={"handler": handler}) if spec.name == name else spec
              for spec in get_local_tool_specs(settings)]
     model = SchemaModel({"name": name, "args": args, "id": "forged-call", "type": "tool_call"})
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     context = ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "web:search"))
     output = stream(build_framework_agent(settings, tools=local_tools(specs, settings)), context)
     message = next(m for m in output["messages"] if isinstance(m, ToolMessage))

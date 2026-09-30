@@ -70,7 +70,9 @@ def _write_run(
             "rerank_model": "reranker", "chunk_size": 500, "chunk_overlap": 50,
         },
         "agent": {
-            "answer_model": "answer", "temperature": 0, "max_tokens": 1024,
+            "agent_model": "agent", "agent_temperature": 0, "agent_max_tokens": 1024,
+            "agent_enable_thinking": "provider_default",
+            "answer_model": "answer", "answer_temperature": 0, "answer_max_tokens": 1024,
             "budget": {"max_iterations": 6, "max_tool_calls": 10},
             "query_rewrite_enabled": True, "query_rewrite_model": "rewrite",
             "tool_contract_sha256": "tools", "registered_tool_names": ["search_document"],
@@ -334,7 +336,10 @@ def _change(path, field, value):
     ("data.agent_cases_sha256", "other"), ("data.rag_eval_sha256", "other"),
     ("rag.retrieval_metric_k", 10), ("rag.prediction_schema_version", 2),
     ("rag.index_manifest_sha256", "other"), ("judge.model", "other"), ("judge.enabled", False),
-    ("agent.answer_model", "other"), ("agent.temperature", 0.5), ("agent.max_tokens", 2048),
+    ("agent.agent_model", "other"), ("agent.agent_temperature", 0.5), ("agent.agent_max_tokens", 2048),
+    ("agent.agent_enable_thinking", False), ("agent.agent_enable_thinking", True),
+    ("agent.agent_enable_thinking", None),
+    ("agent.answer_model", "other"), ("agent.answer_temperature", 0.5), ("agent.answer_max_tokens", 2048),
     ("agent.budget.max_tool_calls", 20), ("agent.query_rewrite_enabled", False),
     ("agent.query_rewrite_model", "other"), ("data.agent_cases_sha256", ""),
 ])
@@ -363,9 +368,10 @@ def test_system_under_test_changes_and_index_path_are_allowed(run_pair):
 
 
 @pytest.mark.parametrize("missing", [[], [0], [1], [0, 1]])
-def test_explicit_override_marks_incompatible_and_missing_manifests(run_pair, missing):
+@pytest.mark.parametrize("field,value", [("rag.retrieval_metric_k", 10), ("agent.agent_model", "other")])
+def test_explicit_override_marks_incompatible_and_missing_manifests(run_pair, missing, field, value):
     baseline, candidate = run_pair
-    _change(candidate / "manifest.json", "rag.retrieval_metric_k", 10)
+    _change(candidate / "manifest.json", field, value)
     for index in missing:
         (run_pair[index] / "manifest.json").unlink()
     with pytest.raises(ValueError, match="Incompatible run controls"):
@@ -379,9 +385,24 @@ def test_explicit_override_marks_incompatible_and_missing_manifests(run_pair, mi
     comparison = json.loads((candidate / "comparison.json").read_text())
     compatibility = comparison["compatibility"]
     assert not compatibility["compatible"] and compatibility["overridden"]
-    assert compatibility["mismatches"][0]["field"] == ("manifest.json" if missing else "rag.retrieval_metric_k")
+    assert compatibility["mismatches"][0]["field"] == ("manifest.json" if missing else field)
     assert comparison["metrics"]["rag_retrieval_gold_chunk_recall_at_k"]["delta"] == 0
     assert "**Comparison was forced across incompatible run controls.**" in (candidate / "comparison.md").read_text()
+
+
+def test_legacy_manifest_without_separate_model_roles_is_incompatible(run_pair):
+    baseline, candidate = run_pair
+    path = baseline / "manifest.json"
+    manifest = json.loads(path.read_text())
+    agent = manifest["agent"]
+    for field in ("agent_model", "agent_temperature", "agent_max_tokens"):
+        del agent[field]
+    agent["temperature"] = agent.pop("answer_temperature")
+    agent["max_tokens"] = agent.pop("answer_max_tokens")
+    path.write_text(json.dumps(manifest))
+
+    with pytest.raises(ValueError, match="agent.agent_model"):
+        compare_runs(baseline, candidate)
 
 
 @pytest.mark.parametrize("layer,unused_dataset", [("rag", "rag_eval_sha256"), ("agent", "agent_cases_sha256")])

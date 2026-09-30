@@ -99,7 +99,7 @@ async def _invoke_dynamic_graph(
     """把独立 Provider 注入现有 Graph，不修改任何编排分支。"""
     provider = local_tools(registry)
     reset_agent_runtime()
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
         "get_local_tools",

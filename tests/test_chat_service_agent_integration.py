@@ -211,7 +211,7 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
         return original_route(question)
 
     monkeypatch.setattr(agent_runtime, "route_agent_action", recording_route)
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
         "get_local_tools",
@@ -343,7 +343,7 @@ def test_chat_service_returns_kb_evidence_to_agent_with_request_tool_mode(monkey
         }]),
         FinalAgentResponse(outcome="no_evidence", answer="无法根据当前证据确定学习年限。"),
     ])
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     search, rerank = Mock(return_value=[]), Mock(return_value=[])
     monkeypatch.setattr(rag_pipeline, "RAG_READY", True)
     monkeypatch.setattr(rag_pipeline, "search_relevant_chunks", search)
@@ -462,7 +462,7 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
     monkeypatch.setattr("app.agent.streaming.get_answer_model", lambda: composer)
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     monkeypatch.setattr(web_download_module, "Manager", FakeManager)
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     settings = settings_env(
         agent_max_iterations=6,
         agent_max_tool_calls=10,
@@ -650,7 +650,7 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
     monkeypatch.setattr("app.agent.streaming.get_answer_model", lambda: composer)
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     monkeypatch.setattr(web_download_module, "Manager", FakeManager)
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     settings = settings_env(
         agent_max_iterations=6,
         agent_max_tool_calls=10,

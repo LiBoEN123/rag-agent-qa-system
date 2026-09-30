@@ -103,7 +103,7 @@ def _setup(monkeypatch, settings, model, calls, *, server_config=None):
         "get_local_tools",
         lambda settings: local_tools([]),
     )
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     return build_agent_harness(settings), tool
 
 

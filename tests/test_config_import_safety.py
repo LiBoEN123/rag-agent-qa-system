@@ -117,6 +117,7 @@ assert agent_runtime._get_cached_framework_agent.cache_info().currsize == 0
 assert all(
     getter.cache_info().currsize == 0
     for getter in (
+        factory.get_agent_model,
         factory.get_answer_model,
         factory.get_query_rewrite_model,
         factory.get_judge_model,
