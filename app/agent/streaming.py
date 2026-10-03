@@ -6,6 +6,7 @@ import asyncio
 import re
 import time
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from contextlib import aclosing
 from dataclasses import dataclass
 from typing import Any
 
@@ -218,13 +219,6 @@ def project_agent_stream_part(part: object) -> list[AgentRuntimeStreamEvent]:
     return []
 
 
-async def _close_async_iterator(iterator: object) -> None:
-    """尽最大努力关闭 Agent 流，使断开和取消向下传播。"""
-    close = getattr(iterator, "aclose", None)
-    if callable(close):
-        await close()
-
-
 async def stream_agent(
     *,
     write_bad_cases: Callable[[dict[str, Any]], None] | None,
@@ -238,8 +232,6 @@ async def stream_agent(
     """路由后直接流式执行 ``create_agent`` 并产出安全事件。"""
     resolved_original = (original_question or "").strip()
     resolved_effective = (effective_question or "").strip()
-    agent_stream: object | None = None
-    agent_stream_completed = False
     try:
         invocation = prepare_agent_runtime_invocation(
             trace_id=trace_id,
@@ -262,14 +254,6 @@ async def stream_agent(
             )
             return
 
-        agent_stream = invocation.agent.astream(
-            invocation.agent_input,
-            config=invocation.agent_config,
-            context=invocation.tool_context,
-            stream_mode=list(_STREAM_MODES),
-            subgraphs=False,
-            version="v2",
-        )
         final_state: Mapping[str, Any] | None = None
         seen_event_keys: set[str] = set()
         composed_answer: str | None = None
@@ -279,44 +263,51 @@ async def stream_agent(
         deadline = asyncio.timeout(settings.agent_max_total_cost_ms / 1000.0)
         try:
             async with deadline:
-                async for part in agent_stream:
-                    if isinstance(part, Mapping) and part.get("type") == "values":
-                        value = part.get("data")
-                        if isinstance(value, Mapping):
-                            final_state = value
-                            model_events = [
-                                item for item in value.get("governance_events", [])
-                                if item.get("kind") == "model"
-                            ] 
-                            if len(model_events) != model_calls:
-                                model_calls = len(model_events)
-                                yield AgentRuntimeStreamEvent("llm_usage", {
-                                    "llm_call_count": model_calls,
-                                    "answer_llm_used": any(item.get("ok") for item in model_events),
-                                })
-                        continue
-                    for event in project_agent_stream_part(part):
-                        if event.key and event.key in seen_event_keys:
+                async with aclosing(invocation.agent.astream(
+                    invocation.agent_input,
+                    config=invocation.agent_config,
+                    context=invocation.tool_context,
+                    stream_mode=list(_STREAM_MODES),
+                    subgraphs=False,
+                    version="v2",
+                )) as agent_stream:
+                    async for part in agent_stream:
+                        if isinstance(part, Mapping) and part.get("type") == "values":
+                            value = part.get("data")
+                            if isinstance(value, Mapping):
+                                final_state = value
+                                model_events = [
+                                    item for item in value.get("governance_events", [])
+                                    if item.get("kind") == "model"
+                                ]
+                                if len(model_events) != model_calls:
+                                    model_calls = len(model_events)
+                                    yield AgentRuntimeStreamEvent("llm_usage", {
+                                        "llm_call_count": model_calls,
+                                        "answer_llm_used": any(item.get("ok") for item in model_events),
+                                    })
                             continue
-                        if event.key:
-                            seen_event_keys.add(event.key)
-                        yield event
-                        if (
-                            event.event == "tool"
-                            and event.data.get("tool_name") == "search_knowledge_base"
-                        ):
-                            phase = str(event.data.get("phase") or "")
-                            if phase in {"started", "completed"}:
-                                progress = AgentRuntimeStreamEvent(
-                                    event="progress",
-                                    data={"stage": "rag", "status": phase},
-                                    key=f"progress:rag:{phase}",
-                                )
-                                if progress.key not in seen_event_keys:
-                                    seen_event_keys.add(progress.key)
-                                    yield progress
+                        for event in project_agent_stream_part(part):
+                            if event.key and event.key in seen_event_keys:
+                                continue
+                            if event.key:
+                                seen_event_keys.add(event.key)
+                            yield event
+                            if (
+                                event.event == "tool"
+                                and event.data.get("tool_name") == "search_knowledge_base"
+                            ):
+                                phase = str(event.data.get("phase") or "")
+                                if phase in {"started", "completed"}:
+                                    progress = AgentRuntimeStreamEvent(
+                                        event="progress",
+                                        data={"stage": "rag", "status": phase},
+                                        key=f"progress:rag:{phase}",
+                                    )
+                                    if progress.key not in seen_event_keys:
+                                        seen_event_keys.add(progress.key)
+                                        yield progress
 
-                agent_stream_completed = True
                 if final_state is None:
                     raise RuntimeError("create_agent stream did not produce final state")
                 if final_state.get("stop_reason") in (None, "", AgentStopReason.COMPLETED.value):
@@ -335,7 +326,6 @@ async def stream_agent(
                                 model_event = {"kind": "model", "ok": False, "cost_ms": 0}
                                 events.append(model_event)
                                 started = time.perf_counter()
-                                answer_stream = None
                                 try:
                                     yield AgentRuntimeStreamEvent("llm_usage", {
                                         "llm_call_count": model_calls + 1,
@@ -347,19 +337,19 @@ async def stream_agent(
                                     model = get_answer_model()
                                     if model is None:
                                         raise RuntimeError("Answer model is unavailable")
-                                    answer_stream = model.astream(build_answer_messages(
-                                        resolved_effective, evidence,
-                                    ))
                                     parts: list[str] = []
-                                    async for chunk in answer_stream:
-                                        if not isinstance(chunk, AIMessageChunk):
-                                            raise TypeError("Answer model must stream AIMessageChunk")
-                                        text = chunk.text
-                                        if text:
-                                            parts.append(text)
-                                            yield AgentRuntimeStreamEvent(
-                                                event="answer_delta", data={"text": text},
-                                            )
+                                    async with aclosing(model.astream(build_answer_messages(
+                                        resolved_effective, evidence,
+                                    ))) as answer_stream:
+                                        async for chunk in answer_stream:
+                                            if not isinstance(chunk, AIMessageChunk):
+                                                raise TypeError("Answer model must stream AIMessageChunk")
+                                            text = chunk.text
+                                            if text:
+                                                parts.append(text)
+                                                yield AgentRuntimeStreamEvent(
+                                                    event="answer_delta", data={"text": text},
+                                                )
                                     composed_answer = "".join(parts)
                                     if not composed_answer.strip():
                                         raise ValueError("Answer model returned no text")
@@ -371,18 +361,12 @@ async def stream_agent(
                                     model_event["cost_ms"] = max(
                                         0, int((time.perf_counter() - started) * 1000),
                                     )
-                                    if answer_stream is not None:
-                                        await _close_async_iterator(answer_stream)
 
         except TimeoutError:
             if not deadline.expired():
                 raise
             final_state = {**(final_state or {}), "stop_reason": AgentStopReason.MAX_TOTAL_COST.value}
-            await _close_async_iterator(agent_stream)
 
-        agent_stream_completed = True
-        if final_state is None:
-            raise RuntimeError("create_agent stream did not produce final state")
         result = build_framework_agent_result(
             invocation, final_state, composed_answer=composed_answer,
         )
@@ -405,8 +389,6 @@ async def stream_agent(
             data={"result": result},
             key="result:final",
         )
-    except asyncio.CancelledError:
-        raise
     except Exception as exc:
         logger.exception(
             "[trace_id=%s] [agent] runtime_failed streaming=true",
@@ -426,9 +408,6 @@ async def stream_agent(
             data={"result": result},
             key="result:error",
         )
-    finally:
-        if agent_stream is not None and not agent_stream_completed:
-            await _close_async_iterator(agent_stream)
 
 
 __all__ = [

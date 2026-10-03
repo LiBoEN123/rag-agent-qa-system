@@ -387,6 +387,35 @@ async def test_total_deadline_interrupts_model_or_sync_tool(monkeypatch, setting
     assert calls == (["tool"] if slow_tool else [])
 
 
+@pytest.mark.asyncio
+async def test_cancelling_pending_agent_model_closes_graph_without_terminal_result(monkeypatch):
+    started, closed = asyncio.Event(), asyncio.Event()
+
+    class Model(FakeToolCallingModel):
+        async def ainvoke(self, messages):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                closed.set()
+
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: Model([]))
+    seen = []
+
+    async def consume():
+        async for event in _evidence_stream():
+            seen.append(event)
+
+    async with asyncio.timeout(2):
+        pending = asyncio.create_task(consume())
+        await started.wait()
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        assert closed.is_set()
+    assert all(event.event not in {"result", "answer_delta"} for event in seen)
+
+
 def _evidence_stream():
     return stream_agent(
         write_bad_cases=None, trace_id="evidence-stream", session_id=None, bad_case=None,

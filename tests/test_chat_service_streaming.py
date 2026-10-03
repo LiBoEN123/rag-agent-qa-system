@@ -169,6 +169,7 @@ def test_direct_answer_streams_ordered_deltas_final_and_done_once(monkeypatch):
 
     assert event_names[0] == "start"
     assert event_names[-2:] == ["final", "done"]
+    assert event_names.count("final") == event_names.count("done") == 1
     assert (
         "".join(event.data["text"] for event in events if event.event == "answer_delta")
         == "完整回答"
@@ -293,7 +294,8 @@ def test_rag_stream_has_safe_progress_tool_and_authoritative_final_without_delta
     ]
 
 
-def test_closing_service_stream_marks_disconnect_and_does_not_save_partial_answer():
+@pytest.mark.parametrize("stop_at", ["start", "answer_delta", "finalizing"])
+def test_closing_service_stream_marks_disconnect_and_does_not_save_partial_answer(stop_at):
     result = _result(answer="不会完成")
     service, calls = _build_service(
         [
@@ -302,21 +304,22 @@ def test_closing_service_stream_marks_disconnect_and_does_not_save_partial_answe
         ]
     )
 
-    async def consume_until_delta_then_close():
+    async def consume_then_close():
         stream = service.stream(_request())
         seen = []
         async for event in stream:
             seen.append(event)
-            if event.event == "answer_delta":
+            if event.event == stop_at or (
+                stop_at == "finalizing" and event.data.get("stage") == "finalizing"
+            ):
                 await stream.aclose()
                 break
         return seen
 
-    events = asyncio.run(consume_until_delta_then_close())
+    events = asyncio.run(consume_then_close())
 
-    assert events[-1].event == "answer_delta"
     assert all(event.event not in {"final", "done"} for event in events)
-    assert calls["runtime_closed"] is True
+    assert calls["runtime_closed"] is (stop_at != "start")
     assert calls["messages"] == []
     assert calls["bad_cases"] == []
     assert len(calls["metrics"]) == 1
@@ -348,12 +351,15 @@ def test_cancelled_runtime_stream_propagates_and_finalizes_as_disconnect():
 
 
 @pytest.mark.parametrize("rewrite_llm_used", [True, False])
+@pytest.mark.parametrize("failure", ["exception", "missing_result", "invalid_result"])
 def test_unconverted_runtime_stream_exception_uses_invocation_fallback(
-    rewrite_llm_used,
+    rewrite_llm_used, failure,
 ):
     service, calls = _build_service(
-        [],
-        stream_error=RuntimeError("stream infrastructure failed"),
+        [AgentRuntimeStreamEvent("result", {"result": None})]
+        if failure == "invalid_result" else [],
+        stream_error=RuntimeError("stream infrastructure failed")
+        if failure == "exception" else None,
         rewrite_llm_used=rewrite_llm_used,
     )
 
@@ -367,6 +373,7 @@ def test_unconverted_runtime_stream_exception_uses_invocation_fallback(
     assert len(calls["bad_cases"]) == 1
     assert calls["bad_cases"][0]["error_type"] == "internal_error"
     assert calls["metrics"][0]["client_disconnected"] is False
+    assert [event.event for event in events if event.event in {"final", "done", "error"}] == ["final", "done"]
     outcome = final.data["outcome"]
     response = build_chat_response_from_outcome(outcome, trace_id="trace-1")
     assert outcome.result["llm_call_count"] == int(rewrite_llm_used)

@@ -1,6 +1,6 @@
 """聊天 HTTP Router。"""
 
-import asyncio
+from contextlib import aclosing
 
 from fastapi import APIRouter, Request, Response
 from fastapi.sse import EventSourceResponse
@@ -38,13 +38,6 @@ def _build_service_request(
     )
 
 
-async def _close_stream(stream: object) -> None:
-    """关闭 Service async generator，并让取消继续传到 Agent Runtime。"""
-    close = getattr(stream, "aclose", None)
-    if callable(close):
-        await close()
-
-
 def create_chat_router(chat_service: ChatService) -> APIRouter:
     """创建只负责 HTTP 输入输出适配的聊天路由。"""
     router = APIRouter()
@@ -79,41 +72,38 @@ def create_chat_router(chat_service: ChatService) -> APIRouter:
 
         # 编码服务事件，处理客户端断开和流异常，并确保关闭底层生成器。
         async def encoded_events():
-            try:
-                iterator = service_stream.__aiter__()
-                first_event = True
-                while True:
-                    if not first_event and await request.is_disconnected():
-                        break
-                    try:
-                        event = await anext(iterator)
-                    except StopAsyncIteration:
-                        break
-                    if await request.is_disconnected():
-                        break
-                    yield encoder.encode(event)
-                    first_event = False
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                if not await request.is_disconnected():
-                    yield encoder.encode(
-                        ChatStreamEvent(
-                            event="error",
-                            data={
-                                "code": "STREAM_ERROR",
-                                "message": "流式处理失败",
-                            },
+            async with aclosing(service_stream):
+                try:
+                    iterator = service_stream.__aiter__()
+                    first_event = True
+                    while True:
+                        if not first_event and await request.is_disconnected():
+                            break
+                        try:
+                            event = await anext(iterator)
+                        except StopAsyncIteration:
+                            break
+                        if await request.is_disconnected():
+                            break
+                        yield encoder.encode(event)
+                        first_event = False
+                except Exception:
+                    if not await request.is_disconnected():
+                        yield encoder.encode(
+                            ChatStreamEvent(
+                                event="error",
+                                data={
+                                    "code": "STREAM_ERROR",
+                                    "message": "流式处理失败",
+                                },
+                            )
                         )
-                    )
-                    yield encoder.encode(
-                        ChatStreamEvent(
-                            event="done",
-                            data={"reason": "error"},
+                        yield encoder.encode(
+                            ChatStreamEvent(
+                                event="done",
+                                data={"reason": "error"},
+                            )
                         )
-                    )
-            finally:
-                await _close_stream(service_stream)
 
         return EventSourceResponse(
             encoded_events(),

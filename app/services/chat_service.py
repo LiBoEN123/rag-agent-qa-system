@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncIterator, Callable
+from contextlib import aclosing
 from dataclasses import dataclass
 from typing import Any
 
@@ -137,187 +138,168 @@ class ChatService:
         """流式编排同一业务流程，并在唯一 finally 中完成收尾。"""
         context = self._initialize_context(request)
         initialize_stream_metrics(context.metrics)
-        runtime_stream: object | None = None
-        runtime_stream_completed = False
         agent_start: float | None = None
-        final_outcome_formed = False
+        final_emitted = False
         try:
-            if not context.original_question:
-                outcome = self._empty_question_outcome(context)
+            try:
                 yield record_stream_event(
                     context,
                     "start",
                     {"session_id_present": bool(context.session_id)},
                     perf_counter=self._deps.perf_counter,
                 )
-                final_event = self._build_final_stream_event(context, outcome)
-                final_outcome_formed = True
-                yield final_event
-                record_stream_termination(context.metrics, completed=True)
-                yield record_stream_event(
-                    context,
-                    "done",
-                    {"reason": "completed"},
-                    perf_counter=self._deps.perf_counter,
-                )
-                return
-
-            yield record_stream_event(
-                context,
-                "start",
-                {"session_id_present": bool(context.session_id)},
-                perf_counter=self._deps.perf_counter,
-            )
-            yield record_stream_event(
-                context,
-                "progress",
-                {"stage": "query_rewrite", "status": "started"},
-                perf_counter=self._deps.perf_counter,
-            )
-            settings = self._deps.settings_provider()
-            await asyncio.to_thread(
-                self._prepare_request,
-                context,
-                settings=settings,
-            )
-            yield record_stream_event(
-                context,
-                "progress",
-                {
-                    "stage": "query_rewrite",
-                    "status": (
-                        "completed"
-                        if context.metrics["query_rewrite_used"]
-                        else "skipped"
-                    ),
-                },
-                perf_counter=self._deps.perf_counter,
-            )
-            yield record_stream_event(
-                context,
-                "progress",
-                {"stage": "routing", "status": "started"},
-                perf_counter=self._deps.perf_counter,
-            )
-            yield record_stream_event(
-                context,
-                "progress",
-                {"stage": "agent", "status": "started"},
-                perf_counter=self._deps.perf_counter,
-            )
-
-            agent_start = self._deps.perf_counter()
-            self._log_agent_start(context)
-            result: dict[str, Any] | None = None
-            streamed_answer_parts: list[str] = []
-            try:
-                runtime_stream = self._deps.stream_agent(
-                    write_bad_cases=self._deps.write_bad_cases,
-                    original_question=context.original_question,
-                    effective_question=context.effective_question,
-                    trace_id=context.request.trace_id,
-                    session_id=context.session_id or None,
-                    bad_case=context.bad_case,
-                    tool_context=build_default_tool_context(
-                        trace_id=context.request.trace_id,
-                        session_id=context.session_id,
-                        source="chat_api",
-                        tool_mode=context.request.tool_mode,
-                        settings=settings,
-                    ),
-                )
-                async for runtime_event in runtime_stream:
-                    if runtime_event.event == "llm_usage":
-                        # 内部进度只更新 telemetry，不新增公开 SSE 事件。
-                        context.metrics["llm_call_count"] = (
-                            runtime_event.data["llm_call_count"]
-                            + int(context.metrics["query_rewrite_llm_used"])
-                        )
-                        context.metrics["answer_llm_used"] = runtime_event.data["answer_llm_used"]
-                        continue
-                    if runtime_event.event == "result":
-                        runtime_result = runtime_event.data.get("result")
-                        if not isinstance(runtime_result, dict):
-                            raise RuntimeError(
-                                "streaming Runtime returned an invalid result"
-                            )
-                        result = runtime_result
-                        continue
-                    if runtime_event.event not in {
-                        "progress",
-                        "tool",
-                        "answer_delta",
-                    }:
-                        continue
-                    if runtime_event.event == "answer_delta":
-                        delta = runtime_event.data.get("text")
-                        if not isinstance(delta, str) or not delta:
-                            continue
+                if not context.original_question:
+                    outcome = self._empty_question_outcome(context)
+                else:
                     yield record_stream_event(
                         context,
-                        runtime_event.event,
-                        dict(runtime_event.data),
+                        "progress",
+                        {"stage": "query_rewrite", "status": "started"},
                         perf_counter=self._deps.perf_counter,
-                        streamed_answer_parts=streamed_answer_parts,
                     )
-                runtime_stream_completed = True
-                if result is None:
-                    raise RuntimeError(
-                        "streaming Runtime did not return a final result"
+                    settings = self._deps.settings_provider()
+                    await asyncio.to_thread(
+                        self._prepare_request,
+                        context,
+                        settings=settings,
+                    )
+                    yield record_stream_event(
+                        context,
+                        "progress",
+                        {
+                            "stage": "query_rewrite",
+                            "status": (
+                                "completed"
+                                if context.metrics["query_rewrite_used"]
+                                else "skipped"
+                            ),
+                        },
+                        perf_counter=self._deps.perf_counter,
+                    )
+                    yield record_stream_event(
+                        context,
+                        "progress",
+                        {"stage": "routing", "status": "started"},
+                        perf_counter=self._deps.perf_counter,
+                    )
+                    yield record_stream_event(
+                        context,
+                        "progress",
+                        {"stage": "agent", "status": "started"},
+                        perf_counter=self._deps.perf_counter,
+                    )
+
+                    agent_start = self._deps.perf_counter()
+                    self._log_agent_start(context)
+                    result: dict[str, Any] | None = None
+                    streamed_answer_parts: list[str] = []
+                    try:
+                        async with aclosing(self._deps.stream_agent(
+                            write_bad_cases=self._deps.write_bad_cases,
+                            original_question=context.original_question,
+                            effective_question=context.effective_question,
+                            trace_id=context.request.trace_id,
+                            session_id=context.session_id or None,
+                            bad_case=context.bad_case,
+                            tool_context=build_default_tool_context(
+                                trace_id=context.request.trace_id,
+                                session_id=context.session_id,
+                                source="chat_api",
+                                tool_mode=context.request.tool_mode,
+                                settings=settings,
+                            ),
+                        )) as runtime_stream:
+                            async for runtime_event in runtime_stream:
+                                if runtime_event.event == "llm_usage":
+                                    # 内部进度只更新 telemetry，不新增公开 SSE 事件。
+                                    context.metrics["llm_call_count"] = (
+                                        runtime_event.data["llm_call_count"]
+                                        + int(context.metrics["query_rewrite_llm_used"])
+                                    )
+                                    context.metrics["answer_llm_used"] = runtime_event.data["answer_llm_used"]
+                                    continue
+                                if runtime_event.event == "result":
+                                    runtime_result = runtime_event.data.get("result")
+                                    if not isinstance(runtime_result, dict):
+                                        raise RuntimeError(
+                                            "streaming Runtime returned an invalid result"
+                                        )
+                                    result = runtime_result
+                                    continue
+                                if runtime_event.event not in {
+                                    "progress",
+                                    "tool",
+                                    "answer_delta",
+                                }:
+                                    continue
+                                if runtime_event.event == "answer_delta":
+                                    delta = runtime_event.data.get("text")
+                                    if not isinstance(delta, str) or not delta:
+                                        continue
+                                yield record_stream_event(
+                                    context,
+                                    runtime_event.event,
+                                    dict(runtime_event.data),
+                                    perf_counter=self._deps.perf_counter,
+                                    streamed_answer_parts=streamed_answer_parts,
+                                )
+                        if result is None:
+                            raise RuntimeError(
+                                "streaming Runtime did not return a final result"
+                            )
+                    except Exception as exc:
+                        # Runtime 业务失败已转成 result；这里只兜底流合同或基础设施失败。
+                        outcome = await asyncio.to_thread(
+                            self._agent_invocation_exception_outcome,
+                            context,
+                            exc,
+                        )
+                    else:
+                        outcome = self._finish_agent_result(
+                            context,
+                            result,
+                            agent_start=agent_start,
+                        )
+
+                    yield record_stream_event(
+                        context,
+                        "progress",
+                        {"stage": "agent", "status": "completed"},
+                        perf_counter=self._deps.perf_counter,
+                    )
+                    yield record_stream_event(
+                        context,
+                        "progress",
+                        {"stage": "finalizing", "status": "started"},
+                        perf_counter=self._deps.perf_counter,
+                    )
+                    final_answer = str(outcome.result.get("answer") or "")
+                    record_stream_completion(
+                        context.metrics,
+                        streamed_answer_parts=streamed_answer_parts,
+                        final_answer=final_answer,
+                    )
+                    yield record_stream_event(
+                        context,
+                        "progress",
+                        {"stage": "finalizing", "status": "completed"},
+                        perf_counter=self._deps.perf_counter,
                     )
             except Exception as exc:
-                outcome = await asyncio.to_thread(
-                    self._agent_invocation_exception_outcome,
-                    context,
-                    exc,
-                )
-            else:
-                outcome = self._finish_agent_result(
-                    context,
-                    result,
-                    agent_start=agent_start,
-                )
+                outcome = self._service_exception_outcome(context, exc)
 
-            yield record_stream_event(
+            total_cost_ms = max(
+                0,
+                int((self._deps.perf_counter() - context.request_enter_perf) * 1000),
+            )
+            final_event = record_stream_event(
                 context,
-                "progress",
-                {"stage": "agent", "status": "completed"},
+                "final",
+                {"outcome": outcome, "total_cost_ms": total_cost_ms},
                 perf_counter=self._deps.perf_counter,
             )
-            yield record_stream_event(
-                context,
-                "progress",
-                {"stage": "finalizing", "status": "started"},
-                perf_counter=self._deps.perf_counter,
-            )
-            final_answer = str(outcome.result.get("answer") or "")
-            record_stream_completion(
-                context.metrics,
-                streamed_answer_parts=streamed_answer_parts,
-                final_answer=final_answer,
-            )
-            yield record_stream_event(
-                context,
-                "progress",
-                {"stage": "finalizing", "status": "completed"},
-                perf_counter=self._deps.perf_counter,
-            )
-            final_event = self._build_final_stream_event(context, outcome)
-            final_outcome_formed = True
-            yield final_event
-            record_stream_termination(context.metrics, completed=True)
-            yield record_stream_event(
-                context,
-                "done",
-                {"reason": "completed"},
-                perf_counter=self._deps.perf_counter,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            outcome = self._service_exception_outcome(context, exc)
-            final_event = self._build_final_stream_event(context, outcome)
-            final_outcome_formed = True
+            # 已产出权威 final 才允许保存本轮；done 的交付状态由 telemetry 记录。
+            final_emitted = True
             yield final_event
             record_stream_termination(context.metrics, completed=True)
             yield record_stream_event(
@@ -327,8 +309,6 @@ class ChatService:
                 perf_counter=self._deps.perf_counter,
             )
         finally:
-            if runtime_stream is not None and not runtime_stream_completed:
-                await self._close_async_stream(runtime_stream)
             if agent_start is not None and not context.metrics.get("agent_cost_ms"):
                 context.metrics["agent_cost_ms"] = max(
                     0,
@@ -337,37 +317,10 @@ class ChatService:
                         * 1000
                     ),
                 )
-            if not final_outcome_formed:
+            if not final_emitted:
                 context.session_should_store = False
                 record_stream_termination(context.metrics, completed=False)
             await asyncio.to_thread(self._finalize, context)
-
-    @staticmethod
-    async def _close_async_stream(stream: object) -> None:
-        """关闭下游异步生成器，使客户端取消尽可能向 Agent 传播。"""
-        close = getattr(stream, "aclose", None)
-        if callable(close):
-            await close()
-
-    def _build_final_stream_event(
-        self,
-        context: ChatRequestContext,
-        outcome: ChatServiceOutcome,
-    ) -> ChatStreamEvent:
-        """携带待 API 映射的 outcome；该内部对象不会直接 JSON 序列化。"""
-        total_cost_ms = max(
-            0,
-            int(
-                (self._deps.perf_counter() - context.request_enter_perf)
-                * 1000
-            ),
-        )
-        return record_stream_event(
-            context,
-            "final",
-            {"outcome": outcome, "total_cost_ms": total_cost_ms},
-            perf_counter=self._deps.perf_counter,
-        )
 
     # 整理问题和会话信息，计算排队耗时并初始化请求上下文及观测记录。
     def _initialize_context(
@@ -657,11 +610,8 @@ class ChatService:
                 str(exc)[:200],
             )
 
-    # 确保请求只收尾一次，按需保存会话并完成指标及日志记录。
+    # 由 stream 的唯一 finally 调用，按需保存会话并完成指标及日志记录。
     def _finalize(self, context: ChatRequestContext) -> None:
-        if context.finalized:
-            return
-        context.finalized = True
         if context.session_should_store:
             self._save_session_turn(context)
         finalize_chat_telemetry(
