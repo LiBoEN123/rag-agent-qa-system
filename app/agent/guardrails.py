@@ -15,7 +15,6 @@ class AgentToolFailureKind(StrEnum):
     RECOVERABLE = "recoverable"
     TRANSIENT_EXHAUSTED = "transient_exhausted"
     TERMINAL_GOVERNANCE = "terminal_governance"
-    APPROVAL_REQUIRED = "approval_required"
     TERMINAL_RUNTIME = "terminal_runtime"
 
 
@@ -30,7 +29,6 @@ class AgentStopReason(StrEnum):
     REPEATED_TOOL_CALL = "repeated_tool_call"
     REPEATED_TOOL_ERROR = "repeated_tool_error"
     FATAL_TOOL_ERROR = "fatal_tool_error"
-    APPROVAL_REQUIRED = "approval_required"
     RUNTIME_UNAVAILABLE = "runtime_unavailable"
 
 
@@ -40,17 +38,12 @@ _RECOVERABLE = (
     ToolErrorCode.EXECUTION_ERROR.value,
     ToolErrorCode.INVALID_RESULT.value,
     ToolErrorCode.OUTPUT_VALIDATION_ERROR.value,
-    ToolErrorCode.MCP_EXECUTION_ERROR.value,
-    ToolErrorCode.MCP_UNSUPPORTED_CONTENT.value,
-    ToolErrorCode.MCP_OUTPUT_TOO_LARGE.value,
 )
 
 _TRANSIENT = (
     ToolErrorCode.TIMEOUT.value,
     ToolErrorCode.DEPENDENCY_UNAVAILABLE.value,
     ToolErrorCode.RATE_LIMITED.value,
-    ToolErrorCode.MCP_TOOL_TIMEOUT.value,
-    ToolErrorCode.MCP_TRANSPORT_ERROR.value,
 )
 
 _GOVERNANCE = (
@@ -58,9 +51,6 @@ _GOVERNANCE = (
     ToolErrorCode.POLICY_DENIED.value,
     ToolErrorCode.AUDIT_WRITE_FAILED.value,
     ToolErrorCode.INVALID_INVOCATION_CONTEXT.value,
-    ToolErrorCode.MCP_NOT_CONFIGURED.value,
-    ToolErrorCode.MCP_PERMISSION_DENIED.value,
-    ToolErrorCode.MCP_TOOL_NOT_ALLOWED.value,
 )
 
 
@@ -74,8 +64,6 @@ def classify_tool_failure(*, error_code: str, retryable: bool) -> AgentToolFailu
         return AgentToolFailureKind.TRANSIENT_EXHAUSTED
     if code in _GOVERNANCE:
         return AgentToolFailureKind.TERMINAL_GOVERNANCE
-    if code == ToolErrorCode.APPROVAL_REQUIRED.value:
-        return AgentToolFailureKind.APPROVAL_REQUIRED
     return AgentToolFailureKind.TERMINAL_RUNTIME
 
 
@@ -84,8 +72,6 @@ def stop_reason_for_tool_failure(
 ) -> AgentStopReason | None:
     """返回单次错误要求的立即停止原因。"""
     code = str(error_code or "").strip().lower()
-    if code == ToolErrorCode.APPROVAL_REQUIRED.value:
-        return AgentStopReason.APPROVAL_REQUIRED
     if code == ToolErrorCode.RUNTIME_UNAVAILABLE.value:
         return AgentStopReason.RUNTIME_UNAVAILABLE
     if failure_kind not in {

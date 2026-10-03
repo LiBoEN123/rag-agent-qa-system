@@ -20,7 +20,7 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
 ```
 
 - 旧 `top_k`、`decompose_top_k` 及其他未知字段由 `extra="forbid"` 拒绝，返回 HTTP 422，不会静默忽略。
-- `rag_only` 仅允许 search_knowledge_base、search_document、get_chunk_context 正文工具及 find_documents 目录工具；仍需 `knowledge_base:read` 权限，Web/MCP 被排除。
+- `rag_only` 仅允许 search_knowledge_base、search_document、get_chunk_context 正文工具及 find_documents 目录工具；仍需 `knowledge_base:read` 权限，Web 被排除；MCP 仅用于知识入库，不属于 Agent 工具集合。
 - 每次检索的 query/top_k 由 Agent 通过工具 schema 选择；`/search` 仍接受诊断 top_k。
 - Schema 校验失败：FastAPI 在建流前返回 `HTTP 422 application/json`。
 - 通过 Schema 校验的请求（包括空问题）：返回 `HTTP 200 text/event-stream`。
@@ -89,7 +89,7 @@ create_agent.astream(updates/messages/values, version="v2")
 工具历史、原始工具 JSON 或未选中的证据。它不绑定工具，只根据已锁定证据生成回答。
 chunk 边界由模型/供应商决定，不保证每个 token 单独对应事件，也不会把完整答案切片重放。
 
-无 Document 的目录、SQL、普通 MCP 等操作结果，以及 `no_evidence`，保留结构化结果
+无 Document 的目录操作结果，以及 `no_evidence`，保留结构化结果
 完成后的单次文本交付；不宣称这些场景已实现模型正文流式。`clarify`、错误和直接路由
 回复无需正文模型流。full 模式若混合使用多类工具且选择了 Document，正文仅依据选中的 Document。
 

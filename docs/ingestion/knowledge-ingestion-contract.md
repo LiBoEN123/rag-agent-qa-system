@@ -146,8 +146,7 @@ pending → rejected
 
 `approved`、`rejected` 等 terminal 状态不能直接反转或回到 pending；需要改变内容并
 重新 propose。`superseded` 只作为 contract 扩展状态保留，Phase 9 Service 不产生
-该状态。Knowledge ingestion approval 与 MCP tool execution approval 是两个独立
-domain，不共享持久状态。
+该状态。Knowledge ingestion approval 由候选领域独立管理。
 
 ## 明确不做的事
 

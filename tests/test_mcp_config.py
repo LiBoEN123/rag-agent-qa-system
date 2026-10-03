@@ -50,8 +50,6 @@ def test_mcp_settings_are_disabled_and_bounded_by_default():
     assert settings.mcp_discovery_timeout_seconds == 5.0
     assert settings.mcp_tool_timeout_seconds == 15.0
     assert settings.mcp_max_tools_per_server == 20
-    assert settings.mcp_max_text_chars == 12_000
-    assert settings.mcp_max_structured_chars == 20_000
 
 
 def test_mcp_config_path_allows_project_relative_and_absolute_overrides(tmp_path):
@@ -191,23 +189,6 @@ def test_server_enablement_defaults_are_safe():
     server = _server()
 
     assert server.enabled is True
-    assert server.enabled_for_default_principal is False
-    assert server.approval_required_tools == ()
-
-
-def test_approval_required_tools_must_be_exact_allowlist_subset():
-    server = _server(approval_required_tools=["get_weather"])
-
-    assert server.approval_required_tools == ("get_weather",)
-
-    for invalid in (
-        "get_weather",
-        ["not_allowed"],
-        ["get_weather", "get_weather"],
-        ["*"],
-    ):
-        with pytest.raises(ValidationError):
-            _server(approval_required_tools=invalid)
 
 
 def test_disabled_mcp_does_not_read_config_or_construct_client(
@@ -253,7 +234,6 @@ def test_enabled_mcp_requires_existing_config_file(settings_factory, tmp_path):
         _valid_payload(allowed_tools=[]),
         _valid_payload(allowed_tools=["get_weather", "get_weather"]),
         _valid_payload(allowed_tools=["*"]),
-        _valid_payload(approval_required_tools=["not_allowed"]),
         _valid_payload(headers_env={"Authorization": "lowercase_name"}),
     ],
 )
@@ -362,4 +342,4 @@ def test_repository_uses_example_and_gitignored_local_config_layout():
     assert not (BASE_DIR / "config" / "mcp_servers.json").exists()
     assert "config/mcp_servers.local.json" in ignore_rules
     config = load_mcp_config(example)
-    assert set(config.servers) == {"github", "production_example"}
+    assert set(config.servers) == {"github", "firecrawl"}

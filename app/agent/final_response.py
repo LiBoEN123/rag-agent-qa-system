@@ -47,7 +47,7 @@ _EVIDENCE_TOOLS = RAG_EVIDENCE_TOOL_NAMES | frozenset({"web_fetch", "web_pdf_fet
 
 
 def collect_evidence_from_messages(messages: object) -> dict[str, Document]:
-    """仅恢复本次成功正文工具的 Document；不把搜索摘要或 MCP 输出当证据。"""
+    """仅恢复本次成功正文工具的 Document；不把搜索摘要当证据。"""
     evidence: dict[str, Document] = {}
     if not isinstance(messages, (list, tuple)):
         return evidence

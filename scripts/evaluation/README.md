@@ -18,7 +18,7 @@
 
 Agent-only 的知识库问题仍会检索。RAG-only 同样经过生产 Agent，只是不执行 Agent case 题集。
 `--include-online` 只影响 Agent case；`--use-llm-judge` 只影响 RAG 答案评分。
-评测 Settings 始终禁用 MCP，保留生产 Source/ingestion 的独立能力。
+评测复用仅注册本地工具的 Agent，不初始化来源 MCP；无需覆盖入库 MCP 开关。
 
 ## 离线检查
 

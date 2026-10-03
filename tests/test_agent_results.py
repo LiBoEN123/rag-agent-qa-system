@@ -423,7 +423,6 @@ def test_framework_missing_or_empty_final_answer_fails_closed(messages):
     "stop_reason",
     [
         "fatal_tool_error",
-        "approval_required",
 
         "runtime_unavailable",
     ],
@@ -509,30 +508,30 @@ def test_knowledge_summary_uses_public_final_chunk_count():
     assert result["tool_result_summary"] == "知识库检索完成，召回 2 个 chunk"
 
 
-@pytest.mark.parametrize("error_code", ["approval_required", "permission_denied", "agent_batch_aborted"])
+@pytest.mark.parametrize("error_code", ["permission_denied", "agent_batch_aborted"])
 def test_guardrail_only_summary_falls_back_to_result_reason(error_code):
     result = build_framework_agent_result(
         _invocation(), {
-            "stop_reason": "approval_required",
+            "stop_reason": "fatal_tool_error",
             "governance_events": [
                 {"kind": "model", "ok": True},
                 {
                     "kind": "tool", "name": "custom_tool", "counted_call": False,
                     "handler_executed": False, "error_code": error_code,
-                    "stop_reason": "approval_required",
+                    "stop_reason": "fatal_tool_error",
                     "result": {"ok": False, "error": "blocked", "summary": "不得使用"},
                 },
             ],
         },
     )
-    assert result["tool_result_summary"] == result["reason"] == "approval_required"
+    assert result["tool_result_summary"] == result["reason"] == "fatal_tool_error"
     trace = next(step for step in result["tool_trace"] if step["step"] == "tool_call")
     assert "step_id" not in trace
     assert trace["handler_executed"] is False
     assert trace["will_return_to_agent_model"] is False
 
 
-@pytest.mark.parametrize("error_code", ["invalid_arguments", "approval_required", "permission_denied"])
+@pytest.mark.parametrize("error_code", ["invalid_arguments", "permission_denied"])
 def test_counted_pre_handler_failure_keeps_failure_summary(error_code):
     result = build_framework_agent_result(
         _invocation(), {
@@ -677,7 +676,7 @@ def test_agent_clarification_preserves_real_tool_summary():
     assert result["tool_result_summary"] == "知识库检索完成，召回 2 个 chunk"
 
 
-@pytest.mark.parametrize("name", ["web_search", "find_documents", "mcp_read"])
+@pytest.mark.parametrize("name", ["web_search", "find_documents"])
 def test_non_evidence_tool_outputs_cannot_be_promoted_to_references(name):
     output = _knowledge_output()
     payload = json.loads(output["messages"][0].content)

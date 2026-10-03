@@ -72,7 +72,7 @@ class IngestionCandidateStatus(str, Enum):
 
 
 class ApprovalStatus(str, Enum):
-    """知识摄取审批状态；与 MCP tool execution approval 无关。"""
+    """知识摄取候选的审批状态。"""
 
     NOT_REQUIRED = "not_required"
     PENDING = "pending"

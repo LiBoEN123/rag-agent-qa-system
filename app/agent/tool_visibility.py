@@ -7,7 +7,7 @@ from app.tools.context import ToolInvocationContext, has_permission
 
 
 class ProjectToolVisibilityMiddleware(AgentMiddleware):
-    """先限制请求工具范围，再过滤本地权限；MCP 权限仍由独立路径处理。"""
+    """按请求工具模式和权限过滤本地工具。"""
 
     # 根据请求模式和调用者权限筛选模型可见工具。
     @staticmethod

@@ -203,7 +203,7 @@ class AppSettings(BaseSettings):
     tool_audit_max_string_chars: int = Field(default=500, ge=1)
     tool_audit_max_serialized_chars: int = Field(default=5000, ge=1)
 
-    # 受治理的外部 MCP Client 工具源
+    # 知识入库专用 MCP source client
     mcp_tools_enabled: bool = False
     mcp_servers_config_path: Path = BASE_DIR / "config" / "mcp_servers.local.json"
     mcp_discovery_timeout_seconds: float = Field(
@@ -219,12 +219,6 @@ class AppSettings(BaseSettings):
         allow_inf_nan=False,
     )
     mcp_max_tools_per_server: int = Field(default=20, ge=1, le=100)
-    mcp_max_text_chars: int = Field(default=12_000, ge=128, le=1_000_000)
-    mcp_max_structured_chars: int = Field(
-        default=20_000,
-        ge=128,
-        le=2_000_000,
-    )
 
     # 永久知识运营 API（默认不注册）
     ingestion_admin_api_enabled: bool = False
@@ -384,8 +378,6 @@ class AppSettings(BaseSettings):
         "mcp_discovery_timeout_seconds",
         "mcp_tool_timeout_seconds",
         "mcp_max_tools_per_server",
-        "mcp_max_text_chars",
-        "mcp_max_structured_chars",
         "web_search_timeout",
         "web_fetch_connect_timeout",
         "web_fetch_read_timeout",

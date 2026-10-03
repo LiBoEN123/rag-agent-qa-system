@@ -3,7 +3,6 @@
 import pytest
 
 from app.agent import framework_tools
-from app.agent import runtime as agent_runtime
 from app.agent.runtime import get_compiled_agent_runtime
 from app.tools import catalog
 from app.tools.context import ToolInvocationContext
@@ -107,52 +106,10 @@ def test_cached_agent_and_tools_do_not_capture_principal_or_permissions(settings
     settings = settings_factory()
     contexts = [ToolInvocationContext(), ToolInvocationContext(principal_id="other", permissions=("web:search",)), ToolInvocationContext(permissions=("knowledge_base:read",))]
     tools = framework_tools.get_local_tools(settings)
-    agents = [get_compiled_agent_runtime(settings, tool_context=context) for context in contexts]
+    agents = [get_compiled_agent_runtime(settings) for _ in contexts]
     assert all(agent is agents[0] for agent in agents)
     assert agents[0] is get_compiled_agent_runtime(settings)
     names = [[tool.name for tool in visible_tools(tools, context=context)] for context in contexts]
     assert names[0] == []
     assert names[1] == ["web_search"]
     assert names[2] == ["search_knowledge_base", "find_documents", "search_document", "get_chunk_context"]
-
-
-def test_resolve_agent_tools_passes_same_explicit_settings(monkeypatch, settings_factory):
-    explicit_settings = settings_factory()
-    context = ToolInvocationContext()
-    local_settings = []
-    mcp_settings = []
-
-    def get_local_tools(settings):
-        local_settings.append(settings)
-        return ()
-
-    def list_mcp_tools(received_context, *, settings):
-        assert received_context is context
-        mcp_settings.append(settings)
-        return []
-
-    monkeypatch.setattr(framework_tools, "get_local_tools", get_local_tools)
-    monkeypatch.setattr(framework_tools, "list_mcp_tools_for_context", list_mcp_tools)
-
-    assert framework_tools.resolve_agent_tools(context, explicit_settings) == []
-    assert len(local_settings) == len(mcp_settings) == 1
-    assert local_settings[0] is mcp_settings[0] is explicit_settings
-
-
-def test_compiled_agent_runtime_passes_explicit_mcp_settings(monkeypatch, settings_factory):
-    explicit_settings = settings_factory()
-    context = ToolInvocationContext()
-    mcp_settings = []
-    cached_agent = object()
-
-    def list_mcp_tools(received_context, *, settings):
-        assert received_context is context
-        mcp_settings.append(settings)
-        return []
-
-    monkeypatch.setattr(agent_runtime, "list_mcp_tools_for_context", list_mcp_tools)
-    monkeypatch.setattr(agent_runtime, "build_framework_agent", lambda settings, **kwargs: cached_agent)
-
-    assert get_compiled_agent_runtime(explicit_settings, tool_context=context) is cached_agent
-    assert len(mcp_settings) == 1
-    assert mcp_settings[0] is explicit_settings

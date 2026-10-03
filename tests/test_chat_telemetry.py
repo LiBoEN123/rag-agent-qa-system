@@ -173,7 +173,7 @@ def test_collect_trace_metrics_keeps_existing_activity_semantics_only():
                 "tool_status": "success",
             },
             {"tool_name": "search_document", "tool_status": "success"},
-            {"tool_name": "mcp__example__lookup", "tool_status": "success"},
+            {"tool_name": "unknown_lookup", "tool_status": "success"},
         ],
     }
     original = deepcopy(result)

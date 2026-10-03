@@ -107,11 +107,10 @@ def build_evaluation_settings(
     settings: AppSettings,
     output_dir: Path,
 ) -> AppSettings:
-    """复制无生产写入的评测快照，固定关闭 MCP 与工具审计写入。"""
+    """复制无生产写入的评测快照，关闭工具审计写入。"""
     return settings.model_copy(
         update={
             "tool_audit_enabled": False,
-            "mcp_tools_enabled": False,
             "sqlite_db_path": output_dir / ".isolated" / "app.sqlite",
             "metrics_path": output_dir / ".isolated" / "metrics.jsonl",
             "bad_cases_path": output_dir / ".isolated" / "bad_cases.jsonl",

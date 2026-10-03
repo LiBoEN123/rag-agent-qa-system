@@ -104,59 +104,13 @@ def test_case_filter_executes_whole_cases_and_records_reproduction(tmp_path, mon
     assert "--case-id D008" in report and "--case-id agent-followup-001" in report
 
 
-def test_core_evaluation_snapshot_explicitly_disables_production_mcp(tmp_path):
-    production = _settings(tmp_path).model_copy(
-        update={"mcp_tools_enabled": True}
-    )
-
-    evaluation = runner.build_evaluation_settings(
-        production,
-        tmp_path / "evaluation",
-    )
-
-    assert production.mcp_tools_enabled is True
-    assert evaluation.mcp_tools_enabled is False
-
-
-def test_core_agent_builds_when_environment_enables_mcp(
-    tmp_path,
-    settings_env,
-):
-    from app.agent.runtime import prepare_agent_runtime_invocation
-
-    production = settings_env(mcp_tools_enabled=True)
-    evaluation = runner.build_evaluation_settings(
-        production,
-        tmp_path / "evaluation",
-    )
-
-    with runner.evaluation_settings_scope(evaluation):
-        invocation = prepare_agent_runtime_invocation(
-            original_question="请列出知识库文档",
-            effective_question="请列出知识库文档",
-            trace_id="evaluation-mcp-disabled",
-            session_id="evaluation-mcp-disabled",
-            tool_context=ToolInvocationContext(
-                trace_id="evaluation-mcp-disabled",
-                session_id="evaluation-mcp-disabled",
-                principal_id="evaluation_baseline_v2",
-                principal_type=PrincipalType.SERVICE,
-                permissions=("knowledge_base:read",),
-                source="evaluation_baseline_v2",
-            ),
-            settings=evaluation,
-        )
-
-    assert invocation.agent is not None
-
-
 def test_core_evaluation_exposes_only_authorized_local_tools(
     tmp_path,
     settings_env,
 ):
-    from app.agent.framework_tools import resolve_agent_tools
+    from app.agent.framework_tools import get_local_tools
 
-    production = settings_env(mcp_tools_enabled=True)
+    production = settings_env()
     evaluation = runner.build_evaluation_settings(
         production,
         tmp_path / "evaluation",
@@ -170,7 +124,7 @@ def test_core_evaluation_exposes_only_authorized_local_tools(
 
     with runner.evaluation_settings_scope(evaluation):
         visible_names = [
-            tool.name for tool in visible_tools(resolve_agent_tools(context), context=context)
+            tool.name for tool in visible_tools(get_local_tools(evaluation), context=context)
         ]
 
     assert visible_names == [
@@ -232,6 +186,7 @@ def test_online_runtime_scope_does_not_initialize_mcp(
     tmp_path,
     monkeypatch,
 ):
+    from app import config
     from app.tools.mcp import client as mcp_client
 
     settings = runner.build_evaluation_settings(
@@ -245,7 +200,8 @@ def test_online_runtime_scope_does_not_initialize_mcp(
     monkeypatch.setattr(mcp_client, "initialize_mcp_runtime", forbidden_initialize)
 
     with runner.evaluation_settings_scope(settings):
-        assert get_settings().mcp_tools_enabled is False
+        assert config.get_settings() is settings
+        assert settings.mcp_tools_enabled is True
 
 
 def test_capture_tool_output_keys_never_keeps_values(monkeypatch):

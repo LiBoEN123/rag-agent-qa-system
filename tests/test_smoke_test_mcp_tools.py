@@ -1,6 +1,8 @@
 """MCP 冒烟 CLI 的默认关闭和安全输出测试。"""
 
 import json
+
+import pytest
 from types import SimpleNamespace
 
 from scripts import smoke_test_mcp_tools as smoke
@@ -10,7 +12,7 @@ def test_mcp_smoke_list_is_clean_when_disabled(capsys):
     assert smoke.main(["list"]) == 0
     captured = capsys.readouterr()
 
-    assert captured.out == "MCP tools are disabled\n"
+    assert captured.out == "MCP sources are disabled\n"
     assert captured.err == ""
 
 
@@ -19,7 +21,7 @@ def test_mcp_smoke_safe_result_omits_args_and_redacts_output():
         {
             "status": "success",
             "ok": True,
-            "tool_name": "weather_get_weather",
+            "tool_name": "github_get_file_contents",
             "tool_input": {
                 "location": "Beijing",
                 "authorization": "Bearer input-secret",
@@ -41,7 +43,7 @@ def test_mcp_smoke_safe_result_omits_args_and_redacts_output():
 
 def test_mcp_smoke_list_outputs_safe_server_policy_fields(monkeypatch, capsys):
     settings = SimpleNamespace(mcp_tools_enabled=True)
-    tool = SimpleNamespace(name="weather_get_weather")
+    tool = SimpleNamespace(name="github_get_file_contents")
 
     class Provider:
         def list_tools(self, *, context):
@@ -51,12 +53,11 @@ def test_mcp_smoke_list_outputs_safe_server_policy_fields(monkeypatch, capsys):
         def catalog(self):
             return [
                 {
-                    "server": "weather",
+                    "server": "github",
                     "enabled": True,
-                    "enabled_for_default_principal": True,
-                    "tool_name": "weather_get_weather",
-                    "remote_tool": "get_weather",
-                    "description": "Safe weather",
+                    "tool_name": "github_get_file_contents",
+                    "remote_tool": "get_file_contents",
+                    "description": "GitHub source",
                 }
             ]
 
@@ -70,26 +71,24 @@ def test_mcp_smoke_list_outputs_safe_server_policy_fields(monkeypatch, capsys):
     monkeypatch.setattr(smoke, "initialize_mcp_runtime", initialize)
     monkeypatch.setattr(smoke, "close_mcp_runtime", close)
     monkeypatch.setattr(smoke, "get_mcp_tool_provider", Provider)
-    monkeypatch.setattr(
-        smoke,
-        "build_default_tool_context",
-        lambda **kwargs: SimpleNamespace(**kwargs),
-    )
-
     assert smoke.main(["list"]) == 0
     captured = capsys.readouterr()
     rows = json.loads(captured.out)
 
     assert rows == [
         {
-            "description": "Safe weather",
+            "description": "GitHub source",
             "enabled": True,
-            "enabled_for_default_principal": True,
-            "remote_tool": "get_weather",
-            "server": "weather",
-            "tool_name": "weather_get_weather",
+            "remote_tool": "get_file_contents",
+            "server": "github",
+            "tool_name": "github_get_file_contents",
         }
     ]
     assert "Authorization" not in captured.out
     assert "headers" not in captured.out
     assert captured.err == ""
+
+
+def test_source_smoke_rejects_tools_outside_ingestion_scope():
+    with pytest.raises(SystemExit):
+        smoke.build_parser().parse_args(["invoke", "--tool", "github_get_me", "--args-json", "{}"])

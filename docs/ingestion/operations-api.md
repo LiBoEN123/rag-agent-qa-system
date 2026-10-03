@@ -95,7 +95,7 @@ PDF/DOCX 依赖固定为 `docling==2.127.0`，移除不再使用的 `docx2txt` �
 
 ## 显式来源入库
 
-Agent MCP 工具只返回本次工具结果，不产生 candidate。永久知识必须通过上述
+Agent 不接入 MCP。MCP 来源获取和永久知识写入必须通过上述
 GitHub/Firecrawl/Upload proposal 入口，再显式审批与索引。
 
 ## 持久化与双阶段操作

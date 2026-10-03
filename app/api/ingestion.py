@@ -150,7 +150,6 @@ def _source_error(exc: SourceIngestionError | IndexingError) -> IngestionAPIErro
     mappings = {
         "SOURCE_CANDIDATE_NOT_FOUND": (404, "CANDIDATE_NOT_FOUND", "candidate 不存在"),
         "SOURCE_TOOL_UNAVAILABLE": (503, code, "source runtime 当前不可用"),
-        "SOURCE_TOOL_NOT_READ_ONLY": (503, code, "source runtime 当前不可用"),
         "SOURCE_EMBEDDINGS_UNAVAILABLE": (503, code, "source runtime 当前不可用"),
         "SOURCE_CONTENT_TOO_LARGE": (422, code, "source 不符合 ingestion 要求"),
         "SOURCE_TYPE_UNSUPPORTED": (422, code, "source 不符合 ingestion 要求"),

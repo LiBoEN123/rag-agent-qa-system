@@ -15,7 +15,6 @@ from app.tools.mcp.provider import (
     get_mcp_tool_provider,
     install_mcp_tool_provider,
 )
-from app.tools.catalog import get_local_tool_names
 
 
 logger = get_logger("chat_service")
@@ -36,7 +35,7 @@ async def initialize_mcp_runtime(settings: AppSettings) -> McpToolProvider | Non
         tool_timeout_seconds=settings.mcp_tool_timeout_seconds,
     )
     if not connections:
-        provider = install_mcp_tool_provider(McpToolProvider([], settings=settings))
+        provider = install_mcp_tool_provider(McpToolProvider([]))
         logger.info("[startup] mcp_tools=enabled no active servers")
         return provider
 
@@ -54,9 +53,8 @@ async def initialize_mcp_runtime(settings: AppSettings) -> McpToolProvider | Non
         client,
         config=config,
         settings=settings,
-        local_tool_names=set(get_local_tool_names(settings)),
     )
-    provider = install_mcp_tool_provider(McpToolProvider(entries, settings=settings))
+    provider = install_mcp_tool_provider(McpToolProvider(entries))
     logger.info(
         "[startup] mcp_tools=enabled servers=%s tools=%s",
         len(connections),

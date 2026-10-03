@@ -46,7 +46,6 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "accepted_model_governance_boundary",
         "no_tool_governance_artifact_protocol",
         "framework_tools_does_not_simulate_middleware",
-        "mcp_tool_has_no_framework_rewrapper",
         "result_builder_owns_agent_result",
         "chat_service_consumes_agent_result",
         "streaming_uses_create_agent_directly",
@@ -55,7 +54,6 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "local_tool_execution_entry_is_unique",
         "local_handler_is_adapter_owned",
         "local_visibility_is_model_middleware",
-        "mcp_governance_is_independent",
         "no_parent_event_projection_cursor",
         "agent_result_contract",
         "status_policy_complete",
@@ -68,7 +66,6 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "http_framework_boundary",
         "settings_framework_boundary",
         "zero_import_ignores",
-        "mcp_disabled_by_default",
         "tool_runtime_governance_preserved",
     } <= {item["name"] for item in report["checks"]}
     assert report["module_boundaries"] == {
@@ -90,12 +87,6 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "state_hooks": ["aafter_model"],
         "model_wrap_hooks_overridden": False,
         "status": "accepted_model_governance_boundary",
-    }
-    assert report["mcp_client"] == {
-        "enabled_by_default": False,
-        "config_version": 1,
-        "transport": "streamable_http",
-        "dependency": "0.3.2",
     }
     assert report["local_tool_execution"] == {
         "catalog": "get_local_tools",

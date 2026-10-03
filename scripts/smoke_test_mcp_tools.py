@@ -1,4 +1,4 @@
-"""通过项目正式 Provider/bridge 列出或调用受治理的 MCP Tool。"""
+"""MCP Source Smoke Test：只调试 GitHub 文件与 Firecrawl 页面来源抓取。"""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.config import get_settings  # noqa: E402
-from app.tools.context import build_default_tool_context  # noqa: E402
+from app.tools.context import ToolInvocationContext  # noqa: E402
 from app.tools.mcp.bridge import invoke_mcp_tool  # noqa: E402
 from app.tools.mcp.client import (  # noqa: E402
     close_mcp_runtime,
@@ -25,15 +25,18 @@ from app.tools.mcp.provider import get_mcp_tool_provider  # noqa: E402
 from app.common.redaction import redact_sensitive_data  # noqa: E402
 
 
+_SOURCE_TOOLS = ("github_get_file_contents", "firecrawl_firecrawl_scrape")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """构造列举或调用受治理 MCP Tool 的命令行参数解析器。"""
     parser = argparse.ArgumentParser(
-        description="列出或调用当前部署配置允许的受治理 MCP read-only tools",
+        description="MCP Source Smoke Test：列出或调用只读入库来源工具",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("list", help="列出当前权限可见的 MCP tools")
     invoke = subparsers.add_parser("invoke", help="调用一个当前权限可见的 MCP tool")
-    invoke.add_argument("--tool", required=True, help="带 Server 前缀的工具名")
+    invoke.add_argument("--tool", required=True, choices=_SOURCE_TOOLS, help="带 Server 前缀的工具名")
     invoke.add_argument(
         "--args-json",
         required=True,
@@ -44,7 +47,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _safe_result(value: dict[str, Any]) -> dict[str, Any]:
     """只打印有限结果字段，不回显原始参数、Header 或 Client 信息。"""
-    runtime = value.get("runtime") if isinstance(value.get("runtime"), dict) else {}
     output = value.get("output")
     return {
         "status": value.get("status", ""),
@@ -59,10 +61,6 @@ def _safe_result(value: dict[str, Any]) -> dict[str, Any]:
         ),
         "error": value.get("error", ""),
         "error_code": value.get("error_code", ""),
-        "runtime": {
-            "elapsed_ms": runtime.get("elapsed_ms", 0),
-            "timed_out": bool(runtime.get("timed_out", False)),
-        },
     }
 
 
@@ -70,7 +68,7 @@ async def _run(args: argparse.Namespace) -> int:
     """初始化正式 MCP Runtime，并按命令安全列举或调用可见工具。"""
     settings = get_settings()
     if not settings.mcp_tools_enabled:
-        print("MCP tools are disabled")
+        print("MCP sources are disabled")
         return 0
     try:
         await initialize_mcp_runtime(settings)
@@ -83,11 +81,12 @@ async def _run(args: argparse.Namespace) -> int:
         if provider is None:
             print("MCP runtime is unavailable", file=sys.stderr)
             return 2
-        context = build_default_tool_context(
-            source="mcp_smoke_test",
-            settings=settings,
+        context = ToolInvocationContext(
+            principal_id="mcp-source-smoke", source="mcp_source_smoke_test",
+            permissions=("mcp:github", "mcp:firecrawl"),
         )
-        visible = {tool.name: tool for tool in provider.list_tools(context=context)}
+        visible = {tool.name: tool for tool in provider.list_tools(context=context)
+                   if tool.name in _SOURCE_TOOLS}
         if args.command == "list":
             rows = [
                 row

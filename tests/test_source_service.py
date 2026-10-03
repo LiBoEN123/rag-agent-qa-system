@@ -22,7 +22,6 @@ from app.tools.context import ToolInvocationContext
 from app.tools.mcp.serialization import (
     MCP_INGESTION_MAX_STRUCTURED_CHARS,
     MCP_INGESTION_MAX_TEXT_CHARS,
-    McpSerializationProfile,
     sanitize_mcp_call_result,
 )
 from tests.support.structured_document import REGISTRATION_HTML
@@ -55,7 +54,6 @@ def _output(*blocks, truncated=False):
             "content": "bounded safe content",
             "content_blocks": list(blocks),
             "content_is_untrusted": True,
-            "serialization_profile": "ingestion",
             "server": "source",
             "tool": "source",
             "truncated": truncated,
@@ -68,7 +66,7 @@ def governed_provider(monkeypatch):
     tools = {
         name: SimpleNamespace(
             name=name,
-            metadata={"tool_origin": "mcp", "risk_level": "read_only"},
+            metadata={"mcp_server": name.split("_")[0]},
         )
         for name in ("github_get_file_contents", "firecrawl_firecrawl_scrape")
     }
@@ -83,8 +81,8 @@ def test_github_fetch_uses_exact_tool_resource_body_and_stops_pending(
 ):
     calls = []
 
-    async def invoke(tool, args, *, context, serialization_profile):
-        calls.append((tool.name, args, context, serialization_profile))
+    async def invoke(tool, args, *, context):
+        calls.append((tool.name, args, context))
         return _output(
             {"type": "text", "text": "descriptive noise", "size_chars": 17},
             {
@@ -122,7 +120,6 @@ def test_github_fetch_uses_exact_tool_resource_body_and_stops_pending(
                 "ref": "main",
             },
             _context(),
-            McpSerializationProfile.INGESTION,
         )
     ]
     assert candidate.document.content == "complete README body"
@@ -155,8 +152,8 @@ def test_firecrawl_scrape_requests_markdown_html_and_accepts_legacy_payload(
         },
     }
 
-    async def invoke(tool, args, *, context, serialization_profile):
-        calls.append((tool.name, args, serialization_profile))
+    async def invoke(tool, args, *, context):
+        calls.append((tool.name, args))
         return _output(
             {
                 "type": "text",
@@ -182,7 +179,6 @@ def test_firecrawl_scrape_requests_markdown_html_and_accepts_legacy_payload(
         "onlyMainContent": True,
         "removeBase64Images": True,
     }
-    assert calls[0][2] is McpSerializationProfile.INGESTION
     assert candidate.document.source_uri == "https://example.com/article"
     assert candidate.document.content == scrape["markdown"]
     assert candidate.document.metadata["final_url"] == "https://example.com/final"
@@ -209,10 +205,8 @@ def test_firecrawl_json_secret_is_redacted_without_breaking_payload(
         CallToolResult(
             content=[TextContent(type="text", text=json.dumps(raw))],
         ),
-        settings=settings_factory(),
         server_alias="firecrawl",
         remote_tool_name="firecrawl_scrape",
-        profile=McpSerializationProfile.INGESTION,
     )
     assert outcome.ok is True
     assert outcome.ingestion_output is not None
@@ -270,35 +264,16 @@ def test_truncated_and_oversized_sources_fail_before_document(
     assert service.ingestion_service.repository.count() == 0
 
 
-def test_non_read_only_or_invisible_source_tool_fails_closed(monkeypatch):
-    external_write = SimpleNamespace(
-        name="firecrawl_firecrawl_scrape",
-        metadata={"tool_origin": "mcp", "risk_level": "external_write"},
-    )
-    provider = SimpleNamespace(list_tools=lambda *, context: [external_write])
+@pytest.mark.parametrize("provider", [None, SimpleNamespace(list_tools=lambda **_: [])])
+def test_unavailable_source_tool_fails_closed(monkeypatch, provider):
     monkeypatch.setattr("app.sources.service.get_mcp_tool_provider", lambda: provider)
     service = ExternalKnowledgeSourceService(requester=_requester())
-
-    with pytest.raises(SourceIngestionError) as exc_info:
-        asyncio.run(
-            service.propose_firecrawl_page(
-                url="https://example.com/",
-                context=_context(),
-            )
-        )
-    assert exc_info.value.code == "SOURCE_TOOL_NOT_READ_ONLY"
-
-    monkeypatch.setattr("app.sources.service.get_mcp_tool_provider", lambda: None)
     with pytest.raises(SourceIngestionError) as unavailable:
-        asyncio.run(
-            service.propose_github_file(
-                owner="owner",
-                repository="repo",
-                path="README.md",
-                context=_context(),
-            )
-        )
+        asyncio.run(service.propose_github_file(
+            owner="owner", repository="repo", path="README.md", context=_context(),
+        ))
     assert unavailable.value.code == "SOURCE_TOOL_UNAVAILABLE"
+    assert service.ingestion_service.repository.count() == 0
 
 
 @pytest.mark.parametrize(("transport", "padding_chars"), [
@@ -316,18 +291,16 @@ def test_firecrawl_html_payload_reaches_canonical_structured_candidate(
         "metadata": {"title": "办理事项", "url": "https://example.com/", "statusCode": 200,
                      "contentType": "text/html; charset=utf-8"},
     }
-    settings = settings_factory()
     if padding_chars:
         payload_chars = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
-        assert settings.mcp_max_structured_chars < MCP_INGESTION_MAX_TEXT_CHARS < payload_chars
+        assert MCP_INGESTION_MAX_TEXT_CHARS < payload_chars
         assert payload_chars < MCP_INGESTION_MAX_STRUCTURED_CHARS
     raw = CallToolResult(
         content=[] if transport == "structured" else [TextContent(type="text", text=json.dumps(payload))],
         structuredContent=payload if transport == "structured" else None,
     )
     outcome = sanitize_mcp_call_result(
-        raw, settings=settings, server_alias="firecrawl", remote_tool_name="firecrawl_scrape",
-        profile=McpSerializationProfile.INGESTION,
+        raw, server_alias="firecrawl", remote_tool_name="firecrawl_scrape",
     )
     assert outcome.ok is True
     assert outcome.truncated is False
@@ -429,8 +402,7 @@ def test_dual_format_serialization_limits_still_fail_closed(
             ))],
             structuredContent=payload if transport == "structured" else None,
         ),
-        settings=settings_factory(), server_alias="firecrawl", remote_tool_name="firecrawl_scrape",
-        profile=McpSerializationProfile.INGESTION,
+        server_alias="firecrawl", remote_tool_name="firecrawl_scrape",
     )
     assert outcome.ok is True
     assert outcome.truncated is True

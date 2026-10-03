@@ -133,7 +133,8 @@ async def lifespan(_app: FastAPI):
             or get_settings()
         )
         start_application_resources(settings)
-        await initialize_mcp_runtime(settings)
+        if settings.ingestion_admin_api_enabled:
+            await initialize_mcp_runtime(settings)
         if isinstance(_app, FastAPI):
             _register_ingestion_operations(_app, settings)
         yield

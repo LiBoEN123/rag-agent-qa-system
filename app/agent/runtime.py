@@ -15,9 +15,7 @@ from app.agent.framework_agent import build_framework_agent
 from app.agent.framework_middleware import ProjectToolGovernanceMiddleware
 from app.agent.router import RouteDecision, route_agent_action
 from app.config import AppSettings, get_settings
-from app.contracts.chat import ToolMode
 from app.tools.context import ToolInvocationContext, build_default_tool_context
-from app.tools.mcp.provider import list_mcp_tools_for_context
 
 
 class CompiledAgentRuntime(Protocol):
@@ -43,7 +41,7 @@ class CompiledAgentRuntime(Protocol):
 def _get_cached_framework_agent(
     settings: AppSettings,
 ) -> CompiledAgentRuntime:
-    """缓存不依赖 MCP discovery 的本地 ``create_agent`` 结构。"""
+    """按配置缓存本地工具的 ``create_agent`` 结构。"""
     governance = ProjectToolGovernanceMiddleware(settings=settings)
     return cast(
         CompiledAgentRuntime,
@@ -57,31 +55,9 @@ def _get_cached_framework_agent(
 
 def get_compiled_agent_runtime(
     settings: AppSettings | None = None,
-    *,
-    tool_context: ToolInvocationContext | None = None,
 ) -> CompiledAgentRuntime:
-    """Local 权限变化共用编译缓存；仅额外 MCP 工具集合需要构图。"""
-    resolved_settings = settings or get_settings()
-    if tool_context is None or tool_context.tool_mode is ToolMode.RAG_ONLY:
-        return _get_cached_framework_agent(resolved_settings)
-    if not list_mcp_tools_for_context(
-        tool_context,
-        settings=resolved_settings,
-    ):
-        return _get_cached_framework_agent(resolved_settings)
-
-    governance = ProjectToolGovernanceMiddleware(settings=resolved_settings)
-    return cast(
-        CompiledAgentRuntime,
-        build_framework_agent(
-            resolved_settings,
-            tools=framework_tools.resolve_agent_tools(
-                tool_context,
-                resolved_settings,
-            ),
-            governance=governance,
-        ),
-    )
+    """解析当前配置后读取缓存；请求权限与工具模式由 Middleware 处理。"""
+    return _get_cached_framework_agent(settings or get_settings())
 
 
 def reset_agent_runtime() -> None:
@@ -135,10 +111,7 @@ def prepare_agent_runtime_invocation(
             effective_question=resolved_effective,
         )
     agent = (
-        get_compiled_agent_runtime(
-            resolved_settings,
-            tool_context=resolved_context,
-        )
+        get_compiled_agent_runtime(resolved_settings)
         if decision.get("action") == "agent"
         else None
     )

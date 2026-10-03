@@ -1,5 +1,7 @@
 # ADR 0005：Agent 错误恢复、预算与循环防护
 
+> 历史设计记录。当前 Agent 的 MCP 和工具审批路径已删除；现状见 [current-system](../architecture/current-system.md)。
+
 - 状态：Accepted
 - 日期：2026-07-20
 - 决策者：Project Maintainer

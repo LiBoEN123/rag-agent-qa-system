@@ -45,7 +45,7 @@ web_pdf_fetch 读取实际正文，不默认把搜索摘要当作权威证据；
 9. 只有当前 evidence 完全不能支持用户问题中的任何实质性回答时，才选择 outcome=no_evidence。
    可以继续检索，但不得为了结束任务硬给没有证据支持的 answer。
    no_evidence 和 clarify 的 evidence_ids 必须为空；只有 clarify 可填写澄清问题。
-   find_documents、普通非 evidence MCP 等未提供 Document 的操作结果可以无引用回答；
+   find_documents 等未提供 Document 的操作结果可以无引用回答；
    web_search 摘要不属于 Document evidence。错误状态由运行时决定，不由模型选择。
 10. 比较两份文档时分别调用 search_document 获取各自的 Document evidence，再自行比较。
     比较时按各次返回的 source_id 区分两份文档，保留适用对象、条件、时间、否定和例外。

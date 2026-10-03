@@ -137,7 +137,7 @@ def test_governance_event_normalization_is_pure_and_keeps_separate_step_counts()
         "sanitized_tool_args": {}, "tool_status": "success",
         "success": True, "summary": "文档发现完成，找到 0 份候选文档", "error": "", "cost_ms": 3,
         "error_code": "", "tool_call_id": "list-1", "policy_decision": "",
-        "risk_level": "", "approval_required": False, "args_fingerprint": "",
+        "risk_level": "", "args_fingerprint": "",
         "attempt_count": 1, "max_attempts": 0, "timed_out": False,
         "output_summary": {"type": "dict", "fields": ["count"], "count": 0}, "failure_kind": "", "handler_executed": True,
         "will_return_to_agent_model": True, "stop_reason": "", "call_fingerprint": "",
@@ -171,7 +171,7 @@ def test_public_tool_trace_keeps_ok_precedence(result, success):
     [
         *[(code, "安全策略错误 token=raw-token", "安全策略错误 token=***REDACTED***")
           for code in (
-              "permission_denied", "approval_required",
+              "permission_denied",
               "invalid_invocation_context", "policy_denied",
               "audit_write_failed",
           )],
@@ -190,7 +190,7 @@ def test_public_tool_trace_keeps_safe_error_policy(error_code, raw_error, expect
     assert trace["summary"] == "工具执行失败"
 
 
-@pytest.mark.parametrize("tool_name", ["find_documents", "search_knowledge_base", "mcp_probe"])
+@pytest.mark.parametrize("tool_name", ["find_documents", "search_knowledge_base", "unknown_tool"])
 @pytest.mark.parametrize("output", [None, ["private raw output"], "private raw output"])
 def test_public_tool_trace_normalizes_non_dict_output(tool_name, output):
     trace = build_tool_trace(
@@ -226,9 +226,9 @@ def test_public_tool_trace_keeps_business_body_out_of_output_summary(tool_name):
     assert trace["summary"] == "完成 token=***REDACTED***"
 
 
-def test_public_nonlocal_tool_trace_preserves_existing_redaction_boundary():
+def test_unknown_tool_trace_preserves_redaction_boundary():
     trace = build_tool_trace(
-        step_id=1, tool_name="mcp_probe", tool_args={"token": "raw-token"}, cost_ms=1,
+        step_id=1, tool_name="unknown_tool", tool_args={"token": "raw-token"}, cost_ms=1,
         result={
             "ok": True, "summary": "完成 password=raw-password",
             "output": {"count": 2, "token": "raw-token", "credential": "raw-credential"},

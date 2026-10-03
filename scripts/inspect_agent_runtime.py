@@ -205,10 +205,6 @@ def inspect_runtime(
     visibility_source = (
         PROJECT_ROOT / "app" / "agent" / "tool_visibility.py"
     ).read_text(encoding="utf-8")
-    mcp_source = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in sorted((PROJECT_ROOT / "app" / "tools" / "mcp").glob("*.py"))
-    )
     current_architecture = (
         PROJECT_ROOT / "docs" / "architecture" / "current-system.md"
     ).read_text(encoding="utf-8")
@@ -294,11 +290,6 @@ def inspect_runtime(
             "framework tools do not construct or invoke middleware requests",
         ),
         _check(
-            "mcp_tool_has_no_framework_rewrapper",
-            "_build_governed_external_tool" not in framework_tools_source,
-            "governed MCP BaseTool enters the shared native middleware directly",
-        ),
-        _check(
             "result_builder_owns_agent_result",
             "def build_framework_agent_result(" in results_source
             and "def build_framework_agent_result(" not in runtime_source,
@@ -356,13 +347,6 @@ def inspect_runtime(
             "LangChain async model middleware filters local tools",
         ),
         _check(
-            "mcp_governance_is_independent",
-            "class McpToolCallInterceptor" in mcp_source
-            and "def build_governed_mcp_tool(" in mcp_source
-            and "from app.tools.runtime" not in mcp_source,
-            "MCP keeps its adapter interceptor instead of local ToolRuntime",
-        ),
-        _check(
             "no_parent_event_projection_cursor",
             "framework_events_applied" not in state_fields,
             "governance events normalize once at Runtime exit",
@@ -393,11 +377,6 @@ def inspect_runtime(
             for name, passed in module_boundaries.items()
         ),
         _check(
-            "mcp_disabled_by_default",
-            resolved_settings.mcp_tools_enabled is False,
-            "MCP tools remain opt-in",
-        ),
-        _check(
             "tool_runtime_governance_preserved",
             all("risk_level" not in item and "requires_approval" not in item for item in registered),
             "local tools omit hypothetical write governance",
@@ -407,7 +386,6 @@ def inspect_runtime(
         "versions": {
             "langchain": _version("langchain"),
             "langgraph": _version("langgraph"),
-            "langchain_mcp_adapters": _version("langchain-mcp-adapters"),
         },
         "agent_runtime": {
             "implementation": "langchain.create_agent",
@@ -451,12 +429,6 @@ def inspect_runtime(
             "terminal": "ToolSpec.handler",
         },
         "module_boundaries": module_boundaries,
-        "mcp_client": {
-            "enabled_by_default": False,
-            "config_version": 1,
-            "transport": "streamable_http",
-            "dependency": _version("langchain-mcp-adapters"),
-        },
         "checks": checks,
     }
 

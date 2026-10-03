@@ -3,13 +3,10 @@
   "servers": {
     "github": {
       "enabled": false,
-      "enabled_for_default_principal": false,
       "transport": "http",
       "url": "https://api.githubcopilot.com/mcp/",
       "allowed_tools": [
-        "get_me",
-        "get_file_contents",
-        "pull_request_read"
+        "get_file_contents"
       ],
       "headers_env": {
         "Authorization": "MCP_GITHUB_AUTHORIZATION",
@@ -17,17 +14,15 @@
         "X-MCP-Readonly": "MCP_GITHUB_READONLY"
       }
     },
-    "production_example": {
+    "firecrawl": {
       "enabled": false,
-      "enabled_for_default_principal": false,
       "transport": "http",
-      "url": "https://mcp.example.com/mcp",
+      "url": "https://firecrawl.example.com/mcp",
       "allowed_tools": [
-        "get_resource"
+        "firecrawl_scrape"
       ],
-      "approval_required_tools": [],
-      "headers": {
-        "Authorization": "xxxxxxxxxxx"
+      "headers_env": {
+        "Authorization": "MCP_FIRECRAWL_AUTHORIZATION"
       }
     }
   }

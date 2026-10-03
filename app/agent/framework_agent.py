@@ -20,12 +20,12 @@ from app.agent.framework_middleware import (
     ProjectToolCallLimitMiddleware,
     ProjectToolGovernanceMiddleware,
 )
-from app.agent.framework_tools import resolve_agent_tools
+from app.agent.framework_tools import get_local_tools
 from app.agent.tool_visibility import ProjectToolVisibilityMiddleware
 from app.config import AppSettings, get_settings
 from app.llm.factory import get_agent_model
 from app.prompts import AGENT_SYSTEM_PROMPT
-from app.tools.context import ToolInvocationContext, build_default_tool_context
+from app.tools.context import ToolInvocationContext
 
 
 def _prefer_stop_reason(left: str, right: str) -> str:
@@ -142,13 +142,7 @@ def build_framework_agent(
     resolved_governance = governance or ProjectToolGovernanceMiddleware(
         settings=resolved
     )
-    resolved_tools = list(tools) if tools is not None else resolve_agent_tools(
-        build_default_tool_context(
-            source="agent_runtime",
-            settings=resolved,
-        ),
-        resolved,
-    )
+    resolved_tools = list(tools) if tools is not None else list(get_local_tools(resolved))
     agent = create_agent(
         _DeferredAgentModel(),
         tools=resolved_tools,

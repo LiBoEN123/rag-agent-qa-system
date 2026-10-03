@@ -1,6 +1,6 @@
 # FRAMEWORK-SLIM-3 — Local Tool declaration 审计
 
-> 历史设计记录。本地工具当前实现以 [current-system](../architecture/current-system.md) 为准：TOOL-SLIM-1/2 已移除动态 runtime schema、自定义工具子类、私有线程池与假设性的 Local write 治理；MCP 写入审批保留。
+> 历史设计记录。本地工具当前实现以 [current-system](../architecture/current-system.md) 为准：TOOL-SLIM-1/2 已移除动态 runtime schema、自定义工具子类、私有线程池与假设性的 Local write 治理；MCP 已收缩为知识入库的只读来源访问。下文为历史记录。
 
 > 历史记录：下文描述当时的审计或决策。当前已移除计算器与业务数据库只读工具，
 > 工具集合以[当前系统架构](../architecture/current-system.md)为准。

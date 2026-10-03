@@ -21,7 +21,6 @@ from app.agent.guardrails import (
 )
 from app.config import AppSettings, get_settings
 from app.tools.errors import ToolErrorCode
-from app.tools.mcp.serialization import normalize_mcp_tool_message
 from app.tools.policy import build_tool_args_fingerprint
 from app.tools.result import tool_content, tool_error
 
@@ -84,9 +83,6 @@ def parse_tool_result(
     """读取标准 ToolMessage；框架校验错误映射为项目稳定错误码。"""
     if isinstance(message.artifact, dict) and "ok" in message.artifact:
         return message.artifact
-    mcp_result = normalize_mcp_tool_message(message, tool_name=name, args=args)
-    if mcp_result is not None:
-        return mcp_result
     try:
         value = (
             json.loads(message.content) if isinstance(message.content, str) else None

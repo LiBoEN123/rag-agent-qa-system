@@ -21,10 +21,8 @@ from app.sources.firecrawl import FirecrawlPagePayload, FirecrawlPageSourceAdapt
 from app.sources.github import GitHubFilePayload, GitHubFileSourceAdapter
 from app.sources.upload import load_upload_document
 from app.tools.context import ToolInvocationContext
-from app.tools.contracts import ToolRiskLevel
 from app.tools.mcp.bridge import invoke_mcp_tool
 from app.tools.mcp.provider import get_mcp_tool_provider
-from app.tools.mcp.serialization import McpSerializationProfile
 
 
 _GITHUB_TOOL = "github_get_file_contents"
@@ -50,8 +48,6 @@ def _require_ingestion_output(
     output = result.get("output")
     if not isinstance(output, dict):
         raise SourceIngestionError("SOURCE_PAYLOAD_INVALID", "MCP source payload 无效")
-    if output.get("serialization_profile") != McpSerializationProfile.INGESTION.value:
-        raise SourceIngestionError("SOURCE_PAYLOAD_INVALID", "source output profile 不匹配")
     if output.get("truncated") is not False:
         blocks = output.get("content_blocks")
         if isinstance(blocks, list) and any(
@@ -215,7 +211,7 @@ class ExternalKnowledgeSourceService:
     def ingestion_service(self) -> IngestionService:
         return self._ingestion
 
-    # 查找调用者可见的 MCP 来源工具，并要求其声明为只读工具。
+    # 查找经过只读 discovery 且当前来源主体可访问的 MCP 工具。
     def _tool(self, name: str, context: ToolInvocationContext):
         provider = get_mcp_tool_provider()
         if provider is None:
@@ -224,8 +220,6 @@ class ExternalKnowledgeSourceService:
         tool = tools.get(name)
         if tool is None:
             raise SourceIngestionError("SOURCE_TOOL_UNAVAILABLE", "source MCP tool 不可用")
-        if (tool.metadata or {}).get("risk_level") != ToolRiskLevel.READ_ONLY.value:
-            raise SourceIngestionError("SOURCE_TOOL_NOT_READ_ONLY", "source MCP tool 非只读")
         return tool
 
     # 通过受治理的 MCP 入口抓取内容，并校验其满足完整入库输出要求。
@@ -239,7 +233,6 @@ class ExternalKnowledgeSourceService:
             self._tool(name, context),
             args,
             context=context,
-            serialization_profile=McpSerializationProfile.INGESTION,
         )
         return _require_ingestion_output(result)
 

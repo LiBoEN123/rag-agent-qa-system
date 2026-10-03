@@ -1,4 +1,4 @@
-"""真实 create_agent.astream 的权限 schema、MCP 与隐藏调用回归。"""
+"""真实 create_agent.astream 的本地权限 schema 与隐藏调用回归。"""
 
 from pydantic import RootModel
 
@@ -8,7 +8,6 @@ from unittest.mock import Mock
 
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
-from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_tools
@@ -63,7 +62,7 @@ def test_native_agent_binds_exact_schemas_for_each_context(monkeypatch, settings
         (ToolInvocationContext(permissions=("web:search",)), ["web_search"]),
         (ToolInvocationContext(permissions=("web:fetch",)), ["web_fetch", "web_pdf_fetch"]),
         (ToolInvocationContext(permissions=("knowledge_base:read", "web:search")), [*kb[:3], "web_search", *kb[3:]]),
-        (ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "web:search", "web:fetch", "mcp:github")), ["search_knowledge_base", "find_documents", "search_document", "get_chunk_context"]),
+        (ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "web:search", "web:fetch")), ["search_knowledge_base", "find_documents", "search_document", "get_chunk_context"]),
         (ToolInvocationContext(tool_mode=ToolMode.FULL, permissions=("knowledge_base:read", "web:search")), [*kb[:3], "web_search", *kb[3:]]),
     ]
     for context, expected in cases:
@@ -97,20 +96,6 @@ def test_hidden_registered_tool_cannot_execute(monkeypatch, settings_factory):
     assert calls == []
 
 
-@pytest.mark.parametrize("server", ["github", "firecrawl"])
-def test_mcp_base_tool_survives_local_filter(monkeypatch, settings_factory, server):
-    external = StructuredTool.from_function(lambda value: value, name=f"{server}_read", description="MCP fixture")
-    monkeypatch.setattr(framework_tools, "list_mcp_tools_for_context", lambda context, *, settings: [external])
-    settings = settings_factory()
-    context = ToolInvocationContext(permissions=(f"mcp:{server}",))
-    tools = framework_tools.resolve_agent_tools(context, settings)
-    model = SchemaModel()
-    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
-    stream(build_framework_agent(settings, tools=tools), context)
-    assert list(model.schemas[-1]) == [external.name]
-    assert tools[-1] is external
-
-
 def test_missing_runtime_fails_closed(settings_factory):
     calls = []
 
@@ -124,16 +109,6 @@ def test_missing_runtime_fails_closed(settings_factory):
     with pytest.raises(RuntimeError, match="ToolRuntime"):
         asyncio.run(tool.coroutine(runtime=None, value="missing"))
     assert calls == []
-
-
-def test_rag_only_filters_even_registered_mcp_tools(monkeypatch, settings_factory):
-    settings = settings_factory()
-    external = StructuredTool.from_function(lambda value: value, name="github_read", description="MCP fixture")
-    model = SchemaModel()
-    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
-    agent = build_framework_agent(settings, tools=[*framework_tools.get_local_tools(settings), external])
-    stream(agent, ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "mcp:github")))
-    assert list(model.schemas[-1]) == ["search_knowledge_base", "find_documents", "search_document", "get_chunk_context"]
 
 
 @pytest.mark.parametrize(("name", "args"), [

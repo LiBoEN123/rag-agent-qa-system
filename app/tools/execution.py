@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 _GOVERNANCE_ERRORS = {
     ToolErrorCode.PERMISSION_DENIED, ToolErrorCode.INVALID_INVOCATION_CONTEXT,
     ToolErrorCode.POLICY_DENIED, ToolErrorCode.AUDIT_WRITE_FAILED,
-    ToolErrorCode.APPROVAL_REQUIRED,
 }
 
 
@@ -156,7 +155,7 @@ async def execute_project_tool(
                  "max_attempts": 1 + spec.max_retries, "timeout": spec.timeout,
                  "elapsed_ms": max(0, int((time.perf_counter() - started) * 1000)),
                  "timed_out": code is ToolErrorCode.TIMEOUT},
-        governance={"decision": decision, "risk_level": "read_only", "approval_required": False,
+        governance={"decision": decision, "risk_level": "read_only",
                     "args_fingerprint": fingerprint, "missing_permissions": list(missing_permissions)},
         tool_call_id=call_id, audit={"write_failed": audit_failed},
     )

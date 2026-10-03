@@ -31,7 +31,6 @@ from app.tools.errors import ToolErrorCode
             ToolErrorCode.INVALID_INVOCATION_CONTEXT,
             AgentToolFailureKind.TERMINAL_GOVERNANCE,
         ),
-        (ToolErrorCode.APPROVAL_REQUIRED, AgentToolFailureKind.APPROVAL_REQUIRED),
         (ToolErrorCode.RUNTIME_UNAVAILABLE, AgentToolFailureKind.TERMINAL_RUNTIME),
     ],
 )
@@ -93,11 +92,6 @@ def test_error_fingerprint_binds_call_and_normalized_code():
             "permission_denied",
             AgentToolFailureKind.TERMINAL_GOVERNANCE,
             AgentStopReason.FATAL_TOOL_ERROR,
-        ),
-        (
-            "approval_required",
-            AgentToolFailureKind.APPROVAL_REQUIRED,
-            AgentStopReason.APPROVAL_REQUIRED,
         ),
         (
             "runtime_unavailable",

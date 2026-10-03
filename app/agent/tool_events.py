@@ -58,7 +58,6 @@ def build_tool_trace(
     raw_error = str(result.get("error") or "")
     safe_policy_codes = {
         "permission_denied",
-        "approval_required",
 
         "invalid_invocation_context",
         "policy_denied",
@@ -102,7 +101,6 @@ def build_tool_trace(
         "tool_call_id": result.get("tool_call_id", ""),
         "policy_decision": governance.get("decision", ""),
         "risk_level": governance.get("risk_level", ""),
-        "approval_required": governance.get("approval_required", False),
         "args_fingerprint": governance.get("args_fingerprint", ""),
         "attempt_count": runtime.get("attempt_count", 0),
         "max_attempts": runtime.get("max_attempts", 0),

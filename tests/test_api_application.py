@@ -571,9 +571,12 @@ def test_create_app_does_not_run_lifespan_at_import_or_construction(monkeypatch)
     assert calls == []
 
 
-def test_lifespan_awaits_mcp_startup_and_closes_it_before_other_runtimes(
-    monkeypatch,
+@pytest.mark.parametrize("ingestion_enabled", [False, True])
+def test_lifespan_initializes_mcp_only_for_ingestion(
+    monkeypatch, settings_factory, ingestion_enabled,
 ):
+    settings = settings_factory(ingestion_admin_api_enabled=ingestion_enabled)
+    monkeypatch.setattr(api_application, "get_settings", lambda: settings)
     calls = []
 
     async def initialize_mcp(settings):
@@ -608,7 +611,7 @@ def test_lifespan_awaits_mcp_startup_and_closes_it_before_other_runtimes(
 
     assert calls == [
         "application_start",
-        "mcp_start",
+        *(["mcp_start"] if ingestion_enabled else []),
         "serve",
         "mcp_close",
         "agent_close",

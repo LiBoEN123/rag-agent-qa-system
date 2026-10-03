@@ -4,7 +4,7 @@ Phase 11B 的永久知识流程是显式 operator/service orchestration，不是
 
 ```text
 cached governed MCP tool
-  → ingestion serialization profile
+  → ingestion serialization
   → validated source payload
   → pure Source Adapter
   → KnowledgeDocument
@@ -35,8 +35,8 @@ Crawl、scheduled sync 和 remote delete detection 均不在本阶段。
 serializer 脱敏，再由 KnowledgeDocument 做权威 normalization/redaction/hash；永久索引只
 消费 `KnowledgeDocument.content`，不消费 raw MCP payload。
 
-普通 Agent profile 保持 `MCP_MAX_TEXT_CHARS`（默认 12,000）；ingestion profile 的上限是
-1,000,000，且只能经直接 bridge invocation 使用只读工具。任一截断、超限、block 歧义、
+MCP 仅供入库，文本上限为 1,000,000 字符，structured content 总预算为 2,000,000 字符；
+经直接 bridge invocation 使用只读来源工具，保留完整 Markdown/HTML 和安全 metadata。任一截断、超限、block 歧义、
 错误 trust marker 或无完整正文的结果都 fail closed，不创建 candidate。MCP audit 只保存
 tool、字段、字符数、截断和状态摘要，不保存正文、base64、Header 或凭据。
 

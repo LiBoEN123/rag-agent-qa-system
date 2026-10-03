@@ -22,7 +22,7 @@ def test_minimal_agent_smoke(tool, settings_factory, monkeypatch, tmp_path):
     from app.tools.catalog import get_local_tool_specs
     from app.tools.policy import ToolPolicyEngine
 
-    settings = settings_factory(mcp_tools_enabled=False)
+    settings = settings_factory()
     monkeypatch.setattr("app.rag.runtime.chunks", [])
     monkeypatch.setattr("app.rag.runtime.RAG_READY", True)
     base = chat_service.get_default_chat_service_dependencies()

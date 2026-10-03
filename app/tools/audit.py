@@ -24,7 +24,6 @@ class ToolAuditEventType(str, Enum):
 
     REQUESTED = "requested"
     DENIED = "denied"
-    APPROVAL_REQUIRED = "approval_required"
     STARTED = "started"
     RETRYING = "retrying"
     SUCCEEDED = "succeeded"
@@ -83,10 +82,10 @@ class ToolAuditSink(Protocol):
 
 
 class DisabledToolAuditSink:
-    """配置关闭审计时保持只读 fail-open、写工具 fail-closed。"""
+    """配置关闭审计时报告不可用，保留只读调用的 fail-open 行为。"""
 
     def write(self, event: ToolAuditEvent) -> None:
-        """显式报告审计不可用，由 Runtime 按风险级别处理。"""
+        """显式报告审计不可用，由调用方记录写入失败。"""
         del event
         raise RuntimeError("tool audit is disabled")
 

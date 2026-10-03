@@ -146,7 +146,6 @@ def _stop_result(reason: str) -> tuple[AgentResultStatus, str]:
     """把框架停止原因映射为 API 兼容状态。"""
     tool_errors = {
         AgentStopReason.FATAL_TOOL_ERROR.value,
-        AgentStopReason.APPROVAL_REQUIRED.value,
         AgentStopReason.RUNTIME_UNAVAILABLE.value,
     }
     if reason in tool_errors:

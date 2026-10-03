@@ -28,12 +28,6 @@ _SEMVER_PATTERN = re.compile(
 )
 
 
-# MCP 来源仍需区分只读与需要审批的外部写入。
-class ToolRiskLevel(str, Enum):
-    READ_ONLY = "read_only"
-    EXTERNAL_WRITE = "external_write"
-
-
 # 本地只读工具仅记录有限摘要或不记录输出。
 class ToolAuditOutputMode(str, Enum):
     NONE = "none"
@@ -79,6 +73,5 @@ class ToolSpec(BaseModel):
 __all__ = [
     "ToolAuditOutputMode",
     "ToolHandler",
-    "ToolRiskLevel",
     "ToolSpec",
 ]

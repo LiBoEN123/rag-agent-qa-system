@@ -173,5 +173,5 @@ def get_local_tool_specs(settings: AppSettings) -> tuple[ToolSpec, ...]:
 
 
 def get_local_tool_names(settings: AppSettings | None = None) -> tuple[str, ...]:
-    """为 MCP collision 和诊断提供同一 catalog 的名称。"""
+    """为诊断提供同一 catalog 的名称。"""
     return tuple(spec.name for spec in get_local_tool_specs(settings or get_settings()))

@@ -51,7 +51,6 @@ def setup_prediction(monkeypatch):
         return await original(**kwargs)
 
     monkeypatch.setattr(framework_tools, "execute_project_tool", execute)
-    monkeypatch.setattr(framework_tools, "list_mcp_tools_for_context", Mock(side_effect=AssertionError("MCP discovery forbidden")))
     return contexts
 
 

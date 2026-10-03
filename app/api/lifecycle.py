@@ -1,6 +1,6 @@
 """应用启动生命周期模块。
 
-管理 Agent/MCP 初始化与关闭；索引读取由 application 组合根协调。
+管理 Agent 与入库来源 MCP 的初始化和关闭；索引读取由 application 组合根协调。
 """
 from app.common.logging import get_logger
 from app.config import AppSettings
@@ -18,7 +18,7 @@ def initialize_agent_runtime(settings: AppSettings) -> None:
 
 
 async def initialize_mcp_runtime(settings: AppSettings) -> None:
-    """在启动事件循环中完成 MCP 配置读取和 Tool discovery。"""
+    """为启用的入库管理 API 完成来源 MCP 配置读取和 discovery。"""
     from app.tools.mcp.client import initialize_mcp_runtime as initialize
 
     await initialize(settings)

@@ -73,7 +73,7 @@ Online 与 Judge 默认关闭：
 ## 执行与隔离
 
 Agent 复用真实 `ChatService.stream()`，注入独立内存 session 与无写入的 metrics/
-bad-case writer。评测 Settings 固定禁用 MCP 与 tool audit，备用路径指向本轮输出目录。
+bad-case writer。评测 Settings 关闭 tool audit，备用路径指向本轮输出目录；Agent 不依赖来源 MCP。
 Core 权限只有 `knowledge_base:read`；Online case 额外获得 `web:search`、`web:fetch`。
 生产 MCP Source/ingestion 能力不受此评测边界影响。
 

@@ -1,19 +1,17 @@
-"""缓存与请求无关的 LangChain 本地工具，并合并受治理 MCP 工具。"""
+"""缓存与请求无关的 LangChain 本地 StructuredTool。"""
 
 from functools import lru_cache
 from typing import Any
 
 from langchain.tools import ToolRuntime
-from langchain_core.tools import BaseTool, StructuredTool
+from langchain_core.tools import StructuredTool
 
 from app.config import AppSettings, get_settings
-from app.contracts.chat import ToolMode
 from app.tools.audit import ToolAuditSink, get_default_tool_audit_sink
 from app.tools.catalog import get_local_tool_specs
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from app.tools.execution import execute_project_tool
-from app.tools.mcp.provider import list_mcp_tools_for_context
 from app.tools.policy import ToolPolicyEngine
 from app.tools.result import tool_content
 
@@ -83,20 +81,3 @@ def local_tool_contract(spec: ToolSpec) -> dict[str, Any]:
 def get_local_tool_contracts(settings: AppSettings) -> list[dict[str, Any]]:
     """以稳定顺序派生全量本地 manifest 合同，调用方获得独立副本。"""
     return [local_tool_contract(spec) for spec in get_local_tool_specs(settings)]
-
-
-def resolve_agent_tools(
-    context: ToolInvocationContext, settings: AppSettings | None = None
-) -> list[BaseTool]:
-    """本地工具全部注册；MCP 继续使用当前请求的独立可见性路径。"""
-    resolved_settings = settings or get_settings()
-    tools: list[BaseTool] = list(get_local_tools(resolved_settings))
-    if context.tool_mode is ToolMode.RAG_ONLY:
-        return tools
-    seen = {tool.name for tool in tools}
-    for tool in list_mcp_tools_for_context(context, settings=resolved_settings):
-        if tool.name in seen:
-            raise ValueError(f"tool {tool.name!r} 在本地与 MCP 工具源中重复")
-        seen.add(tool.name)
-        tools.append(tool)
-    return tools
