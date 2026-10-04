@@ -287,7 +287,9 @@ def test_firecrawl_html_payload_reaches_canonical_structured_candidate(
 
     payload = {
         "success": True, "markdown": "compatibility text" + "m" * padding_chars,
-        "html": REGISTRATION_HTML.replace("</body>", "<!--" + "h" * padding_chars + "--></body>"),
+        "html": REGISTRATION_HTML.replace(
+            "<body>", "<body><h1>办理事项</h1><h2>申请材料</h2><h3>证件清单</h3>",
+        ).replace("</body>", "<!--" + "h" * padding_chars + "--></body>"),
         "metadata": {"title": "办理事项", "url": "https://example.com/", "statusCode": 200,
                      "contentType": "text/html; charset=utf-8"},
     }
@@ -318,6 +320,9 @@ def test_firecrawl_html_payload_reaches_canonical_structured_candidate(
     candidate = asyncio.run(service.propose_firecrawl_page(url="https://example.com/", context=_context()))
     document = candidate.document
     assert document.structured_content is not None
+    assert [(block.text_role, block.heading_level) for block in document.structured_content.blocks[:4]] == [
+        ("title", None), ("section_header", 1), ("section_header", 2), ("text", None),
+    ]
     assert document.structure_hash is not None
     assert document.content == canonical_document_text(document.structured_content)
     assert document.source_type.value == "firecrawl"

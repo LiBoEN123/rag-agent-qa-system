@@ -24,6 +24,14 @@ class TextBlock(_StructureValue):
     text: StrictStr = Field(max_length=STRUCTURE_MAX_TEXT_CHARS, repr=False)
     order: StrictInt = Field(ge=0)
     page_number: StrictInt | None = Field(default=None, ge=1)
+    text_role: Literal["text", "title", "section_header"] = "text"
+    heading_level: StrictInt | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def _validate_heading(self) -> TextBlock:
+        if (self.text_role == "section_header") != (self.heading_level is not None):
+            raise ValueError("仅 section_header 必须提供 heading_level")
+        return self
 
 
 class TableCell(_StructureValue):

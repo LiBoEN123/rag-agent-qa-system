@@ -157,6 +157,22 @@ def test_html_keeps_cleaned_intro_before_first_heading():
     assert [block.text for block in parsed.blocks] == ["办理说明", "办理要求", "其他说明"]
 
 
+def test_real_html_preserves_docling_title_and_all_section_levels():
+    parsed = parsing.parse_html_document('''<html><body>
+      <h1>管理办法</h1><h2>第二章 申请条件</h2><h3>第五条</h3>
+      <p>申请人应符合以下条件。</p><h4>细则</h4><h5>补充</h5><h6>说明</h6>
+    </body></html>''')
+    assert [(block.text, block.text_role, block.heading_level) for block in parsed.blocks] == [
+        ("管理办法", "title", None), ("第二章 申请条件", "section_header", 1),
+        ("第五条", "section_header", 2), ("申请人应符合以下条件。", "text", None),
+        ("细则", "section_header", 3), ("补充", "section_header", 4),
+        ("说明", "section_header", 5),
+    ]
+    assert [(block.block_id, block.order, block.page_number) for block in parsed.blocks] == [
+        (f"b{index}", index, None) for index in range(7)
+    ]
+
+
 @pytest.mark.parametrize("status", [ConversionStatus.PARTIAL_SUCCESS, ConversionStatus.FAILURE])
 def test_html_incomplete_conversion_is_rejected(monkeypatch, status):
     def convert_string(html, *, format, name):

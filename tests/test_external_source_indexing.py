@@ -806,7 +806,7 @@ def test_version_migration_rechunks_sqlite_structure_and_preserves_legacy(persis
     # 使用真实启动判断和现有 global force rebuild，无 migration script 或新索引。
     ok, message = _sync_and_load(str(runtime.local_dir))
     assert ok, message
-    assert rag_store.load_manifest()["pipeline_version"] == 5
+    assert rag_store.load_manifest()["pipeline_version"] == 6
     assert parsed_local_paths == [local_table]
     assert rag_store.needs_rebuild(str(runtime.local_dir))[0] is False
     restored = next(item for item in restored_inputs if item.candidate_id == candidate.candidate_id)
@@ -837,7 +837,7 @@ def test_version_migration_rechunks_sqlite_structure_and_preserves_legacy(persis
 
 
 @pytest.mark.parametrize("structure_factory, old_version", [
-    (admission_structure, 3), (imut_admission_structure, 4),
+    (admission_structure, 3), (imut_admission_structure, 4), (imut_admission_structure, 5),
 ])
 @pytest.mark.parametrize("source_type, source_uri, file_type", [
     ("upload", "upload://local/admission", "docx"),
@@ -858,10 +858,14 @@ def test_section_pipeline_migration_rechunks_persisted_candidates_without_acquis
         "source_id": document.source_id, "document_uid": document.document_uid,
         "source_type": source_type, "source_uri": source_uri, "position": 1,
     })
-    result = indexing.sync_documents([old_chunk], runtime.embeddings, namespace=namespace)
+    expected = indexing.candidate_to_langchain_documents(candidate)
+    old_chunks = [Document(
+        page_content=chunk.page_content.removeprefix(f"[标题路径] {document.title}\n\n"),
+        metadata={key: value for key, value in chunk.metadata.items() if key != "title_path"},
+    ) for chunk in expected] if old_version == 5 else [old_chunk]
+    result = indexing.sync_documents(old_chunks, runtime.embeddings, namespace=namespace)
     runtime.runs.succeed(runtime.runs.create_running(candidate.candidate_id, source_id=candidate.document.source_id).id, added=result["num_added"])
     old_ids = indexing.create_vector_store(None).get(where={"source_id": document.source_id})["ids"]
-    expected = indexing.candidate_to_langchain_documents(candidate)
     manifest = rag_store.build_current_manifest(str(runtime.local_dir))
     rag_store.save_manifest({**manifest, "pipeline_version": old_version})
     history = runtime.runs.list()
@@ -878,7 +882,7 @@ def test_section_pipeline_migration_rechunks_persisted_candidates_without_acquis
     ok, message = _sync_and_load(str(runtime.local_dir))
     assert ok, message
     assert rag_store.load_manifest() == manifest
-    assert manifest["pipeline_version"] == 5
+    assert manifest["pipeline_version"] == 6
     assert rag_store.needs_rebuild(str(runtime.local_dir))[0] is False
     restored = SQLiteCandidateRepository(runtime.settings.sqlite_db_path).get(candidate.candidate_id)
     assert restored == candidate
@@ -886,6 +890,7 @@ def test_section_pipeline_migration_rechunks_persisted_candidates_without_acquis
     actual = [chunk for chunk in pipeline.chunks if chunk["metadata"]["source_id"] == document.source_id]
     assert [chunk["text"] for chunk in actual] == [chunk.page_content for chunk in expected]
     assert {chunk["metadata"]["section_index"] for chunk in actual} == {1, 2}
+    assert all(chunk["metadata"]["title_path"] == document.title for chunk in actual)
     assert all("上下文：内蒙古工业大学2026年分省录取分数统计" in chunk["text"] for chunk in actual)
     records = indexing.create_vector_store(None).get(where={"source_id": document.source_id})
     ordered = sorted(zip(records["documents"], records["metadatas"]), key=lambda item: item[1]["position"])
@@ -904,13 +909,17 @@ def test_firecrawl_html_sqlite_index_retrieval_and_rebuild_keep_legacy(persisted
     from tests.support.structured_document import REGISTRATION_HTML
 
     runtime = persisted_runtime
+    html = REGISTRATION_HTML.replace(
+        "<body>", "<body><h1>办理事项</h1><h2>申请材料</h2><h3>证件清单</h3>",
+    )
+    title_path = "办理事项 > 申请材料 > 证件清单"
 
     async def fetch(name, args, context):
         assert name == "firecrawl_firecrawl_scrape"
         assert args["formats"] == ["markdown", "html"]
         return {"content_blocks": [{"type": "text", "text": json.dumps({
-            "markdown": "fallback", "html": REGISTRATION_HTML, "success": True,
-            "metadata": {"contentType": "text/html", "url": args["url"], "statusCode": 200},
+            "markdown": "fallback", "html": html, "success": True,
+            "metadata": {"title": "办理事项", "contentType": "text/html", "url": args["url"], "statusCode": 200},
         })}]}
 
     monkeypatch.setattr(runtime.source_service, "_fetch", fetch)
@@ -924,6 +933,8 @@ def test_firecrawl_html_sqlite_index_retrieval_and_rebuild_keep_legacy(persisted
     [table] = [chunk for chunk in chunks if chunk.metadata.get("element_type") == "table"]
     expected = "事项：企业注册；条件：年满18岁；材料：身份证、申请表。"
     assert expected in table.page_content
+    assert table.metadata["title_path"] == title_path
+    assert table.page_content.startswith(f"[标题路径] {title_path}\n\n[表格]")
     assert _index_with_run(runtime, candidate)["num_added"] == 3
     legacy = _approve(runtime.domain, _firecrawl_document("legacy markdown"))
     assert legacy.document.structured_content is None
@@ -950,7 +961,7 @@ def test_firecrawl_html_sqlite_index_retrieval_and_rebuild_keep_legacy(persisted
     history = runtime.runs.list()
     ok, message = _sync_and_load(str(runtime.local_dir), force_rebuild=True)
     assert ok, message
-    assert rag_store.load_manifest()["pipeline_version"] == 5
+    assert rag_store.load_manifest()["pipeline_version"] == 6
     assert runtime.runs.list() == history
     assert repository.get(candidate.candidate_id) == restored
     [legacy_chunk] = [chunk for chunk in pipeline.chunks if chunk["metadata"]["source_id"] == legacy.document.source_id]
@@ -959,8 +970,11 @@ def test_firecrawl_html_sqlite_index_retrieval_and_rebuild_keep_legacy(persisted
     table_position = next(i for i, chunk in enumerate(pipeline.chunks)
                           if chunk["metadata"].get("element_type") == "table")
     assert all(pipeline.bm25.doc_freqs[table_position].get(token, 0) for token in tokenize("身份证"))
+    assert all(pipeline.bm25.doc_freqs[table_position].get(token, 0) for token in tokenize("申请材料"))
     hits = pipeline.search_relevant_chunks("企业注册需要哪些材料", top_k=5)
     assert any(expected in hit["text"] and hit["metadata"].get("element_type") == "table" for hit in hits)
     records = indexing.create_vector_store(None).get(where={"source_type": "firecrawl"})
     assert len(records["ids"]) == 4
+    assert all(metadata.get("title_path") == title_path for metadata in records["metadatas"]
+               if metadata["source_id"] == candidate.document.source_id)
     assert set(records["ids"]) == set(indexing.create_record_manager(namespace=FIRECRAWL_RECORD_NAMESPACE).list_keys())

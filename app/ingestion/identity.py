@@ -176,8 +176,15 @@ def build_content_hash(normalized_content: str) -> str:
 
 def build_structure_hash(document: ParsedDocument) -> str:
     """对已规范化结构（含 structure_version）做 canonical JSON + SHA-256。"""
+    representation = document.model_dump(mode="json")
+    for block in representation["blocks"]:
+        # 普通正文沿用新增 heading 字段前的精确表示；真实 heading 参与 identity。
+        # 不使用 exclude_defaults，避免同时删掉旧合同已有的默认字段。
+        if block["kind"] == "text" and block["text_role"] == "text":
+            del block["text_role"]
+            del block["heading_level"]
     payload = json.dumps(
-        document.model_dump(mode="json"), ensure_ascii=False, sort_keys=True,
+        representation, ensure_ascii=False, sort_keys=True,
         separators=(",", ":"), allow_nan=False,
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()

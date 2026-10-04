@@ -91,6 +91,7 @@ def candidate_to_langchain_documents(
     if document.structured_content is not None:
         chunks = chunk_structured_document(
             document.structured_content, splitter=splitter, chunk_size=chunk_size,
+            document_title=document.title,
         )
     elif file_type == "md":
         sections = MarkdownHeaderTextSplitter(

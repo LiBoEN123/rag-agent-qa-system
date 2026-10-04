@@ -42,7 +42,7 @@ def _document_converter():
 
 def adapt_docling_document(document: DoclingDocument, *, page_count: int | None = None) -> ParsedDocument:
     """保留官方 reading order、cell offsets/spans、header、caption 和起始页。"""
-    from docling_core.types.doc import TableItem, TextItem
+    from docling_core.types.doc import SectionHeaderItem, TableItem, TextItem, TitleItem
 
     blocks: list[TextBlock | TableBlock] = []
     caption_refs = {ref.cref for table in document.tables for ref in table.captions}
@@ -73,6 +73,12 @@ def adapt_docling_document(document: DoclingDocument, *, page_count: int | None 
                 ) for cell in item.data.table_cells),
             ))
             table_level = level
+        elif isinstance(item, TitleItem):
+            blocks.append(TextBlock(**common, text=item.text, text_role="title"))
+        elif isinstance(item, SectionHeaderItem):
+            blocks.append(TextBlock(
+                **common, text=item.text, text_role="section_header", heading_level=item.level,
+            ))
         else:
             blocks.append(TextBlock(**common, text=item.text))
     return ParsedDocument(blocks=tuple(blocks), page_count=page_count)

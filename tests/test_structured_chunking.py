@@ -12,13 +12,13 @@ from tests.support.structured_document import (
 )
 
 
-def _candidate(structure, *, file_type="pdf", source_type="local_file"):
+def _candidate(structure, *, file_type="pdf", source_type="local_file", title="table"):
     source_uri = {
         "local_file": "/fixture/table", "upload": "upload://local/table",
         "firecrawl": "https://example.com/table", "github": "github://owner/repo/table",
     }[source_type]
     document = build_knowledge_document(
-        source_type=source_type, source_uri=source_uri, title="table",
+        source_type=source_type, source_uri=source_uri, title=title,
         content="ignored in favor of structure", structured_content=structure,
         metadata={"file_type": file_type, "file_name": "table", "source_path": "fixture/table"},
     )
@@ -31,8 +31,11 @@ def _candidate(structure, *, file_type="pdf", source_type="local_file"):
 
 
 def _chunks(table, *, chunk_size=600):
-    return indexing.candidate_to_langchain_documents(
-        _candidate(ParsedDocument(blocks=(table,))), chunk_size=chunk_size, chunk_overlap=0,
+    # 单独验证既有 table projection；完整 candidate 的标题与 provenance 在上层用例覆盖。
+    candidate = _candidate(ParsedDocument(blocks=(table,)))
+    return chunk_structured_document(
+        candidate.document.structured_content, chunk_size=chunk_size,
+        splitter=RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=0),
     )
 
 
@@ -50,7 +53,7 @@ def test_structure_precedes_file_type_and_has_exact_semantics_and_scalar_provena
     monkeypatch.setattr(indexing, "parse_document", forbidden)
     [chunk] = indexing.candidate_to_langchain_documents(candidate, chunk_size=600, chunk_overlap=0)
     assert chunk.page_content == (
-        "[表格]\n标题：企业登记办理要求\n表头：事项；条件；材料\n"
+        "[标题路径] table\n\n[表格]\n标题：企业登记办理要求\n表头：事项；条件；材料\n"
         "事项：企业注册；条件：年满18岁；材料：身份证、申请表。\n"
         "事项：企业变更；条件：企业已注册；材料：营业执照、变更表。\n[/表格]"
     )
@@ -61,7 +64,7 @@ def test_structure_precedes_file_type_and_has_exact_semantics_and_scalar_provena
         "file_name": "table", "file_type": file_type, "source_path": "fixture/table",
         "position": 1, "element_type": "table", "table_id": "b0", "block_order": 0,
         "table_chunk_index": 1, "table_chunk_count": 1, "row_start": 1, "row_end": 2,
-        "page_number": 2,
+        "page_number": 2, "title_path": "table",
     }
     assert all(type(value) in (str, int, float, bool) for value in chunk.metadata.values())
 
@@ -91,17 +94,109 @@ def test_ordered_text_buffer_uses_existing_splitter_overlap_and_page_boundaries(
     monkeypatch.setattr(RecursiveCharacterTextSplitter, "create_documents", capture)
     chunks = indexing.candidate_to_langchain_documents(_candidate(structure), chunk_size=70, chunk_overlap=10)
     assert calls == ["前置短段。\n\n连续短段。", "正文长段。" * 30 + "\n\n同页尾段。", "下一页。"]
-    assert chunks[0].page_content == calls[0]
+    assert chunks[0].page_content == "[标题路径] table\n\n" + calls[0]
     assert chunks[0].metadata["block_start"] == 0
     assert chunks[0].metadata["block_end"] == 1
     assert chunks[0].metadata["page_number"] == 1
     text_chunks = [chunk for chunk in chunks if chunk.metadata.get("block_start") == 3]
-    assert [chunk.page_content for chunk in text_chunks] == expected_long_text
+    assert [chunk.page_content for chunk in text_chunks] == ["[标题路径] table\n\n" + text for text in expected_long_text]
     assert all(chunk.metadata["block_end"] == 4 and chunk.metadata["page_number"] == 2 for chunk in text_chunks)
     assert [chunk.metadata["position"] for chunk in chunks] == list(range(1, len(chunks) + 1))
     assert [chunk.metadata.get("block_order", chunk.metadata.get("block_start")) for chunk in chunks] == (
         [0, 2, 2] + [3] * len(text_chunks) + [5, 6, 6]
     )
+
+
+def test_heading_boundaries_stack_reset_and_oversized_section_keep_context():
+    entries = [
+        ("A", "title", None), ("B", "section_header", 1), ("C", "section_header", 2),
+        ("正文一。" * 30, "text", None), ("D", "section_header", 1), ("正文二。", "text", None),
+        ("E", "title", None), ("正文三。", "text", None),
+        ("F", "section_header", 7), ("正文四。", "text", None),
+    ]
+    structure = ParsedDocument(blocks=tuple(TextBlock(
+        block_id=f"b{i}", order=i, text=text, text_role=role, heading_level=level,
+    ) for i, (text, role, level) in enumerate(entries)))
+    candidate = _candidate(structure, title="A", source_type="firecrawl", file_type="html")
+    chunks = indexing.candidate_to_langchain_documents(candidate, chunk_size=40, chunk_overlap=10)
+    first = [chunk for chunk in chunks if chunk.metadata["block_start"] == 3]
+    expected = RecursiveCharacterTextSplitter(
+        chunk_size=40, chunk_overlap=10, separators=indexing._TEXT_SEPARATORS,
+    ).split_text(entries[3][0])
+    assert len(first) > 1
+    assert [chunk.page_content for chunk in first] == ["[标题路径] A > B > C\n\n" + text for text in expected]
+    assert {chunk.metadata["title_path"] for chunk in first} == {"A > B > C"}
+    assert [(chunk.metadata["title_path"], chunk.page_content) for chunk in chunks[len(first):]] == [
+        ("A > D", "[标题路径] A > D\n\n正文二。"),
+        ("A > E", "[标题路径] A > E\n\n正文三。"),
+        ("A > E > F", "[标题路径] A > E > F\n\n正文四。"),
+    ]
+    assert [chunk.metadata["position"] for chunk in chunks] == list(range(1, len(chunks) + 1))
+    assert all(type(value) in (str, int, float, bool) for chunk in chunks for value in chunk.metadata.values())
+
+
+def test_section_levels_pop_siblings_and_roots_without_document_title():
+    entries = [("A", 1), ("B", 2), ("C", 3), ("正文1", None),
+               ("D", 2), ("正文2", None), ("E", 1), ("正文3", None)]
+    structure = ParsedDocument(blocks=tuple(TextBlock(
+        block_id=f"b{i}", order=i, text=text,
+        text_role="section_header" if level else "text", heading_level=level,
+    ) for i, (text, level) in enumerate(entries)))
+    chunks = chunk_structured_document(
+        structure, splitter=RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=0), chunk_size=600,
+    )
+    assert [chunk.metadata["title_path"] for chunk in chunks] == ["A > B > C", "A > D", "E"]
+    assert [chunk.page_content.split("\n\n")[-1] for chunk in chunks] == ["正文1", "正文2", "正文3"]
+
+
+def test_tables_inherit_heading_across_pages_without_changing_table_metadata():
+    table = admission_structure().blocks[0].model_copy(update={"block_id": "b2", "order": 2})
+    structure = ParsedDocument(page_count=2, blocks=(
+        TextBlock(block_id="b0", order=0, text="管理办法", text_role="title", page_number=1),
+        TextBlock(block_id="b1", order=1, text="申请材料", text_role="section_header", heading_level=1, page_number=1),
+        table,
+        TextBlock(block_id="b3", order=3, text="材料正文 A", page_number=1),
+        TextBlock(block_id="b4", order=4, text="材料正文 B", page_number=2),
+        TextBlock(block_id="b5", order=5, text="申请条件", text_role="section_header", heading_level=1, page_number=2),
+        TextBlock(block_id="b6", order=6, text="条件正文 C", page_number=2),
+    ))
+    splitter = RecursiveCharacterTextSplitter(chunk_size=180, chunk_overlap=0)
+    baseline = chunk_structured_document(
+        ParsedDocument(blocks=(table.model_copy(update={"block_id": "b0", "order": 0}),)),
+        splitter=splitter, chunk_size=180,
+    )
+    chunks = indexing.candidate_to_langchain_documents(
+        _candidate(structure, title="管理办法"), chunk_size=180, chunk_overlap=0,
+    )
+    tables = [chunk for chunk in chunks if chunk.metadata["element_type"] == "table"]
+    assert len(tables) == len(baseline) > 1
+    assert {chunk.metadata["section_index"] for chunk in tables} == {1, 2}
+    for actual, expected in zip(tables, baseline):
+        assert actual.metadata["title_path"] == "管理办法 > 申请材料"
+        assert actual.page_content == "[标题路径] 管理办法 > 申请材料\n\n" + expected.page_content
+        assert actual.metadata["table_id"] == "b2"
+        assert actual.metadata["block_order"] == 2
+        for key in ("table_chunk_index", "table_chunk_count", "row_start", "row_end", "section_index", "section_title"):
+            assert actual.metadata[key] == expected.metadata[key]
+    text_chunks = chunks[len(tables):]
+    assert [chunk.metadata["title_path"] for chunk in text_chunks] == [
+        "管理办法 > 申请材料", "管理办法 > 申请材料", "管理办法 > 申请条件",
+    ]
+    assert [chunk.metadata["page_number"] for chunk in text_chunks] == [1, 2, 2]
+    assert [chunk.page_content.split("\n\n")[-1] for chunk in text_chunks] == ["材料正文 A", "材料正文 B", "条件正文 C"]
+
+
+def test_heading_only_sections_retain_evidence_without_repeating_ancestors():
+    structure = ParsedDocument(blocks=(
+        TextBlock(block_id="b0", order=0, text="管理办法", text_role="title"),
+        TextBlock(block_id="b1", order=1, text="待公布", text_role="section_header", heading_level=1),
+        TextBlock(block_id="b2", order=2, text="补充说明", text_role="section_header", heading_level=1),
+        TextBlock(block_id="b3", order=3, text="\n  "),
+    ))
+    chunks = indexing.candidate_to_langchain_documents(_candidate(structure, title="管理办法"))
+    assert [chunk.page_content for chunk in chunks] == [
+        "[标题路径] 管理办法 > 待公布", "[标题路径] 管理办法 > 补充说明",
+    ]
 
 
 def test_large_table_groups_contiguous_rows_without_loss_or_body_overlap():

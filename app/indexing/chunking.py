@@ -206,37 +206,78 @@ def chunk_structured_document(
     *,
     splitter: RecursiveCharacterTextSplitter,
     chunk_size: int,
+    document_title: str | None = None,
 ) -> list[Document]:
-    """缓冲同页连续 TextBlock；表格、页变化及文档结束时 flush。
+    """按标题、表格和页边界切分；Docling level 原样维护，title 位于 level 0。
 
     Text metadata 的 block_start/end 是该连续 segment 的原始 order 范围（含端点），
-    拆出的文本 chunks 共用此范围。全局 position 与 source provenance 由调用方统一追加。
+    拆出的文本 chunks 共用此范围。标题作为上下文在切分后加入每个 text/table chunk。
+    全局 position 与 source provenance 由调用方统一追加。
     """
     chunks: list[Document] = []
     pending: list[TextBlock] = []
+    headings: list[tuple[int, str]] = []
+    pending_heading: TextBlock | None = None
+
+    def append_with_context(section_chunks: list[Document]) -> None:
+        titles: list[str] = []
+        for title in [document_title or "", *(text for _, text in headings)]:
+            title = title.strip()
+            if title and (not titles or titles[-1] != title):
+                titles.append(title)
+        title_path = " > ".join(titles)
+        for chunk in section_chunks:
+            if title_path:
+                chunk.metadata["title_path"] = title_path
+                chunk.page_content = f"[标题路径] {title_path}" + (
+                    f"\n\n{chunk.page_content}" if chunk.page_content else ""
+                )
+        chunks.extend(section_chunks)
 
     def flush_text() -> None:
-        if not pending:
+        nonlocal pending_heading
+        if pending and not any(block.text.strip() for block in pending):
+            pending.clear()
+        blocks = pending or ([pending_heading] if pending_heading is not None else [])
+        if not blocks:
             return
         metadata = {
             "element_type": "text",
-            "block_start": pending[0].order,
-            "block_end": pending[-1].order,
+            "block_start": blocks[0].order,
+            "block_end": blocks[-1].order,
         }
-        if pending[0].page_number is not None:
-            metadata["page_number"] = pending[0].page_number
-        chunks.extend(splitter.create_documents(
+        if blocks[0].page_number is not None:
+            metadata["page_number"] = blocks[0].page_number
+        section_chunks = splitter.create_documents(
             ["\n\n".join(block.text for block in pending)], metadatas=[metadata],
-        ))
+        ) if pending else [Document(page_content="", metadata=metadata)]
+        append_with_context(section_chunks)
         pending.clear()
+        pending_heading = None
 
     for block in document.blocks:
         if isinstance(block, TextBlock):
+            if block.text_role != "text":
+                level = block.heading_level if block.heading_level is not None else 0
+                # 连续祖先标题由子章节路径承载；空的同级/末尾章节仍保留标题证据。
+                if pending_heading is not None and level > headings[-1][0]:
+                    pending_heading = None
+                flush_text()
+                while headings and headings[-1][0] >= level:
+                    headings.pop()
+                headings.append((level, block.text))
+                pending_heading = block if block.text.strip() else None
+                continue
             if pending and pending[-1].page_number != block.page_number:
                 flush_text()
+            if block.text.strip():
+                pending_heading = None
             pending.append(block)
         else:
+            table_chunks = _chunk_table_block(block, chunk_size)
+            if table_chunks:
+                pending_heading = None
             flush_text()
-            chunks.extend(_chunk_table_block(block, chunk_size))
+            append_with_context(table_chunks)
     flush_text()
     return chunks
