@@ -16,13 +16,9 @@ from app.tools.catalog import get_local_tool_specs
 
 def summarize_tool_result(tool_name: str, tool_result: dict[str, Any]) -> str:
     """为标准工具结果生成简短摘要。"""
-    success = bool(tool_result.get("ok", tool_result.get("status") == "success"))
+    success = bool(tool_result.get("ok"))
     if not success:
         return "工具执行失败"
-
-    summary = tool_result.get("summary") or tool_result.get("result_summary")
-    if summary:
-        return str(summary)
 
     output = tool_result.get("output")
     count = output.get("count", 0) if isinstance(output, dict) else 0
@@ -50,7 +46,7 @@ def build_tool_trace(
         raise ValueError("tool trace step_id must be at least 1")
     if cost_ms < 0:
         raise ValueError("tool trace cost_ms must be non-negative")
-    success = bool(result.get("ok", result.get("status") == "success"))
+    success = bool(result.get("ok"))
     output = result.get("output") or {}
     if not isinstance(output, dict):
         output = {}

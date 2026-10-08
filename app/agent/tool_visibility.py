@@ -13,22 +13,19 @@ class ProjectToolVisibilityMiddleware(AgentMiddleware):
     @staticmethod
     def visible_request(request: ModelRequest) -> ModelRequest:
         context = request.runtime.context
-        permissions = (
-            context.permissions if isinstance(context, ToolInvocationContext) else ()
-        )
-        rag_only = (
-            isinstance(context, ToolInvocationContext)
-            and context.tool_mode is ToolMode.RAG_ONLY
-        )
+        if not isinstance(context, ToolInvocationContext):
+            return request.override(tools=[])
+        permissions = context.permissions
+        rag_only = context.tool_mode is ToolMode.RAG_ONLY
         return request.override(
             tools=[
                 tool
                 for tool in request.tools
-                if (not rag_only or getattr(tool, "name", None) in RAG_TOOL_NAMES)
+                if (not rag_only or tool.name in RAG_TOOL_NAMES)
                 and (
                     all(
                         has_permission(permissions, permission)
-                        for permission in (getattr(tool, "metadata", None) or {}).get("required_permissions", ())
+                        for permission in (tool.metadata or {}).get("required_permissions", ())
                     )
                 )
             ]

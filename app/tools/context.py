@@ -24,41 +24,25 @@ class PrincipalType(str, Enum):
     SYSTEM = "system"
 
 
-def _normalize_sequence(
-    value: object,
-    *,
-    field_name: str,
-    pattern: re.Pattern[str],
-    format_hint: str,
-) -> tuple[str, ...]:
-    """规范化字符串序列，去重并保持首次出现顺序。"""
+def normalize_permissions(value: object) -> tuple[str, ...]:
+    """规范化精确权限序列，去重并保持顺序；不支持通配权限。"""
     if isinstance(value, str) or not isinstance(value, Sequence):
-        raise ValueError(f"{field_name} 必须是字符串序列，不能是单个字符串")
+        raise ValueError("permissions 必须是字符串序列，不能是单个字符串")
 
     normalized: list[str] = []
     seen: set[str] = set()
     for item in value:
         if not isinstance(item, str):
-            raise ValueError(f"{field_name} 中的每一项都必须是字符串")
+            raise ValueError("permissions 中的每一项都必须是字符串")
         cleaned = item.strip()
         if not cleaned:
-            raise ValueError(f"{field_name} 不允许包含空值")
-        if not pattern.fullmatch(cleaned):
-            raise ValueError(f"{field_name} 中的值必须匹配 {format_hint}")
+            raise ValueError("permissions 不允许包含空值")
+        if not _PERMISSION_PATTERN.fullmatch(cleaned):
+            raise ValueError("permissions 中的值必须匹配 resource:action")
         if cleaned not in seen:
             seen.add(cleaned)
             normalized.append(cleaned)
     return tuple(normalized)
-
-
-def normalize_permissions(value: object) -> tuple[str, ...]:
-    """规范化精确权限序列，本阶段不支持通配权限。"""
-    return _normalize_sequence(
-        value,
-        field_name="permissions",
-        pattern=_PERMISSION_PATTERN,
-        format_hint="resource:action",
-    )
 
 
 def has_permission(

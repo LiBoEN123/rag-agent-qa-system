@@ -159,13 +159,6 @@ def _stop_result(reason: str) -> tuple[AgentResultStatus, str]:
     return status, final_answer
 
 
-def _finalize_agent_result(
-    result: AgentRunResult,
-) -> dict[str, Any]:
-    """序列化并返回已校验的最终 Result。"""
-    return result.model_dump(mode="json")
-
-
 def build_short_circuit_result(
     invocation: AgentResultInvocation,
 ) -> dict[str, Any]:
@@ -233,7 +226,7 @@ def build_short_circuit_result(
         answer_llm_used=False,
         llm_call_count=0,
     )
-    return _finalize_agent_result(result)
+    return result.model_dump(mode="json")
 
 
 def build_framework_agent_result(
@@ -331,7 +324,7 @@ def build_framework_agent_result(
         answer_llm_used=answer_llm_used,
         llm_call_count=llm_call_count,
     )
-    return _finalize_agent_result(result)
+    return result.model_dump(mode="json")
 
 
 def create_agent_result(
@@ -371,16 +364,13 @@ def create_agent_result(
 
 
 def build_internal_error_result(
-    exc: Exception,
     *,
-    runtime_label: str = "Agent Runtime",
     trace_step: str = "agent_runtime_error",
     answer: str = INTERNAL_ERROR_MESSAGE,
     reason: str = INTERNAL_ERROR_MESSAGE,
     tool_trace: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """构造经过统一模型校验的脱敏内部错误结果。"""
-    del exc, runtime_label
     resolved_trace = tool_trace
     if resolved_trace is None:
         resolved_trace = [
@@ -418,18 +408,15 @@ def _write_internal_bad_case(
     trace_id: str,
     question: str,
     exc: Exception,
-    *,
-    runtime_route: str = "agent_runtime",
-    runtime_label: str = "Agent Runtime",
 ) -> None:
     """Runtime 顶层异常时写入 bad case，写入失败不继续抛错。"""
     if not callable(write_bad_cases):
         return
 
     record = dict(bad_case or _default_bad_case(trace_id, question))
-    record["answer"] = f"系统内部执行 {runtime_label} 时发生错误，无法生成可靠回答。"
+    record["answer"] = "系统内部执行 Agent Runtime 时发生错误，无法生成可靠回答。"
     record["references"] = []
-    record["route"] = runtime_route
+    record["route"] = "agent_runtime"
     record["error_type"] = "internal_error"
     record["note"] = str(exc)
 
@@ -444,9 +431,7 @@ def build_agent_runtime_error_result(
     write_bad_cases: Callable[[dict[str, Any]], None] | None,
     bad_case: dict[str, Any] | None,
     trace_id: str,
-    session_id: str | None,
     original_question: str,
-    effective_question: str,
     exc: Exception,
 ) -> dict[str, Any]:
     """把流式 Runtime 异常转换成脱敏内部错误结果。"""
@@ -456,14 +441,8 @@ def build_agent_runtime_error_result(
         trace_id=trace_id,
         question=original_question,
         exc=exc,
-        runtime_route="agent_runtime",
-        runtime_label="Agent Runtime",
     )
-    return build_internal_error_result(
-        exc,
-        runtime_label="Agent Runtime",
-        trace_step="agent_runtime_error",
-    )
+    return build_internal_error_result()
 
 
 def build_empty_question_result() -> dict[str, Any]:

@@ -122,9 +122,9 @@ def test_retrieve_falls_back_to_local_embeddings_after_chroma_error(
         def __init__(self):
             self.encoded_texts = []
 
-        def encode(self, texts, **_kwargs):
-            self.encoded_texts.append(texts)
-            return np.array([[1.0, 0.0]], dtype=np.float32)
+        def embed_query(self, text):
+            self.encoded_texts.append(text)
+            return [1.0, 0.0]
 
     def fail_chroma_query(*_args, **_kwargs):
         raise query_error
@@ -143,7 +143,7 @@ def test_retrieve_falls_back_to_local_embeddings_after_chroma_error(
 
     assert results
     assert {result["chunk_id"] for result in results} == {1, 2}
-    assert model.encoded_texts == [["question"], ["question"]]
+    assert model.encoded_texts == ["question", "question"]
 
 
 def test_retrieval_does_not_reexport_policy_or_scoring_symbols():

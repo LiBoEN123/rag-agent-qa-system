@@ -83,14 +83,6 @@ def parse_tool_result(
     """读取标准 ToolMessage；框架校验错误映射为项目稳定错误码。"""
     if isinstance(message.artifact, dict) and "ok" in message.artifact:
         return message.artifact
-    try:
-        value = (
-            json.loads(message.content) if isinstance(message.content, str) else None
-        )
-    except (TypeError, ValueError):
-        value = None
-    if isinstance(value, dict) and "ok" in value:
-        return value
     code = ToolErrorCode.INVALID_ARGUMENTS if known else ToolErrorCode.UNKNOWN_TOOL
     return tool_error(name, args, str(message.content), error_code=code.value)
 
@@ -159,69 +151,21 @@ def _governance_block(
 
 
 def _resolve_tool_message(output: object, call_id: str) -> ToolMessage:
-    """从原生 ToolMessage 或 Command 中取得本次配对消息。"""
+    """项目工具只返回配对 ToolMessage；Command 由治理层生成。"""
     if isinstance(output, ToolMessage) and output.tool_call_id == call_id:
         return output
-    if isinstance(output, Command) and isinstance(output.update, dict):
-        messages = output.update.get("messages", [])
-        matches = [
-            item
-            for item in messages
-            if isinstance(item, ToolMessage) and item.tool_call_id == call_id
-        ]
-        if len(matches) == 1:
-            return matches[0]
     raise TypeError("governed tool must return its paired ToolMessage")
 
 
-def _replace_command_message(
-    output: Command[Any], message: ToolMessage
-) -> dict[str, Any]:
-    """保留工具原有 Command 更新，并替换治理后的配对消息。"""
-    if not isinstance(output.update, dict):
-        raise TypeError("governed tool Command must use a dict state update")
-    updates = dict(output.update)
-    raw_messages = updates.get("messages", [])
-    if not isinstance(raw_messages, (list, tuple)):
-        raise TypeError("governed tool Command messages must be a sequence")
-    replaced = False
-    messages: list[object] = []
-    for item in raw_messages:
-        if isinstance(item, ToolMessage) and item.tool_call_id == message.tool_call_id:
-            messages.append(message)
-            replaced = True
-        else:
-            messages.append(item)
-    if not replaced:
-        raise TypeError("governed tool Command lost its paired ToolMessage")
-    updates["messages"] = messages
-    return updates
-
-
 def _tool_state_command(
-    output: ToolMessage | Command[Any],
     message: ToolMessage,
     event: dict[str, Any],
 ) -> Command[Any]:
     """把工具消息与项目治理结果直接写入 FrameworkAgentState。"""
-    if isinstance(output, Command):
-        updates = _replace_command_message(output, message)
-        graph = output.graph
-        resume = output.resume
-        goto = output.goto
-    else:
-        updates = {"messages": [message]}
-        graph = None
-        resume = None
-        goto = ()
-
-    existing_events = updates.get("governance_events", [])
-    if not isinstance(existing_events, list):
-        raise TypeError("governance_events update must be a list")
-    updates["governance_events"] = [*existing_events, event]
+    updates: dict[str, Any] = {"messages": [message], "governance_events": [event]}
     if event.get("stop_reason"):
         updates["stop_reason"] = str(event["stop_reason"])
-    return Command(graph=graph, update=updates, resume=resume, goto=goto)
+    return Command(update=updates)
 
 
 class ProjectToolGovernanceMiddleware(AgentMiddleware):
@@ -332,7 +276,7 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
     def _complete_tool_call(
         self,
         request: ToolCallRequest,
-        output: ToolMessage | Command[Any],
+        message: ToolMessage,
         *,
         args: dict[str, Any],
         key: tuple[str, tuple[str, ...]],
@@ -341,7 +285,6 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
         started: int,
     ) -> Command[Any]:
         """把工具输出转换为直接 State Update 的治理 Command。"""
-        message = _resolve_tool_message(output, request.tool_call["id"])
         result = parse_tool_result(
             message,
             known=request.tool is not None,
@@ -359,7 +302,7 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
             known_tool=request.tool is not None,
             settings=self._settings,
         )
-        return self._finish_tool_call(request, output, message, result, event, key)
+        return self._finish_tool_call(message, event, key)
 
     async def awrap_tool_call(
         self,
@@ -373,10 +316,7 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
         if blocked is not None:
             message, event = blocked
             return self._finish_tool_call(
-                request,
                 message,
-                message,
-                event["result"],
                 event,
                 key,
                 remember=False,
@@ -391,7 +331,7 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
             raise
         return self._complete_tool_call(
             request,
-            output,
+            _resolve_tool_message(output, request.tool_call["id"]),
             args=args,
             key=key,
             prior=prior,
@@ -401,10 +341,7 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
 
     def _finish_tool_call(
         self,
-        request: ToolCallRequest,
-        output: ToolMessage | Command[Any],
         message: ToolMessage,
-        result: dict[str, Any],
         event: dict[str, Any],
         key: tuple[str, tuple[str, ...]],
         *,
@@ -418,7 +355,7 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
                 "status": "success" if event.get("ok") is True else "error",
             }
         )
-        return _tool_state_command(output, governed_message, event)
+        return _tool_state_command(governed_message, event)
 
     async def aafter_agent(self, state, runtime):
         """归一化框架结束原因。"""

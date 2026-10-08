@@ -26,17 +26,6 @@ __all__ = [
 logger = get_logger('chat_service')
 
 
-def _embed_query(model, question: str) -> np.ndarray:
-    """兼容官方 LangChain Embeddings 与现有测试用 SentenceTransformer fake。"""
-    if hasattr(model, "embed_query"):
-        return np.asarray(model.embed_query(question), dtype=np.float32)
-    return model.encode(
-        [question],
-        normalize_embeddings=True,
-        convert_to_numpy=True,
-    )[0]
-
-
 def _chunk_identity(metadata: dict, fallback: object = "") -> str:
     """优先使用长期 provenance 匹配 Chroma hit 与 runtime chunk。"""
     source_id = str(metadata.get("source_id") or "")
@@ -150,7 +139,7 @@ def _retrieve_with_local_embeddings(
     tokenized_question = tokenize(question)
     bm25_score = bm25.get_scores(tokenized_question)
 
-    question_embedding = _embed_query(model, question)
+    question_embedding = np.asarray(model.embed_query(question), dtype=np.float32)
 
     vector_score = doc_embeddings @ question_embedding
 
@@ -186,7 +175,7 @@ def _retrieve_with_chroma(
     """使用 ChromaDB 做向量召回，并与 BM25 候选合并。"""
     candidate_k = max(top_k * 5, top_k)
 
-    question_embedding = _embed_query(model, question)
+    question_embedding = np.asarray(model.embed_query(question), dtype=np.float32)
 
     chroma_hits = query_chroma(question_embedding, n_results=candidate_k)
     if not chroma_hits:

@@ -55,10 +55,7 @@ class _DeferredAgentModel:
 
     def bind_tools(self, tools, **kwargs):
         """绑定静态请求工具，并返回记录治理事件的模型适配器。"""
-        clean_kwargs = {
-            key: value for key, value in kwargs.items() if value is not None
-        }
-        bound = self._model().bind_tools(tools, **clean_kwargs)
+        bound = self._model().bind_tools(tools, **kwargs)
         return _GovernedBoundModel(
             bound,
             available_tool_names=[
@@ -67,10 +64,8 @@ class _DeferredAgentModel:
         )
 
     def bind(self, **kwargs):
-        """兼容转发模型的通用绑定参数。"""
-        model = self._model()
-        bind = getattr(model, "bind", None)
-        bound = bind(**kwargs) if callable(bind) else model
+        """转发 LangChain 模型的通用绑定参数。"""
+        bound = self._model().bind(**kwargs)
         return _GovernedBoundModel(bound, available_tool_names=[])
 
 
@@ -137,7 +132,7 @@ def build_framework_agent(
     tools: Sequence[BaseTool] | None = None,
     governance: ProjectToolGovernanceMiddleware | None = None,
 ):
-    """创建使用请求可见工具和内置调用限制的唯一 Agent Loop。"""
+    """创建唯一 Agent Loop；注入工具须返回携带标准 artifact 的 ToolMessage。"""
     resolved = settings or get_settings()
     resolved_governance = governance or ProjectToolGovernanceMiddleware(
         settings=resolved

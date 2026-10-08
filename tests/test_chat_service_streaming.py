@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent.results import build_internal_error_result, create_agent_result
+from app.agent.results import build_agent_runtime_error_result, create_agent_result
 from app.api.responses import build_chat_response_from_outcome
 from app.contracts.chat import AgentResultStatus
 from app.agent.streaming import AgentRuntimeStreamEvent, stream_agent
@@ -555,10 +555,9 @@ def test_storage_failures_preserve_successful_stream(boundary):
 
 
 def test_internal_runtime_error_remains_redacted_in_final_response():
-    result = build_internal_error_result(
-        RuntimeError("/home/test-user/checkpoints.sqlite api_key=sk-test-secret"),
-        runtime_label="Agent",
-        trace_step="agent_error",
+    result = build_agent_runtime_error_result(
+        write_bad_cases=None, bad_case=None, trace_id="error", original_question="测试",
+        exc=RuntimeError("/home/test-user/checkpoints.sqlite api_key=sk-test-secret"),
     )
     service, _ = _build_service([AgentRuntimeStreamEvent("result", {"result": result})])
     outcome = _collect(service)[-2].data["outcome"]
@@ -570,7 +569,7 @@ def test_internal_runtime_error_remains_redacted_in_final_response():
     )
     assert response.data.reason == "Agent 内部执行异常，请稍后重试"
     assert {
-        "step": "agent_error",
+        "step": "agent_runtime_error",
         "status": "error",
         "error": "internal_error",
     } in response.data.tool_trace

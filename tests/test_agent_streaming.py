@@ -80,6 +80,16 @@ def test_tool_call_chunks_emit_name_and_id_without_arguments():
     assert "private query" not in repr(events)
 
 
+@pytest.mark.parametrize("namespace", [
+    ("rag_subgraph:task",), ("framework_agent:task",), ("unrelated:task",),
+])
+def test_projector_excludes_nested_tool_calls(namespace):
+    message = AIMessage(content="private", tool_calls=[{
+        "name": "web_search", "args": {"query": "private"}, "id": "nested",
+    }])
+    assert project_agent_stream_part(_message_part(message, namespace=namespace)) == []
+
+
 def test_update_projector_emits_safe_tool_completion():
     events = project_agent_stream_part(
         {

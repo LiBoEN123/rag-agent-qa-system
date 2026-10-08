@@ -7,11 +7,15 @@ import json
 from unittest.mock import Mock
 
 import pytest
+from langchain.agents.middleware import ModelRequest
 from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.tools import StructuredTool
+from langgraph.runtime import Runtime
 from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_tools
 from app.agent.framework_agent import build_framework_agent
+from app.agent.tool_visibility import ProjectToolVisibilityMiddleware
 from app.contracts.chat import ToolMode
 from app.tools.catalog import get_local_tool_specs
 from app.tools.context import ToolInvocationContext, build_default_tool_context
@@ -109,6 +113,20 @@ def test_missing_runtime_fails_closed(settings_factory):
     with pytest.raises(RuntimeError, match="ToolRuntime"):
         asyncio.run(tool.coroutine(runtime=None, value="missing"))
     assert calls == []
+
+
+@pytest.mark.parametrize("context", [None, {}, {"permissions": ["knowledge_base:read"]}])
+def test_invalid_visibility_context_hides_even_unrestricted_tools(context):
+    tool = StructuredTool.from_function(
+        lambda: "done", name="public_tool", description="No permission metadata",
+    )
+    request = ModelRequest(
+        model=framework_agent._DeferredAgentModel(), tools=[tool], messages=[],
+        runtime=Runtime(context=context),
+    )
+    visible = ProjectToolVisibilityMiddleware.visible_request(request)
+    assert visible.tools == []
+    assert request.tools == [tool]
 
 
 @pytest.mark.parametrize(("name", "args"), [

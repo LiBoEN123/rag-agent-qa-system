@@ -163,8 +163,11 @@ Router 只决定 `agent`、`direct_answer` 或 `clarify`，不选择具体工具
 `ProjectToolGovernanceMiddleware.awrap_tool_call` 直接包裹框架 ToolNode
 调用，保留模型/工具调用计数、错误分类、重复调用检测、累计耗时、同批 fail-closed、
 停止原因和 ToolMessage 配对。工具治理结果通过原生 `Command(update=...)` 写入
-`FrameworkAgentState`，不再借用 `ToolMessage.artifact` 传递项目私有事件。Agent 内部
-职责固定为：
+`FrameworkAgentState`，不再借用 `ToolMessage.artifact` 传递项目私有事件。
+`build_framework_agent(tools=...)` 的注入工具也须遵守项目普通结果契约：成功结果通过
+`content_and_artifact` 形成配对 ToolMessage，artifact 携带标准工具结果；不接受工具直接
+返回 Command，也不从 content 恢复成功结果或证据。框架自动产生的错误消息仍映射为
+项目错误码；`ToolStrategy(FinalAgentResponse)` 由框架单独处理。Agent 内部职责固定为：
 
 - `runtime.py`：参数校验、Router、请求 Context、Agent 构建/缓存；
 - `streaming.py`：唯一 Agent executor，消费 `astream` 并安全投影 SSE 事件；

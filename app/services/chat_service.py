@@ -161,7 +161,6 @@ class ChatService:
                     await asyncio.to_thread(
                         self._prepare_request,
                         context,
-                        settings=settings,
                     )
                     yield record_stream_event(
                         context,
@@ -385,8 +384,6 @@ class ChatService:
     def _prepare_request(
         self,
         context: ChatRequestContext,
-        *,
-        settings: AppSettings,
     ) -> None:
         """完成 history/query rewrite 请求准备。"""
         try:
@@ -544,8 +541,6 @@ class ChatService:
             question=context.original_question,
             result={
                 **build_internal_error_result(
-                    exc,
-                    runtime_label="ChatService Agent invocation",
                     answer="",
                     reason="工具调用或模型调用异常",
                     tool_trace=[context.rewrite_trace],
@@ -578,8 +573,6 @@ class ChatService:
             message="服务器内部错误",
             question=context.original_question,
             result=build_internal_error_result(
-                exc,
-                runtime_label="ChatService",
                 answer="",
                 tool_trace=[],
             ),

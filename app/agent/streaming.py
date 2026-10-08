@@ -10,7 +10,7 @@ from contextlib import aclosing
 from dataclasses import dataclass
 from typing import Any
 
-from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
 
 from app.agent.final_response import (
     FinalAgentResponse,
@@ -64,26 +64,11 @@ def _safe_non_negative_int(value: object) -> int:
         return 0
 
 
-def _namespace_is_agent(namespace: tuple[str, ...]) -> bool:
-    """接受根 ``create_agent``，同时显式拒绝任何 RAG 子图 namespace。"""
-    if any(part.split(":", 1)[0] == "rag_subgraph" for part in namespace):
-        return False
-    return not namespace or any(
-        part.split(":", 1)[0] == "framework_agent"
-        for part in namespace
-    )
-
-
 def _tool_calls_from_message(message: AIMessage) -> list[Mapping[str, Any]]:
     """读取工具名和调用 ID，不读取或复制任何工具参数。"""
-    calls: list[Mapping[str, Any]] = []
-    for value in (
-        getattr(message, "tool_calls", None),
-        getattr(message, "tool_call_chunks", None),
-    ):
-        if not isinstance(value, Sequence):
-            continue
-        calls.extend(item for item in value if isinstance(item, Mapping))
+    calls: list[Mapping[str, Any]] = list(message.tool_calls)
+    if isinstance(message, AIMessageChunk):
+        calls.extend(message.tool_call_chunks)
     return calls
 
 
@@ -92,15 +77,12 @@ def _project_message_part(
     namespace: tuple[str, ...],
 ) -> list[AgentRuntimeStreamEvent]:
     """按消息类型、block、namespace 和 metadata 白名单投影模型消息。"""
-    if not _namespace_is_agent(namespace):
+    if namespace:  # subgraphs=False：只消费根 create_agent 的消息。
         return []
     if not isinstance(data, tuple) or len(data) != 2:
         return []
     message, metadata = data
-    if isinstance(message, ToolMessage) or not isinstance(
-        message,
-        (AIMessage, AIMessageChunk),
-    ):
+    if not isinstance(message, AIMessage):
         return []
     if not isinstance(metadata, Mapping):
         return []
@@ -110,7 +92,7 @@ def _project_message_part(
         return []
 
     message_id = str(
-        getattr(message, "id", "")
+        message.id
         or metadata.get("run_id")
         or metadata.get("langgraph_checkpoint_ns")
         or ""
@@ -398,9 +380,7 @@ async def stream_agent(
             write_bad_cases=write_bad_cases,
             bad_case=bad_case,
             trace_id=trace_id,
-            session_id=session_id,
             original_question=resolved_original,
-            effective_question=resolved_effective,
             exc=exc,
         )
         yield AgentRuntimeStreamEvent(

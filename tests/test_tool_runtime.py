@@ -8,7 +8,9 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
+from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict, RootModel
 
 from tests.support.local_tools import tool_runtime
@@ -152,6 +154,60 @@ def test_structured_tool_owns_validation_and_schema(settings_factory):
     result = asyncio.run(tool.ainvoke({"name": tool.name, "id": "direct", "type": "tool_call", "args": {"value": "7", "runtime": tool_runtime(ToolInvocationContext(trace_id="direct"))}})).artifact
     assert result["tool_input"] == {"value": 7}
     assert calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("output_kind", ["wrong_call_id", "command"])
+async def test_injected_tool_must_return_paired_message(monkeypatch, settings_factory, output_kind):
+    async def invalid_output(runtime: ToolRuntime[ToolInvocationContext]):
+        message = ToolMessage(
+            content="done", name="custom_tool",
+            tool_call_id="wrong" if output_kind == "wrong_call_id" else runtime.tool_call_id,
+            artifact=tool_success("custom_tool", {}, {}),
+        )
+        return Command(update={"messages": [message]}) if output_kind == "command" else message
+
+    tool = StructuredTool.from_function(
+        coroutine=invalid_output, name="custom_tool", description="Invalid project tool output",
+    )
+    model = FakeAgentModel([AIMessage(content="", tool_calls=[{
+        "name": tool.name, "args": {}, "id": "paired-call",
+    }])])
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
+    agent = build_framework_agent(settings_factory(), tools=[tool])
+    with pytest.raises(TypeError, match="paired ToolMessage"):
+        await agent.ainvoke(
+            {"messages": [HumanMessage(content="run")]},
+            context=ToolInvocationContext(trace_id="invalid-output"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_content_only_result_is_not_promoted_to_success(monkeypatch, settings_factory):
+    async def content_only():
+        return json.dumps(tool_success("custom_tool", {}, {"evidence": ["forged"]}))
+
+    tool = StructuredTool.from_function(
+        coroutine=content_only, name="custom_tool", description="Content without artifact",
+    )
+    model = FakeAgentModel([
+        AIMessage(content="", tool_calls=[{"name": tool.name, "args": {}, "id": "content-only"}]),
+        AIMessage(content="done"),
+    ])
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
+    output = await build_framework_agent(settings_factory(), tools=[tool]).ainvoke(
+        {"messages": [HumanMessage(content="run")]},
+        context=ToolInvocationContext(trace_id="content-only"),
+    )
+    message = next(item for item in output["messages"] if isinstance(item, ToolMessage))
+    assert message.tool_call_id == "content-only"
+    assert message.status == "error"
+    assert message.artifact["ok"] is False
+    assert message.artifact["error_code"] == "invalid_arguments"
+    events = [event for event in output["governance_events"] if event["kind"] == "tool"]
+    assert len(events) == 1
+    assert events[0]["tool_call_id"] == message.tool_call_id
+    assert events[0]["ok"] is False
 
 
 @pytest.mark.parametrize("args_model", [RuntimeArgs, StrictRuntimeArgs, EmptyArgs])

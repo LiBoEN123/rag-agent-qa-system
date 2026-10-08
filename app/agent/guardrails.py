@@ -54,9 +54,8 @@ _GOVERNANCE = (
 )
 
 
-def classify_tool_failure(*, error_code: str, retryable: bool) -> AgentToolFailureKind:
+def classify_tool_failure(*, error_code: str) -> AgentToolFailureKind:
     """把 Runtime 错误映射为恢复或终止语义；未知错误 fail closed。"""
-    del retryable
     code = str(error_code or "").strip().lower()
     if code in _RECOVERABLE:
         return AgentToolFailureKind.RECOVERABLE
@@ -151,7 +150,6 @@ def build_tool_governance_event(
     if not ok:
         failure = classify_tool_failure(
             error_code=error_code,
-            retryable=result.get("retryable", False),
         )
         failure_kind = failure.value
         error_fingerprint = build_agent_tool_error_fingerprint(

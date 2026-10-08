@@ -76,7 +76,7 @@ def test_discovery_ranks_topic_and_exact_names_without_evidence(document_kb, inv
     assert "evidence" not in result["output"]
     assert "page_content" not in json.dumps(result)
     encoder.predict.assert_not_called()
-    message = ToolMessage(content=json.dumps(result), name="find_documents", tool_call_id="find")
+    message = ToolMessage(content=json.dumps(result), artifact=result, name="find_documents", tool_call_id="find")
     assert collect_evidence_from_messages([message]) == {}
     assert "find_documents" in RAG_DISCOVERY_TOOL_NAMES
     assert "find_documents" not in RAG_EVIDENCE_TOOL_NAMES
@@ -158,7 +158,7 @@ def test_exact_locators_hard_scope_before_rerank(document_kb, invoke, monkeypatc
     ])
     global_search.assert_not_called()
     assert chunks == original
-    message = ToolMessage(content=json.dumps(result), name="search_document", tool_call_id="search")
+    message = ToolMessage(content=json.dumps(result), artifact=result, name="search_document", tool_call_id="search")
     assert collect_evidence_from_messages([message]) == {item.id: item for item in output.evidence}
 
 

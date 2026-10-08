@@ -52,8 +52,6 @@ def test_upsert_llm_usage_trace_is_pure_and_idempotent():
 
 def test_internal_error_result_keeps_compatible_schema():
     result = build_internal_error_result(
-        RuntimeError("graph exploded"),
-        runtime_label="LangGraph Agent",
         trace_step="agent_langgraph_error",
     )
 

@@ -102,13 +102,8 @@ def load_index_from_chroma(
 def query_chroma(query_embedding: Any, n_results: int) -> list[dict[str, Any]]:
     """用 langchain-chroma 和既有 cosine distance 语义执行向量检索。"""
     store = create_vector_store(None, create_collection_if_not_exists=False)
-    embedding = (
-        query_embedding.tolist()
-        if hasattr(query_embedding, "tolist")
-        else query_embedding
-    )
     matches = store.similarity_search_by_vector_with_relevance_scores(
-        [float(value) for value in embedding],
+        [float(value) for value in query_embedding],
         k=max(1, int(n_results)),
     )
     return [

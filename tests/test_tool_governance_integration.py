@@ -148,7 +148,7 @@ def test_governance_event_normalization_is_pure_and_keeps_separate_step_counts()
 @pytest.mark.parametrize(
     ("result", "success"),
     [
-        ({"status": "success"}, True),
+        ({"status": "success"}, False),
         ({"status": "error"}, False),
         ({"ok": False, "status": "success"}, False),
         ({"ok": True, "status": "error"}, True),
@@ -223,7 +223,7 @@ def test_public_tool_trace_keeps_business_body_out_of_output_summary(tool_name):
     for value in ("raw-password", "raw-token", "raw-credential", "private business body", "private row"):
         assert value not in serialized
     assert "output" not in trace
-    assert trace["summary"] == "完成 token=***REDACTED***"
+    assert trace["summary"] == f"{tool_name} 工具执行完成"
 
 
 def test_unknown_tool_trace_preserves_redaction_boundary():
@@ -238,7 +238,7 @@ def test_unknown_tool_trace_preserves_redaction_boundary():
         "count": 2, "token": "***REDACTED***", "credential": "***REDACTED***",
     }
     assert "output" not in trace
-    assert trace["summary"] == "完成 password=***REDACTED***"
+    assert trace["summary"] == "unknown_tool 工具执行完成"
     assert "raw-" not in json.dumps(trace)
 
 
