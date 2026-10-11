@@ -177,7 +177,7 @@ def _retrieve_with_chroma(
 
     question_embedding = np.asarray(model.embed_query(question), dtype=np.float32)
 
-    chroma_hits = query_chroma(question_embedding, n_results=candidate_k)
+    chroma_hits = query_chroma(question_embedding, n_results=candidate_k * 4)
     if not chroma_hits:
         return []
 
