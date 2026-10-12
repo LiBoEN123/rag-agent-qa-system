@@ -1,656 +1,347 @@
 # Agentic RAG 知识库问答系统
 
-一个面向中文制度类文档的 Agentic RAG 问答系统，支持文档解析、混合检索、重排、引用生成、Agent 路由、多轮追问改写、可观测性和离线评测。
-
-当前实现的职责、调用链和持久化边界见
-[当前系统架构](docs/architecture/current-system.md)。
-架构演进见 [2026 年 Agent 演进归档](docs/history/agent-evolution-2026.md)，已接受的
-Model Governance 边界见 [ADR 0006](docs/adr/0006-framework-native-agent-runtime.md)。
-外部知识入库来源接入见
-[MCP 知识入库来源](docs/tools/mcp-client.md)。
-
-本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。聊天通过唯一公开入口 `/chat/stream` 执行 LangChain `create_agent` 模型—工具循环；传入 `session_id` 时还会结合 SQLite 中最近的会话历史对短追问做 Query Rewrite。
-
-## 项目亮点
-
-- 中文知识库问答：面向中文制度、校务、规范类文档，支持本地文档解析、检索、回答和引用溯源。
-- 混合检索：BM25 负责关键词精确匹配，SentenceTransformer Embedding 负责语义召回，提升中文问答召回稳定性。
-- CrossEncoder rerank：对候选 chunk 做二阶段重排，缓解初召回排序不准的问题。
-- ChromaDB 持久化：chunk 文本、metadata 和 embedding 持久化保存，服务重启可复用索引缓存。
-- 普通 Python 入口 Router：由 Agent Runtime 在每次调用时执行一次，只处理空问题、少量稳定直答和明确澄清；其他自然语言请求统一进入 `agent`，具体工具由 Agent Model 根据当前请求可见的动态 Tool Schema 选择。
-- 框架原生 Agent Runtime：直接执行 LangChain `create_agent` 返回的 CompiledStateGraph，由框架管理唯一的模型—工具循环、参数校验、ToolMessage 和调用上限。
-- 权限感知的工具可见性：Agent 仅使用本地 StructuredTool，Middleware 按 `tool_mode` 与 `required_permissions` 过滤知识库和 Web 工具。
-- Agent 循环防护：工具错误总数、连续相同调用、连续相同错误和模型/工具累计耗时均有独立预算；终止错误对同批后续调用 fail-closed，并补齐关联 ToolMessage。
-- 多轮追问改写：同一 `session_id` 下通过 SQLite 保留最近会话历史，短追问和指代问题会先改写成独立检索问题。
-- 工具调用：Agent 支持知识库检索、文档发现、公开网页搜索和正文提取；MCP 仅服务 GitHub / Firecrawl 知识入库。
-- 引用绑定和拒答机制：模型声明的 evidence ID 经 grounding 校验后投影为真实引用；未知 ID 失败关闭。
-- 流式聊天：唯一公开入口 `POST /chat/stream`，响应 `Content-Type: text/event-stream`，提供 progress、tool、安全答案增量和权威 final SSE 事件。
-- 可观测性：每次聊天请求记录 `trace_id`、阶段耗时、状态、工具调用、引用数量和 LLM 调用次数。
-- bad case 日志：对模型格式异常、引用异常、工具异常、索引未就绪等失败样例做结构化记录。
-- 离线评测闭环：支持批量生成预测结果，并从答案质量、检索命中、行为约束和可选 LLM Judge 语义判断等维度评测。
-
-## 系统架构（已冻结）
-
-Phase 7 起架构状态为 `frozen`，当前唯一主链是：
-
-```text
-FastAPI / Chat Router
-→ ChatService / Query Rewrite
-→ Agent Runtime（普通 Python Router）
-→ LangChain create_agent（唯一 Agent Loop）
-→ Project Governance Middleware
-→ 缓存的 Local StructuredTool + 请求级可见性 Middleware
-→ execute_project_tool
-→ Tool Handler → Document evidence → ToolMessage → 下一轮 Agent
-→ Framework State → AgentRunResult
-→ ChatStatusPolicy → HTTP JSON / SSE
-```
-
-本地工具固定经过 `StructuredTool → execute_project_tool → ToolSpec.handler`。MCP
-仅供知识入库获取 GitHub / Firecrawl 来源，永不进入 Agent Loop。LangGraph 只存在于
-`create_agent` 内部循环；RAG Evaluation 复用同一个 ChatService，不存在第二个回答工作流。
-
-Phase 6B 的 Model private marker 是已接受设计，不是待迁移 TODO。详细当前事实、稳定边界
-与禁止无证据重构的规则见[当前系统架构](docs/architecture/current-system.md)；历史原因只在
-[演进归档](docs/history/agent-evolution-2026.md)和 [ADR](docs/adr/) 中维护。
+面向中文制度、校务和规范类文档的知识库问答系统。后端使用 FastAPI，前端使用 Vue 3 + TypeScript；通过混合检索、Agent 多轮工具调用和证据校验生成带引用的流式回答，支持知识入库管理与统一评测。
 
 ## 核心能力
 
-| 模块 | 已实现能力 |
-| --- | --- |
-| 文档读取 | 支持 `.txt`、`.md`、`.pdf`、`.docx`；文本类文件自动识别编码，Local/Upload PDF/DOCX 共用 Docling，保留正文及表格结构 |
-| 文档切分 | 普通文本按段落和标点递归切分；Markdown 按标题层级切分并保留标题路径 |
-| 混合检索 | jieba + BM25 关键词召回，SentenceTransformer Embedding 语义召回 |
-| 重排 | CrossEncoder reranker 对候选 chunk 重新排序 |
-| 多轮检索 | Agent 阅读 ToolMessage 后决定下一轮 query/top_k，生产与评估共用同一 Agent |
-| 多轮追问 | `session_id` 通过 SQLite 维持最近会话历史，对短追问、指代问题做 Query Rewrite |
-| 答案生成 | 调用 OpenAI-compatible Chat Completions，要求模型返回 JSON |
-| 引用绑定 | 将实际声明的 Document.id 校验并映射回文件、`chunk_id`、`snippet` 和分数 |
-| Agent Runtime | 直接执行唯一的 LangChain `create_agent` CompiledStateGraph；框架负责模型—工具循环、参数校验、ToolMessage 和模型/工具调用上限 |
-| Agent 路由 | `app.agent.runtime` 是唯一 Router 调用者；正常请求输出 `agent`，`direct_answer` / `clarify` 在普通 Python 中安全短路 |
-| 工具发现 | 不可变本地 ToolSpec/StructuredTool catalog 按配置缓存；LangChain Model Middleware 按请求权限过滤模型可见工具 |
-| Agent Guardrail | 工具错误总数、连续相同调用/错误、累计模型与工具耗时预算、同批 fail-closed、无悬空 ToolMessage |
-| 工具调用 | 默认 catalog 包含七个生产工具。模型可见集合由请求 tool_mode 与权限共同决定 |
-| 可观测性 | `trace_id`、请求耗时、阶段耗时、工具调用日志、metrics 汇总接口 |
-| 失败分析 | `logs/bad_cases.jsonl` 记录值得分析的失败样例 |
-| 评测 | 支持规则评测、Chroma/chunks 索引取证和可选 LLM Judge 语义评估 |
-| 索引缓存 | ChromaDB 持久化 chunk、metadata、embedding，manifest 记录索引构建状态 |
+- **文档解析与结构保留**：支持 TXT、Markdown、PDF、DOCX；PDF/DOCX 使用 Docling，保留标题层级、正文、表格及可用页码。Markdown 和结构化文档的 chunk 保留标题路径，表格按完整行分组。
+- **混合检索与重排**：jieba + BM25 关键词召回、SentenceTransformer 向量召回和 CrossEncoder 重排；Chroma 持久化文本、metadata 和 embedding，LangChain Indexing API 管理增量索引。
+- **多轮 Agent**：LangChain `create_agent` 管理唯一的模型—工具循环，Agent 根据检索结果调整 query、选择文档或补读相邻 chunk。
+- **证据约束的流式回答**：Agent 声明回答决策和证据 ID，校验通过后由独立 Answer 模型流式生成正文，引用由代码从选中证据投影。
+- **会话与可观测性**：SQLite 保存会话历史，支持短追问改写；SSE 展示进度、工具状态和答案增量，提供 trace、metrics、工具审计和失败日志。
+- **知识入库管理**：本地目录显式同步；上传文件、GitHub 文件和 Firecrawl 页面经过提案、审批、写入流程，也支持按来源撤库。
+- **可选联网与评测**：按权限开放公开网页搜索、网页正文和 PDF 页范围读取；Agent/RAG 评测复用生产聊天链路，可选真实 Online case 和 LLM Judge。
 
-## RAG 流程说明
+## 快速启动
 
-1. 文档加载：从 `RAG_FILE_PATH` 读取 `.txt` / `.md` / `.pdf` / `.docx` 文档。
-2. 文本清洗：统一清理不可见字符、空白和文档噪声。
-3. 文档切分：Markdown 先按标题层级切分并保留标题路径，普通文本按段落和标点递归切分。
-4. 建立索引：构建 BM25 关键词索引，并使用 SentenceTransformer 生成 embedding；向量、chunk 和 metadata 持久化到 ChromaDB。
-5. 多轮改写：`/chat/stream` 如果传入 `session_id`，会读取最近历史；短追问或指代问题会先改写成独立问题。
-6. Agent 执行：ChatService 将改写后的问题交给普通 Python Router，再进入唯一的 LangChain `create_agent`；`direct_answer` 和入口 `clarify` 不调用 Agent Model。
-7. 检索与观察：`search_knowledge_base` 复用 BM25、Chroma/Embedding 和 CrossEncoder 重排，返回带稳定 ID 的 LangChain Document；Agent 阅读 ToolMessage 后可修改 query 再检索。
-8. 结构化回答：`ToolStrategy(FinalAgentResponse)` 原生校验并重试，最终输出 `answer`、`no_evidence` 或 `clarify` 及实际使用的 `evidence_ids`。
-9. 引用绑定：代码检查 ID 是否来自本次成功的 KB、原文读取、Web/PDF 工具消息，只按声明顺序投影真实引用。已有 Document 的 answer 不允许漏引用；未知 ID 返回 `MODEL_ERROR`。
-10. 状态与展示：证据不足映射 `NO_RELEVANT_INFO`，澄清映射 `NEED_CLARIFICATION`；两项 confidence 保持 `0.0`。校验通过的答案在 SSE 中作为一次完整 delta 发送，随后返回权威 final。
+以下命令从仓库根目录执行。使用 **Python 3.12**，与 Docker 和后端 CI 保持一致；前端需要 **Node.js 22.12+**。
 
-旧 Graph、独立拆分模型、context builder 与引用 heuristic 已删除。Agent 根据观察动态检索多个子问题；诊断检索分数门独立保留。
+### 1. 安装后端依赖
 
-## 历史 RAG 单项评测结果
-
-下表是 Evaluation Baseline v2 引入前记录的 65 题 RAG 单项结果，仅用于历史对照；
-它不包含 Agent Core、Online tools、多轮会话或统一 manifest，也不代表当前代码与
-当前模型配置下的最新成绩。当前统一评测入口、复现约束和结果比较方式见
-[Evaluation Baseline v2](docs/evaluation/baseline-v2.md)。
-
-| Metric              |  Score |
-| ------------------- | -----: |
-| Evaluation Cases    |     65 |
-| Final Score         | 0.9605 |
-| Key Point Recall    | 0.9353 |
-| Gold Chunk Hit@K    | 0.9846 |
-| Gold Chunk Recall@K | 0.9756 |
-| Gold Document Hit@K | 0.9846 |
-| Behavior Score      | 0.9846 |
-| Forbidden Hit       |      0 |
-
-该历史评测集覆盖 `single_doc`、`cross_doc`、`partial_answer`、`not_in_doc`、
-`trap` 五类问题；当时的主要优化方向是 `partial_answer` 场景和新旧政策冲突类
-`trap` 问题。
-
-## 工程化设计
-
-- 配置通过 `.env` 管理，`.env.example` 提供默认模板，回答/Agent 模型、追问改写模型、拆分模型和评测 Judge 均使用 OpenAI-compatible Chat Completions 配置。
-- 应用内部模型调用统一由 LangChain `ChatOpenAI(base_url=...)` 访问 OpenAI-compatible 服务，各角色原有模型环境变量仍然有效。
-- 生产 Agent 使用 `ToolStrategy(FinalAgentResponse)` 与 evidence ID 校验；Query Rewrite 和 Evaluation Judge 继续使用 `ModelGateway`。比较文档时分别调用 `search_document`，由 Agent 阅读两组证据并生成结论。
-- `requirements.txt` 保留顶层依赖声明，`requirements.lock` 固定 Python 3.12 验证过的版本；Docker 和 CI 均使用 lock 文件安装依赖。
-- `.importlinter` 使用 Import Linter 2.13 固化应用包的单向依赖、顶层无环、基础层、HTTP 框架和 Settings 框架边界；CI 在 Ruff 后执行全量 `lint-imports`。
-- 支持 embedding / rerank 模型本地缓存，默认缓存目录为 `./.cache/huggingface/hub`，也可通过 `MODEL_CACHE_DIR`、`HF_HOME` 等环境变量调整。
-- 支持 ChromaDB 持久化，默认将向量、chunk 文本、metadata 和文档注册信息保存到 `data/chroma/`。
-- 显式知识同步由写侧基于 manifest 判断重建；QA 启动只加载索引。文件变化增量处理，chunk/embedding/索引版本变化触发重建。
-- 多轮会话历史保存在 `SQLITE_DB_PATH` 指定的 SQLite 数据库中，每个 `session_id` 默认读取最近 6 条 user/assistant 消息，服务重启后仍可继续使用。
-- Agent trace 通过 `AgentRunResult.tool_trace` 返回，供 API、Evaluation 和运行时诊断使用。旧数据库可能保留历史 `agent_runs`、`agent_steps` 表；应用不再读写或删除这些表，新数据库不再创建它们。
-- `/chat/stream` 请求支持继承或生成 `trace_id`，响应头返回 `X-Trace-Id`，真实总耗时位于 `final.data.total_cost_ms`。
-- metrics 记录 Query Rewrite、路由、Agent、检索、问题拆分、重排、上下文构造、LLM 调用、结构化结果规范化等阶段耗时和 LLM 调用次数。
-- bad case 日志用于定位失败样例，包括模型结构化输出校验失败、引用异常、工具异常、内部异常和索引未就绪。
-
-模型客户端、唯一 `create_agent` Agent Loop 和 KB 检索工具彼此分层；RAG Evaluation 复用生产链，检索、Rerank、ChromaDB 和 grounding 合同保持。
-
-## MCP 知识入库来源
-
-Agent 只注册本地知识库工具与按权限启用的 Web 工具。MCP 仅供
-`ExternalKnowledgeSourceService` 抓取 GitHub 文件和 Firecrawl 页面，不参与问答循环。
-
-MCP 默认关闭。复制 `config/mcp_servers.example.json` 到 Git 忽略的
-`config/mcp_servers.local.json`，配置来源端点、凭据及精确只读 allowlist。
-HTTP 应用同时启用 `INGESTION_ADMIN_API_ENABLED` 与 `MCP_TOOLS_ENABLED` 才会执行
-来源 discovery；来源 smoke CLI 可独立初始化。QA Agent 不依赖 MCP 初始化。
-
-官方 client、discovery cache、来源权限、超时、脱敏和摘要审计继续保留。
-GitHub 使用 `get_file_contents`，Firecrawl 使用受只读参数限制的 `firecrawl_scrape`。
-完整内容经 Source Service 校验后产生 pending candidate，再经显式审批和索引。
-配置迁移、来源完整性限制和 smoke 命令见 [MCP 知识入库来源](docs/tools/mcp-client.md)。
-
-## Web Search
-
-`web_search` 使用开源 `ddgs` 的公共 Python API 搜索公开互联网中的当前或外部信息，只返回有限的 `title`、`url` 和 `snippet`。它与 `search_knowledge_base` 的边界不同：后者读取受控知识库并返回 Document evidence；二者都通过 ToolMessage 回到唯一 Agent。
-
-Web Search 默认关闭可见性。要让默认 `/chat/stream` 服务主体看到它，必须显式配置：
-
-```env
-TOOL_DEFAULT_PERMISSIONS=knowledge_base:read,web:search
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.lock
+cp .env.example .env
 ```
 
-搜索 query 会发送到外部搜索服务，可能受搜索服务限流、地区设置和网络条件影响。搜索摘要可能不准确、过时或含恶意指令，输出始终带有 `content_is_untrusted=true`；模型不得执行摘要中的命令，使用搜索信息回答时应列出实际使用的标题和 URL。代理配置不会写入工具输出或审计。
+Windows PowerShell 使用 `.\.venv\Scripts\Activate.ps1` 激活环境，并用 `Copy-Item .env.example .env` 复制模板。已有 `.env` 时直接编辑，保留自己的配置。
 
-## Web Fetch
+[`requirements.txt`](requirements.txt) 声明顶层依赖，[`requirements.lock`](requirements.lock) 固定安装版本，Docker 和 CI 均使用锁文件。
 
-`web_fetch` 用于已知具体公开 URL 后读取单个网页正文；通常由 Agent 在 `web_search` 返回候选标题、URL 和摘要后选择调用，也可读取用户明确提供的 URL。下载层固定使用 `requests-hardened==1.3.0` 做 SSRF IP 过滤和逐跳安全重定向，正文提取固定使用 `trafilatura==2.1.0`，而权限、总体超时、一次有限重试、审计和输出校验仍由现有 `ToolRuntime` 负责。`search_knowledge_base` 则只读取本地受控知识库并进入 RAG 引用路径。
+### 2. 配置模型并准备本地缓存
 
-模型只能提供 `url` 和 `max_chars`，不能提供 method、headers、Cookie、Authorization、proxy、timeout 或 body。应用层只接受 HTTP(S)、无 credentials、无控制字符且端口为 80/443 的 URL。默认 `WEB_TRUSTED_PROXY_MODE=false`，私网、环回、链路本地、metadata 地址、DNS 解析和 redirect 目标继续由 `requests-hardened` 校验。响应以 streaming 方式读取解压后内容并受 `WEB_FETCH_MAX_RESPONSE_BYTES` 限制，只接受 HTML、XHTML 和纯文本，不支持 PDF、二进制文件或 JavaScript 渲染。
+编辑 `.env`，至少替换回答模型的密钥、名称和接口地址。模板使用以下配置：
 
-受控本地开发环境可显式设置 `WEB_TRUSTED_PROXY_MODE=true` 和 `WEB_TRUSTED_PROXY_URL=http://127.0.0.1:<port>`。开启后统一代理覆盖 `WEB_SEARCH_PROXY`、`WEB_FETCH_PROXY`，搜索、HTML 和 PDF 工具共用该代理；下载层仍禁用环境代理并保留 URL、超时、响应体量、Content-Type 和资源关闭约束，但把 DNS/IP、私网及重定向目标的网络策略委托给受信代理。该代理必须自行拒绝局域网、环回、metadata 地址和危险重定向，不能把此模式当作生产安全默认值；关闭开关即恢复原有 hardened SSRF 校验。
+```env
+LLM_API_KEY=replace-with-local-key
+MODEL_NAME=deepseek-chat
+LLM_API_URL=https://api.deepseek.com/v1/chat/completions
+```
 
-URL、页面元数据和正文全部是不可信输入。输出固定包含 `content_is_untrusted=true`；模型不得执行页面中的命令、不得把正文视为 system/developer/tool 指令，也不得因为页面要求而调用其他工具，只能将其作为回答用户问题的参考，并在回答中注明实际 `final_url`。网页不会写入 ChromaDB/BM25，不进入本地 RAG，其 Document 在被最终结构化回答实际引用后，按现有公开字段投影为 Web references。
+Agent 专用配置留空时逐项继承回答模型配置。同一模型同时承担两个角色时，服务需支持工具调用、`ToolStrategy` 所需的结构化工具选择以及正文流式输出。角色独立配置见下方「配置说明」。
 
-默认权限仍只有 `knowledge_base:read`，因此三个 Web 工具都默认不可见。两项 Web 权限彼此独立：只有 `web:search` 时只能搜索；只有 `web:fetch` 时可用 `web_fetch` 和 `web_pdf_fetch` 读取明确 URL；两者都有时才支持搜索后读取：
+**Embedding 和 reranker 都以 `local_files_only=True` 加载，启动或建索引不会自动下载这两类权重。** 首次使用可执行下面的显式下载命令；它读取当前 `.env` 中的模型名称和缓存目录，需要访问 Hugging Face：
+
+```bash
+python - <<'PY'
+from huggingface_hub import snapshot_download
+from app.config import get_settings
+
+settings = get_settings()
+for model_name in (settings.embedding_model_name, settings.rerank_model_name):
+    snapshot_download(repo_id=model_name, cache_dir=str(settings.model_cache_dir))
+PY
+```
+
+模板使用 `Qwen/Qwen3-Embedding-0.6B` 和 `BAAI/bge-reranker-v2-m3`，缓存目录为 `./.cache/huggingface/hub`。也可以配置已准备好的本地模型目录。运行时根据 PyTorch 的 CUDA 可用性选择 GPU 或 CPU。
+
+PDF 解析还需要 Docling 的解析模型，首次解析可能下载这些资源；离线环境应提前准备。项目关闭 OCR，扫描件无法通过 OCR 补出正文。
+
+### 3. 同步知识库并启动 API
+
+将 `.txt`、`.md`、`.pdf`、`.docx` 文档放入模板指定的 `data/kb/`，然后执行：
+
+```bash
+mkdir -p data/kb
+python -m app.rebuild_kb
+uvicorn app.main:app --reload
+```
+
+启动后可访问：
+
+- Swagger：<http://127.0.0.1:8000/docs>
+- 进程健康检查：<http://127.0.0.1:8000/health>
+- 知识库状态：`curl -X POST http://127.0.0.1:8000/kb_summary`
+
+`/health` 只表示进程存活。确认知识库可检索需查看 `/kb_summary` 的 `ready`、文档数和 chunk 数。QA 启动只加载已有索引和模型缓存；修改本地文档后，再次执行同步命令并重启 QA 加载新快照。
+
+### 4. 启动 Vue 前端
+
+另开终端：
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+访问 <http://localhost:5173>。页面包括智能问答、检索调试、知识库、知识入库和系统诊断，使用 hash 路由，例如 `/#/ingestion`。
+
+浏览器使用同源相对 API 路径，Vite 默认代理到 `http://127.0.0.1:8000`。需要修改时，复制 [`frontend/.env.example`](frontend/.env.example) 为 `frontend/.env`，设置 `VITE_DEV_PROXY_TARGET` 并重启 Vite。
+
+聊天 session ID 保存在 `sessionStorage`，页面聊天记录保留在内存；「新建对话」生成新 ID。后端会话历史持久化到 SQLite。中断生成不会自动重发请求。
+
+## 当前架构与回答流程
+
+```mermaid
+flowchart LR
+    Q["POST /chat/stream"] --> S["ChatService / Query Rewrite"]
+    S --> R["Python Router"]
+    R --> A["create_agent / Agent 模型"]
+    A <--> T["权限过滤 / 本地工具 / ToolMessage"]
+    A --> E["结构化决策 / 证据 ID 校验"]
+    E -->|Document 回答| C["Answer 模型 / 正文流"]
+    C --> F["AgentRunResult / final / done"]
+    E -->|无需正文模型| F
+    R --> D["固定直答或入口澄清"]
+    D --> F
+```
+
+图中 Answer 模型阶段适用于选中了有效 Document 的回答，具体流程如下：
+
+1. **准备问题**：带 `session_id` 时读取最近 6 条 user/assistant 消息；短追问和指代问题可先改写为独立问题。
+2. **路由与工具选择**：普通 Python Router 对固定能力问答和明确澄清做短路，其余请求进入 `create_agent`。模型只看到当前 `tool_mode` 和主体权限允许的工具。
+3. **检索与观察**：工具通过 `StructuredTool → execute_project_tool → handler` 执行，结果经 `ToolMessage` 回到 Agent；Agent 可继续检索、限定文档或补读上下文。
+4. **确定证据**：`ToolStrategy(FinalAgentResponse)` 校验 `answer`、`no_evidence` 或 `clarify` 决策。正文证据从本轮成功工具消息的 artifact 中恢复；未知证据 ID、无效 Document 或应引用却漏引用会导致安全失败。
+5. **生成正文**：有选中证据的 `answer` 调用 `get_answer_model().astream()`，只传入问题和选中的证据。正文模型不绑定工具，输出实际文本 chunk 对应的 `answer_delta`。
+6. **返回结果**：引用由代码从选中 Document 映射，`final` 返回完整业务结果。无 Document 的操作结果及 `no_evidence` 仍可一次性交付文本，澄清和错误可能没有答案增量。
+
+Agent 循环和正文生成共用总超时预算，正文调用也占用模型调用名额。框架与项目 Middleware 同时约束模型/工具调用次数、工具错误、重复调用和连续相同错误。
+
+检索工具只提供证据，知识入库由独立写侧处理。MCP 只服务 GitHub / Firecrawl 入库来源，不进入问答 Agent。架构边界见[当前系统架构](docs/architecture/current-system.md)，SSE 的详细行为见[聊天流式 API](docs/api/chat-streaming.md)。
+
+## 配置说明
+
+完整模板见 [`.env.example`](.env.example)，字段解析与校验见 [`app/config.py`](app/config.py)。配置由冻结的 `AppSettings` 管理，优先级为：
+
+```text
+显式 AppSettings(...) 参数 > 进程环境变量 > 项目根目录 .env > 字段默认值
+```
+
+相对路径按项目根目录解析。下面提到的示例值以 `.env.example` 为准；模板覆盖了部分代码默认值。修改 `.env` 后需重启服务，配置不会热更新。
+
+### 模型角色
+
+| 角色 | 配置 | 当前用途与回退 |
+| --- | --- | --- |
+| Answer / Composer | `LLM_API_KEY`、`MODEL_NAME`、`LLM_API_URL`、`TEMPERATURE`、`LLM_MAX_TOKENS`、`LLM_TIMEOUT`、`LLM_MAX_RETRIES` | 根据已校验证据生成正文；基础密钥仍兼容 `DEEPSEEK_API_KEY` |
+| Agent | `AGENT_LLM_API_KEY`、`AGENT_MODEL_NAME`、`AGENT_LLM_API_URL`、`AGENT_TEMPERATURE`、`AGENT_LLM_MAX_TOKENS`、`AGENT_LLM_TIMEOUT`、`AGENT_LLM_MAX_RETRIES` | 负责工具调用与结构化决策；未配置字段逐项继承 Answer |
+| Query Rewrite | `ENABLE_QUERY_REWRITE`、`QUERY_REWRITE_API_KEY`、`QUERY_REWRITE_MODEL_NAME`、`QUERY_REWRITE_API_URL`、`QUERY_REWRITE_TIMEOUT`、`QUERY_REWRITE_MAX_TOKENS`、`QUERY_REWRITE_TEMPERATURE` | 多轮追问改写；模板独立指定 `deepseek-chat`，默认超时 10 秒、无模型重试 |
+| Evaluation Judge | `USE_LLM_JUDGE`、`JUDGE_API_KEY`、`JUDGE_MODEL`、`JUDGE_API_URL`、`JUDGE_TIMEOUT`、`JUDGE_MAX_RETRIES`、`JUDGE_MAX_TOKENS` | 可选离线评测判分；正式 Runner 通过 `--use-llm-judge` 显式开启 |
+
+`AGENT_ENABLE_THINKING` 是 Agent 专用开关，留空表示不发送该参数。使用模板注释所述的 Qwen 配置时应设为 `false`，避免思考模式与当前 `ToolStrategy` 的 `tool_choice=required` 冲突。
+
+Query Rewrite 使用独立的 `QUERY_REWRITE_TIMEOUT`，调整 `LLM_TIMEOUT` 不会改变它。改写模型不可用或调用失败时，已有规则回退仍可继续主链路。切换到其他提供方或本地服务时，也应同步检查模板中显式设置的 Query Rewrite 和 Judge 地址。
+
+### 索引、权限与运行预算
+
+| 配置 | 说明 |
+| --- | --- |
+| `RAG_FILE_PATH` | 本地知识目录，模板为 `./data/kb` |
+| `INDEX_STORE_DIR` | manifest 与 RecordManager 存储目录，模板为 `./data/manifest` |
+| `CHROMA_PERSIST_DIR` / `CHROMA_INDEX_COLLECTION_NAME` | 当前持久化索引目录 / collection，模板为 `./data/chroma` / `mini_rag_chunks_v2` |
+| `CHUNK_SIZE` / `CHUNK_OVERLAP` | 切分参数，模板为 600 / 120；结构化表格保留完整行，单行可超过目标长度 |
+| `EMBEDDING_MODEL_NAME` / `RERANK_MODEL_NAME` | 向量与重排模型名称或本地路径 |
+| `MODEL_CACHE_DIR` | 模型缓存目录；未指定时继续按 `HF_HUB_CACHE`、`HF_HOME/hub`、`SENTENCE_TRANSFORMERS_HOME` 和项目默认目录解析 |
+| `TOP_K` / `VECTOR_THRESHOLD` | 诊断搜索默认条数 / 分数门；不控制 Agent 每轮的检索参数或最终证据决策 |
+| `TOOL_DEFAULT_PERMISSIONS` | 默认 `knowledge_base:read`；Web 权限需显式添加 |
+| `AGENT_MAX_ITERATIONS` / `AGENT_MAX_TOOL_CALLS` | 默认最多 6 次模型调用、10 次工具调用；正文生成需要剩余模型调用名额 |
+| `AGENT_MAX_TOOL_ERRORS` | 累计工具错误上限，默认 3 |
+| `AGENT_MAX_CONSECUTIVE_SAME_TOOL_CALLS` / `AGENT_MAX_CONSECUTIVE_SAME_TOOL_ERRORS` | 连续相同调用 / 错误阈值，默认均为 2 |
+| `AGENT_MAX_TOTAL_COST_MS` | Agent 循环、证据校验和正文流的共同预算，默认 120000 毫秒 |
+| `SQLITE_DB_PATH` | 会话、入库候选和索引操作历史，模板为 `./data/app.sqlite` |
+
+### 可用工具与 Web 权限
+
+当前 catalog 有七个生产工具，实际可见集合还受请求的 `tool_mode` 限制：
+
+| 工具 | 用途 | 所需权限 |
+| --- | --- | --- |
+| `search_knowledge_base` | 全库混合检索与重排，返回 Document 证据 | `knowledge_base:read` |
+| `find_documents` | 列出或查找文档，返回目录信息 | `knowledge_base:read` |
+| `search_document` | 在指定文档内检索正文 | `knowledge_base:read` |
+| `get_chunk_context` | 读取已知 chunk 的原文或同文档相邻 chunk | `knowledge_base:read` |
+| `web_search` | 使用 DDGS 搜索标题、URL 和摘要 | `web:search` |
+| `web_fetch` | 提取公开 HTML、XHTML 或纯文本网页正文 | `web:fetch` |
+| `web_pdf_fetch` | 使用 pypdf 提取公开 PDF 的指定连续页范围 | `web:fetch` |
+
+默认 Web 工具不可见。要支持搜索后读取正文，在后端 `.env` 设置并重启：
 
 ```env
 TOOL_DEFAULT_PERMISSIONS=knowledge_base:read,web:search,web:fetch
 ```
 
-## Web PDF Fetch
+`rag_only` 请求仍只允许四个知识库工具；`full` 也不会绕过权限。`find_documents` 的目录信息和 `web_search` 的摘要不属于正文 Document 证据，回答正文问题时应继续读取实际内容。`get_chunk_context` 接受 metadata 中的 `chunk_id`，不是 Document 的 evidence ID。
 
-`web_pdf_fetch` 用于读取已知公开 PDF 的指定连续页范围。它与 `web_fetch` 保持明确分工：`web_fetch` 只处理 HTML、XHTML 和纯文本并继续拒绝 PDF；`web_pdf_fetch` 只处理 PDF，并使用项目已经锁定的 `pypdf==6.14.2` 提取数字文本。两者共用 `app/tools/web_download.py` 中基于 `requests-hardened==1.3.0` 的下载、逐跳重定向、可信代理、streaming 和资源关闭边界；默认模式实施本地 SSRF 校验，显式受信代理模式则按上一节所述委托网络策略。
+Web 正文下载共用 `requests-hardened` 的网络校验和有限 streaming 读取；网页由 Trafilatura 提取，PDF 由 pypdf 提取。网页/PDF 内容视为不可信数据，不自动写入知识库。搜索查询会发送到外部搜索服务。
 
-模型只能提供 `url`、1-based `start_page`、1–20 的 `max_pages` 和 1000–30000 的 `max_chars`。服务端另以 `WEB_PDF_MAX_RESPONSE_BYTES`、`WEB_PDF_MAX_DOCUMENT_PAGES` 和 `WEB_PDF_TOOL_TIMEOUT_SECONDS` 控制下载字节、总页数和总体 ToolRuntime 时间。工具接受 `application/pdf`、`application/x-pdf`，并仅在内容具有 `%PDF-` 签名时兼容 `application/octet-stream`；所有允许类型最终都检查 PDF magic。
+`web_fetch` 不支持 PDF 或 JavaScript 渲染；`web_pdf_fetch` 不支持 OCR。超时、体积上限、重定向和代理配置见 `.env.example`。`WEB_TRUSTED_PROXY_MODE` 默认关闭；显式开启会把 DNS/IP 与重定向目标策略委托给受信代理，适用边界见 [Web Fetch ADR](docs/adr/0009-secure-web-fetch-tool.md) 和 [Web PDF ADR](docs/adr/0010-secure-web-pdf-fetch-tool.md)。
 
-正文按实际页码返回 `[Page N]` 边界，空白页不列入 `page_numbers`，title、author 和 subject 只做有限单行规范化。加密、损坏、页数超限和无可提取文本的 PDF 会返回稳定非重试错误；扫描件/图片型 PDF 不自动 OCR，也不接收密码、提取图片/附件/脚本或调用 LLM 清洗。
+## 知识入库与索引维护
 
-PDF 文本和元数据固定标记 `content_is_untrusted=true`，只能作为回答参考；模型不得执行 PDF 中的命令或把内容视为 system/developer/tool 指令，回答时应注明 `final_url` 和相关页码。`web_pdf_fetch` 要求 `web:fetch` 权限，经过普通 `StructuredTool → execute_project_tool → handler → ToolMessage` 链路；它不进入本地 RAG、不写 ChromaDB/BM25，其 Document 在被最终结构化回答实际引用后，按现有公开字段投影为 PDF references。
-
-## Agent Runtime 检查
-
-以下命令通过 LangGraph/LangChain 公开 introspection 与 Schema API 查看当前 Runtime，不调用模型、工具或网络，也不会创建 Checkpoint 数据库：
-
-```bash
-python scripts/inspect_agent_runtime.py
-python scripts/inspect_agent_runtime.py --format json
-python scripts/inspect_agent_runtime.py --format mermaid
-python scripts/inspect_agent_runtime.py --check
-lint-imports
-```
-
-图结构、维护路径、文件职责和常见问题定位见 [Agent Runtime 维护指南](docs/agent-runtime-maintenance.md)。Runtime inspection 只确认 `.importlinter` 及关键合同声明存在；真实 import graph 由独立 `lint-imports` 验证。CI 会同时运行二者，阻止模块反向依赖、旧自定义循环节点回归、关键框架节点消失、工具契约失效或核心文件超过架构预算。
-
-真实模型 Tool Calling、MCP、Online 与 SQL 冒烟命令见维护指南及对应工具文档；这些
-环境相关检查不会进入默认 Pytest/CI。
-
-## 文档入口
-
-- [当前系统架构](docs/architecture/current-system.md)
-- [Agent Runtime 维护指南](docs/agent-runtime-maintenance.md)
-- [模块依赖边界](docs/architecture/module-boundaries.md)
-- [Evaluation Baseline v2](docs/evaluation/baseline-v2.md)
-- [2026 年 Agent 演进归档](docs/history/agent-evolution-2026.md)
-- [ADR 0001：开源 Agent 技术栈](docs/adr/0001-open-source-agent-stack.md)
-- [ADR 0002：迭代式 Agent Loop](docs/adr/0002-iterative-agent-loop.md)
-- [ADR 0003：工具治理边界](docs/adr/0003-tool-governance-boundary.md)
-- [ADR 0004：基于注册表的工具发现](docs/adr/0004-registry-driven-tool-discovery.md)
-- [ADR 0005：Agent 错误恢复、预算与循环防护](docs/adr/0005-agent-error-recovery-and-budgets.md)
-- [ADR 0006：框架原生 Agent Runtime](docs/adr/0006-framework-native-agent-runtime.md)
-- [ADR 0007：权限感知的工具可见性](docs/adr/0007-permission-aware-tool-visibility.md)
-- [ADR 0008：开源 Web Search 生产工具](docs/adr/0008-open-source-web-search-tool.md)
-- [ADR 0009：安全 Web Fetch 网页正文工具](docs/adr/0009-secure-web-fetch-tool.md)
-- [ADR 0010：安全 Web PDF 页范围读取工具](docs/adr/0010-secure-web-pdf-fetch-tool.md)
-- [ADR 0011：单一框架 Agent 执行链](docs/adr/0011-single-framework-agent-execution-path.md)
-- [ADR 0012：Graph 独占确定性 Router](docs/adr/0012-graph-owned-deterministic-routing.md)
-- [ADR 0013：单一平铺 Agent Runtime State](docs/adr/0013-single-flat-agent-runtime-state.md)
-- [ADR 0014：单一 Agent Result 契约](docs/adr/0014-single-agent-result-contract.md)
-- [ADR 0015：pydantic-settings 配置](docs/adr/0015-pydantic-settings-configuration.md)
-- [ADR 0016：可执行模块依赖边界](docs/adr/0016-enforced-module-dependency-boundaries.md)
-
-## 快速启动
-
-建议使用 Python 3.12，与 Docker 和 CI 环境保持一致。
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.lock
-cp .env.example .env
-```
-
-Windows PowerShell 可使用：
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\activate
-pip install -r requirements.lock
-copy .env.example .env
-```
-
-锁文件已经包含 `ddgs==9.14.4`、`requests-hardened==1.3.0` 和
-`trafilatura==2.1.0` 基础包；未安装这些依赖的 dev、docs、eval、all、MCP
-等 extras，也不需要 `langchain-community` 包装。
-
-将知识库文档放到 `data/kb/`，然后编辑 `.env` 中的模型配置。准备好本地 embedding/rerank 模型缓存后，同步索引并启动服务：
+### 本地目录同步
 
 ```bash
 python -m app.rebuild_kb
-uvicorn app.main:app --reload
 ```
 
-启动后访问：
+普通文件变化走增量同步。切分参数、embedding 模型、索引版本、namespace 或 collection 变化会要求重建；当前 `pipeline_version` 为 **6**，以 [`app/indexing/manifest.py`](app/indexing/manifest.py) 为准。Reranker、Prompt 和回答模型变更不要求重建向量索引。
 
-```text
-Swagger: http://127.0.0.1:8000/docs
-Health:  http://127.0.0.1:8000/health
-```
-
-QA 启动只读取已有 Chroma 索引和本地模型缓存，不扫描或解析知识文件。修改本地知识后再次执行同步命令，并重启 QA 加载新快照。
-
-## Vue 前端
-
-Vue 3 + TypeScript 是主要 Demo / 管理界面，提供智能问答、检索调试、知识库、知识入库和系统诊断。需要 Node.js 22.12+（已用 22.21.1 验证）。先启动 FastAPI 后端：
+确需全量重建时：
 
 ```bash
-uvicorn app.main:app --reload
+python -m app.rebuild_kb --force-rebuild
 ```
 
-另一个终端启动前端：
+全量重建会重新解析本地文件，并从 SQLite 恢复外部来源最新成功 INDEX 对应的候选，排除最新成功操作为 REMOVE 的来源；不会重新抓取外部页面，也不会把仅审批、未成功入库的候选写入索引。独立 CLI 完成后需重启 QA。
 
-```bash
-cd frontend
-npm install
-npm run dev
+### 上传、GitHub 与 Firecrawl
+
+在后端启用管理 API 并配置独立密钥，然后重启服务：
+
+```env
+INGESTION_ADMIN_API_ENABLED=true
+INGESTION_ADMIN_API_KEY=replace-with-admin-key
 ```
 
-Vue 地址为 `http://localhost:5173`，FastAPI 为 `http://127.0.0.1:8000`。
-API 使用同源相对路径，经 Vite proxy 访问后端；需要修改目标时复制
-`frontend/.env.example` 为 `frontend/.env`，设置 `VITE_DEV_PROXY_TARGET` 后重启 Vite。
-页面使用 hash 路由（例如 `/#/ingestion`），避免页面路径与 `/chat/stream`、`/search` API 冲突。
-
-知识入库管理需在**后端**配置 `INGESTION_ADMIN_API_ENABLED=true` 和
-`INGESTION_ADMIN_API_KEY=<你的管理员密钥>`，然后重启后端。密钥在入库页的密码框中输入，
-仅保留在浏览器内存，刷新页面即清除；不要放入 `VITE_*`、URL 或仓库。
-在「待审批知识」刷新 Agent 已生成的候选，查看安全预览后批准，再单独点击「写入知识库」。
-「索引记录」可检查结果；GitHub / Firecrawl 手动提案及本地文件上传位于「来源提案」。
-Upload、GitHub、Firecrawl 可在候选详情确认「移出知识库」，撤除同一来源当前入库的全部内容。
-候选和审批历史保留；撤库成功后全量重建不会恢复该来源，再次手动写入后才会恢复。
-「索引记录」区分 index/remove，并可按操作筛选。
-选择「本地文件」后可选择或拖拽单个 PDF、DOCX、TXT、MD 文件；上传只生成待审批候选，
-仍需批准后手动写入知识库。默认上限 20 MiB，通过 `INGESTION_UPLOAD_MAX_BYTES` 配置；
-扫描 PDF 暂不支持 OCR，原始文件解析后删除，候选持久化全文与表格结构；
-历史纯文本 PDF/DOCX 候选继续按正文切分，重新上传才能获得结构。有 `structured_content`
-时，连续文本复用 LangChain splitter，表格保留标题/表头并按完整连续行分组；
-`pipeline_version` 从 2 升至 3，旧索引在显式同步时通过写侧 force rebuild 迁移。
-Firecrawl 显式提案请求 Markdown + cleaned HTML，经同一 Docling parser 得到
-`ParsedDocument`，直接复用现有 table-aware chunks；禁用二次抓取、图片读取与渲染。
-HTML 原文不保存，结构随 candidate_json 持久化。历史 Firecrawl 候选保持纯文本，
-force rebuild 不重抓 URL，也不会自动升级结构；需重新抓取、生成候选、审批并索引。
-本次 `pipeline_version` 保持 3。详见
-[结构化解析、持久化与切分](docs/ingestion/structured-documents.md)。
-
-聊天只使用 `/chat/stream`，`answer_delta` 用于增量展示，`final.data.response` 更新本轮权威结果，
-`done` 表示流结束。中断不会自动重试。session ID 保存在 sessionStorage，
-聊天记录保留在内存；「新建对话」生成新 ID 并清空记录。
-
-前端验证：`npm run typecheck`、`npm run test -- --run`、`npm run build`。
-`npm run preview` 可在 `http://localhost:4173` 本地预览构建结果，仍使用相同代理；
-`dist/` 是静态资源，本阶段不包含生产托管部署。
-
-## 环境变量
-
-常用配置如下，完整示例见 `.env.example`。
-
-应用配置由唯一的冻结 `AppSettings` 模型管理。生产代码通过惰性缓存入口
-`get_settings()` 获取一个进程级快照；导入 `app.config` 不读取 `.env`，也不检查
-API key、路径或创建任何目录。配置来源优先级为：
+在 Vue 的「知识入库」页输入该密钥，仅保存在浏览器内存，刷新后清除。API 使用 `X-Ingestion-Admin-Key`；不要把密钥放入 `VITE_*` 或 URL。
 
 ```text
-显式 AppSettings(...) 参数 > 环境变量 > 项目根目录 .env > 字段默认值
+上传文件 / GitHub 文件 / Firecrawl 页面
+→ 来源提案 → pending candidate → 显式审批 → 单独写入知识库
+→ Chroma / RecordManager / 索引操作历史 → 刷新当前应用的查询索引
 ```
 
-测试和一次性脚本应显式构造
-`AppSettings(_env_file=None, ...)`，并把实例传给现有依赖边界，以免维护者本地
-`.env`、代理或权限污染结果。配置模型只负责解析和纯校验；真实
-API key 及可写持久化路径等外部前提由 FastAPI lifespan 在启动时通过
-`validate_startup_environment()` 检查。
+上传支持单个 PDF、DOCX、TXT、MD，`INGESTION_UPLOAD_MAX_BYTES` 默认 20 MiB。上传原文件解析后删除，候选保存正文与可用结构。批准和写入是两个独立操作；这些候选来自管理端提案，问答 Agent 不负责生成或审批。
 
-`get_settings()` 的结果不会随环境变量或 `.env` 动态变化。受控刷新必须先调用
-`clear_settings_cache()`，并同步清理持有旧快照的 Model Factory、Tool Registry、
-Tool Runtime 与 Agent Runtime 缓存；生产服务通常直接重启进程。不要把 `.env`
-当作动态热更新配置。
+GitHub / Firecrawl 还需启用 `MCP_TOOLS_ENABLED=true`，将 [`config/mcp_servers.example.json`](config/mcp_servers.example.json) 复制为 Git 忽略的 `config/mcp_servers.local.json`，配置来源端点、凭据与精确只读 allowlist。HTTP 应用仅在启用入库管理 API 时初始化 MCP；本地上传不需要 MCP。
 
-| 配置项 | 说明 |
-| --- | --- |
-| `RAG_FILE_PATH` | 知识库目录，示例：`./data/kb` |
-| `INDEX_STORE_DIR` | 索引构建 manifest 目录，示例：`./data/manifest` |
-| `CHROMA_PERSIST_DIR` | ChromaDB 本地持久化目录，示例：`./data/chroma` |
-| `CHROMA_COLLECTION_NAME` | 保留的旧 ChromaDB collection，默认 `mini_rag_chunks` |
-| `CHROMA_INDEX_COLLECTION_NAME` | LangChain 增量索引 collection，默认 `mini_rag_chunks_v2` |
-| `TOP_K` | `/search` 默认召回条数；不控制 Agent Chat 的 Tool Call |
-| `CHUNK_SIZE` | chunk 最大长度 |
-| `CHUNK_OVERLAP` | 相邻 chunk 重叠长度 |
-| `EMBEDDING_MODEL_NAME` | SentenceTransformer embedding 模型 |
-| `RERANK_MODEL_NAME` | CrossEncoder rerank 模型 |
-| `MODEL_CACHE_DIR` | embedding/rerank 模型权重本地缓存目录 |
-| `LLM_API_KEY` | 回答模型 API Key；兼容旧变量 `DEEPSEEK_API_KEY` |
-| `MODEL_NAME` | 回答模型名称 |
-| `LLM_API_URL` | OpenAI-compatible Chat Completions 地址 |
-| `TEMPERATURE` | 回答模型温度 |
-| `LLM_MAX_TOKENS` | 回答模型最大输出 token |
-| `LLM_TIMEOUT` | 单次回答模型请求超时秒数 |
-| `LLM_MAX_RETRIES` | 回答模型失败重试次数 |
-| `WEB_SEARCH_REGION` | DDGS 地区设置，默认 `us-en` |
-| `WEB_SEARCH_SAFESEARCH` | 安全搜索级别：`on`、`moderate` 或 `off`，默认 `moderate` |
-| `WEB_SEARCH_TIMEOUT` | DDGS 内部 HTTP 超时秒数，默认 `8`，不得超过工具总体超时 |
-| `WEB_SEARCH_PROXY` | 可选 DDGS 代理；留空时传入 `None`，只在确实需要时配置 |
-| `WEB_TRUSTED_PROXY_MODE` | 是否启用统一受信代理模式，默认 `false`；开启时委托 DNS/IP 网络策略，只适合受控环境 |
-| `WEB_TRUSTED_PROXY_URL` | 统一受信 HTTP(S) 代理 URL；模式开启时必填并覆盖两个 Web 工具独立代理 |
-| `WEB_FETCH_CONNECT_TIMEOUT` | Web Fetch 连接阶段超时秒数，默认 `3` |
-| `WEB_FETCH_READ_TIMEOUT` | Web Fetch 单次响应读取超时秒数，默认 `10` |
-| `WEB_FETCH_MAX_RESPONSE_BYTES` | Web Fetch 解压后响应正文上限，默认 `2000000` bytes |
-| `WEB_FETCH_MAX_REDIRECTS` | Web Fetch 最大安全重定向次数，默认 `5` |
-| `WEB_FETCH_USER_AGENT` | 维护者配置的非空 User-Agent，不接受模型输入 |
-| `WEB_FETCH_PROXY` | 可选受信任代理；留空时禁用，禁止使用未经信任的用户输入 |
-| `WEB_PDF_MAX_RESPONSE_BYTES` | Web PDF 解压后响应上限，默认 `10000000` bytes |
-| `WEB_PDF_MAX_DOCUMENT_PAGES` | Web PDF 允许的文档总页数上限，默认 `1000` |
-| `WEB_PDF_TOOL_TIMEOUT_SECONDS` | Web PDF ToolRuntime 总体超时，默认 `45` 秒，必须大于连接与读取超时之和 |
-| `MCP_TOOLS_ENABLED` | 是否启用入库 MCP，默认 `false`；HTTP 生命周期仅在开启入库管理 API 时初始化 |
-| `MCP_SERVERS_CONFIG_PATH` | MCP Server 静态 JSON 路径；默认是 Git 忽略的 `config/mcp_servers.local.json`，可用项目内相对路径或绝对路径覆盖 |
-| `MCP_DISCOVERY_TIMEOUT_SECONDS` / `MCP_TOOL_TIMEOUT_SECONDS` | 启动 discovery 与单次 MCP Tool 超时，默认 `5` / `15` 秒 |
-| `MCP_MAX_TOOLS_PER_SERVER` | 每 Server 精确 allowlist 上限，默认 `20` |
-| `INGESTION_ADMIN_API_ENABLED` | 是否注册永久知识运营 API，默认 `false`；它不是 Agent Tool |
-| `INGESTION_ADMIN_API_KEY` | `SecretStr` operator/service 管理密钥；启用运营 API 时必填，通过 `X-Ingestion-Admin-Key` 发送 |
-| `INGESTION_UPLOAD_MAX_BYTES` | 单文件上传及 DOCX 展开大小上限，默认 `20971520`（20 MiB），必须为正整数 |
-| `TOOL_DEFAULT_PERMISSIONS` | 默认 Agent 主体权限；默认仅 `knowledge_base:read`，Web 需显式 `web:search` / `web:fetch` |
-| `USE_LLM_JUDGE` | 评测脚本是否启用 LLM Judge，默认 `false` |
-| `JUDGE_API_KEY` | 评测 Judge 模型 API Key；为空时可复用回答模型 Key |
-| `JUDGE_MODEL` | 评测 Judge 模型名称 |
-| `JUDGE_API_URL` | 评测 Judge 模型接口地址 |
-| `JUDGE_TIMEOUT` | Judge 模型请求超时秒数 |
-| `JUDGE_MAX_RETRIES` | Judge 模型失败重试次数 |
-| `JUDGE_MAX_TOKENS` | Judge 模型最大输出 token |
-| `AGENT_MAX_ITERATIONS` | 迭代式 Agent 最大模型轮次，默认 `6` |
-| `AGENT_MAX_TOOL_CALLS` | 迭代式 Agent 最大工具调用总数，默认 `10` |
-| `AGENT_MAX_TOOL_ERRORS` | 累计工具失败上限，第三次失败后停止，默认 `3` |
-| `AGENT_MAX_CONSECUTIVE_SAME_TOOL_CALLS` | 连续完全相同调用最多执行次数，默认 `2` |
-| `AGENT_MAX_CONSECUTIVE_SAME_TOOL_ERRORS` | 连续相同调用与错误码停止阈值，默认 `2` |
-| `AGENT_MAX_TOTAL_COST_MS` | Agent 模型与工具累计协作式耗时预算（毫秒），默认 `120000` |
-| `SQLITE_DB_PATH` | 会话历史、ingestion candidate/index run 共用的 SQLite 文件路径，默认 `./data/app.sqlite` |
-| `ENABLE_QUERY_REWRITE` | 是否启用多轮追问改写，默认 `true` |
-| `QUERY_REWRITE_API_KEY` | 追问改写模型 API Key；为空时复用回答模型 Key |
-| `QUERY_REWRITE_MODEL_NAME` | 追问改写模型名称 |
-| `QUERY_REWRITE_API_URL` | 追问改写模型接口地址 |
-| `QUERY_REWRITE_TIMEOUT` | 追问改写模型请求超时秒数 |
-| `QUERY_REWRITE_MAX_TOKENS` | 追问改写模型最大输出 token |
-| `QUERY_REWRITE_TEMPERATURE` | 追问改写模型温度 |
-| `VECTOR_THRESHOLD` | 召回证据不足时拒答的向量分数阈值 |
+结构化 PDF/DOCX 和 Firecrawl cleaned HTML 复用 Docling 解析及表格切分，保留标题路径。历史候选若只保存了纯文本，重建无法恢复已丢失的结构，需要重新上传或抓取、审批并写入。
 
-### DeepSeek 示例
+上传、GitHub、Firecrawl 来源可在候选详情中「移出知识库」，撤除该来源的全部现有 chunk，并保留候选和操作历史。组合应用在成功 INDEX/REMOVE 后尝试刷新当前进程索引；刷新失败时需重启 QA。独立 QA 进程仍需自行重新加载。
 
-```env
-RAG_FILE_PATH=./data/kb
-INDEX_STORE_DIR=./data/manifest
-CHROMA_PERSIST_DIR=./data/chroma
-CHROMA_COLLECTION_NAME=mini_rag_chunks
-CHROMA_INDEX_COLLECTION_NAME=mini_rag_chunks_v2
+详见[入库运营 API](docs/ingestion/operations-api.md)、[MCP 来源配置](docs/tools/mcp-client.md)、[增量索引](docs/ingestion/langchain-indexing.md)和[结构化解析与切分](docs/ingestion/structured-documents.md)。
 
-TOP_K=5
-CHUNK_SIZE=600
-CHUNK_OVERLAP=120
+## API 与流式响应
 
-EMBEDDING_MODEL_NAME=Qwen/Qwen3-Embedding-0.6B
-RERANK_MODEL_NAME=BAAI/bge-reranker-v2-m3
-MODEL_CACHE_DIR=./.cache/huggingface/hub
-
-LLM_API_KEY=your-api-key
-MODEL_NAME=deepseek-chat
-LLM_API_URL=https://api.deepseek.com/v1/chat/completions
-TEMPERATURE=0.1
-LLM_MAX_TOKENS=1024
-LLM_TIMEOUT=60
-LLM_MAX_RETRIES=2
-
-AGENT_MAX_ITERATIONS=6
-AGENT_MAX_TOOL_CALLS=10
-AGENT_MAX_TOOL_ERRORS=3
-AGENT_MAX_CONSECUTIVE_SAME_TOOL_CALLS=2
-AGENT_MAX_CONSECUTIVE_SAME_TOOL_ERRORS=2
-AGENT_MAX_TOTAL_COST_MS=120000
-SQLITE_DB_PATH=./data/app.sqlite
-
-ENABLE_QUERY_REWRITE=true
-QUERY_REWRITE_API_KEY=
-QUERY_REWRITE_MODEL_NAME=deepseek-chat
-QUERY_REWRITE_API_URL=https://api.deepseek.com/v1/chat/completions
-QUERY_REWRITE_MAX_TOKENS=256
-
-
-USE_LLM_JUDGE=false
-VECTOR_THRESHOLD=0.1
-```
-
-### Ollama 示例
-
-```env
-LLM_API_KEY=ollama
-MODEL_NAME=qwen2.5:7b
-LLM_API_URL=http://127.0.0.1:11434/v1/chat/completions
-
-QUERY_REWRITE_API_KEY=ollama
-QUERY_REWRITE_MODEL_NAME=qwen2.5:7b
-QUERY_REWRITE_API_URL=http://127.0.0.1:11434/v1/chat/completions
-
-```
-
-## API 示例
-
-| 接口 | 方法 | 作用 |
+| 方法 | 接口 | 用途 |
 | --- | --- | --- |
-| `/health` | GET | 健康检查 |
-| `/docs-preview` | GET | 查看已加载文档列表 |
-| `/chunks-preview` | GET | 查看 chunk 预览，支持 `max_len`、`limit`、`file_name` |
-| `/chat/stream` | POST | 唯一聊天 HTTP 入口；SSE `final.data.response` 是权威结果 |
-| `/search` | POST | 只执行检索和 rerank，不调用回答模型 |
-| `/decide` | POST | 只返回 Agent 路由决策，不执行工具或 RAG |
-| `/kb_summary` | POST | 返回知识库 ready 状态、文档数、chunk 数和 `index_source` |
-| `/metrics-summary` | GET | 汇总最近 N 条聊天请求指标 |
+| GET | `/health` | 轻量进程存活检查 |
+| POST | `/chat/stream` | 唯一聊天入口，SSE 响应 |
+| POST | `/search` | 诊断检索和重排，不调用聊天模型 |
+| POST | `/decide` | 查看确定性 Router 决策，不执行 Agent 或工具 |
+| POST | `/kb_summary` | 当前知识库 ready 状态、文档数、chunk 数和索引来源 |
+| GET | `/docs-preview` | 已加载文档列表 |
+| GET | `/chunks-preview` | chunk 预览，支持 `max_len`、`limit`、`file_name` |
+| GET | `/metrics-summary` | 最近请求指标，`limit` 默认 20，范围 1–200 |
+| 多种 | `/admin/ingestion/*` | 可选入库管理 API，默认不注册，启用后需管理密钥 |
 
-### `/chat/stream` SSE 示例
+### 聊天
 
 ```bash
-curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
-  -H "Content-Type: application/json" \
-  -H "Accept: text/event-stream" \
-  -d '{"question":"缓考应该如何办理？"}'
+curl --no-buffer -X POST http://127.0.0.1:8000/chat/stream \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: text/event-stream' \
+  -d '{"question":"缓考应该如何办理？","session_id":"demo-001","tool_mode":"rag_only"}'
 ```
 
-通过 Schema 校验的问题返回 `HTTP 200 text/event-stream`，正常事件边界为
-`start → progress/tool/answer_delta... → final → done`。空问题也建流，事件为
-`start → final → done(completed)`，其中 `final.data.http_status=400`、
-`final.data.response.code=EMPTY_QUESTION`。请求 Schema 错误仍在建流前返回 HTTP 422 JSON。
-`final.data.response` 是权威 ChatResponse，`done` 表示流结束。Agent 的 answer/no_evidence 经校验后，
-以一次完整 `answer_delta` 发出；当前不提供逐 token 答案流。Router 短路、澄清或错误可能没有
-`answer_delta`，最终结果始终在 `final`。事件字段、安全过滤、断开语义
-和 Python 冒烟命令见 [聊天流式 API 文档](docs/api/chat-streaming.md)。
+请求只接受 `question`、可选 `session_id` 和 `tool_mode`（`full` / `rag_only`，默认 `full`）。不传 session 时按单轮处理。`top_k` 等未知字段返回 HTTP 422；检索条数由 Agent 在工具调用中选择。
 
-核心响应字段：
-
-| 字段 | 说明 |
-| --- | --- |
-| `trace_id` | 本次请求追踪 ID，也会写入响应头 `X-Trace-Id` |
-| `data.question` | 原始用户问题；如果触发 Query Rewrite，改写后的问题可在 `tool_trace` 中查看 |
-| `data.answer` | 最终回答 |
-| `data.references` | 引用来源列表，包含 `file_name`、`source_path`、`chunk_id`、`snippet`、`score`、`rerank_score` |
-| `data.retrieval_confidence` | 0 到 1 的检索证据置信度估计 |
-| `data.answer_confidence` | 0 到 1 的最终回答置信度估计 |
-| `data.status` | `ok`、`no_evidence`、`empty_index`、`error`、`clarify`、`out_of_scope` |
-| `data.need_clarification` | 是否需要用户补充问题 |
-| `data.clarification_question` | 澄清追问 |
-| `data.reason` | 当前状态原因 |
-| `data.action` | Agent 选择的动作 |
-| `data.tool_result_summary` | 工具或 RAG 路径摘要 |
-| `data.tool_trace` | Query Rewrite、路由、工具调用、检索命中、最终状态等过程信息 |
-| `data.router_llm_used` | 兼容字段；确定性 Router 不调用模型，因此固定为 `false` |
-| `data.answer_llm_used` | 本次请求是否调用最终回答 LLM |
-| `data.llm_call_count` | 本次请求累计 LLM 调用次数 |
-
-### 多轮追问与 Query Rewrite
-
-`/chat/stream` 只接受 `question`、`session_id`、`tool_mode`；未知字段由 Pydantic `extra="forbid"` 拒绝并返回 HTTP 422。旧 `top_k`、`decompose_top_k` 已退役。Agent 每轮通过工具 schema 自主选择 query/top_k，`search_knowledge_base.top_k` 和 `search_document.top_k` 范围仍为 1–10。`TOP_K` 只用于诊断搜索；独立 Decompose 配置已删除。
-
-`/chat/stream` 的 `session_id` 是可选字段。为空时系统按单轮问题处理；非空时系统会读取该会话最近 6 条 user/assistant 消息，并在问题像短追问或包含“这个、那个、它、上面、刚才”等指代词时尝试改写成独立问题。
-
-改写逻辑的优先级是：先用规则判断是否需要改写；如果 `ENABLE_QUERY_REWRITE=true` 且改写模型配置可用，就调用改写模型；如果改写模型不可用或返回异常，会回退为“基于上一轮问题的追问”格式，保证主链路仍可继续。
-
-### `/search`
-
-`/search` 适合调试召回质量。它只执行检索和 rerank，不调用回答模型。
-
-```json
-{
-  "question": "普通本科四年制专业学生现在最长学习年限是不是 8 年？",
-  "top_k": 5
-}
-```
-
-返回结果包含 `reference_id`、`file_name`、`source_path`、`chunk_id`、`position`、`snippet`、`score`、`bm25_score`、`vector_score`、`rerank_score`。
-
-### `/decide`
-
-`/decide` 用于观察 `app.agent.runtime` 使用的确定性 Router 对问题产生的结果；它复用同一 Router 函数，但不执行后续 Agent、工具或 RAG。
-
-```json
-{
-  "question": "1 + 2 * 3 等于多少？"
-}
-```
-
-只会返回 `agent`、`clarify` 或 `direct_answer`。具体工具由后续 Agent Model 根据当前可见 Schema 选择。
-
-`web_search` 不作为 Router 关键词 action。普通问题先进入 `agent`，再由 Agent Model 根据动态 Tool Schema 和当前请求权限决定是否调用 Web Search。
-
-`web_fetch` 同样不作为 Router action，也不在 Query Rewrite 或 Runtime 中增加 URL 特判；它由 Agent Model 在普通工具循环中按权限和 Schema 选择。
-
-`web_pdf_fetch` 也不增加 PDF Router action 或 Runtime 特判；模型可根据 `web_fetch` 的类型错误 ToolMessage 在同一框架循环中改用 PDF 工具。
-
-### `/kb_summary`
-
-返回当前知识库是否 ready、文档数量、chunk 数量、文件列表和 `index_source`。其中 `index_source=chroma` 表示当前索引来自 ChromaDB 缓存，`memory` 表示刚重建完成，`none` 表示没有可用索引。
-
-### `/metrics-summary`
+正常 SSE 顺序为：
 
 ```text
-GET /metrics-summary?limit=20
+start → progress / tool / answer_delta ... → final → done
 ```
 
-用于查看最近请求的状态分布、成功数、拒答数、错误数、平均延迟、平均 LLM 调用次数，以及 Router / Answer LLM 的使用次数。
+- `answer_delta.data.text` 为可展示的答案增量；有证据的正文来自 Answer 模型实际文本 chunk，chunk 不保证逐 token 对齐。
+- `final.data.response` 是权威 `ChatResponse`，包含答案、引用、业务状态及 `tool_trace`；客户端应据此覆盖临时文本。已收到部分答案不代表请求成功。
+- Schema 校验通过后建流返回 HTTP 200，业务错误在 `final.data.http_status`、`final.data.response.code` 和结果状态中表达；空问题同样建流，但 final 表示 `EMPTY_QUESTION` / 400。
+- `retrieval_confidence` 和 `answer_confidence` 当前固定为 `0.0`，不是质量评分。`router_llm_used` 固定为 `false`。
+- `X-Trace-Id` 可由请求传入，响应头与 SSE 信封均提供 trace ID；完整耗时位于 `final.data.total_cost_ms`。客户端断开后不再发送 final/done，也不保存部分 assistant 文本。
 
-## Agent 路由与工具
+完整字段、异常和取消语义见[聊天流式 API](docs/api/chat-streaming.md)。
 
-正常 `/chat/stream` 的确定性 Router action：
+### 检索调试
 
-| action | 路径 |
-| --- | --- |
-| `agent` | 普通问题统一进入 LangChain `create_agent` |
-| `direct_answer` | 由 Answer Composer 生成系统能力说明，不把 Router 的内部 reason 直接暴露为用户回答 |
-| `clarify` | 明确指代不明时追问；完全空问题由 ChatService 在进入 Runtime 前生成 final，业务 http_status 为 400 |
-
-如果 `/chat/stream` 传入 `session_id`，Query Rewrite 会在 Agent Router 之前执行；Router 看到的是改写后的有效问题，响应中的 `data.question` 仍保留原始输入，改写细节记录在 `data.tool_trace` 的 `query_rewrite` step 中。
-
-Router 不调用独立模型，也不解析具体工具 action。普通问题进入 `create_agent` 后，Agent Model 根据可见性 Middleware 绑定的 StructuredTool/Pydantic Schema 选择本地 catalog 工具，执行统一经过 `execute_project_tool`。
-
-## 索引构建与缓存
-
-知识索引写入与 RAG 查询独立运行，持久 Chroma 是共享边界：
-
-```text
-python -m app.rebuild_kb [--force-rebuild]
-→ IndexingService → LangChain Indexing API → Chroma + SQLRecordManager
-
-启动 QA → 读取已有 Chroma → BM25 / embedding query / CrossEncoder → Agent KB tools
+```bash
+curl -X POST http://127.0.0.1:8000/search \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"普通本科四年制专业最长学习年限是多少？","top_k":5}'
 ```
 
-Local/GitHub/Firecrawl/Upload 共用 `mini_rag_chunks_v2`，各有独立 RecordManager namespace。
-Local 文件变化通过显式同步增量处理；chunk 参数、embedding 或索引版本变化触发重建。
-`--force-rebuild` 恢复最新成功 INDEX 对应候选，排除最新成功 REMOVE 来源；不重新抓取外部内容。
-Reranker、Prompt 和回答模型变更不要求重建向量索引。独立 CLI 同步后需重启 QA。
-组合应用 admin INDEX/REMOVE 成功后由 API composition root 刷新查询 runtime。
-MCP 只供知识入库获取来源，永久入库必须经过显式 proposal、approval 和 index。
-详见 [LangChain-native Incremental Indexing](docs/ingestion/langchain-indexing.md)。
+`top_k` 范围为 1–10，省略时使用 `TOP_K`。结果包含来源、chunk ID、片段，以及 BM25、向量、混合和 rerank 分数。该接口的诊断分数门独立于 Agent 的证据选择。
 
-## 日志与可观测性
+## 日志、检查与评测
 
-`/chat/stream` 会为每次请求生成或继承 `trace_id`：
+默认日志位置可通过 `.env` 调整：
 
-- 请求头可传入 `X-Trace-Id`。
-- 响应头返回 `X-Trace-Id`；完整业务耗时位于 `final.data.total_cost_ms`。
-- 每个 SSE 信封及 `final.data.response` 都包含 `trace_id`。
-
-日志文件：
-
-| 文件 | 说明 |
+| 文件 | 内容 |
 | --- | --- |
-| `logs/metrics.jsonl` | 每次聊天的耗时、状态、action、引用数、工具信息、Query Rewrite、LLM 与流事件统计 |
-| `logs/tool_calls.jsonl` | 每次工具调用的输入、输出、耗时和是否成功 |
-| `logs/bad_cases.jsonl` | 模型结构化输出校验失败、引用异常、工具异常、内部异常、索引未就绪等失败样例 |
+| `logs/metrics.jsonl` | 聊天状态、阶段耗时、模型调用及流事件统计 |
+| `logs/tool_audit.jsonl` | 按工具审计策略脱敏、裁剪后的调用记录 |
+| `logs/bad_cases.jsonl` | 模型、工具、引用和运行异常等失败样例 |
 
-## 测试与评测
+### 开发检查
 
-执行与 CI 一致的静态检查和测试：
+后端 CI 执行以下检查；完整 pytest 中包含 PDF 解析测试，CI 会预先准备 Docling 解析模型，再以离线模式运行：
 
 ```bash
 python -m compileall -q app scripts tests
 ruff check app tests scripts
 lint-imports
 python scripts/inspect_agent_runtime.py --check
+python scripts/run_evaluation_baseline.py --validate-only
 python -m pytest -q
 ```
 
-Evaluation Baseline v2 支持 Core Agent、RAG 和可选 Online Web 评测。离线校验同时检查
-Agent 数据合同与当前 65 题 RAG 数据，不调用模型、索引或网络：
+Runtime inspection 也支持 `--format json` 和 `--format mermaid`，只检查图与合同，不调用模型或工具。Import Linter 单独验证模块依赖；职责与排查入口见 [Runtime 维护指南](docs/agent-runtime-maintenance.md)。
+
+前端检查在 `frontend/` 中运行：
 
 ```bash
-python scripts/run_evaluation_baseline.py --validate-only
+npm run typecheck
+npm run test -- --run
+npm run build
 ```
 
-Agent Evaluation 检查最终 action/status、必要工具能力、答案关键信息、引用来源和本轮
-真实 evidence grounding；仅 multi-tool/recovery case 约束工具顺序，多轮按最终结果评测。
+`npm run preview` 在 <http://localhost:4173> 预览构建结果，并沿用 Vite API 代理。构建出的 `dist/` 需要另行静态托管和配置 API 反向代理；当前 Docker 镜像只启动后端。
 
-默认真实运行 Core Agent 和本地 RAG；Online 工具与 LLM Judge 必须显式启用：
+### 统一评测
+
+正式入口为 `scripts/run_evaluation_baseline.py`，默认数据包含 25 个 Core Agent case、3 个可选 Online case 和 65 道 RAG 题。`--validate-only` 只校验数据合同，不加载模型或索引。
+
+真实运行需要可用模型、索引、本地权重、干净工作区和新的输出目录：
 
 ```bash
 python scripts/run_evaluation_baseline.py \
-  --agent-cases data/eval/agent_eval_cases_v2.json \
-  --rag-eval-file data/eval/rag_eval_questions_v2_semantic_fixed.json \
-  --output-dir outputs/evaluation_baseline_v2/initial-core \
+  --output-dir outputs/evaluation_baseline_v2/core-run \
   --retrieval-k 5
 ```
 
-`retrieval-k` 只控制 RAG 指标的评分 cutoff，不传入 Agent Tool Call。
+默认运行 Core Agent + RAG；`--agent-only` / `--rag-only` 限定题集，`--include-online` 开启真实 Web case。语义 Judge 需显式开启，例如：
 
-每次运行会生成 commit/数据/索引/模型/Prompt/工具合同 manifest、Prediction v3 与评分 cutoff、Agent/RAG 指标、覆盖矩阵、多原因失败报告和 Markdown 摘要。RAG 报告
-headline 指标为 prediction coverage、retrieval Gold Recall@K、reference Gold Recall
-及可选 DeepEval GEval 的 Answer Correctness；Judge coverage 单独表示判分覆盖率。工作区不干净时默认拒绝正式
-运行；实验运行必须显式使用 `--allow-dirty` 并会被标记。两轮结果可比较：
+```bash
+python scripts/run_evaluation_baseline.py \
+  --rag-only --use-llm-judge --judge-model deepseek-chat \
+  --output-dir outputs/evaluation_baseline_v2/rag-judge
+```
+
+当前使用 **Prediction Schema v3**：RAG 经生产 `ChatService.stream → stream_agent → create_agent` 链路，每题使用空 session 和 `rag_only`。`retrieved_chunk_ids` 记录有序去重的 KB 观察，`reference_chunk_ids` 记录最终通过校验的引用。`--retrieval-k` 仅控制评分 cutoff，不传入 Agent 工具。
+
+主要指标为 prediction coverage、retrieval Gold Recall@K、reference Gold Recall，以及可选的 Answer Correctness。Judge 关闭或失败时正确性分数为 `None`，判分覆盖率单独报告。历史旧工作流分数不能直接作为当前实现成绩。
+
+唯一机器可读汇总为 `baseline_summary.json`，运行还保存 manifest、逐题结果、失败记录和 Markdown 报告。比较已有运行：
 
 ```bash
 python scripts/compare_evaluation_runs.py \
@@ -658,209 +349,86 @@ python scripts/compare_evaluation_runs.py \
   --candidate outputs/evaluation_baseline_v2/run-b
 ```
 
-完整说明见 [Evaluation Baseline v2](docs/evaluation/baseline-v2.md)。RAG prediction、
-Judge、检索打分和报告实现都属于 `scripts/evaluation/` 内部包，不提供独立兼容
-CLI。需要语义级答案正确性评分时，由统一 Runner 显式启用 LLM Judge：
-
-```bash
-python scripts/run_evaluation_baseline.py \
-  --output-dir outputs/evaluation_baseline_v2/rag-llm-judge \
-  --rag-only \
-  --use-llm-judge \
-  --judge-model deepseek-chat
-```
-
-整次运行的唯一机器可读汇总为 `baseline_summary.json`；Agent 明细保留 `agent/per_case.jsonl`。
-RAG 输出保留 `predictions.csv`、`prediction_failures.jsonl` 和 `per_question_report.csv`
-（亦为 Judge 缓存来源），不再生成重复 summary。比较先检查 manifest 中的运行控制条件，
-缺失或不兼容默认失败；Git commit、Prompt 和工具合同变化允许比较。
-显式 `--allow-incompatible` 可强制比较，JSON 和 Markdown 会标记不兼容及原因。
-正式 Prediction 只接受 Schema v3，保存观察/引用 chunk IDs 与安全计数；旧 v1/v2 输入
-不再读取。Runtime 失败写入 sidecar，缺失预测降低 coverage、召回计零，Answer Correctness 保持 `None`。
-专项表格题集和 `table_diagnostics.py` 属于 diagnostics，不参与主 Baseline。
-
-Core 不评测真实联网能力；Judge 关闭时不具备完整语义答案质量判断；Online 结果受
-外部服务和内容变化影响，不适合作为稳定 CI 门禁。
-
-架构合同由 `inspect_agent_runtime.py --check` 检查。没有可用模型、网络或 API Key 时
-只运行离线验证与 mock 回归测试，不把环境失败或空结果当作正式质量数据。
-
-## 适合面试讲解的设计取舍
-
-- 为什么不用纯向量检索，而是 BM25 + Embedding：中文制度文档里经常出现政策名、条款号、年份、专业名称等精确关键词，BM25 对这些字面匹配更敏感；Embedding 能补足语义相近但表述不同的问题，两者混合比单一路径更稳。
-- 为什么引入 reranker：初召回阶段更关注“找全”，排序可能受关键词密度或向量相似度误差影响；CrossEncoder 可以基于 query-chunk 交互重新判断相关性，把更适合作答的证据排到前面。
-- 为什么需要引用绑定：RAG 问答不能只给自然语言答案，还需要能追溯到文件、chunk 和片段，便于用户核验，也便于排查模型是否引用了错误证据。
-- 为什么证据不足时拒答：制度类问答对准确性要求高，低相关度证据强行生成容易造成误导；系统通过阈值、引用绑定和模型输出检查，在证据不足时返回 `no_evidence`。
-- 为什么普通请求默认进 Agent：Router 看不到 Provider 的动态工具 Schema，若它先按自然语言猜成 RAG，新工具或换一种说法就可能永远到不了 Agent。Agent-first 让具体工具选择只发生在动态 Schema 已绑定之后。
-- 为什么 Query Rewrite 只对追问触发：完整问题直接进入检索可以减少额外 LLM 成本；短追问和指代问题才结合历史改写，能在成本和多轮体验之间取得平衡。
-- 为什么要做离线评测：RAG 优化不能只看单个 demo，需要用覆盖多场景的评测集持续观察召回、答案关键点、拒答行为和 forbidden 命中情况，形成可复现的优化闭环。
-
-## 项目结构
-
-```text
-.
-├── app/
-│   ├── main.py                  # 正式 ASGI 入口：app.main:app
-│   ├── api/
-│   │   ├── application.py       # FastAPI 组合根、lifespan 和 Router 注册
-│   │   ├── chat.py              # /chat/stream HTTP Router
-│   │   ├── streaming.py         # SSE 信封、白名单投影与编码
-│   │   ├── health.py            # 轻量进程存活检查
-│   │   ├── middleware.py        # HTTP trace 和端到端耗时
-│   │   ├── http_logging.py      # 显式 Uvicorn access-log 适配
-│   │   ├── schemas.py           # 请求、响应和引用数据模型
-│   │   ├── diagnostics.py       # 检索、知识库和指标诊断接口
-│   │   ├── responses.py         # ChatOutcome 到 HTTP Schema 的单一路径
-│   │   └── lifecycle.py         # RAG/Agent 初始化和 Runtime 关闭
-│   ├── contracts/
-│   │   └── chat.py              # 唯一 Chat Result/HTTP/API/metrics 状态策略
-│   ├── agent/
-│   │   ├── __init__.py          # Agent 包入口，不聚合业务函数
-│   │   ├── router.py            # 确定性入口路由
-│   │   ├── rules.py             # Router 问题规范化规则
-│   │   ├── query_rewrite.py     # 多轮追问识别和 Query Rewrite
-│   │   ├── state.py             # Observation 与内部 Agent 状态
-│   │   ├── results.py           # Framework 输出到 AgentRunResult 的唯一构造/校验边界
-│   │   ├── answer.py            # 最终答案合成
-│   │   ├── framework_agent.py   # 唯一 create_agent Agent Loop 构建
-│   │   ├── framework_middleware.py # 项目特有 Agent 治理 Middleware
-│   │   ├── framework_tools.py   # 动态框架工具与 Context 适配
-│   │   ├── tool_events.py       # Framework 事件到 observation/trace/metrics 的投影
-│   │   ├── guardrails.py        # 治理规则、预算、错误分类、Stop Reason 与指纹
-│   │   ├── runtime.py           # 请求准备、Router 与 Agent 缓存
-│   │   └── streaming.py         # 直接 astream 与安全 Agent 事件投影
-│   ├── indexing/               # 独立索引写侧：service/langchain/chunking/manifest
-│   ├── rag/
-│   │   ├── __init__.py          # RAG 包说明
-│   │   ├── runtime.py           # 只读索引加载、查询状态与检索 API
-│   │   ├── retrieval.py         # 混合召回与重排
-│   │   ├── policy.py            # 诊断检索分数门
-│   │   ├── chroma.py            # ChromaDB 持久化
-│   │   └── debug.py             # 文档和 chunk 调试查询
-│   ├── tools/
-│   │   ├── __init__.py          # 包说明；业务从具体职责模块导入
-│   │   ├── result.py            # 统一成功/失败返回协议
-│   │   ├── knowledge_base.py    # 文档、chunk 和检索工具
-│   │   ├── context.py           # 请求级工具调用上下文
-│   │   ├── contracts.py         # ToolSpec、风险和审计输出契约
-│   │   ├── catalog.py           # 按配置缓存的不可变本地 ToolSpec catalog
-│   │   ├── execution.py         # 只读权限、审计与输出校验；原生异步调度和重试
-│   │   ├── web_search.py        # DDGS 调用、结果规范化和公开异常映射
-│   │   ├── web_download.py      # HTML/PDF 共用的 hardened 有限下载适配
-│   │   ├── web_fetch.py         # HTML/XHTML/纯文本的 Trafilatura 提取
-│   │   ├── web_pdf_fetch.py     # PDF magic、pypdf 页范围与元数据提取
-│   │   ├── mcp/                 # 入库 MCP 配置、discovery、来源调用与安全序列化
-│   │   └── schemas.py           # 工具参数模型
-│   ├── services/
-│   │   ├── chat_models.py       # 框架无关请求、结果和内部上下文
-│   │   ├── chat_stream_models.py # 框架无关流事件合同
-│   │   ├── chat_service.py      # 流式 Query Rewrite、Runtime、状态策略和会话编排
-│   │   └── chat_telemetry.py    # metrics、bad case、stream accounting 和调用链收尾
-│   ├── llm/                     # 统一模型工厂、调用网关、Schema 和错误类型
-│   ├── storage/                 # SQLite 会话历史和 ingestion 存储
-│   ├── observability/
-│   │   ├── __init__.py          # trace_id 生成
-│   │   └── metrics.py           # 指标、bad case 和 trace 汇总
-│   ├── common/logging.py        # 框架无关的公共日志构造
-│   ├── prompts.py               # RAG、问题拆分和评测 Prompt
-│   └── config.py                # 环境变量配置
-├── data/
-│   ├── kb/                      # 默认知识库文档目录
-│   ├── eval/                    # v1/v2 Agent 与 RAG 评测数据、示例阈值
-│   ├── chroma/                  # ChromaDB 持久化目录
-│   └── manifest/                # 索引构建 manifest
-├── scripts/
-│   ├── run_evaluation_baseline.py # Evaluation Baseline v2 统一入口
-│   ├── compare_evaluation_runs.py # 两轮 v2 结果比较
-│   ├── smoke_test_mcp_tools.py  # GitHub / Firecrawl 来源 smoke
-│   ├── inspect_agent_runtime.py # CI 架构合同检查
-│   └── evaluation/              # Runner、Agent/RAG evaluator、Judge 与报告内部包
-├── frontend/                    # Vue 3 + TypeScript Demo / 管理界面
-│   ├── src/                     # 页面、composable 与薄 API client
-│   └── vite.config.ts           # 开发 / 本地预览代理与 Vitest 配置
-├── docs/
-│   ├── architecture/
-│   │   ├── current-system.md    # 当前实现的主要架构入口
-│   │   └── module-boundaries.md # 可执行模块依赖方向
-│   ├── evaluation/
-│   │   └── baseline-v2.md       # v2 数据、运行、输出与比较合同
-│   ├── api/
-│   │   └── chat-streaming.md     # SSE HTTP、事件、安全与断开合同
-│   └── history/
-│       └── agent-evolution-2026.md # PR0～PR16 历史演进归档
-├── tests/                       # 单元测试和接口测试
-├── logs/                        # metrics、bad_cases、tool_calls
-├── outputs/                     # 评测和日志汇总输出
-├── .github/workflows/tests.yml  # 静态检查、评测数据校验和 pytest CI
-├── .importlinter                # 可执行模块依赖合同
-├── .env.example
-├── Dockerfile
-├── docker-compose.yml
-├── requirements.lock            # Python 3.12 已验证的固定依赖
-├── requirements.txt
-├── ruff.toml
-└── README.md
-```
-
-> 说明：旧的根目录转发模块已经删除，项目统一使用上面的领域包路径。
+正式运行默认拒绝 dirty 工作区；`--allow-dirty` 仅用于带标记的实验。比较先校验 manifest 的可比性，Online 结果需单独解释。完整合同见 [Evaluation Baseline](docs/evaluation/baseline-v2.md)和[评测启动说明](scripts/evaluation/README.md)。
 
 ## Docker
 
-构建镜像：
+[`docker-compose.yml`](docker-compose.yml) 当前包含 NVIDIA GPU 设备预留，运行需要相应驱动与 NVIDIA Container Toolkit；CPU 环境需先移除该设备预留。镜像使用 Python 3.12 和 `requirements.lock`。
+
+准备 `.env` 后，先构建镜像。Compose 的模型缓存位于独立命名卷 `model-cache`，宿主机 `.cache/` 不会自动映射进去，可在容器中显式下载：
 
 ```bash
-docker build -t agent-rag-demo:latest .
+docker compose build
+docker compose run --rm -T rag-api python - <<'PY'
+from huggingface_hub import snapshot_download
+from app.config import get_settings
+
+settings = get_settings()
+for model_name in (settings.embedding_model_name, settings.rerank_model_name):
+    snapshot_download(repo_id=model_name, cache_dir=str(settings.model_cache_dir))
+PY
 ```
 
-推荐运行方式：
+现有 Compose 挂载了知识目录、Chroma、manifest、日志和模型缓存，**未挂载默认的 `data/app.sqlite`**。需要保存会话和外部入库历史时，应在首次运行前为服务补充 SQLite 目录挂载，例如在本地 `docker-compose.override.yml` 中配置：
+
+```yaml
+services:
+  rag-api:
+    environment:
+      SQLITE_DB_PATH: /app/data/runtime/app.sqlite
+    volumes:
+      - ./data/runtime:/app/data/runtime
+```
+
+已有 SQLite 数据时应先迁移到该目录；索引同步容器与 API 容器需使用相同的持久化配置。随后同步并启动：
 
 ```bash
+docker compose run --rm rag-api python -m app.rebuild_kb
 docker compose up -d
+docker compose logs -f rag-api
 ```
 
-如果不用 compose，至少挂载知识库、索引和模型缓存目录：
+容器中的本地模型服务地址需使用可达的宿主机或服务名；例如宿主机 Ollama 通常通过 `host.docker.internal:11434` 访问。修改本地知识后先同步，再用 `docker compose restart rag-api` 加载索引。更多运维命令见 [DEPLOY.md](DEPLOY.md)。
 
-```bash
-docker run --rm -p 8000:8000 --env-file .env \
-  -e RAG_FILE_PATH=/app/data/kb \
-  -e INDEX_STORE_DIR=/app/data/manifest \
-  -e CHROMA_PERSIST_DIR=/app/data/chroma \
-  -e HF_HOME=/cache/huggingface \
-  -e MODEL_CACHE_DIR=/cache/huggingface/hub \
-  -e SENTENCE_TRANSFORMERS_HOME=/cache/sentence-transformers \
-  -v "$(pwd)/data/kb:/app/data/kb:ro" \
-  -v "$(pwd)/data/chroma:/app/data/chroma" \
-  -v "$(pwd)/data/manifest:/app/data/manifest" \
-  -v "$(pwd)/logs:/app/logs" \
-  -v agent-rag-model-cache:/cache \
-  --add-host=host.docker.internal:host-gateway \
-  agent-rag-demo:latest
+## 目录与文档导航
+
+```text
+app/
+├── api/             # FastAPI 路由、生命周期和 SSE 适配
+├── services/        # 聊天、会话、状态与 telemetry 编排
+├── agent/           # Router、create_agent、治理、证据校验和正文流
+├── tools/           # 本地工具、输出合同、执行治理及入库 MCP client
+├── ingestion/       # 文档解析、结构、候选与审批合同
+├── sources/         # Upload / GitHub / Firecrawl 来源适配
+├── indexing/        # 切分、LangChain 增量索引与 manifest
+├── rag/             # 索引读取、混合检索、重排与诊断
+├── llm/             # 按角色配置的模型工厂与结构化调用网关
+├── storage/         # SQLite 与 Chroma 存储边界
+├── contracts/       # 聊天状态和工具模式合同
+├── observability/   # metrics 与失败日志
+├── config.py        # AppSettings
+└── rebuild_kb.py    # 显式索引同步 CLI
+frontend/            # Vue 3 + TypeScript 界面与测试
+scripts/             # Runtime 检查、统一评测和来源 smoke
+tests/               # 后端单元、合同与集成测试
+data/eval/           # 版本化评测数据
+docs/                # 架构、API、入库、评测与历史决策
 ```
 
-## 后续优化方向
+| 主题 | 文档 |
+| --- | --- |
+| 系统职责与依赖边界 | [当前系统架构](docs/architecture/current-system.md)、[模块边界](docs/architecture/module-boundaries.md) |
+| Runtime 维护与工具声明 | [维护指南](docs/agent-runtime-maintenance.md)、[原生工具声明](docs/tools/native-tool-declaration.md) |
+| SSE 事件与取消语义 | [聊天流式 API](docs/api/chat-streaming.md) |
+| 知识运营与来源接入 | [运营 API](docs/ingestion/operations-api.md)、[MCP 来源](docs/tools/mcp-client.md)、[入库合同](docs/ingestion/knowledge-ingestion-contract.md) |
+| 结构化解析与索引 | [结构化文档](docs/ingestion/structured-documents.md)、[增量索引](docs/ingestion/langchain-indexing.md) |
+| 评测与数据 | [Baseline 合同](docs/evaluation/baseline-v2.md)、[评测数据](data/eval/README.md) |
+| 历史设计决策 | [ADR](docs/adr/)、[Agent 演进归档](docs/history/agent-evolution-2026.md) |
 
-- 优化 `partial_answer` 场景的 prompt，让模型在只能回答部分问题时更清晰地说明已回答和未覆盖部分。
-- 强化新旧政策冲突判断，提升 `trap` 类问题中对时间、版本和政策优先级的识别能力。
-- 继续优化 Query Rewrite 对跨轮限定、复杂指代和历史冲突的处理能力。
-- 在现有编译、Ruff、Import Linter、Runtime inspection、评测数据校验和 pytest
-  基础上增加 Docker 构建检查；真实基线经过人工审查后再决定是否加入回退阈值门禁。
+## 已知边界
 
-## 已知限制
-
-- 当前支持 `.txt`、`.md`、`.pdf`、`.docx`；PDF 依赖可提取文本，暂不内置 OCR，旧版 `.doc` 和图片文件暂不支持。
-- 回答/Agent 模型、追问改写模型、拆分模型和 Judge 模型都按 OpenAI-compatible Chat Completions 格式调用。
-- embedding 和 rerank 模型首次加载较慢，可能需要下载权重。
-- 多轮历史使用本地 SQLite 持久化，适合单实例运行；多实例部署时需要额外规划共享存储和并发策略。
-- Agent 已通过唯一的 `create_agent` 路径支持 Registry-driven 多轮工具观察、同轮多个工具调用和参数修正，并具备错误次数、重复调用/错误、总耗时和同批 fail-closed 防护。
-- 当前尚未实现 RAG JSON token streaming、Interrupt/Resume、SQL 写工具或多 Agent；入库 MCP 不支持 Server、stdio、OAuth、Resources 或 Prompts。
-- retrieval_confidence 和 answer_confidence 是启发式估计，不等同于严格概率。
-
-### Agentic RAG 评估合同（v3）
-
-RAG 预测经 `ChatService.stream → stream_agent → create_agent` 执行，使用 `RAG_ONLY` 与
-`knowledge_base:read`，通过 `search_knowledge_base`、`search_document`、`get_chunk_context` 获取 KB 证据。每题空 session；
-Agent 自主决定每轮 query/top_k。`retrieved_chunk_ids` 是按观察顺序去重的全部 KB 证据，
-`reference_chunk_ids` 是最终通过 grounding 的引用。`--retrieval-k` 仅是评分 cutoff。
-正式评分只保留 v3 观察/引用 Recall；Judge 与评分权重保留。
-Prediction Schema v3 is a new baseline generation contract.
-Raw scores are not strictly comparable to historical v2 workflow scores.
+- 当前不支持 OCR、旧版 `.doc`、图片知识入库或网页 JavaScript 渲染；复杂表格与标题识别受解析器输出限制。
+- 证据校验保证引用来自本轮有效工具结果，不能替代对模型正文事实正确性的评测；两个 confidence 字段目前只保留兼容值。
+- SQLite、本地 Chroma 和进程内索引快照适合当前单实例部署，多实例需另行规划存储、写入并发和索引刷新。
+- 当前没有 Interrupt/Resume、多 Agent 或 SQL 写工具；MCP client 仅开放受治理的入库来源调用。
+- Embedding、reranker 和 PDF 解析模型需要预先准备相应资源；联网工具及真实模型评测受服务可用性、费用与外部内容变化影响。
