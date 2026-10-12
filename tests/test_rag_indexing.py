@@ -429,9 +429,11 @@ def test_local_and_upload_keep_same_structure_and_table_aware_chunks(tmp_path, m
     upload_chunks = indexing.candidate_to_langchain_documents(uploaded_candidate, chunk_size=1000, chunk_overlap=0)
     assert [chunk.page_content for chunk in documents] == [chunk.page_content for chunk in upload_chunks]
     assert [chunk.metadata["element_type"] for chunk in documents] == ["text", "table", "text"]
-    assert documents[0].page_content == (
+    assert all(chunk.metadata["title_path"] == path.name for chunk in [*documents, *upload_chunks])
+    first_paragraph = (
         "段落 A" if file_type == "docx" else "Paragraph A: registration requirements."
     )
+    assert documents[0].page_content == f"[标题路径] {path.name}\n\n{first_paragraph}"
     assert documents[1].metadata["table_id"] == "b1"
     assert ("：年满18岁" if file_type == "docx" else "：Age 18+") in documents[1].page_content
     assert all("structured_content" not in document.metadata for document in documents)
