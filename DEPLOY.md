@@ -62,10 +62,9 @@ LLM_API_KEY=你的真实 key
 ## 5.启动服务
 推荐使用 docker compose 启动。`docker-compose.yml` 已经把知识库、ChromaDB 索引、manifest、日志和模型缓存挂载到了宿主机，重启容器不会丢缓存。
 
-先缓存模型、显式同步知识索引，再启动 QA；启动过程只加载索引：
+准备好本地 embedding/rerank 模型缓存后，显式同步知识索引，再启动 QA；启动过程只加载索引：
 
 ```bash
-docker compose run --rm rag-api python scripts/cache_models.py
 docker compose run --rm rag-api python -m app.rebuild_kb
 ```
 

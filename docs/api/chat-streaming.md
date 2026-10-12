@@ -134,26 +134,6 @@ Runtime 内部的 `llm_usage` 通知仅更新 Service telemetry，不进入公�
 第三方同步 handler 的调用以及 provider 请求采用 best-effort cancel，不保证立刻终止；
 Runtime 同时关闭正在读取的模型异步流，断开后不会继续向客户端输出。
 
-## 手动冒烟
-
-先启动服务：
-
-```bash
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-```
-
-再运行只打印安全摘要的客户端：
-
-```bash
-python scripts/smoke_test_chat_stream.py \
-  --base-url http://127.0.0.1:8000 \
-  --question "缓考应该如何办理？"
-```
-
-该脚本检查 content type、sequence、SSE id、trace ID、`final` 和 `done`；不会打印
-完整答案、工具原始结果、网页/PDF/chunk 正文或凭据。它是人工真实服务检查，不在
-Pytest/CI 中运行。
-
 ## Vue Demo
 
 `frontend/src/views/ChatView.vue` 只使用本接口，POST SSE 由
@@ -162,11 +142,3 @@ Pytest/CI 中运行。
 没有 delta 的请求继续显示进度并等待 `final`。中断、切换页面或取消生成不会
 自动重发 POST；用户可显式重新发送。
 流收到 final 后若未正常 done，保留 final 并显示中断错误。新建对话会中止旧请求并清空消息。
-
-## 性能测量
-
-`scripts/benchmark_chat_api.py` 使用当前环境的 `httpx-sse` 消费本接口。
-`latency_ms` 从发起 POST 计时到收到合法 `done`，业务码、状态、答案长度和引用数
-取自 `final.data.response`。`http_status` 记录实际 HTTP 传输状态；空问题为 200，
-业务失败仍按 `EMPTY_QUESTION` 统计。缺失 final/done、非法终止顺序或流错误均记为失败，
-不会自动重试请求。

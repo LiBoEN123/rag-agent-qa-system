@@ -158,16 +158,6 @@ TOOL_DEFAULT_PERMISSIONS=knowledge_base:read,web:search
 
 搜索 query 会发送到外部搜索服务，可能受搜索服务限流、地区设置和网络条件影响。搜索摘要可能不准确、过时或含恶意指令，输出始终带有 `content_is_untrusted=true`；模型不得执行摘要中的命令，使用搜索信息回答时应列出实际使用的标题和 URL。代理配置不会写入工具输出或审计。
 
-真实网络验证只通过维护者手动运行，不进入 Pytest/CI：
-
-```bash
-python scripts/smoke_test_online_tools.py search \
-  --query "LangGraph latest release" \
-  --max-results 3
-```
-
-脚本默认经过 `StructuredTool → execute_project_tool → DDGS` 生产链路，不调用 Agent 模型、不读取或修改知识库；缺少 `web:search` 权限时会直接给出启用提示。
-
 ## Web Fetch
 
 `web_fetch` 用于已知具体公开 URL 后读取单个网页正文；通常由 Agent 在 `web_search` 返回候选标题、URL 和摘要后选择调用，也可读取用户明确提供的 URL。下载层固定使用 `requests-hardened==1.3.0` 做 SSRF IP 过滤和逐跳安全重定向，正文提取固定使用 `trafilatura==2.1.0`，而权限、总体超时、一次有限重试、审计和输出校验仍由现有 `ToolRuntime` 负责。`search_knowledge_base` 则只读取本地受控知识库并进入 RAG 引用路径。
@@ -184,16 +174,6 @@ URL、页面元数据和正文全部是不可信输入。输出固定包含 `con
 TOOL_DEFAULT_PERMISSIONS=knowledge_base:read,web:search,web:fetch
 ```
 
-真实网络验证仅由维护者手动执行，不进入 Pytest/CI：
-
-```bash
-python scripts/smoke_test_online_tools.py fetch \
-  --url "https://example.com/" \
-  --max-chars 4000
-```
-
-脚本默认经过 `StructuredTool → execute_project_tool → requests-hardened → Trafilatura`，只显示有限正文预览和安全元数据，不显示代理、headers、cookies 或完整正文。
-
 ## Web PDF Fetch
 
 `web_pdf_fetch` 用于读取已知公开 PDF 的指定连续页范围。它与 `web_fetch` 保持明确分工：`web_fetch` 只处理 HTML、XHTML 和纯文本并继续拒绝 PDF；`web_pdf_fetch` 只处理 PDF，并使用项目已经锁定的 `pypdf==6.14.2` 提取数字文本。两者共用 `app/tools/web_download.py` 中基于 `requests-hardened==1.3.0` 的下载、逐跳重定向、可信代理、streaming 和资源关闭边界；默认模式实施本地 SSRF 校验，显式受信代理模式则按上一节所述委托网络策略。
@@ -203,18 +183,6 @@ python scripts/smoke_test_online_tools.py fetch \
 正文按实际页码返回 `[Page N]` 边界，空白页不列入 `page_numbers`，title、author 和 subject 只做有限单行规范化。加密、损坏、页数超限和无可提取文本的 PDF 会返回稳定非重试错误；扫描件/图片型 PDF 不自动 OCR，也不接收密码、提取图片/附件/脚本或调用 LLM 清洗。
 
 PDF 文本和元数据固定标记 `content_is_untrusted=true`，只能作为回答参考；模型不得执行 PDF 中的命令或把内容视为 system/developer/tool 指令，回答时应注明 `final_url` 和相关页码。`web_pdf_fetch` 要求 `web:fetch` 权限，经过普通 `StructuredTool → execute_project_tool → handler → ToolMessage` 链路；它不进入本地 RAG、不写 ChromaDB/BM25，其 Document 在被最终结构化回答实际引用后，按现有公开字段投影为 PDF references。
-
-真实网络验证仅由维护者手动执行，不进入 Pytest/CI：
-
-```bash
-python scripts/smoke_test_online_tools.py pdf \
-  --url "https://example.com/document.pdf" \
-  --start-page 1 \
-  --max-pages 3 \
-  --max-chars 8000
-```
-
-脚本默认经过 `StructuredTool → execute_project_tool → requests-hardened → pypdf`，只显示安全有限 URL、页码、长度和正文预览，不显示代理、headers、PDF bytes 或完整正文。
 
 ## Agent Runtime 检查
 
@@ -281,10 +249,9 @@ copy .env.example .env
 `trafilatura==2.1.0` 基础包；未安装这些依赖的 dev、docs、eval、all、MCP
 等 extras，也不需要 `langchain-community` 包装。
 
-将知识库文档放到 `data/kb/`，然后编辑 `.env` 中的模型配置。先缓存模型并同步索引，再启动服务：
+将知识库文档放到 `data/kb/`，然后编辑 `.env` 中的模型配置。准备好本地 embedding/rerank 模型缓存后，同步索引并启动服务：
 
 ```bash
-python scripts/cache_models.py
 python -m app.rebuild_kb
 uvicorn app.main:app --reload
 ```
@@ -646,14 +613,6 @@ MCP 只供知识入库获取来源，永久入库必须经过显式 proposal、a
 | `logs/tool_calls.jsonl` | 每次工具调用的输入、输出、耗时和是否成功 |
 | `logs/bad_cases.jsonl` | 模型结构化输出校验失败、引用异常、工具异常、内部异常、索引未就绪等失败样例 |
 
-日志汇总脚本：
-
-```bash
-python scripts/summarize_logs.py
-```
-
-默认读取 `logs/metrics.jsonl` 和 `logs/bad_cases.jsonl`，并将汇总结果写到 `outputs/week9_summary.md`。
-
 ## 测试与评测
 
 执行与 CI 一致的静态检查和测试：
@@ -723,25 +682,8 @@ RAG 输出保留 `predictions.csv`、`prediction_failures.jsonl` 和 `per_questi
 Core 不评测真实联网能力；Judge 关闭时不具备完整语义答案质量判断；Online 结果受
 外部服务和内容变化影响，不适合作为稳定 CI 门禁。
 
-HTTP 性能测试是独立入口；`concurrency=1` 即串行基线，问题只从 cases 文件读取：
-
-```bash
-python scripts/benchmark_chat_api.py \
-  --base-url http://127.0.0.1:8000 \
-  --cases data/eval/performance_cases.json \
-  --concurrency 1,2,3,5 \
-  --repeats 5 \
-  --warmup 1 \
-  --timeout 120 \
-  --output-dir outputs/performance/run-001
-```
-
-它只生成 `requests.jsonl`、`summary.json` 和 `summary.md`。真实外部工具连通性使用
-`smoke_test_online_tools.py` 的 `search`、`fetch`、`pdf` 子命令；模型供应商 Tool
-Calling 协议单独使用 `smoke_test_agent_tool_calling.py`。两者用途不同，且都不进入
-Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行日志由
-`summarize_logs.py` 汇总。没有可用模型、网络或 API Key 时只运行离线验证与 mock
-回归测试，不把环境失败或空结果当作正式质量数据。
+架构合同由 `inspect_agent_runtime.py --check` 检查。没有可用模型、网络或 API Key 时
+只运行离线验证与 mock 回归测试，不把环境失败或空结果当作正式质量数据。
 
 ## 适合面试讲解的设计取舍
 
@@ -830,14 +772,8 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 ├── scripts/
 │   ├── run_evaluation_baseline.py # Evaluation Baseline v2 统一入口
 │   ├── compare_evaluation_runs.py # 两轮 v2 结果比较
-│   ├── benchmark_chat_api.py    # /chat/stream 串行与并发性能测试
-│   ├── smoke_test_online_tools.py # Online Tool 真实连通性子命令
-│   ├── smoke_test_agent_tool_calling.py # 模型 Tool Calling 协议
-│   ├── smoke_test_chat_stream.py # /chat/stream 安全摘要冒烟客户端
 │   ├── smoke_test_mcp_tools.py  # GitHub / Firecrawl 来源 smoke
 │   ├── inspect_agent_runtime.py # CI 架构合同检查
-│   ├── summarize_logs.py        # metrics/bad_cases 日志汇总
-│   ├── cache_models.py          # 预下载 embedding/rerank 模型
 │   └── evaluation/              # Runner、Agent/RAG evaluator、Judge 与报告内部包
 ├── frontend/                    # Vue 3 + TypeScript Demo / 管理界面
 │   ├── src/                     # 页面、composable 与薄 API client

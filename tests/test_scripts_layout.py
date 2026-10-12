@@ -9,14 +9,8 @@ SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 PUBLIC_CLIS = {
     "run_evaluation_baseline.py",
     "compare_evaluation_runs.py",
-    "benchmark_chat_api.py",
-    "smoke_test_online_tools.py",
-    "smoke_test_agent_tool_calling.py",
-    "smoke_test_chat_stream.py",
     "smoke_test_mcp_tools.py",
     "inspect_agent_runtime.py",
-    "cache_models.py",
-    "summarize_logs.py",
 }
 
 

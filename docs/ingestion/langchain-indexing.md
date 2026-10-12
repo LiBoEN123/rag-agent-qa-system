@@ -12,10 +12,9 @@ Local files / approved external candidate
 QA startup → load existing Chroma → chunks / BM25 / query embedding / CrossEncoder
 ```
 
-先缓存模型并同步知识索引，再启动 QA：
+准备好本地 embedding/rerank 模型缓存后，同步知识索引，再启动 QA：
 
 ```bash
-python scripts/cache_models.py
 python -m app.rebuild_kb
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
