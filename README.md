@@ -6,8 +6,8 @@
 [当前系统架构](docs/architecture/current-system.md)。
 架构演进见 [2026 年 Agent 演进归档](docs/history/agent-evolution-2026.md)，已接受的
 Model Governance 边界见 [ADR 0006](docs/adr/0006-framework-native-agent-runtime.md)。
-外部只读工具接入见
-[受治理的 MCP Client 工具源](docs/tools/mcp-client.md)。
+外部知识入库来源接入见
+[MCP 知识入库来源](docs/tools/mcp-client.md)。
 
 本项目基于 FastAPI 构建，围绕中文知识库问答场景实现了一条完整的 RAG 工程链路：读取本地 `.txt` / `.md` / `.pdf` / `.docx` 文档，按文档结构切分 chunk，构建 BM25 + SentenceTransformer Embedding 混合检索索引，使用 CrossEncoder reranker 重排候选证据，再通过 OpenAI-compatible Chat Completions 模型生成带引用的答案。聊天通过唯一公开入口 `/chat/stream` 执行 LangChain `create_agent` 模型—工具循环；传入 `session_id` 时还会结合 SQLite 中最近的会话历史对短追问做 Query Rewrite。
 
@@ -19,10 +19,10 @@ Model Governance 边界见 [ADR 0006](docs/adr/0006-framework-native-agent-runti
 - ChromaDB 持久化：chunk 文本、metadata 和 embedding 持久化保存，服务重启可复用索引缓存。
 - 普通 Python 入口 Router：由 Agent Runtime 在每次调用时执行一次，只处理空问题、少量稳定直答和明确澄清；其他自然语言请求统一进入 `agent`，具体工具由 Agent Model 根据当前请求可见的动态 Tool Schema 选择。
 - 框架原生 Agent Runtime：直接执行 LangChain `create_agent` 返回的 CompiledStateGraph，由框架管理唯一的模型—工具循环、参数校验、ToolMessage 和调用上限。
-- 权限感知的动态工具发现：本地 Provider 按 `required_permissions` 过滤 Registry tools；可选 MCP Provider 通过 Server 默认可见性或显式 `mcp:<server>` 授权过滤启动期缓存的 adapter tools，两者由同一 Middleware 注入模型和执行层。
+- 权限感知的工具可见性：Agent 仅使用本地 StructuredTool，Middleware 按 `tool_mode` 与 `required_permissions` 过滤知识库和 Web 工具。
 - Agent 循环防护：工具错误总数、连续相同调用、连续相同错误和模型/工具累计耗时均有独立预算；终止错误对同批后续调用 fail-closed，并补齐关联 ToolMessage。
 - 多轮追问改写：同一 `session_id` 下通过 SQLite 保留最近会话历史，短追问和指代问题会先改写成独立检索问题。
-- 工具调用：支持知识库检索、公开网页搜索与受治理的正文提取、文档工具，以及默认关闭的 Streamable HTTP MCP Client 工具源。
+- 工具调用：Agent 支持知识库检索、文档发现、公开网页搜索和正文提取；MCP 仅服务 GitHub / Firecrawl 知识入库。
 - 引用绑定和拒答机制：模型声明的 evidence ID 经 grounding 校验后投影为真实引用；未知 ID 失败关闭。
 - 流式聊天：唯一公开入口 `POST /chat/stream`，响应 `Content-Type: text/event-stream`，提供 progress、tool、安全答案增量和权威 final SSE 事件。
 - 可观测性：每次聊天请求记录 `trace_id`、阶段耗时、状态、工具调用、引用数量和 LLM 调用次数。
@@ -40,14 +40,14 @@ FastAPI / Chat Router
 → LangChain create_agent（唯一 Agent Loop）
 → Project Governance Middleware
 → 缓存的 Local StructuredTool + 请求级可见性 Middleware
-→ Local ToolRuntime 或独立 MCP Bridge
+→ execute_project_tool
 → Tool Handler → Document evidence → ToolMessage → 下一轮 Agent
 → Framework State → AgentRunResult
 → ChatStatusPolicy → HTTP JSON / SSE
 ```
 
-本地工具固定经过 `StructuredTool → execute_project_tool → ToolSpec.handler`；MCP
-保持 adapter/bridge/interceptor 边界，不进入本地 ToolRuntime。LangGraph 只存在于
+本地工具固定经过 `StructuredTool → execute_project_tool → ToolSpec.handler`。MCP
+仅供知识入库获取 GitHub / Firecrawl 来源，永不进入 Agent Loop。LangGraph 只存在于
 `create_agent` 内部循环；RAG Evaluation 复用同一个 ChatService，不存在第二个回答工作流。
 
 Phase 6B 的 Model private marker 是已接受设计，不是待迁移 TODO。详细当前事实、稳定边界
@@ -68,7 +68,7 @@ Phase 6B 的 Model private marker 是已接受设计，不是待迁移 TODO。�
 | 引用绑定 | 将实际声明的 Document.id 校验并映射回文件、`chunk_id`、`snippet` 和分数 |
 | Agent Runtime | 直接执行唯一的 LangChain `create_agent` CompiledStateGraph；框架负责模型—工具循环、参数校验、ToolMessage 和模型/工具调用上限 |
 | Agent 路由 | `app.agent.runtime` 是唯一 Router 调用者；正常请求输出 `agent`，`direct_answer` / `clarify` 在普通 Python 中安全短路 |
-| 工具发现 | 不可变本地 ToolSpec/StructuredTool catalog 按配置缓存；LangChain Model Middleware 按请求权限过滤模型可见工具。可选 MCP Provider 继续过滤启动期 discovery cache |
+| 工具发现 | 不可变本地 ToolSpec/StructuredTool catalog 按配置缓存；LangChain Model Middleware 按请求权限过滤模型可见工具 |
 | Agent Guardrail | 工具错误总数、连续相同调用/错误、累计模型与工具耗时预算、同批 fail-closed、无悬空 ToolMessage |
 | 工具调用 | 默认 catalog 包含七个生产工具。模型可见集合由请求 tool_mode 与权限共同决定 |
 | 可观测性 | `trace_id`、请求耗时、阶段耗时、工具调用日志、metrics 汇总接口 |
@@ -117,12 +117,12 @@ Phase 6B 的 Model private marker 是已接受设计，不是待迁移 TODO。�
 
 - 配置通过 `.env` 管理，`.env.example` 提供默认模板，回答/Agent 模型、追问改写模型、拆分模型和评测 Judge 均使用 OpenAI-compatible Chat Completions 配置。
 - 应用内部模型调用统一由 LangChain `ChatOpenAI(base_url=...)` 访问 OpenAI-compatible 服务，各角色原有模型环境变量仍然有效。
-- 生产 Agent 使用 `ToolStrategy(FinalAgentResponse)` 与 evidence ID 校验；Query Rewrite 和 Evaluation Judge 继续使用 `ModelGateway`。`compare_documents` 返回 Document evidence，由 Agent 生成比较结论。
+- 生产 Agent 使用 `ToolStrategy(FinalAgentResponse)` 与 evidence ID 校验；Query Rewrite 和 Evaluation Judge 继续使用 `ModelGateway`。比较文档时分别调用 `search_document`，由 Agent 阅读两组证据并生成结论。
 - `requirements.txt` 保留顶层依赖声明，`requirements.lock` 固定 Python 3.12 验证过的版本；Docker 和 CI 均使用 lock 文件安装依赖。
 - `.importlinter` 使用 Import Linter 2.13 固化应用包的单向依赖、顶层无环、基础层、HTTP 框架和 Settings 框架边界；CI 在 Ruff 后执行全量 `lint-imports`。
 - 支持 embedding / rerank 模型本地缓存，默认缓存目录为 `./.cache/huggingface/hub`，也可通过 `MODEL_CACHE_DIR`、`HF_HOME` 等环境变量调整。
 - 支持 ChromaDB 持久化，默认将向量、chunk 文本、metadata 和文档注册信息保存到 `data/chroma/`。
-- 启动时基于 manifest 判断是否需要重建索引；知识库文件、chunk 参数、embedding/rerank 模型或 pipeline 版本变化会触发重建。
+- 显式知识同步由写侧基于 manifest 判断重建；QA 启动只加载索引。文件变化增量处理，chunk/embedding/索引版本变化触发重建。
 - 多轮会话历史保存在 `SQLITE_DB_PATH` 指定的 SQLite 数据库中，每个 `session_id` 默认读取最近 6 条 user/assistant 消息，服务重启后仍可继续使用。
 - Agent trace 通过 `AgentRunResult.tool_trace` 返回，供 API、Evaluation 和运行时诊断使用。旧数据库可能保留历史 `agent_runs`、`agent_steps` 表；应用不再读写或删除这些表，新数据库不再创建它们。
 - `/chat/stream` 请求支持继承或生成 `trace_id`，响应头返回 `X-Trace-Id`，真实总耗时位于 `final.data.total_cost_ms`。
@@ -131,35 +131,20 @@ Phase 6B 的 Model private marker 是已接受设计，不是待迁移 TODO。�
 
 模型客户端、唯一 `create_agent` Agent Loop 和 KB 检索工具彼此分层；RAG Evaluation 复用生产链，检索、Rerank、ChromaDB 和 grounding 合同保持。
 
-## MCP Client 工具源
+## MCP 知识入库来源
 
-MCP 默认关闭；关闭时不读取 Server 配置、不连接网络、不 discovery，默认本地工具与
-Evaluation 合同不变。启用后，FastAPI 启动期使用官方
-`langchain-mcp-adapters.MultiServerMCPClient` 从部署者静态配置的 Streamable HTTP
-Server 获取工具，只保留精确 `allowed_tools` 中的 read-only tool，并以
-`<server>_<tool>` 隔离名称。`enabled_for_default_principal=true` 可授权当前默认
-SERVICE 主体；其他主体继续使用精确的请求级 `mcp:<server>` 权限。
+Agent 只注册本地知识库工具与按权限启用的 Web 工具。MCP 仅供
+`ExternalKnowledgeSourceService` 抓取 GitHub 文件和 Firecrawl 页面，不参与问答循环。
 
-MCP Server 定义不放进 `.env`：`.env` 只保存 MCP 全局开关和限制；全部 Server URL、
-认证 Header、`allowed_tools`、启停与默认可见性位于 gitignored 的
-`config/mcp_servers.local.json`。本地 `headers` 使用 `SecretStr`，生产还可通过
-`headers_env` 引用 Secret Manager 注入的环境变量。初始化方式如下：
+MCP 默认关闭。复制 `config/mcp_servers.example.json` 到 Git 忽略的
+`config/mcp_servers.local.json`，配置来源端点、凭据及精确只读 allowlist。
+HTTP 应用同时启用 `INGESTION_ADMIN_API_ENABLED` 与 `MCP_TOOLS_ENABLED` 才会执行
+来源 discovery；来源 smoke CLI 可独立初始化。QA Agent 不依赖 MCP 初始化。
 
-```bash
-cp config/mcp_servers.example.json config/mcp_servers.local.json
-```
-
-编辑 local JSON 后，只需在 `.env` 设置 `MCP_TOOLS_ENABLED=true` 并重启。以后新增普通
-Server 只编辑这一个 local JSON，不需要修改 Python、`AppSettings`、`.env`、
-`.env.example` 或 `TOOL_DEFAULT_PERMISSIONS`。`enabled=false` 的 Server 不进入 adapter
-connections、不 discovery，也不会建立网络连接。
-
-MCP Tool 保持 adapter `StructuredTool`，不会反向转换成 `ToolSpec`；
-`ChatService.stream → stream_agent → create_agent.astream` 经异步 ToolNode 直接 await
-原生 MCP coroutine。输出被
-视为不可信外部数据并脱敏、限长，image/audio/resource 等第一版不进入模型上下文。
-所有调用继续经过现有 Agent Guardrail、ToolResult、审计和 SSE 白名单投影。配置、
-安全边界和冒烟命令见[受治理的 MCP Client 工具源](docs/tools/mcp-client.md)。
+官方 client、discovery cache、来源权限、超时、脱敏和摘要审计继续保留。
+GitHub 使用 `get_file_contents`，Firecrawl 使用受只读参数限制的 `firecrawl_scrape`。
+完整内容经 Source Service 校验后产生 pending candidate，再经显式审批和索引。
+配置迁移、来源完整性限制和 smoke 命令见 [MCP 知识入库来源](docs/tools/mcp-client.md)。
 
 ## Web Search
 
@@ -172,16 +157,6 @@ TOOL_DEFAULT_PERMISSIONS=knowledge_base:read,web:search
 ```
 
 搜索 query 会发送到外部搜索服务，可能受搜索服务限流、地区设置和网络条件影响。搜索摘要可能不准确、过时或含恶意指令，输出始终带有 `content_is_untrusted=true`；模型不得执行摘要中的命令，使用搜索信息回答时应列出实际使用的标题和 URL。代理配置不会写入工具输出或审计。
-
-真实网络验证只通过维护者手动运行，不进入 Pytest/CI：
-
-```bash
-python scripts/smoke_test_online_tools.py search \
-  --query "LangGraph latest release" \
-  --max-results 3
-```
-
-脚本默认经过 `StructuredTool → execute_project_tool → DDGS` 生产链路，不调用 Agent 模型、不读取或修改知识库；缺少 `web:search` 权限时会直接给出启用提示。
 
 ## Web Fetch
 
@@ -199,16 +174,6 @@ URL、页面元数据和正文全部是不可信输入。输出固定包含 `con
 TOOL_DEFAULT_PERMISSIONS=knowledge_base:read,web:search,web:fetch
 ```
 
-真实网络验证仅由维护者手动执行，不进入 Pytest/CI：
-
-```bash
-python scripts/smoke_test_online_tools.py fetch \
-  --url "https://example.com/" \
-  --max-chars 4000
-```
-
-脚本默认经过 `StructuredTool → execute_project_tool → requests-hardened → Trafilatura`，只显示有限正文预览和安全元数据，不显示代理、headers、cookies 或完整正文。
-
 ## Web PDF Fetch
 
 `web_pdf_fetch` 用于读取已知公开 PDF 的指定连续页范围。它与 `web_fetch` 保持明确分工：`web_fetch` 只处理 HTML、XHTML 和纯文本并继续拒绝 PDF；`web_pdf_fetch` 只处理 PDF，并使用项目已经锁定的 `pypdf==6.14.2` 提取数字文本。两者共用 `app/tools/web_download.py` 中基于 `requests-hardened==1.3.0` 的下载、逐跳重定向、可信代理、streaming 和资源关闭边界；默认模式实施本地 SSRF 校验，显式受信代理模式则按上一节所述委托网络策略。
@@ -218,18 +183,6 @@ python scripts/smoke_test_online_tools.py fetch \
 正文按实际页码返回 `[Page N]` 边界，空白页不列入 `page_numbers`，title、author 和 subject 只做有限单行规范化。加密、损坏、页数超限和无可提取文本的 PDF 会返回稳定非重试错误；扫描件/图片型 PDF 不自动 OCR，也不接收密码、提取图片/附件/脚本或调用 LLM 清洗。
 
 PDF 文本和元数据固定标记 `content_is_untrusted=true`，只能作为回答参考；模型不得执行 PDF 中的命令或把内容视为 system/developer/tool 指令，回答时应注明 `final_url` 和相关页码。`web_pdf_fetch` 要求 `web:fetch` 权限，经过普通 `StructuredTool → execute_project_tool → handler → ToolMessage` 链路；它不进入本地 RAG、不写 ChromaDB/BM25，其 Document 在被最终结构化回答实际引用后，按现有公开字段投影为 PDF references。
-
-真实网络验证仅由维护者手动执行，不进入 Pytest/CI：
-
-```bash
-python scripts/smoke_test_online_tools.py pdf \
-  --url "https://example.com/document.pdf" \
-  --start-page 1 \
-  --max-pages 3 \
-  --max-chars 8000
-```
-
-脚本默认经过 `StructuredTool → execute_project_tool → requests-hardened → pypdf`，只显示安全有限 URL、页码、长度和正文预览，不显示代理、headers、PDF bytes 或完整正文。
 
 ## Agent Runtime 检查
 
@@ -296,9 +249,10 @@ copy .env.example .env
 `trafilatura==2.1.0` 基础包；未安装这些依赖的 dev、docs、eval、all、MCP
 等 extras，也不需要 `langchain-community` 包装。
 
-将知识库文档放到 `data/kb/`，然后编辑 `.env` 中的模型配置。启动服务：
+将知识库文档放到 `data/kb/`，然后编辑 `.env` 中的模型配置。准备好本地 embedding/rerank 模型缓存后，同步索引并启动服务：
 
 ```bash
+python -m app.rebuild_kb
 uvicorn app.main:app --reload
 ```
 
@@ -309,7 +263,7 @@ Swagger: http://127.0.0.1:8000/docs
 Health:  http://127.0.0.1:8000/health
 ```
 
-首次启动可能会下载 embedding / rerank 模型权重并构建索引；后续如果知识库文件和索引参数没有变化，会复用本地 ChromaDB 和 manifest 缓存。
+QA 启动只读取已有 Chroma 索引和本地模型缓存，不扫描或解析知识文件。修改本地知识后再次执行同步命令，并重启 QA 加载新快照。
 
 ## Vue 前端
 
@@ -345,7 +299,7 @@ Upload、GitHub、Firecrawl 可在候选详情确认「移出知识库」，撤�
 扫描 PDF 暂不支持 OCR，原始文件解析后删除，候选持久化全文与表格结构；
 历史纯文本 PDF/DOCX 候选继续按正文切分，重新上传才能获得结构。有 `structured_content`
 时，连续文本复用 LangChain splitter，表格保留标题/表头并按完整连续行分组；
-`pipeline_version` 从 2 升至 3，旧索引在启动时通过现有 force rebuild 迁移。
+`pipeline_version` 从 2 升至 3，旧索引在显式同步时通过写侧 force rebuild 迁移。
 Firecrawl 显式提案请求 Markdown + cleaned HTML，经同一 Docling parser 得到
 `ParsedDocument`，直接复用现有 table-aware chunks；禁用二次抓取、图片读取与渲染。
 HTML 原文不保存，结构随 candidate_json 持久化。历史 Firecrawl 候选保持纯文本，
@@ -376,7 +330,7 @@ API key、路径或创建任何目录。配置来源优先级为：
 测试和一次性脚本应显式构造
 `AppSettings(_env_file=None, ...)`，并把实例传给现有依赖边界，以免维护者本地
 `.env`、代理或权限污染结果。配置模型只负责解析和纯校验；真实
-API key、知识库目录及可写持久化路径等外部前提由 FastAPI lifespan 在启动时通过
+API key 及可写持久化路径等外部前提由 FastAPI lifespan 在启动时通过
 `validate_startup_environment()` 检查。
 
 `get_settings()` 的结果不会随环境变量或 `.env` 动态变化。受控刷新必须先调用
@@ -419,15 +373,14 @@ Tool Runtime 与 Agent Runtime 缓存；生产服务通常直接重启进程。�
 | `WEB_PDF_MAX_RESPONSE_BYTES` | Web PDF 解压后响应上限，默认 `10000000` bytes |
 | `WEB_PDF_MAX_DOCUMENT_PAGES` | Web PDF 允许的文档总页数上限，默认 `1000` |
 | `WEB_PDF_TOOL_TIMEOUT_SECONDS` | Web PDF ToolRuntime 总体超时，默认 `45` 秒，必须大于连接与读取超时之和 |
-| `MCP_TOOLS_ENABLED` | 是否启用 MCP Client，默认 `false`；关闭时不读取配置或连接 Server |
+| `MCP_TOOLS_ENABLED` | 是否启用入库 MCP，默认 `false`；HTTP 生命周期仅在开启入库管理 API 时初始化 |
 | `MCP_SERVERS_CONFIG_PATH` | MCP Server 静态 JSON 路径；默认是 Git 忽略的 `config/mcp_servers.local.json`，可用项目内相对路径或绝对路径覆盖 |
 | `MCP_DISCOVERY_TIMEOUT_SECONDS` / `MCP_TOOL_TIMEOUT_SECONDS` | 启动 discovery 与单次 MCP Tool 超时，默认 `5` / `15` 秒 |
 | `MCP_MAX_TOOLS_PER_SERVER` | 每 Server 精确 allowlist 上限，默认 `20` |
-| `MCP_MAX_TEXT_CHARS` / `MCP_MAX_STRUCTURED_CHARS` | MCP 文本与 structured content 的模型上下文上限，默认 `12000` / `20000` |
 | `INGESTION_ADMIN_API_ENABLED` | 是否注册永久知识运营 API，默认 `false`；它不是 Agent Tool |
 | `INGESTION_ADMIN_API_KEY` | `SecretStr` operator/service 管理密钥；启用运营 API 时必填，通过 `X-Ingestion-Admin-Key` 发送 |
 | `INGESTION_UPLOAD_MAX_BYTES` | 单文件上传及 DOCX 展开大小上限，默认 `20971520`（20 MiB），必须为正整数 |
-| `TOOL_DEFAULT_PERMISSIONS` | 默认服务主体通用权限；默认仅 `knowledge_base:read`，Web/SQL 仍需显式权限；MCP 默认主体可见性由每个 Server 的 `enabled_for_default_principal` 配置 |
+| `TOOL_DEFAULT_PERMISSIONS` | 默认 Agent 主体权限；默认仅 `knowledge_base:read`，Web 需显式 `web:search` / `web:fetch` |
 | `USE_LLM_JUDGE` | 评测脚本是否启用 LLM Judge，默认 `false` |
 | `JUDGE_API_KEY` | 评测 Judge 模型 API Key；为空时可复用回答模型 Key |
 | `JUDGE_MODEL` | 评测 Judge 模型名称 |
@@ -450,7 +403,6 @@ Tool Runtime 与 Agent Runtime 缓存；生产服务通常直接重启进程。�
 | `QUERY_REWRITE_MAX_TOKENS` | 追问改写模型最大输出 token |
 | `QUERY_REWRITE_TEMPERATURE` | 追问改写模型温度 |
 | `VECTOR_THRESHOLD` | 召回证据不足时拒答的向量分数阈值 |
-| `AUTO_REBUILD_ON_STARTUP` | 是否启动时强制重建索引 |
 
 ### DeepSeek 示例
 
@@ -460,7 +412,6 @@ INDEX_STORE_DIR=./data/manifest
 CHROMA_PERSIST_DIR=./data/chroma
 CHROMA_COLLECTION_NAME=mini_rag_chunks
 CHROMA_INDEX_COLLECTION_NAME=mini_rag_chunks_v2
-AUTO_REBUILD_ON_STARTUP=false
 
 TOP_K=5
 CHUNK_SIZE=600
@@ -564,7 +515,7 @@ curl --no-buffer -X POST "http://127.0.0.1:8000/chat/stream" \
 
 ### 多轮追问与 Query Rewrite
 
-`/chat/stream` 只接受 `question`、`session_id`、`tool_mode`；未知字段由 Pydantic `extra="forbid"` 拒绝并返回 HTTP 422。旧 `top_k`、`decompose_top_k` 已退役。Agent 每轮通过工具 schema 自主选择 query/top_k，`search_knowledge_base.top_k` 和 `compare_documents.top_k` 范围仍为 1–10。`TOP_K` 只用于诊断搜索；独立 Decompose 配置已删除。
+`/chat/stream` 只接受 `question`、`session_id`、`tool_mode`；未知字段由 Pydantic `extra="forbid"` 拒绝并返回 HTTP 422。旧 `top_k`、`decompose_top_k` 已退役。Agent 每轮通过工具 schema 自主选择 query/top_k，`search_knowledge_base.top_k` 和 `search_document.top_k` 范围仍为 1–10。`TOP_K` 只用于诊断搜索；独立 Decompose 配置已删除。
 
 `/chat/stream` 的 `session_id` 是可选字段。为空时系统按单轮问题处理；非空时系统会读取该会话最近 6 条 user/assistant 消息，并在问题像短追问或包含“这个、那个、它、上面、刚才”等指代词时尝试改写成独立问题。
 
@@ -625,40 +576,26 @@ GET /metrics-summary?limit=20
 
 如果 `/chat/stream` 传入 `session_id`，Query Rewrite 会在 Agent Router 之前执行；Router 看到的是改写后的有效问题，响应中的 `data.question` 仍保留原始输入，改写细节记录在 `data.tool_trace` 的 `query_rewrite` step 中。
 
-Router 不调用独立模型，也不解析具体工具 action。普通问题进入 `create_agent` 后，Agent Model 根据可见性 Middleware 绑定的 StructuredTool/Pydantic Schema 选择本地 catalog 工具或获授权的 MCP 工具；本地执行统一经过 `execute_project_tool`，MCP 执行通过官方 adapter 和项目 bridge 后进入相同 Agent 治理。
+Router 不调用独立模型，也不解析具体工具 action。普通问题进入 `create_agent` 后，Agent Model 根据可见性 Middleware 绑定的 StructuredTool/Pydantic Schema 选择本地 catalog 工具，执行统一经过 `execute_project_tool`。
 
 ## 索引构建与缓存
 
-服务启动时会同步当前 Local Knowledge corpus：
+知识索引写入与 RAG 查询独立运行，持久 Chroma 是共享边界：
 
 ```text
-启动服务
-  -> get_settings()
-  -> validate_startup_environment(settings)
-  -> 检查 manifest、SQLRecordManager 和 v2 ChromaDB
-  -> 加载 Local 文件并经过 Phase 9 approved-only boundary
-  -> LangChain index(cleanup="full")
-  -> 未变化 chunks skip；新增/修改/删除增量写入
-  -> 从最终 corpus 全量重建 BM25 并发布 runtime
+python -m app.rebuild_kb [--force-rebuild]
+→ IndexingService → LangChain Indexing API → Chroma + SQLRecordManager
+
+启动 QA → 读取已有 Chroma → BM25 / embedding query / CrossEncoder → Agent KB tools
 ```
 
-缓存分为两部分：
-
-- `data/chroma/`：`mini_rag_chunks_v2` 保存增量向量索引；旧 `mini_rag_chunks` 保留。
-- `data/manifest/record_manager.sqlite3`：官方 SQLRecordManager 的 hash/cleanup 记录。
-- `data/manifest/index_manifest.json`：判断配置变化是否需要 force rebuild。
-
-新增/删除/修改知识库文件走增量 sync。修改 `CHUNK_SIZE`、`CHUNK_OVERLAP`、embedding 模型或索引版本会 force rebuild v2；只修改 reranker 不重新 embedding。修改 `TOP_K`、Prompt、回答模型名称、温度等不需要重建向量索引。
-
-设置 `AUTO_REBUILD_ON_STARTUP=true` 会在启动时强制重建 v2；默认 `false` 仍会执行增量 sync，相同 corpus 全部 skip。详细设计见 [LangChain-native Incremental Indexing](docs/ingestion/langchain-indexing.md)。
-
-受保护的持久 proposal、审批与显式索引接口见 [Persistent Ingestion Operations API](docs/ingestion/operations-api.md)。
-
-如需在启动 API 前先下载模型权重，可以运行：
-
-```bash
-python scripts/cache_models.py
-```
+Local/GitHub/Firecrawl/Upload 共用 `mini_rag_chunks_v2`，各有独立 RecordManager namespace。
+Local 文件变化通过显式同步增量处理；chunk 参数、embedding 或索引版本变化触发重建。
+`--force-rebuild` 恢复最新成功 INDEX 对应候选，排除最新成功 REMOVE 来源；不重新抓取外部内容。
+Reranker、Prompt 和回答模型变更不要求重建向量索引。独立 CLI 同步后需重启 QA。
+组合应用 admin INDEX/REMOVE 成功后由 API composition root 刷新查询 runtime。
+MCP 只供知识入库获取来源，永久入库必须经过显式 proposal、approval 和 index。
+详见 [LangChain-native Incremental Indexing](docs/ingestion/langchain-indexing.md)。
 
 ## 日志与可观测性
 
@@ -676,14 +613,6 @@ python scripts/cache_models.py
 | `logs/tool_calls.jsonl` | 每次工具调用的输入、输出、耗时和是否成功 |
 | `logs/bad_cases.jsonl` | 模型结构化输出校验失败、引用异常、工具异常、内部异常、索引未就绪等失败样例 |
 
-日志汇总脚本：
-
-```bash
-python scripts/summarize_logs.py
-```
-
-默认读取 `logs/metrics.jsonl` 和 `logs/bad_cases.jsonl`，并将汇总结果写到 `outputs/week9_summary.md`。
-
 ## 测试与评测
 
 执行与 CI 一致的静态检查和测试：
@@ -696,11 +625,15 @@ python scripts/inspect_agent_runtime.py --check
 python -m pytest -q
 ```
 
-Evaluation Baseline v2 首先支持不调用模型、RAG 或网络的数据校验：
+Evaluation Baseline v2 支持 Core Agent、RAG 和可选 Online Web 评测。离线校验同时检查
+Agent 数据合同与当前 65 题 RAG 数据，不调用模型、索引或网络：
 
 ```bash
 python scripts/run_evaluation_baseline.py --validate-only
 ```
+
+Agent Evaluation 检查最终 action/status、必要工具能力、答案关键信息、引用来源和本轮
+真实 evidence grounding；仅 multi-tool/recovery case 约束工具顺序，多轮按最终结果评测。
 
 默认真实运行 Core Agent 和本地 RAG；Online 工具与 LLM Judge 必须显式启用：
 
@@ -715,8 +648,8 @@ python scripts/run_evaluation_baseline.py \
 `retrieval-k` 只控制 RAG 指标的评分 cutoff，不传入 Agent Tool Call。
 
 每次运行会生成 commit/数据/索引/模型/Prompt/工具合同 manifest、Prediction v3 与评分 cutoff、Agent/RAG 指标、覆盖矩阵、多原因失败报告和 Markdown 摘要。RAG 报告
-分别展示 Observed Evidence Recall@k 和 Grounded Reference Recall；
-Context 指标对 v3 不适用，Final Score 原有权重保持。工作区不干净时默认拒绝正式
+headline 指标为 prediction coverage、retrieval Gold Recall@K、reference Gold Recall
+及可选 DeepEval GEval 的 Answer Correctness；Judge coverage 单独表示判分覆盖率。工作区不干净时默认拒绝正式
 运行；实验运行必须显式使用 `--allow-dirty` 并会被标记。两轮结果可比较：
 
 ```bash
@@ -727,7 +660,7 @@ python scripts/compare_evaluation_runs.py \
 
 完整说明见 [Evaluation Baseline v2](docs/evaluation/baseline-v2.md)。RAG prediction、
 Judge、检索打分和报告实现都属于 `scripts/evaluation/` 内部包，不提供独立兼容
-CLI。需要语义级关键点评分时，由统一 Runner 显式启用 LLM Judge：
+CLI。需要语义级答案正确性评分时，由统一 Runner 显式启用 LLM Judge：
 
 ```bash
 python scripts/run_evaluation_baseline.py \
@@ -737,33 +670,20 @@ python scripts/run_evaluation_baseline.py \
   --judge-model deepseek-chat
 ```
 
-RAG 输出包括 `predictions.csv`、`per_question_report.csv`、`summary_report.csv`、
-`summary_report.json` 和 `llm_judge_details.jsonl`。Prediction v2 分别保存 Final、
-Context 和 Reference chunk IDs 及安全计数，不保存完整 Context/chunk 正文；旧 v1
-文件仍可读取，缺失的新指标显示 unavailable。Judge Prompt 和 Final Score 公式不变。
+整次运行的唯一机器可读汇总为 `baseline_summary.json`；Agent 明细保留 `agent/per_case.jsonl`。
+RAG 输出保留 `predictions.csv`、`prediction_failures.jsonl` 和 `per_question_report.csv`
+（亦为 Judge 缓存来源），不再生成重复 summary。比较先检查 manifest 中的运行控制条件，
+缺失或不兼容默认失败；Git commit、Prompt 和工具合同变化允许比较。
+显式 `--allow-incompatible` 可强制比较，JSON 和 Markdown 会标记不兼容及原因。
+正式 Prediction 只接受 Schema v3，保存观察/引用 chunk IDs 与安全计数；旧 v1/v2 输入
+不再读取。Runtime 失败写入 sidecar，缺失预测降低 coverage、召回计零，Answer Correctness 保持 `None`。
+专项表格题集和 `table_diagnostics.py` 属于 diagnostics，不参与主 Baseline。
 
 Core 不评测真实联网能力；Judge 关闭时不具备完整语义答案质量判断；Online 结果受
 外部服务和内容变化影响，不适合作为稳定 CI 门禁。
 
-HTTP 性能测试是独立入口；`concurrency=1` 即串行基线，问题只从 cases 文件读取：
-
-```bash
-python scripts/benchmark_chat_api.py \
-  --base-url http://127.0.0.1:8000 \
-  --cases data/eval/performance_cases.json \
-  --concurrency 1,2,3,5 \
-  --repeats 5 \
-  --warmup 1 \
-  --timeout 120 \
-  --output-dir outputs/performance/run-001
-```
-
-它只生成 `requests.jsonl`、`summary.json` 和 `summary.md`。真实外部工具连通性使用
-`smoke_test_online_tools.py` 的 `search`、`fetch`、`pdf` 子命令；模型供应商 Tool
-Calling 协议单独使用 `smoke_test_agent_tool_calling.py`。两者用途不同，且都不进入
-Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行日志由
-`summarize_logs.py` 汇总。没有可用模型、网络或 API Key 时只运行离线验证与 mock
-回归测试，不把环境失败或空结果当作正式质量数据。
+架构合同由 `inspect_agent_runtime.py --check` 检查。没有可用模型、网络或 API Key 时
+只运行离线验证与 mock 回归测试，不把环境失败或空结果当作正式质量数据。
 
 ## 适合面试讲解的设计取舍
 
@@ -809,31 +729,27 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 │   │   ├── guardrails.py        # 治理规则、预算、错误分类、Stop Reason 与指纹
 │   │   ├── runtime.py           # 请求准备、Router 与 Agent 缓存
 │   │   └── streaming.py         # 直接 astream 与安全 Agent 事件投影
+│   ├── indexing/               # 独立索引写侧：service/langchain/chunking/manifest
 │   ├── rag/
 │   │   ├── __init__.py          # RAG 包说明
-│   │   ├── pipeline.py          # 索引状态、生命周期与检索门面
-│   │   ├── ingest.py            # Local 文档读取与清洗
-│   │   ├── indexing.py          # approved candidate 切分与 LangChain 增量索引
+│   │   ├── runtime.py           # 只读索引加载、查询状态与检索 API
 │   │   ├── retrieval.py         # 混合召回与重排
 │   │   ├── policy.py            # 诊断检索分数门
-│   │   ├── scoring.py           # 分数安全转换
-│   │   ├── store.py             # 索引缓存、manifest、模型加载
 │   │   ├── chroma.py            # ChromaDB 持久化
 │   │   └── debug.py             # 文档和 chunk 调试查询
 │   ├── tools/
 │   │   ├── __init__.py          # 包说明；业务从具体职责模块导入
 │   │   ├── result.py            # 统一成功/失败返回协议
 │   │   ├── knowledge_base.py    # 文档、chunk 和检索工具
-│   │   ├── compare_documents.py # 双文档证据对比
 │   │   ├── context.py           # 请求级工具调用上下文
 │   │   ├── contracts.py         # ToolSpec、风险和审计输出契约
 │   │   ├── catalog.py           # 按配置缓存的不可变本地 ToolSpec catalog
-│   │   ├── runtime.py           # 唯一执行入口与 ToolRuntime 治理
+│   │   ├── execution.py         # 只读权限、审计与输出校验；原生异步调度和重试
 │   │   ├── web_search.py        # DDGS 调用、结果规范化和公开异常映射
 │   │   ├── web_download.py      # HTML/PDF 共用的 hardened 有限下载适配
 │   │   ├── web_fetch.py         # HTML/XHTML/纯文本的 Trafilatura 提取
 │   │   ├── web_pdf_fetch.py     # PDF magic、pypdf 页范围与元数据提取
-│   │   ├── mcp/                 # MCP 配置、discovery、bridge、Provider 与安全序列化
+│   │   ├── mcp/                 # 入库 MCP 配置、discovery、来源调用与安全序列化
 │   │   └── schemas.py           # 工具参数模型
 │   ├── services/
 │   │   ├── chat_models.py       # 框架无关请求、结果和内部上下文
@@ -856,14 +772,8 @@ Pytest/CI。架构合同由 `inspect_agent_runtime.py --check` 检查，运行�
 ├── scripts/
 │   ├── run_evaluation_baseline.py # Evaluation Baseline v2 统一入口
 │   ├── compare_evaluation_runs.py # 两轮 v2 结果比较
-│   ├── benchmark_chat_api.py    # /chat/stream 串行与并发性能测试
-│   ├── smoke_test_online_tools.py # Online Tool 真实连通性子命令
-│   ├── smoke_test_agent_tool_calling.py # 模型 Tool Calling 协议
-│   ├── smoke_test_chat_stream.py # /chat/stream 安全摘要冒烟客户端
-│   ├── smoke_test_mcp_tools.py  # 受治理 MCP list/invoke 冒烟入口
+│   ├── smoke_test_mcp_tools.py  # GitHub / Firecrawl 来源 smoke
 │   ├── inspect_agent_runtime.py # CI 架构合同检查
-│   ├── summarize_logs.py        # metrics/bad_cases 日志汇总
-│   ├── cache_models.py          # 预下载 embedding/rerank 模型
 │   └── evaluation/              # Runner、Agent/RAG evaluator、Judge 与报告内部包
 ├── frontend/                    # Vue 3 + TypeScript Demo / 管理界面
 │   ├── src/                     # 页面、composable 与薄 API client
@@ -942,15 +852,15 @@ docker run --rm -p 8000:8000 --env-file .env \
 - embedding 和 rerank 模型首次加载较慢，可能需要下载权重。
 - 多轮历史使用本地 SQLite 持久化，适合单实例运行；多实例部署时需要额外规划共享存储和并发策略。
 - Agent 已通过唯一的 `create_agent` 路径支持 Registry-driven 多轮工具观察、同轮多个工具调用和参数修正，并具备错误次数、重复调用/错误、总耗时和同批 fail-closed 防护。
-- 当前尚未实现 RAG JSON token streaming、Interrupt/Resume、SQL/MCP 写工具、写工具的跨请求人工审批恢复或多 Agent；MCP 第一版也不支持 Server、stdio、OAuth、Resources 或 Prompts。
+- 当前尚未实现 RAG JSON token streaming、Interrupt/Resume、SQL 写工具或多 Agent；入库 MCP 不支持 Server、stdio、OAuth、Resources 或 Prompts。
 - retrieval_confidence 和 answer_confidence 是启发式估计，不等同于严格概率。
 
 ### Agentic RAG 评估合同（v3）
 
 RAG 预测经 `ChatService.stream → stream_agent → create_agent` 执行，使用 `RAG_ONLY` 与
-`knowledge_base:read`，开放检索、比较、chunk 原文三种 KB 证据工具。每题空 session；
+`knowledge_base:read`，通过 `search_knowledge_base`、`search_document`、`get_chunk_context` 获取 KB 证据。每题空 session；
 Agent 自主决定每轮 query/top_k。`retrieved_chunk_ids` 是按观察顺序去重的全部 KB 证据，
 `reference_chunk_ids` 是最终通过 grounding 的引用。`--retrieval-k` 仅是评分 cutoff。
-Context 指标对 v3 不适用；Judge 与评分权重保留。
+正式评分只保留 v3 观察/引用 Recall；Judge 与评分权重保留。
 Prediction Schema v3 is a new baseline generation contract.
 Raw scores are not strictly comparable to historical v2 workflow scores.

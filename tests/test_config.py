@@ -139,7 +139,6 @@ def test_scalar_path_literal_secret_and_permissions_types(tmp_path):
         ("agent_max_consecutive_same_tool_calls", 101),
         ("agent_max_consecutive_same_tool_errors", 101),
         ("agent_max_total_cost_ms", 3_600_001),
-        ("tool_runtime_max_workers", 0),
         ("tool_retry_base_delay_ms", -1),
         ("tool_retry_jitter_ratio", -0.01),
         ("tool_retry_jitter_ratio", 1.01),
@@ -251,6 +250,93 @@ def test_deepseek_key_fallback_and_secret_dump_are_safe(monkeypatch):
     assert "deepseek_api_key" not in dumped
 
 
+@pytest.mark.parametrize("empty_agent_strings", [False, True])
+def test_agent_settings_fall_back_per_field(settings_env, empty_agent_strings):
+    """未设置或模板中的空字符串均逐字段回退，不要求独立 Agent key。"""
+    overrides = {
+        "agent_llm_api_key": "",
+        "agent_model_name": "",
+        "agent_llm_api_url": "",
+    } if empty_agent_strings else {}
+    settings = settings_env(
+        llm_api_key="composer-key",
+        model_name="composer-model",
+        llm_api_url="https://composer.example/v1",
+        temperature=0.6,
+        llm_max_tokens=789,
+        llm_timeout=43,
+        llm_max_retries=4,
+        **overrides,
+    )
+
+    assert settings.agent_llm_api_key is None
+    assert settings.agent_model_name is None
+    assert settings.agent_llm_api_url is None
+    assert secret_value(settings.agent_llm_api_key_resolved) == "composer-key"
+    assert settings.agent_model_name_resolved == "composer-model"
+    assert settings.agent_llm_api_url_resolved == "https://composer.example/v1"
+    assert settings.agent_temperature_resolved == 0.6
+    assert settings.agent_llm_max_tokens_resolved == 789
+    assert settings.agent_llm_timeout_resolved == 43
+    assert settings.agent_llm_max_retries_resolved == 4
+    validate_startup_environment(settings)
+
+
+def test_agent_settings_parse_independent_values_and_keep_zero(settings_env):
+    """专用环境变量按类型解析，显式零温度与零重试不会回退。"""
+    settings = settings_env(
+        temperature=0.6,
+        llm_max_retries=4,
+        agent_llm_api_key="agent-secret",
+        agent_model_name="agent-model",
+        agent_llm_api_url="https://agent.example/v1",
+        agent_temperature=0,
+        agent_llm_max_tokens=321,
+        agent_llm_timeout=13,
+        agent_llm_max_retries=0,
+    )
+
+    assert isinstance(settings.agent_llm_api_key, SecretStr)
+    assert "agent-secret" not in settings.model_dump_json()
+    assert secret_value(settings.agent_llm_api_key_resolved) == "agent-secret"
+    assert settings.agent_model_name_resolved == "agent-model"
+    assert settings.agent_llm_api_url_resolved == "https://agent.example/v1"
+    assert settings.agent_temperature_resolved == 0.0
+    assert settings.agent_llm_max_tokens_resolved == 321
+    assert settings.agent_llm_timeout_resolved == 13
+    assert settings.agent_llm_max_retries_resolved == 0
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [(None, None), ("", None), ("false", False), ("true", True)],
+)
+def test_agent_thinking_setting_parses_optional_boolean(settings_env, raw, expected):
+    """未设置和空值使用服务商默认行为，显式 false 必须保留。"""
+    settings = settings_env(agent_enable_thinking=raw)
+
+    assert settings.agent_enable_thinking is expected
+
+
+def test_agent_thinking_setting_rejects_invalid_value(settings_env):
+    with pytest.raises(ValidationError):
+        settings_env(agent_enable_thinking="invalid")
+
+
+def test_env_example_agent_fields_fall_back_to_composer():
+    """真实模板的空文本和注释数值能直接加载，无需修改本地 .env。"""
+    settings = AppSettings(_env_file=BASE_DIR / ".env.example")
+
+    assert settings.agent_llm_api_key_resolved == settings.llm_api_key
+    assert settings.agent_model_name_resolved == settings.model_name
+    assert settings.agent_llm_api_url_resolved == settings.llm_api_url
+    assert settings.agent_temperature_resolved == settings.temperature
+    assert settings.agent_llm_max_tokens_resolved == settings.llm_max_tokens
+    assert settings.agent_llm_timeout_resolved == settings.llm_timeout
+    assert settings.agent_llm_max_retries_resolved == settings.llm_max_retries
+    assert settings.agent_enable_thinking is None
+
+
 def test_query_rewrite_and_judge_fallbacks_preserve_explicit_empty_strings():
     """查询改写和评判配置正确回退，同时保留显式空字符串。"""
     settings = AppSettings(
@@ -259,6 +345,9 @@ def test_query_rewrite_and_judge_fallbacks_preserve_explicit_empty_strings():
         model_name="main-model",
         llm_api_url="https://main.example/v1/chat/completions",
         llm_timeout=61,
+        agent_llm_api_key="independent-agent-key",
+        agent_model_name="independent-agent",
+        agent_llm_api_url="https://agent.example/v1",
     )
 
     assert secret_value(settings.query_rewrite_api_key_resolved) == "main-key"
@@ -390,10 +479,16 @@ def test_startup_validation_is_explicit_and_checks_external_paths(tmp_path):
 
     with pytest.raises(ValueError, match="LLM_API_KEY"):
         validate_startup_environment(
-            settings.model_copy(update={"llm_api_key": None})
+            settings.model_copy(update={
+                "llm_api_key": None,
+                "agent_llm_api_key": SecretStr("agent-key"),
+            })
         )
+    # QA 只读持久索引，不要求原 corpus 仍然存在。
+    validate_startup_environment(settings.model_copy(update={"rag_file_path": tmp_path / "missing"}))
+    from app.config import validate_rag_environment
     with pytest.raises(ValueError, match="RAG_FILE_PATH"):
-        validate_startup_environment(
+        validate_rag_environment(
             settings.model_copy(update={"rag_file_path": tmp_path / "missing"})
         )
 

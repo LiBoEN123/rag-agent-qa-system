@@ -1,4 +1,4 @@
-"""真实 create_agent.astream 的权限 schema、MCP 与隐藏调用回归。"""
+"""真实 create_agent.astream 的本地权限 schema 与隐藏调用回归。"""
 
 from pydantic import RootModel
 
@@ -7,12 +7,15 @@ import json
 from unittest.mock import Mock
 
 import pytest
+from langchain.agents.middleware import ModelRequest
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import StructuredTool
+from langgraph.runtime import Runtime
 from pydantic import BaseModel
 
 from app.agent import framework_agent, framework_tools
 from app.agent.framework_agent import build_framework_agent
+from app.agent.tool_visibility import ProjectToolVisibilityMiddleware
 from app.contracts.chat import ToolMode
 from app.tools.catalog import get_local_tool_specs
 from app.tools.context import ToolInvocationContext, build_default_tool_context
@@ -29,7 +32,7 @@ class SchemaModel(FakeToolCallingModel):
 
     def bind_tools(self, tools, **kwargs):
         super().bind_tools(tools, **kwargs)
-        self.schemas.append({tool.name: tool.tool_call_schema.model_json_schema() for tool in tools if tool.name != self.structured_tool_name})
+        self.schemas.append({tool.name: tool.tool_call_schema for tool in tools if tool.name != self.structured_tool_name})
         return self
 
     async def ainvoke(self, messages):
@@ -53,9 +56,9 @@ def test_native_agent_binds_exact_schemas_for_each_context(monkeypatch, settings
     settings = settings_factory()
     tools = framework_tools.get_local_tools(settings)
     model = SchemaModel()
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     agent = build_framework_agent(settings, tools=tools)
-    kb = ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "list_documents", "get_chunk_text"]
+    kb = ["search_knowledge_base", "find_documents", "search_document", "get_chunk_context"]
     cases = [
         (build_default_tool_context(settings=settings), kb),
         (ToolInvocationContext(), []),
@@ -63,7 +66,7 @@ def test_native_agent_binds_exact_schemas_for_each_context(monkeypatch, settings
         (ToolInvocationContext(permissions=("web:search",)), ["web_search"]),
         (ToolInvocationContext(permissions=("web:fetch",)), ["web_fetch", "web_pdf_fetch"]),
         (ToolInvocationContext(permissions=("knowledge_base:read", "web:search")), [*kb[:3], "web_search", *kb[3:]]),
-        (ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "web:search", "web:fetch", "mcp:github")), ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "get_chunk_text"]),
+        (ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "web:search", "web:fetch")), ["search_knowledge_base", "find_documents", "search_document", "get_chunk_context"]),
         (ToolInvocationContext(tool_mode=ToolMode.FULL, permissions=("knowledge_base:read", "web:search")), [*kb[:3], "web_search", *kb[3:]]),
     ]
     for context, expected in cases:
@@ -72,7 +75,7 @@ def test_native_agent_binds_exact_schemas_for_each_context(monkeypatch, settings
         # 无可见工具时框架直接调用模型，不会调用 bind_tools。
         schemas = model.schemas[-1] if model.schemas else {}
         assert list(schemas) == expected
-        assert schemas == {t.name: t.tool_call_schema.model_json_schema() for t in tools if t.name in expected}
+        assert schemas == {t.name: t.tool_call_schema for t in tools if t.name in expected}
         assert all("runtime" not in schema["properties"] for schema in schemas.values())
         assert all("tool_mode" not in schema["properties"] for schema in schemas.values())
 
@@ -85,30 +88,16 @@ def test_hidden_registered_tool_cannot_execute(monkeypatch, settings_factory):
     hidden = ToolSpec(name="hidden_tool", version="1.0.0", description="private description", args_model=Args, output_model=RootModel[dict], required_permissions=("a:read",), handler=lambda args, context: calls.append(context))
     public = hidden.model_copy(update={"name": "public_tool", "required_permissions": ()})
     model = SchemaModel({"name": "hidden_tool", "args": {"value": "forged"}, "id": "hidden-call", "type": "tool_call"})
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     settings = settings_factory()
     output = stream(build_framework_agent(settings, tools=local_tools([hidden, public], settings)), ToolInvocationContext())
     message = next(m for m in output["messages"] if isinstance(m, ToolMessage))
-    result = json.loads(message.content)
+    result = (message.artifact or json.loads(message.content))
     assert all(list(s) == ["public_tool"] for s in model.schemas)
     assert result["error_code"] == "permission_denied"
     assert result["governance"]["decision"] == "deny"
     assert result["runtime"]["attempt_count"] == 0
     assert calls == []
-
-
-@pytest.mark.parametrize("server", ["github", "firecrawl"])
-def test_mcp_base_tool_survives_local_filter(monkeypatch, settings_factory, server):
-    external = StructuredTool.from_function(lambda value: value, name=f"{server}_read", description="MCP fixture")
-    monkeypatch.setattr(framework_tools, "list_mcp_tools_for_context", lambda context, *, settings: [external])
-    settings = settings_factory()
-    context = ToolInvocationContext(permissions=(f"mcp:{server}",))
-    tools = framework_tools.resolve_agent_tools(context, settings)
-    model = SchemaModel()
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
-    stream(build_framework_agent(settings, tools=tools), context)
-    assert list(model.schemas[-1]) == [external.name]
-    assert tools[-1] is external
 
 
 def test_missing_runtime_fails_closed(settings_factory):
@@ -119,25 +108,28 @@ def test_missing_runtime_fails_closed(settings_factory):
 
     spec = ToolSpec(name="public_tool", version="1.0.0", description="public", args_model=Args, output_model=RootModel[dict], handler=lambda a, c: calls.append(c))
     tool = framework_tools.build_local_tool(spec, settings=settings_factory())
-    with pytest.raises(ValueError, match="runtime"):
-        tool.invoke({"value": "no runtime"})
+    with pytest.raises(TypeError, match="runtime"):
+        asyncio.run(tool.ainvoke({"value": "no runtime"}))
     with pytest.raises(RuntimeError, match="ToolRuntime"):
-        tool.func(runtime=None, value="missing")
+        asyncio.run(tool.coroutine(runtime=None, value="missing"))
     assert calls == []
 
 
-def test_rag_only_filters_even_registered_mcp_tools(monkeypatch, settings_factory):
-    settings = settings_factory()
-    external = StructuredTool.from_function(lambda value: value, name="github_read", description="MCP fixture")
-    model = SchemaModel()
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
-    agent = build_framework_agent(settings, tools=[*framework_tools.get_local_tools(settings), external])
-    stream(agent, ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "mcp:github")))
-    assert list(model.schemas[-1]) == ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "get_chunk_text"]
+@pytest.mark.parametrize("context", [None, {}, {"permissions": ["knowledge_base:read"]}])
+def test_invalid_visibility_context_hides_even_unrestricted_tools(context):
+    tool = StructuredTool.from_function(
+        lambda: "done", name="public_tool", description="No permission metadata",
+    )
+    request = ModelRequest(
+        model=framework_agent._DeferredAgentModel(), tools=[tool], messages=[],
+        runtime=Runtime(context=context),
+    )
+    visible = ProjectToolVisibilityMiddleware.visible_request(request)
+    assert visible.tools == []
+    assert request.tools == [tool]
 
 
 @pytest.mark.parametrize(("name", "args"), [
-    ("list_documents", {}),
     ("web_search", {"query": "test"}),
 ])
 def test_rag_only_forged_calls_are_denied_before_handler(monkeypatch, settings_factory, name, args):
@@ -146,14 +138,14 @@ def test_rag_only_forged_calls_are_denied_before_handler(monkeypatch, settings_f
     specs = [spec.model_copy(update={"handler": handler}) if spec.name == name else spec
              for spec in get_local_tool_specs(settings)]
     model = SchemaModel({"name": name, "args": args, "id": "forged-call", "type": "tool_call"})
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     context = ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "web:search"))
     output = stream(build_framework_agent(settings, tools=local_tools(specs, settings)), context)
     message = next(m for m in output["messages"] if isinstance(m, ToolMessage))
-    result = json.loads(message.content)
-    assert all(list(schema) == ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "get_chunk_text"] for schema in model.schemas)
+    result = (message.artifact or json.loads(message.content))
+    assert all(list(schema) == ["search_knowledge_base", "find_documents", "search_document", "get_chunk_context"] for schema in model.schemas)
     assert result["error_code"] == "policy_denied"
-    assert result["handler_executed"] is False
+    assert result["runtime"]["attempt_count"] == 0
     assert result["governance"]["decision"] == "deny"
     assert result["runtime"]["attempt_count"] == 0
     handler.assert_not_called()

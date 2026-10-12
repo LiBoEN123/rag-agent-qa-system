@@ -48,4 +48,3 @@ class ChatRequestContext:
     rewrite_trace: dict[str, Any] = field(default_factory=dict)
     session_should_store: bool = False
     session_assistant_content: str = ""
-    finalized: bool = False

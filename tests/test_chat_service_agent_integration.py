@@ -16,7 +16,7 @@ from app.agent import framework_agent, framework_tools
 from app.agent import runtime as agent_runtime
 from app.agent.runtime import reset_agent_runtime
 from app.contracts.chat import ToolMode
-from app.rag import pipeline as rag_pipeline
+from app.rag import runtime as rag_pipeline
 from app.services.chat_service import (
     ChatService,
     ChatServiceDependencies,
@@ -28,6 +28,7 @@ from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from tests.support.local_tools import local_tools
 from tests.support.agent_runtime import FakeToolCallingModel
+from tests.support.answer_streaming import ControlledAnswerModel
 from app.agent.final_response import FinalAgentResponse
 from app.tools.result import tool_success
 
@@ -111,10 +112,6 @@ class ChatWebSearchModel(ChatAgentModel):
         output = payload["output"]
         return self.final_response(
             outcome="answer", evidence_ids=[output["evidence"][0]["id"]],
-            answer=(
-                f"{output['title']}：{output['evidence'][0]['page_content']} "
-                f"来源：{output['final_url']}"
-            )
         )
 
 
@@ -168,10 +165,6 @@ class ChatWebPdfModel(ChatAgentModel):
         output = payload["output"]
         return self.final_response(
             outcome="answer", evidence_ids=[output["evidence"][0]["id"]],
-            answer=(
-                f"{output['title']}，相关页码 {output['page_numbers']}，"
-                f"来源：{output['final_url']}"
-            )
         )
 
 
@@ -218,7 +211,7 @@ def test_chat_service_runs_real_create_agent_provider_and_local_tool(
         return original_route(question)
 
     monkeypatch.setattr(agent_runtime, "route_agent_action", recording_route)
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
         "get_local_tools",
@@ -350,7 +343,7 @@ def test_chat_service_returns_kb_evidence_to_agent_with_request_tool_mode(monkey
         }]),
         FinalAgentResponse(outcome="no_evidence", answer="无法根据当前证据确定学习年限。"),
     ])
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     search, rerank = Mock(return_value=[]), Mock(return_value=[])
     monkeypatch.setattr(rag_pipeline, "RAG_READY", True)
     monkeypatch.setattr(rag_pipeline, "search_relevant_chunks", search)
@@ -380,13 +373,13 @@ def test_chat_service_returns_kb_evidence_to_agent_with_request_tool_mode(monkey
     assert first_messages[-1].content == "本科生学习年限是多少？"
     message = model.received_messages[1][-1]
     assert isinstance(message, ToolMessage) and message.tool_call_id == "kb-mode-call"
-    assert json.loads(message.content)["output"]["count"] == 0
+    assert (message.artifact or json.loads(message.content))["output"]["count"] == 0
     search.assert_called_once_with("学习年限", top_k=8)
     rerank.assert_called_once_with([], "学习年限")
     if tool_mode is ToolMode.RAG_ONLY:
-        assert model.bound_tool_names == ["search_knowledge_base", "find_documents", "search_document", "compare_documents", "get_chunk_text", model.structured_tool_name]
+        assert model.bound_tool_names == ["search_knowledge_base", "find_documents", "search_document", "get_chunk_context", model.structured_tool_name]
     else:
-        assert {"search_knowledge_base", "web_search", "compare_documents"} <= set(model.bound_tool_names)
+        assert {"search_knowledge_base", "web_search", "search_document"} <= set(model.bound_tool_names)
 
 
 def test_chat_service_completes_web_search_and_fetch_through_production_chain(
@@ -461,9 +454,15 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
             return self.session
 
     model = ChatWebSearchModel()
+    composer = ControlledAnswerModel(
+        first_text="Python release news：A new Python release is available. ",
+        last_text="来源：https://example.com/python-news",
+    )
+    composer.release.set()
+    monkeypatch.setattr("app.agent.streaming.get_answer_model", lambda: composer)
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     monkeypatch.setattr(web_download_module, "Manager", FakeManager)
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     settings = settings_env(
         agent_max_iterations=6,
         agent_max_tool_calls=10,
@@ -566,6 +565,7 @@ def test_chat_service_completes_web_search_and_fetch_through_production_chain(
     assert metric_writes[0]["tool_called"] is True
     assert metric_writes[0]["tool_success"] is True
     assert metric_writes[0]["tool_name"] == "web_fetch"
+    assert outcome.result["llm_call_count"] == metric_writes[0]["llm_call_count"] == 4
     assert [
         item["tool_name"]
         for item in outcome.result["tool_trace"]
@@ -642,9 +642,15 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
             return self.session
 
     model = ChatWebPdfModel()
+    composer = ControlledAnswerModel(
+        first_text="Governed Web PDF Fixture，相关页码 [1, 2]，",
+        last_text="来源：https://example.com/document.pdf",
+    )
+    composer.release.set()
+    monkeypatch.setattr("app.agent.streaming.get_answer_model", lambda: composer)
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     monkeypatch.setattr(web_download_module, "Manager", FakeManager)
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     settings = settings_env(
         agent_max_iterations=6,
         agent_max_tool_calls=10,
@@ -739,6 +745,7 @@ def test_chat_service_completes_search_and_pdf_fetch_without_rag(
     assert metric_writes[0]["tool_called"] is True
     assert metric_writes[0]["tool_success"] is True
     assert metric_writes[0]["tool_name"] == "web_pdf_fetch"
+    assert outcome.result["llm_call_count"] == metric_writes[0]["llm_call_count"] == 4
     assert [
         item["tool_name"]
         for item in outcome.result["tool_trace"]

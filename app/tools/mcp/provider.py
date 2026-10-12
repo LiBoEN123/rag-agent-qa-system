@@ -1,4 +1,4 @@
-"""按统一 MCP Access Policy 提供启动期缓存的 StructuredTool。"""
+"""按来源权限提供启动期缓存的只读 MCP 工具。"""
 
 from __future__ import annotations
 
@@ -7,9 +7,7 @@ from dataclasses import dataclass
 
 from langchain_core.tools import BaseTool
 
-from app.config import AppSettings, get_settings
-from app.tools.context import ToolInvocationContext
-from app.tools.mcp.access import can_use_mcp_server
+from app.tools.context import ToolInvocationContext, has_permission
 from app.tools.mcp.config import McpServerConfig
 
 
@@ -22,24 +20,16 @@ class CachedMcpTool:
     tool: BaseTool
     server_config: McpServerConfig
 
-    @property
-    def required_permission(self) -> str:
-        """返回访问该 Server 工具所需的精确项目权限。"""
-        return f"mcp:{self.server_alias}"
-
 
 class McpToolProvider:
-    """只从不可变 cache 中按统一 Server Access Policy 选择工具。"""
+    """仅为来源服务提供按 Server 权限隔离的只读工具缓存。"""
 
     def __init__(
         self,
         entries: list[CachedMcpTool],
-        *,
-        settings: AppSettings,
     ) -> None:
         """固化 discovery 结果，并拒绝缓存中的重复工具名称。"""
         self._entries = tuple(entries)
-        self._settings = settings
         names = [entry.tool.name for entry in self._entries]
         if len(names) != len(set(names)):
             raise ValueError("MCP Tool cache 包含重复名称")
@@ -49,12 +39,8 @@ class McpToolProvider:
         return [
             entry.tool
             for entry in self._entries
-            if can_use_mcp_server(
-                context=context,
-                server_alias=entry.server_alias,
-                server_config=entry.server_config,
-                settings=self._settings,
-            )
+            if entry.server_config.enabled
+            and has_permission(context.permissions, f"mcp:{entry.server_alias}")
         ]
 
     def catalog(self) -> list[dict[str, str | bool]]:
@@ -63,17 +49,8 @@ class McpToolProvider:
             {
                 "server": entry.server_alias,
                 "enabled": entry.server_config.enabled,
-                "enabled_for_default_principal": (
-                    entry.server_config.enabled_for_default_principal
-                ),
                 "tool_name": entry.tool.name,
                 "remote_tool": entry.remote_tool_name,
-                "risk_level": str(
-                    (entry.tool.metadata or {}).get("risk_level") or "read_only"
-                ),
-                "approval_required": bool(
-                    (entry.tool.metadata or {}).get("approval_required", False)
-                ),
                 "description": " ".join(entry.tool.description.split())[:240],
             }
             for entry in self._entries
@@ -84,11 +61,13 @@ _provider_lock = threading.Lock()
 _provider: McpToolProvider | None = None
 
 
-def install_mcp_tool_provider(provider: McpToolProvider) -> None:
-    """在 discovery 全部成功后原子安装进程级 cache。"""
+def install_mcp_tool_provider(provider: McpToolProvider) -> McpToolProvider:
+    """在 discovery 全部成功后原子安装 cache；并发初始化复用首次安装结果。"""
     global _provider
     with _provider_lock:
-        _provider = provider
+        if _provider is None:
+            _provider = provider
+        return _provider
 
 
 def clear_mcp_tool_provider() -> None:
@@ -104,33 +83,10 @@ def get_mcp_tool_provider() -> McpToolProvider | None:
         return _provider
 
 
-def list_mcp_tools_for_context(
-    context: ToolInvocationContext,
-    *,
-    settings: AppSettings | None = None,
-) -> list[BaseTool]:
-    """默认关闭时保持空集合；显式启用却未初始化时 fail closed。"""
-    provider = get_mcp_tool_provider()
-    if provider is not None:
-        return provider.list_tools(context=context)
-    resolved = settings or get_settings()
-    if resolved.mcp_tools_enabled:
-        raise RuntimeError("MCP runtime is not initialized")
-    return []
-
-
-def get_mcp_tool_catalog() -> list[dict[str, str | bool]]:
-    """返回当前缓存的安全工具目录；未初始化时返回空列表。"""
-    provider = get_mcp_tool_provider()
-    return provider.catalog() if provider is not None else []
-
-
 __all__ = [
     "CachedMcpTool",
     "McpToolProvider",
     "clear_mcp_tool_provider",
-    "get_mcp_tool_catalog",
     "get_mcp_tool_provider",
     "install_mcp_tool_provider",
-    "list_mcp_tools_for_context",
 ]

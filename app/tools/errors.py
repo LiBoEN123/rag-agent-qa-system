@@ -25,21 +25,16 @@ class ToolErrorCode(str, Enum):
     RUNTIME_UNAVAILABLE = "runtime_unavailable"
 
     PERMISSION_DENIED = "permission_denied"
-    APPROVAL_REQUIRED = "approval_required"
-    MISSING_IDEMPOTENCY_KEY = "missing_idempotency_key"
     INVALID_INVOCATION_CONTEXT = "invalid_invocation_context"
     POLICY_DENIED = "policy_denied"
     AUDIT_WRITE_FAILED = "audit_write_failed"
 
-    MCP_NOT_CONFIGURED = "mcp_not_configured"
     MCP_PERMISSION_DENIED = "mcp_permission_denied"
-    MCP_DISCOVERY_FAILED = "mcp_discovery_failed"
     MCP_TOOL_NOT_ALLOWED = "mcp_tool_not_allowed"
     MCP_TOOL_TIMEOUT = "mcp_tool_timeout"
     MCP_TRANSPORT_ERROR = "mcp_transport_error"
     MCP_EXECUTION_ERROR = "mcp_execution_error"
     MCP_UNSUPPORTED_CONTENT = "mcp_unsupported_content"
-    MCP_OUTPUT_TOO_LARGE = "mcp_output_too_large"
 
 
 class ToolExecutionError(Exception):

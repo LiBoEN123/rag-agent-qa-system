@@ -7,8 +7,6 @@ from typing import Annotated, Any
 from langchain.agents import create_agent
 from langchain.agents.middleware import (
     ModelCallLimitMiddleware,
-    ToolErrorMiddleware,
-    ToolRetryMiddleware,
 )
 from langchain.agents.middleware.types import AgentState as LangChainAgentState
 from langchain.agents.structured_output import ToolStrategy
@@ -20,16 +18,14 @@ from app.agent.final_response import FinalAgentResponse
 from app.agent.framework_middleware import (
     _MODEL_GOVERNANCE_KEY,
     ProjectToolCallLimitMiddleware,
-    ProjectToolExecutionMiddleware,
     ProjectToolGovernanceMiddleware,
 )
-from app.agent.framework_tools import ProjectStructuredTool, resolve_agent_tools
+from app.agent.framework_tools import get_local_tools
 from app.agent.tool_visibility import ProjectToolVisibilityMiddleware
 from app.config import AppSettings, get_settings
-from app.llm.factory import get_answer_model
+from app.llm.factory import get_agent_model
 from app.prompts import AGENT_SYSTEM_PROMPT
-from app.tools.context import ToolInvocationContext, build_default_tool_context
-from app.tools.execution import project_failure_content, retry_project_failure
+from app.tools.context import ToolInvocationContext
 
 
 def _prefer_stop_reason(left: str, right: str) -> str:
@@ -41,7 +37,6 @@ class FrameworkAgentState(LangChainAgentState):
     """create_agent 内部使用的最小治理状态。"""
 
     governance_events: NotRequired[Annotated[list[dict[str, Any]], operator.add]]
-    agent_elapsed_ms: NotRequired[int]
     stop_reason: NotRequired[Annotated[str, _prefer_stop_reason]]
 
 
@@ -53,17 +48,14 @@ class _DeferredAgentModel:
     @staticmethod
     def _model():
         """延迟取得当前请求使用的 Agent 模型。"""
-        model = get_answer_model()
+        model = get_agent_model()
         if model is None:
             raise RuntimeError("Agent model is unavailable")
         return model
 
     def bind_tools(self, tools, **kwargs):
         """绑定静态请求工具，并返回记录治理事件的模型适配器。"""
-        clean_kwargs = {
-            key: value for key, value in kwargs.items() if value is not None
-        }
-        bound = self._model().bind_tools(tools, **clean_kwargs)
+        bound = self._model().bind_tools(tools, **kwargs)
         return _GovernedBoundModel(
             bound,
             available_tool_names=[
@@ -72,10 +64,8 @@ class _DeferredAgentModel:
         )
 
     def bind(self, **kwargs):
-        """兼容转发模型的通用绑定参数。"""
-        model = self._model()
-        bind = getattr(model, "bind", None)
-        bound = bind(**kwargs) if callable(bind) else model
+        """转发 LangChain 模型的通用绑定参数。"""
+        bound = self._model().bind(**kwargs)
         return _GovernedBoundModel(bound, available_tool_names=[])
 
 
@@ -142,46 +132,12 @@ def build_framework_agent(
     tools: Sequence[BaseTool] | None = None,
     governance: ProjectToolGovernanceMiddleware | None = None,
 ):
-    """创建使用请求可见工具和内置调用限制的唯一 Agent Loop。"""
+    """创建唯一 Agent Loop；注入工具须返回携带标准 artifact 的 ToolMessage。"""
     resolved = settings or get_settings()
     resolved_governance = governance or ProjectToolGovernanceMiddleware(
         settings=resolved
     )
-    resolved_tools = list(tools) if tools is not None else resolve_agent_tools(
-        build_default_tool_context(
-            source="agent_runtime",
-            settings=resolved,
-        ),
-        resolved,
-    )
-    local_tools = [
-        tool for tool in resolved_tools if isinstance(tool, ProjectStructuredTool)
-    ]
-    retry_groups: dict[int, list[str]] = {}
-    for tool in local_tools:
-        spec = tool.project_spec
-        if spec.idempotent and spec.max_retries > 0:
-            retry_groups.setdefault(spec.max_retries, []).append(tool.name)
-    execution_middleware = [
-        ProjectToolExecutionMiddleware(),
-        ToolErrorMiddleware(
-            project_failure_content,
-            tools=local_tools,
-        ),
-        *(
-            ToolRetryMiddleware(
-                max_retries=max_retries,
-                tools=tool_names,
-                retry_on=retry_project_failure,
-                on_failure="error",
-                backoff_factor=2.0,
-                initial_delay=resolved.tool_retry_base_delay_ms / 1000.0,
-                max_delay=resolved.tool_retry_max_delay_ms / 1000.0,
-                jitter=resolved.tool_retry_jitter_ratio > 0,
-            )
-            for max_retries, tool_names in sorted(retry_groups.items())
-        ),
-    ] if local_tools else []
+    resolved_tools = list(tools) if tools is not None else list(get_local_tools(resolved))
     agent = create_agent(
         _DeferredAgentModel(),
         tools=resolved_tools,
@@ -190,7 +146,6 @@ def build_framework_agent(
         middleware=[
             ProjectToolVisibilityMiddleware(),
             resolved_governance,
-            *execution_middleware,
             ModelCallLimitMiddleware(
                 run_limit=resolved.agent_max_iterations,
                 exit_behavior="end",

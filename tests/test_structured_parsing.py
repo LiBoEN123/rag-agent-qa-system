@@ -10,7 +10,7 @@ from docling_core.types.doc import (
 )
 
 from app.ingestion.document_blocks import TableBlock, TextBlock, canonical_document_text
-from app.rag import parsing
+from app.ingestion import parsing
 from tests.support.structured_document import (
     ADMISSION_HTML, REGISTRATION_HTML, admission_structure, build_table_docx,
 )
@@ -155,6 +155,22 @@ def test_html_keeps_cleaned_intro_before_first_heading():
         "<html><body><p>办理说明</p><h2>办理要求</h2><p>其他说明</p></body></html>"
     )
     assert [block.text for block in parsed.blocks] == ["办理说明", "办理要求", "其他说明"]
+
+
+def test_real_html_preserves_docling_title_and_all_section_levels():
+    parsed = parsing.parse_html_document('''<html><body>
+      <h1>管理办法</h1><h2>第二章 申请条件</h2><h3>第五条</h3>
+      <p>申请人应符合以下条件。</p><h4>细则</h4><h5>补充</h5><h6>说明</h6>
+    </body></html>''')
+    assert [(block.text, block.text_role, block.heading_level) for block in parsed.blocks] == [
+        ("管理办法", "title", None), ("第二章 申请条件", "section_header", 1),
+        ("第五条", "section_header", 2), ("申请人应符合以下条件。", "text", None),
+        ("细则", "section_header", 3), ("补充", "section_header", 4),
+        ("说明", "section_header", 5),
+    ]
+    assert [(block.block_id, block.order, block.page_number) for block in parsed.blocks] == [
+        (f"b{index}", index, None) for index in range(7)
+    ]
 
 
 @pytest.mark.parametrize("status", [ConversionStatus.PARTIAL_SUCCESS, ConversionStatus.FAILURE])

@@ -3,7 +3,7 @@
 使用 Pydantic 定义并校验各内置工具接收的结构化参数和稳定输出。
 """
 
-from typing import Any, Literal
+from typing import Literal
 from urllib.parse import urlsplit
 
 from langchain_core.documents import Document
@@ -56,24 +56,13 @@ class SearchKnowledgeBaseArgs(BaseModel):
     top_k: int = Field(default=5, ge=1, le=10, description="返回候选 chunk 数量")
 
 
-class CompareDocumentsArgs(BaseModel):
-    """compare_documents 工具参数。"""
-
-    model_config = ConfigDict(str_strip_whitespace=True)
-
-    query: str = Field(..., min_length=1, description="对比主题或问题")
-    doc_a: str = Field(..., min_length=1, description="第一个文档名或文档名关键词")
-    doc_b: str = Field(..., min_length=1, description="第二个文档名或文档名关键词")
-    top_k: int = Field(default=3, ge=1, le=10, description="每个文档返回的证据数量")
-
-
 class FindDocumentsArgs(BaseModel):
     """按主题发现知识库文档，只搜索目录元数据。"""
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    query: str = Field(..., min_length=1, max_length=500, description="文档名称或主题关键词")
-    limit: int = Field(default=5, ge=1, le=10, description="最多返回的候选文档数量")
+    query: str | None = Field(default=None, max_length=500, description="文档名称或主题关键词；为空时列出文档")
+    limit: int = Field(default=20, ge=1, le=100, description="最多返回的文档数量，total 表示匹配文档总数")
 
 
 class SearchDocumentArgs(BaseModel):
@@ -92,8 +81,8 @@ class SearchDocumentArgs(BaseModel):
     top_k: int = Field(default=5, ge=1, le=10, description="返回该文档的候选 chunk 数量")
 
 
-class GetChunkTextArgs(BaseModel):
-    """get_chunk_text 工具参数。"""
+class GetChunkContextArgs(BaseModel):
+    """读取 anchor 原文或同文档相邻 chunk；locator 来自 metadata.chunk_id。"""
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -106,11 +95,8 @@ class GetChunkTextArgs(BaseModel):
         ),
     )
 
-
-class ListDocumentsArgs(BaseModel):
-    """list_documents 工具参数。"""
-
-    model_config = ConfigDict(extra="ignore")
+    before: int = Field(default=1, ge=0, le=3, description="读取 anchor 之前的位置数量")
+    after: int = Field(default=1, ge=0, le=3, description="读取 anchor 之后的位置数量")
 
 
 class SearchKnowledgeBaseOutput(BaseModel):
@@ -129,31 +115,6 @@ class SearchKnowledgeBaseOutput(BaseModel):
         """确保公开证据列表与显式数量保持一致。"""
         if self.count != len(self.evidence):
             raise ValueError("count 必须等于 evidence 数量")
-        return self
-
-
-class CompareDocumentsOutput(BaseModel):
-    """双文档证据检索的稳定输出，按 doc_a、doc_b 顺序分组。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    query: str
-    doc_a: str
-    doc_b: str
-    doc_a_count: int = Field(..., ge=0)
-    doc_b_count: int = Field(..., ge=0)
-    count: int = Field(..., ge=0)
-    evidence: list[Document]
-
-    _validate_evidence = field_validator("evidence")(validate_evidence_documents)
-
-    @model_validator(mode="after")
-    def validate_evidence_counts(self) -> "CompareDocumentsOutput":
-        """确保总数同时匹配证据列表和两份文档的数量。"""
-        if self.count != len(self.evidence):
-            raise ValueError("count 必须等于 evidence 数量")
-        if self.count != self.doc_a_count + self.doc_b_count:
-            raise ValueError("count 必须等于 doc_a_count + doc_b_count")
         return self
 
 
@@ -178,13 +139,14 @@ class FindDocumentsOutput(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    query: str = Field(..., min_length=1, max_length=500)
-    count: int = Field(..., ge=0, le=10)
+    query: str | None = Field(default=None, max_length=500)
+    count: int = Field(..., ge=0, le=100)
+    total: int = Field(..., ge=0)
     documents: list[DocumentSearchItem]
 
     @model_validator(mode="after")
     def validate_document_count(self) -> "FindDocumentsOutput":
-        if self.count != len(self.documents):
+        if self.count != len(self.documents) or self.total < self.count:
             raise ValueError("count 必须等于 documents 数量")
         return self
 
@@ -196,31 +158,26 @@ class SearchDocumentOutput(SearchKnowledgeBaseOutput):
     source_id: str = Field(..., min_length=1)
 
 
-class ListDocumentsOutput(BaseModel):
-    """文档列表工具的稳定输出。"""
+class GetChunkContextOutput(BaseModel):
+    """同文档位置窗口中的独立 Document evidence，包含 anchor 本身。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    count: int = Field(..., ge=0)
-    documents: list[dict[str, Any]]
-
-    @model_validator(mode="after")
-    def validate_document_count(self) -> "ListDocumentsOutput":
-        """确保显式文档数量与列表长度一致。"""
-        if self.count != len(self.documents):
-            raise ValueError("count 必须等于 documents 数量")
-        return self
-
-
-class GetChunkTextOutput(BaseModel):
-    """chunk 原文工具的稳定输出。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    count: Literal[1]
-    evidence: list[Document] = Field(..., min_length=1, max_length=1)
+    anchor_chunk_id: int = Field(..., ge=1)
+    source_id: str = Field(..., min_length=1)
+    anchor_position: int = Field(..., ge=1)
+    before: int = Field(..., ge=0, le=3)
+    after: int = Field(..., ge=0, le=3)
+    count: int = Field(..., ge=1, le=7)
+    evidence: list[Document]
 
     _validate_evidence = field_validator("evidence")(validate_evidence_documents)
+
+    @model_validator(mode="after")
+    def validate_evidence_counts(self) -> "GetChunkContextOutput":
+        if self.count != len(self.evidence):
+            raise ValueError("count 必须等于 evidence 数量")
+        return self
 
 
 class WebSearchArgs(BaseModel):
@@ -274,7 +231,7 @@ class WebSearchResultItem(BaseModel):
 class WebSearchOutput(BaseModel):
     """稳定、有限且明确标记不可信的 Web Search 输出。"""
 
-    query: str = Field(..., min_length=1, max_length=500)
+    query: str | None = Field(default=None, max_length=500)
     count: int = Field(..., ge=0, le=10)
     provider: Literal["ddgs"] = "ddgs"
     content_is_untrusted: Literal[True] = True

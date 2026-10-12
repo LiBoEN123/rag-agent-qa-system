@@ -1,12 +1,15 @@
 """统一 LLM Factory 的配置映射与缓存测试。"""
 
+import json
 import socket
 
+import httpx
 import pytest
 from langchain_openai import ChatOpenAI
 
 from app.llm import factory
 from app.llm.errors import ModelCallError
+from app.agent.final_response import FinalAgentResponse
 
 
 class FakeChatOpenAI:
@@ -52,6 +55,71 @@ def test_answer_model_uses_existing_configuration(settings_env):
         "timeout": 42,
         "max_retries": 3,
     }
+
+
+def test_agent_model_uses_independent_configuration(settings_env):
+    """两个角色可同时创建独立 client，Agent 的全部参数不影响 Composer。"""
+    settings_env(
+        llm_api_key="answer-key",
+        model_name="answer-model",
+        llm_api_url="https://answer.example.test/v1",
+        temperature=0.7,
+        llm_max_tokens=987,
+        llm_timeout=42,
+        llm_max_retries=3,
+        agent_llm_api_key="agent-key",
+        agent_model_name="agent-model",
+        agent_llm_api_url="https://agent.example.test/v1/chat/completions",
+        agent_temperature=0,
+        agent_llm_max_tokens=456,
+        agent_llm_timeout=12,
+        agent_llm_max_retries=0,
+        agent_enable_thinking=False,
+    )
+
+    agent = factory.get_agent_model()
+    answer = factory.get_answer_model()
+
+    assert agent is not answer
+    assert agent.kwargs == {
+        "model": "agent-model",
+        "api_key": "agent-key",
+        "base_url": "https://agent.example.test/v1",
+        "temperature": 0,
+        "max_tokens": 456,
+        "timeout": 12,
+        "max_retries": 0,
+        "extra_body": {"enable_thinking": False},
+    }
+    assert answer.kwargs == {
+        "model": "answer-model",
+        "api_key": "answer-key",
+        "base_url": "https://answer.example.test/v1",
+        "temperature": 0.7,
+        "max_tokens": 987,
+        "timeout": 42,
+        "max_retries": 3,
+    }
+
+
+@pytest.mark.parametrize("override_model_name", [False, True])
+def test_agent_model_falls_back_to_answer_configuration(settings_env, override_model_name):
+    """未设置及仅设置 Agent 名称时，其余配置均逐字段回退。"""
+    settings_env(
+        llm_api_key="shared-key",
+        model_name="shared-model",
+        llm_api_url="https://shared.example.test/v1/chat/completions",
+        temperature=0.4,
+        llm_max_tokens=789,
+        llm_timeout=43,
+        llm_max_retries=4,
+        agent_model_name="agent-only" if override_model_name else None,
+    )
+
+    expected = dict(factory.get_answer_model().kwargs)
+    if override_model_name:
+        expected["model"] = "agent-only"
+    assert factory.get_agent_model().kwargs == expected
 
 
 @pytest.mark.parametrize(
@@ -132,17 +200,23 @@ def test_factory_cache_can_be_cleared(settings_env):
     settings_env(
         llm_api_url="https://models.example.test/v1",
         model_name="model-a",
+        agent_model_name="agent-a",
     )
 
     first = factory.get_answer_model()
     second = factory.get_answer_model()
-    settings_env(model_name="model-b")
+    first_agent = factory.get_agent_model()
+    assert factory.get_agent_model() is first_agent
+    settings_env(model_name="model-b", agent_model_name="agent-b")
     third = factory.get_answer_model()
+    second_agent = factory.get_agent_model()
 
     assert first is second
     assert third is not first
     assert third.kwargs["model"] == "model-b"
-    assert len(FakeChatOpenAI.instances) == 2
+    assert second_agent is not first_agent
+    assert second_agent.kwargs["model"] == "agent-b"
+    assert len(FakeChatOpenAI.instances) == 4
 
 
 def test_real_chat_openai_constructor_without_network(monkeypatch, settings_env):
@@ -198,3 +272,52 @@ def test_constructor_failure_maps_to_model_call_error(monkeypatch, settings_env)
     assert error.value.model_name == "test-model"
     assert error.value.retryable is False
     assert error.value.__cause__ is failure
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enable_thinking", [None, False, True])
+async def test_agent_thinking_setting_reaches_native_tool_request(
+    monkeypatch, settings_env, enable_thinking,
+):
+    """原生 SDK 将思考开关与强制工具调用参数正确序列化到请求顶层。"""
+    requests = []
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={
+            "id": "chatcmpl-test", "object": "chat.completion", "created": 0,
+            "model": "agent-model",
+            "choices": [{
+                "index": 0, "finish_reason": "tool_calls",
+                "message": {"role": "assistant", "content": None, "tool_calls": [{
+                    "id": "call-final", "type": "function",
+                    "function": {
+                        "name": "FinalAgentResponse",
+                        "arguments": '{"outcome":"no_evidence"}',
+                    },
+                }]},
+            }],
+        })
+
+    settings_env(
+        agent_model_name="agent-model",
+        agent_llm_api_url="https://models.example.test/v1",
+        agent_enable_thinking=enable_thinking,
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        monkeypatch.setattr(
+            factory, "ChatOpenAI",
+            lambda **kwargs: ChatOpenAI(**kwargs, http_async_client=client),
+        )
+        result = await factory.get_agent_model().bind_tools(
+            [FinalAgentResponse], tool_choice="any",
+        ).ainvoke("Return no_evidence.")
+
+    assert result.tool_calls[0]["name"] == "FinalAgentResponse"
+    assert len(requests) == 1
+    assert requests[0]["tool_choice"] == "required"
+    assert "extra_body" not in requests[0]
+    if enable_thinking is None:
+        assert "enable_thinking" not in requests[0]
+    else:
+        assert requests[0]["enable_thinking"] is enable_thinking

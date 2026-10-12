@@ -31,21 +31,16 @@ from app.tools.errors import ToolErrorCode
             ToolErrorCode.INVALID_INVOCATION_CONTEXT,
             AgentToolFailureKind.TERMINAL_GOVERNANCE,
         ),
-        (
-            ToolErrorCode.MISSING_IDEMPOTENCY_KEY,
-            AgentToolFailureKind.TERMINAL_GOVERNANCE,
-        ),
-        (ToolErrorCode.APPROVAL_REQUIRED, AgentToolFailureKind.APPROVAL_REQUIRED),
         (ToolErrorCode.RUNTIME_UNAVAILABLE, AgentToolFailureKind.TERMINAL_RUNTIME),
     ],
 )
 def test_classify_all_tool_error_codes(error_code, expected):
-    assert classify_tool_failure(error_code=error_code.value, retryable=False) is expected
+    assert classify_tool_failure(error_code=error_code.value) is expected
 
 
 @pytest.mark.parametrize("error_code", ["future_error", "", "  UNKNOWN_NEW "])
 def test_unknown_error_code_fails_closed_without_raising(error_code):
-    assert classify_tool_failure(error_code=error_code, retryable=True) is (
+    assert classify_tool_failure(error_code=error_code) is (
         AgentToolFailureKind.TERMINAL_RUNTIME
     )
 
@@ -97,16 +92,6 @@ def test_error_fingerprint_binds_call_and_normalized_code():
             "permission_denied",
             AgentToolFailureKind.TERMINAL_GOVERNANCE,
             AgentStopReason.FATAL_TOOL_ERROR,
-        ),
-        (
-            "approval_required",
-            AgentToolFailureKind.APPROVAL_REQUIRED,
-            AgentStopReason.APPROVAL_REQUIRED,
-        ),
-        (
-            "missing_idempotency_key",
-            AgentToolFailureKind.TERMINAL_GOVERNANCE,
-            AgentStopReason.MISSING_IDEMPOTENCY_KEY,
         ),
         (
             "runtime_unavailable",

@@ -13,47 +13,65 @@ from app.tools.errors import ToolErrorCode, ToolExecutionError
 from app.tools.result import tool_error, tool_success
 
 
-def list_documents() -> dict:
-    """列出知识库中的文档并包装为标准工具结果。"""
-    tool_name = "list_documents"
-    tool_input = {}
+def get_chunk_context(
+    args: dict,
+    context: ToolInvocationContext | None = None,
+) -> dict:
+    """按已有 source_id + position 扩展上下文，不检索或修改 runtime chunks。"""
+    tool_name = "get_chunk_context"
     try:
-        from app.rag.pipeline import preview_docs
+        from app.rag import runtime
+        from app.rag.debug import get_chunk_full_text
 
-        documents = preview_docs()
-        return tool_success(
-            tool_name,
-            tool_input,
-            {"count": len(documents), "documents": documents},
-        )
-    except Exception as exc:
-        return tool_error(tool_name, tool_input, str(exc))
-
-
-def get_chunk_text(chunk_id: int) -> dict:
-    """按 chunk 编号读取完整文本并包装为标准工具结果。"""
-    tool_name = "get_chunk_text"
-    tool_input = {"chunk_id": chunk_id}
-    try:
-        from app.rag.pipeline import get_chunk_full_text
-
-        chunk = get_chunk_full_text(chunk_id)
-        if not chunk.get("found"):
+        # anchor 与邻居使用同一 runtime 快照；复用原文工具底层的唯一查找逻辑。
+        chunks = runtime.chunks
+        chunk_id = args["chunk_id"]
+        anchor = get_chunk_full_text(chunks, chunk_id)
+        if not anchor.get("found"):
             raise ToolExecutionError(
-                f"未找到 chunk_id={chunk_id}。get_chunk_text.chunk_id 必须使用知识库 "
-                "evidence 的 metadata.chunk_id，不要使用 Document.id。",
-                code=ToolErrorCode.INVALID_ARGUMENTS,
-                retryable=False,
+                f"未找到 chunk_id={chunk_id}。chunk_id 必须来自知识库 evidence 的 "
+                "metadata.chunk_id，不能使用 Document.id / evidence id。",
+                code=ToolErrorCode.INVALID_ARGUMENTS, retryable=False,
             )
-        return tool_success(
-            tool_name,
-            tool_input,
-            {"count": 1, "evidence": [chunk_to_evidence_document(chunk)]},
-        )
+        metadata = anchor["metadata"]
+        source_id = metadata.get("source_id")
+        position = metadata.get("position")
+        if (
+            not isinstance(source_id, str) or not source_id.strip()
+            or type(position) is not int or position < 1
+        ):
+            raise ToolExecutionError(
+                f"chunk_id={chunk_id} 缺少有效的 source_id 或正整数 position，"
+                "无法确定同文档上下文。",
+                code=ToolErrorCode.INVALID_ARGUMENTS, retryable=False,
+            )
+
+        before, after = args["before"], args["after"]
+        start, end = max(1, position - before), position + after
+        neighbors = []
+        for chunk in chunks:
+            neighbor_metadata = chunk.get("metadata") or {}
+            neighbor_position = neighbor_metadata.get("position")
+            if (
+                neighbor_metadata.get("source_id") == source_id
+                and type(neighbor_position) is int
+                and start <= neighbor_position <= end
+            ):
+                neighbors.append(chunk)
+        neighbors.sort(key=lambda chunk: chunk["metadata"]["position"])
+        evidence: dict[str, Document] = {}
+        for chunk in neighbors:
+            document = chunk_to_evidence_document(chunk)
+            evidence.setdefault(document.id, document)
+        return tool_success(tool_name, args, {
+            "anchor_chunk_id": chunk_id, "source_id": source_id,
+            "anchor_position": position, "before": before, "after": after,
+            "count": len(evidence), "evidence": list(evidence.values()),
+        })
     except ToolExecutionError:
         raise
     except Exception as exc:
-        return tool_error(tool_name, tool_input, str(exc))
+        return tool_error(tool_name, args, str(exc))
 
 
 def chunk_to_evidence_document(chunk: dict) -> Document:
@@ -105,7 +123,7 @@ def search_knowledge_base(
     """按本轮工具参数混合召回、重排，只返回候选证据。"""
     tool_name = "search_knowledge_base"
     try:
-        from app.rag.pipeline import get_rag_status, rerank, search_relevant_chunks
+        from app.rag.runtime import get_rag_status, rerank, search_relevant_chunks
 
         if not get_rag_status()["ready"]:
             raise ToolExecutionError(

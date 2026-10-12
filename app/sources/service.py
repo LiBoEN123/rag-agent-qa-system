@@ -1,45 +1,28 @@
-"""编排受治理 MCP / 上传来源 proposal、approved-only indexing 与 source 撤库。"""
+"""受治理 MCP / 上传来源抓取、校验与显式 proposal。"""
 
 from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from datetime import datetime
-from functools import partial
 from pathlib import PurePosixPath
 from typing import Any, BinaryIO
 from urllib.parse import urlsplit
-
-from langchain_core.embeddings import Embeddings
 
 from app.config import AppSettings, get_settings
 from app.ingestion import (
     INGESTION_MAX_CONTENT_CHARS,
     IngestionCandidate,
-    IngestionPrincipalType,
     IngestionRequester,
     IngestionService,
-)
-from app.rag import pipeline as rag_pipeline
-from app.rag.indexing import (
-    EXTERNAL_RECORD_NAMESPACE_BY_SOURCE_TYPE,
-    FIRECRAWL_RECORD_NAMESPACE,
-    GITHUB_RECORD_NAMESPACE,
-    candidate_to_langchain_documents,
-    create_record_manager,
-    create_vector_store,
-    sync_documents,
 )
 from app.sources.firecrawl import FirecrawlPagePayload, FirecrawlPageSourceAdapter
 from app.sources.github import GitHubFilePayload, GitHubFileSourceAdapter
 from app.sources.upload import load_upload_document
-from app.storage.ingestion import SQLiteCandidateRepository
 from app.tools.context import ToolInvocationContext
-from app.tools.contracts import ToolRiskLevel
 from app.tools.mcp.bridge import invoke_mcp_tool
 from app.tools.mcp.provider import get_mcp_tool_provider
-from app.tools.mcp.serialization import McpSerializationProfile
 
 
 _GITHUB_TOOL = "github_get_file_contents"
@@ -59,16 +42,12 @@ class SourceIngestionError(RuntimeError):
 # 校验 MCP 入库输出成功、正文完整且带有不可信标记和内容块列表。
 def _require_ingestion_output(
     result: Mapping[str, Any],
-    *,
-    profile: McpSerializationProfile = McpSerializationProfile.INGESTION,
 ) -> dict[str, Any]:
     if result.get("ok") is not True:
         raise SourceIngestionError("SOURCE_FETCH_FAILED", "受治理 MCP source fetch 失败")
     output = result.get("output")
     if not isinstance(output, dict):
         raise SourceIngestionError("SOURCE_PAYLOAD_INVALID", "MCP source payload 无效")
-    if output.get("serialization_profile") != profile.value:
-        raise SourceIngestionError("SOURCE_PAYLOAD_INVALID", "source output profile 不匹配")
     if output.get("truncated") is not False:
         blocks = output.get("content_blocks")
         if isinstance(blocks, list) and any(
@@ -148,7 +127,6 @@ def _firecrawl_payload(
     output: Mapping[str, Any],
     *,
     requested_url: str,
-    require_markdown: bool = False,
 ) -> FirecrawlPagePayload:
     payloads: list[Mapping[str, Any]] = []
     structured = output.get("structured_content")
@@ -170,8 +148,7 @@ def _firecrawl_payload(
     selected: Mapping[str, Any] | None = None
     content: str | None = None
     for candidate in payloads:
-        keys = ("markdown",) if require_markdown else ("markdown", "content", "text")
-        for key in keys:
+        for key in ("markdown", "content", "text"):
             value = candidate.get(key)
             if isinstance(value, str):
                 selected, content = candidate, value
@@ -212,101 +189,20 @@ def _firecrawl_payload(
     )
 
 
-def promote_tool_result(
-    *,
-    result: Mapping[str, Any],
-    metadata: Mapping[str, Any],
-    args: dict[str, Any],
-    source_output: object,
-    context: ToolInvocationContext,
-    settings: AppSettings,
-) -> IngestionCandidate | None:
-    """仅将显式声明的完整 source payload 提交到现有持久候选流程。"""
-    source = metadata.get("knowledge_promotion")
-    expected_tool = {"github": _GITHUB_TOOL, "firecrawl": _FIRECRAWL_TOOL}.get(source)
-    if (
-        expected_tool is None
-        or metadata.get("tool_origin") != "mcp"
-        or metadata.get("risk_level") != ToolRiskLevel.READ_ONLY.value
-        or result.get("tool_name") != expected_tool
-        or result.get("ok") is not True
-        or result.get("governance", {}).get("decision") != "allow"
-        or result.get("audit", {}).get("write_failed") is not False
-    ):
-        return None
-    output = _require_ingestion_output(
-        {"ok": result["ok"], "output": source_output},
-        profile=McpSerializationProfile.AGENT,
-    )
-    if (
-        output.get("server") != metadata.get("mcp_server")
-        or output.get("tool") != metadata.get("remote_tool_name")
-        or f"{output.get('server')}_{output.get('tool')}" != expected_tool
-        or result.get("output", {}).get("truncated") is not False
-    ):
-        return None
-    if source == "github":
-        payload = _github_payload(
-            output,
-            owner=args["owner"],
-            repository=args["repo"],
-            path=args["path"],
-            requested_ref=args.get("ref"),
-        )
-        if payload.resolved_sha is None:
-            return None
-        document = GitHubFileSourceAdapter().to_document(payload)
-    else:
-        formats = args.get("formats")
-        if formats not in (["markdown"], ["markdown", "html"], ["html", "markdown"]):
-            return None
-        payload = _firecrawl_payload(
-            output, requested_url=args["url"], require_markdown=True
-        )
-        if (
-            payload.final_url is None
-            or payload.status_code is None
-            or not 200 <= payload.status_code < 300
-        ):
-            return None
-        if formats == ["markdown"]:
-            payload = payload.model_copy(update={"html": None})
-        try:
-            document = FirecrawlPageSourceAdapter().to_document(payload)
-        except ValueError:
-            raise SourceIngestionError("SOURCE_PAYLOAD_INVALID", "Firecrawl page 无法转换为知识文档") from None
-    if not document.content.strip():
-        return None
-    return IngestionService(SQLiteCandidateRepository(settings.sqlite_db_path)).propose(
-        document=document,
-        requester=IngestionRequester(
-            principal_id=context.principal_id,
-            principal_type=IngestionPrincipalType(context.principal_type.value),
-            source="agent-tool-promotion",
-        ),
-    )
-
-
 class ExternalKnowledgeSourceService:
-    """显式 operator/service source fetch、proposal、approval 与知识库操作。"""
+    """显式 operator/service source fetch 与 proposal。"""
 
-    # 配置申请主体、入库服务、索引依赖和 GitHub、Firecrawl 来源适配器。
+    # 配置申请主体、入库服务和来源适配器。
     def __init__(
         self,
         *,
         requester: IngestionRequester,
         ingestion_service: IngestionService | None = None,
-        embeddings: Embeddings | None = None,
         settings: AppSettings | None = None,
-        runtime_reload: Callable[[], tuple[bool, str]] | None = None,
     ) -> None:
         self._requester = requester
         self._ingestion = ingestion_service or IngestionService()
-        self._embeddings = embeddings
         self._settings = settings
-        self._runtime_reload = runtime_reload or partial(
-            rag_pipeline.load_index_cache, allow_empty=True,
-        )
         self._github_adapter = GitHubFileSourceAdapter()
         self._firecrawl_adapter = FirecrawlPageSourceAdapter()
 
@@ -315,7 +211,7 @@ class ExternalKnowledgeSourceService:
     def ingestion_service(self) -> IngestionService:
         return self._ingestion
 
-    # 查找调用者可见的 MCP 来源工具，并要求其声明为只读工具。
+    # 查找经过只读 discovery 且当前来源主体可访问的 MCP 工具。
     def _tool(self, name: str, context: ToolInvocationContext):
         provider = get_mcp_tool_provider()
         if provider is None:
@@ -324,8 +220,6 @@ class ExternalKnowledgeSourceService:
         tool = tools.get(name)
         if tool is None:
             raise SourceIngestionError("SOURCE_TOOL_UNAVAILABLE", "source MCP tool 不可用")
-        if (tool.metadata or {}).get("risk_level") != ToolRiskLevel.READ_ONLY.value:
-            raise SourceIngestionError("SOURCE_TOOL_NOT_READ_ONLY", "source MCP tool 非只读")
         return tool
 
     # 通过受治理的 MCP 入口抓取内容，并校验其满足完整入库输出要求。
@@ -339,7 +233,6 @@ class ExternalKnowledgeSourceService:
             self._tool(name, context),
             args,
             context=context,
-            serialization_profile=McpSerializationProfile.INGESTION,
         )
         return _require_ingestion_output(result)
 
@@ -412,85 +305,3 @@ class ExternalKnowledgeSourceService:
             file, filename=filename, max_bytes=settings.ingestion_upload_max_bytes,
         )
         return self._propose(document, reason)
-
-    def approve(self, candidate_id: str, *, reason: str | None = None) -> IngestionCandidate:
-        """显式批准知识候选；与 MCP execution approval 完全独立。"""
-        return self._ingestion.approve(
-            candidate_id,
-            decided_by=self._requester,
-            reason=reason,
-        )
-
-    def index_approved(
-        self,
-        candidate_id: str,
-        *,
-        embeddings: Embeddings | None = None,
-    ) -> dict[str, int]:
-        """把 approved external candidate 增量同步并复用现有 runtime reload。"""
-        candidate = self._ingestion.repository.get(candidate_id)
-        if candidate is None:
-            raise SourceIngestionError("SOURCE_CANDIDATE_NOT_FOUND", "candidate 不存在")
-        namespace = EXTERNAL_RECORD_NAMESPACE_BY_SOURCE_TYPE.get(
-            candidate.document.source_type
-        )
-        if namespace is None:
-            raise SourceIngestionError("SOURCE_TYPE_UNSUPPORTED", "不支持该 external source")
-        resolved_embeddings = embeddings or self._embeddings or rag_pipeline.model
-        if resolved_embeddings is None:
-            raise SourceIngestionError("SOURCE_EMBEDDINGS_UNAVAILABLE", "embedding model 未初始化")
-        documents = candidate_to_langchain_documents(candidate)
-        result = sync_documents(
-            documents,
-            resolved_embeddings,
-            settings=self._settings,
-            namespace=namespace,
-            cleanup="incremental",
-        )
-        ok, _message = self._runtime_reload()
-        if not ok:
-            raise SourceIngestionError(
-                "SOURCE_RUNTIME_RELOAD_FAILED",
-                "external source 已索引，但 RAG runtime reload 失败",
-            )
-        return result
-
-    def remove_indexed(self, candidate_id: str) -> dict[str, int]:
-        """按 logical source 撤库；保留候选历史，成功需同时清理持久索引并 reload。"""
-        candidate = self._ingestion.repository.get(candidate_id)
-        if candidate is None:
-            raise SourceIngestionError("SOURCE_CANDIDATE_NOT_FOUND", "candidate 不存在")
-        namespace = EXTERNAL_RECORD_NAMESPACE_BY_SOURCE_TYPE.get(
-            candidate.document.source_type
-        )
-        if namespace is None:
-            raise SourceIngestionError("SOURCE_TYPE_UNSUPPORTED", "不支持该 external source")
-        source_id = candidate.document.source_id
-        manager = create_record_manager(self._settings, namespace=namespace)
-        keys = manager.list_keys(group_ids=[source_id])
-        store = create_vector_store(None, self._settings)
-        # metadata 查询也覆盖 RecordManager 缺记录的 chunks；不依赖候选版本切分。
-        where = {"source_id": source_id}
-        ids = store.get(where=where, include=[])["ids"]
-        if ids:
-            store.delete(where=where)
-        if keys:
-            manager.delete_keys(keys)
-        ok, _message = self._runtime_reload()
-        if not ok:
-            raise SourceIngestionError(
-                "SOURCE_RUNTIME_RELOAD_FAILED",
-                "external source 已移除，但 RAG runtime reload 失败",
-            )
-        return {
-            "num_added": 0, "num_updated": 0,
-            "num_deleted": len(ids), "num_skipped": 0,
-        }
-
-
-__all__ = [
-    "ExternalKnowledgeSourceService",
-    "FIRECRAWL_RECORD_NAMESPACE",
-    "GITHUB_RECORD_NAMESPACE",
-    "SourceIngestionError",
-]

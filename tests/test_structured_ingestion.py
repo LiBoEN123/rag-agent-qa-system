@@ -15,7 +15,7 @@ from app.ingestion.document_blocks import ParsedDocument, TableBlock, TableCell,
 from app.ingestion.factory import build_knowledge_document
 from app.ingestion.identity import build_content_hash, build_structure_hash
 from app.ingestion.normalization import prepare_structured_content
-from app.rag.indexing import candidate_to_langchain_documents
+from app.indexing.langchain import candidate_to_langchain_documents
 from app.storage.database import clear_storage_engine_cache
 from app.storage.ingestion import CandidatePersistenceError, SQLiteCandidateRepository, SQLiteIndexRunRepository
 
@@ -77,13 +77,16 @@ def test_structure_hash_is_canonical_across_key_cell_order_and_processes():
 
 def test_all_structured_text_slots_are_normalized_and_redacted_before_persistence(tmp_path):
     structure = ParsedDocument(blocks=(
-        TextBlock(block_id="b0", order=0, text="Cafe\u0301\r\nAuthorization: Bearer block-secret  "),
+        TextBlock(block_id="b0", order=0, text="Cafe\u0301\r\nAuthorization: Bearer block-secret  ",
+                  text_role="section_header", heading_level=2),
         TableBlock(block_id="b1", order=1, caption="api_key=caption-secret", row_count=1, column_count=1,
                    cells=(TableCell(text="password=cell-secret\r\ntrail  ", row_index=0, column_index=0),)),
     ))
     document = _document(structure)
     assert document.content_redacted
     assert document.structured_content.blocks[0].text.startswith("Café\n")
+    assert document.structured_content.blocks[0].text_role == "section_header"
+    assert document.structured_content.blocks[0].heading_level == 2
     assert document.structured_content.blocks[1].cells[0].text.endswith("\ntrail")
     candidate = IngestionService(SQLiteCandidateRepository(tmp_path / "app.db")).propose(
         document=document, requester=REQUESTER,
@@ -112,9 +115,10 @@ def test_sqlite_reload_and_successful_rebuild_input_keep_complete_structure(tmp_
     [restored] = repository.load_latest_successfully_indexed()
     assert restored.document.structured_content == candidate.document.structured_content
     [chunk] = candidate_to_langchain_documents(restored, chunk_size=1000, chunk_overlap=0)
-    assert chunk.page_content == "[表格]\n表头：列1；列2\n列1 / 列2：value。\n[/表格]"
+    assert chunk.page_content == "[标题路径] table\n\n[表格]\n表头：列1；列2\n说明：value\n[/表格]"
     assert chunk.metadata["element_type"] == "table"
-    assert chunk.metadata["row_start"] == chunk.metadata["row_end"] == 0
+    # 全宽合并说明行不是 data row；结构本身仍完整保留在 candidate。
+    assert "row_start" not in chunk.metadata and "row_end" not in chunk.metadata
     with sqlite3.connect(path) as connection:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert not {"document_structure", "table_cells", "parsed_documents"} & tables
@@ -138,6 +142,61 @@ def test_legacy_sqlite_candidate_without_structure_uses_exact_old_identity(tmp_p
     assert restored == candidate
     assert restored.document.structured_content is None
     assert restored.document.structure_hash is None
+
+
+def test_legacy_structured_candidate_keeps_hash_identity_and_sqlite_reload(tmp_path):
+    # 精确旧表示：不调用新 model_dump 生成 legacy hash。
+    old_structure = {"structure_version": 1, "page_count": None, "blocks": [{
+        "kind": "text", "block_id": "b0", "order": 0, "page_number": None, "text": "旧正文",
+    }]}
+    old_hash = hashlib.sha256(json.dumps(
+        old_structure, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+    path = tmp_path / "legacy-structured.db"
+    service = IngestionService(SQLiteCandidateRepository(path))
+    candidate = service.propose(document=_document(ParsedDocument.model_validate(old_structure)), requester=REQUESTER)
+    old_candidate_id = "cand_" + hashlib.sha256("\x1f".join([
+        "ingestion-candidate:structured-v1", candidate.document.source_id,
+        candidate.document.content_hash, old_hash,
+    ]).encode("utf-8")).hexdigest()
+    assert candidate.document.structure_hash == old_hash
+    assert candidate.candidate_id == old_candidate_id
+    payload = candidate.model_dump(mode="json")
+    payload["document"].update(structured_content=old_structure, structure_hash=old_hash)
+    assert KnowledgeDocument.model_validate(payload["document"]) == candidate.document
+    assert IngestionCandidate.model_validate(payload) == candidate
+    with sqlite3.connect(path) as connection:
+        connection.execute("UPDATE ingestion_candidates SET candidate_json = ?", (json.dumps(payload),))
+    clear_storage_engine_cache()
+    restored = SQLiteCandidateRepository(path).get(old_candidate_id)
+    assert restored == candidate
+    assert restored.document.structured_content.blocks[0].text_role == "text"
+    assert restored.document.structured_content.blocks[0].heading_level is None
+    assert build_structure_hash(restored.document.structured_content) == old_hash
+    assert IngestionCandidate.model_validate_json(restored.model_dump_json()) == restored
+
+
+def test_heading_role_and_level_change_identity_and_tampering_is_rejected():
+    documents = [_document(ParsedDocument(blocks=(TextBlock(
+        block_id="b0", order=0, text="相同标题", text_role=role, heading_level=level,
+    ),))) for role, level in (("text", None), ("title", None), ("section_header", 1), ("section_header", 7))]
+    assert len({document.content_hash for document in documents}) == 1
+    assert len({document.structure_hash for document in documents}) == 4
+    service = IngestionService()
+    assert len({service.propose(document=document, requester=REQUESTER).candidate_id for document in documents}) == 4
+    payload = documents[-1].model_dump(mode="json")
+    payload["structured_content"]["blocks"][0]["heading_level"] = 2
+    with pytest.raises(ValidationError, match="structure_hash"):
+        KnowledgeDocument.model_validate(payload)
+
+
+@pytest.mark.parametrize("role, level", [
+    ("text", 1), ("title", 1), ("section_header", None), ("section_header", 0),
+    ("section_header", True), ("section_header", "2"),
+])
+def test_heading_contract_rejects_invalid_role_level_pairs(role, level):
+    with pytest.raises(ValidationError):
+        TextBlock(block_id="b0", order=0, text="标题", text_role=role, heading_level=level)
 
 
 @pytest.mark.parametrize("damage", ["hash", "content", "structure", "missing_structure", "missing_hash"])

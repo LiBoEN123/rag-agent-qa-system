@@ -6,16 +6,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from app.api.lifecycle import StartupDependencies, initialize_rag
 from app.config import AppSettings
 from app.contracts.chat import ToolMode
-from app.rag import pipeline
-from app.rag.pipeline import get_rag_status, rebuild_and_persist_index
-from app.rag.store import needs_rebuild
+from app.rag import runtime
+from app.rag.runtime import get_rag_status, load_index_cache
 from app.services.chat_models import ChatServiceRequest
 from scripts.evaluation.agent import capture_tool_output_keys, run_evaluation_chat_turn
 
-PREDICTION_SCHEMA_VERSION = 3
+from scripts.evaluation.rag.common import PREDICTION_SCHEMA_VERSION, load_eval
+
 ERROR_STATUSES = frozenset({"MODEL_ERROR", "MODEL_BAD_OUTPUT", "TOOL_ERROR", "INTERNAL_ERROR"})
 PREDICTION_FIELDNAMES = [
     "prediction_schema_version", "qid", "question", "answer", "status",
@@ -52,45 +51,13 @@ def initialize_rag_for_predictions(force_rebuild: bool = False) -> None:
 
     settings = get_settings()
     if force_rebuild:
-        ok, message = rebuild_and_persist_index(
-            str(settings.rag_file_path),
-            force_rebuild=True,
-        )
-        if not ok:
-            raise RuntimeError(f"RAG 强制重建失败：{message}")
-    else:
-        initialize_rag(
-            StartupDependencies(
-                settings=settings,
-                needs_rebuild=needs_rebuild,
-                rebuild_and_persist_index=rebuild_and_persist_index,
-            )
-        )
+        from app.indexing.service import IndexingService
+
+        IndexingService(settings=settings).sync_local_corpus(force_rebuild=True)
+    load_index_cache()
     status = get_rag_status()
     if not status.get("ready"):
         raise RuntimeError(f"RAG 未准备好：{status}")
-
-
-def load_eval_questions(eval_file):
-    """读取评测题列表，兼容 list 和带 items 的 JSON 对象。"""
-    with open(eval_file, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    if isinstance(data, dict) and "items" in data:
-        data = data["items"]
-    if not isinstance(data, list) or not data:
-        raise ValueError("评测文件必须包含非空题目列表")
-    qids = set()
-    for item in data:
-        if not isinstance(item, dict) or any(
-            not isinstance(item.get(key), str) or not item[key].strip()
-            for key in ("qid", "question")
-        ):
-            raise ValueError("评测题必须包含非空 qid 和 question")
-        if item["qid"] in qids:
-            raise ValueError(f"评测题 qid 重复：{item['qid']}")
-        qids.add(item["qid"])
-    return data
 
 
 def _run_rag_once(
@@ -116,7 +83,7 @@ def _run_rag_once(
         raise ValueError(f"Invalid RAG prediction status: {status}")
     valid_ids = {
         int(value)
-        for chunk in pipeline.chunks
+        for chunk in runtime.chunks
         if (value := (chunk.get("metadata") or {}).get("chunk_id", chunk.get("chunk_id"))) is not None
         and not isinstance(value, bool) and str(value).isascii() and str(value).isdigit()
     }
@@ -192,7 +159,7 @@ def run_predictions(
     force_rebuild: bool = False,
 ) -> list[dict[str, Any]]:
     """逐题落盘；Agent 错误状态仅记录失败，评测结构异常仍中止整批。"""
-    questions = load_eval_questions(eval_file)
+    questions = load_eval(eval_file)
     initialize_rag_for_predictions(force_rebuild=force_rebuild)
     rows = []
     failure_count = 0

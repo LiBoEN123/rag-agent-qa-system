@@ -67,8 +67,6 @@ def collect_trace_metrics(result: dict) -> dict:
     tool_name = ""
     route_cost_ms = 0
     real_tools = {
-        "list_documents",
-        "get_chunk_text",
         "web_search",
         "web_fetch",
         "web_pdf_fetch",

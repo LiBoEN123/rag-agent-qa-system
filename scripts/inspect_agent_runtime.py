@@ -26,7 +26,7 @@ from app.agent.framework_middleware import (  # noqa: E402
     _MODEL_GOVERNANCE_KEY,
     ProjectToolGovernanceMiddleware,
 )
-from app.agent.framework_tools import get_local_tools, local_tool_contract  # noqa: E402
+from app.agent.framework_tools import get_local_tools, get_local_tool_contracts  # noqa: E402
 from app.agent.results import AgentRunResult  # noqa: E402
 from app.agent.streaming import stream_agent  # noqa: E402
 from app.config import AppSettings  # noqa: E402
@@ -93,7 +93,7 @@ def _tool_report(
     tools: tuple[BaseTool, ...], *, settings: AppSettings,
 ) -> tuple[list[dict[str, Any]], list[str], dict[str, int]]:
     context = build_default_tool_context(source="agent_runtime_inspection", settings=settings)
-    registered = [local_tool_contract(tool) for tool in tools]
+    registered = get_local_tool_contracts(settings)
     request = ModelRequest(model=_DeferredAgentModel(), tools=list(tools), messages=[], runtime=Runtime(context=context))
     visible = [tool.name for tool in ProjectToolVisibilityMiddleware.visible_request(request).tools]
     return registered, visible, {
@@ -199,19 +199,12 @@ def inspect_runtime(
     catalog_source = (
         PROJECT_ROOT / "app" / "tools" / "catalog.py"
     ).read_text(encoding="utf-8")
-    tool_runtime_source = (
-        PROJECT_ROOT / "app" / "tools" / "runtime.py"
-    ).read_text(encoding="utf-8")
     tool_execution_source = (
         PROJECT_ROOT / "app" / "tools" / "execution.py"
     ).read_text(encoding="utf-8")
     visibility_source = (
         PROJECT_ROOT / "app" / "agent" / "tool_visibility.py"
     ).read_text(encoding="utf-8")
-    mcp_source = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in sorted((PROJECT_ROOT / "app" / "tools" / "mcp").glob("*.py"))
-    )
     current_architecture = (
         PROJECT_ROOT / "docs" / "architecture" / "current-system.md"
     ).read_text(encoding="utf-8")
@@ -297,11 +290,6 @@ def inspect_runtime(
             "framework tools do not construct or invoke middleware requests",
         ),
         _check(
-            "mcp_tool_has_no_framework_rewrapper",
-            "_build_governed_external_tool" not in framework_tools_source,
-            "governed MCP BaseTool enters the shared native middleware directly",
-        ),
-        _check(
             "result_builder_owns_agent_result",
             "def build_framework_agent_result(" in results_source
             and "def build_framework_agent_result(" not in runtime_source,
@@ -333,18 +321,18 @@ def inspect_runtime(
         ),
         _check(
             "local_tool_execution_entry_is_unique",
-            "class ProjectStructuredTool(StructuredTool)" in framework_tools_source
+            "StructuredTool.from_function(" in framework_tools_source
             and "execute_project_tool(" in framework_tools_source
             and "execute_registered_tool" not in framework_tools_source
             and "registry.dispatch(" not in framework_tools_source
             and "def dispatch(" not in catalog_source
             and not (PROJECT_ROOT / "app" / "tools" / "dispatch.py").exists(),
-            "ProjectStructuredTool directly enters the thin project adapter",
+            "native StructuredTool enters the thin project adapter",
         ),
         _check(
             "local_handler_is_adapter_owned",
             tool_execution_source.count("spec.handler") == 1
-            and "spec.handler" not in tool_runtime_source
+            and not (PROJECT_ROOT / "app" / "tools" / "runtime.py").exists()
             and "spec.handler" not in framework_tools_source
             and "spec.handler" not in visibility_source,
             "only the thin project execution adapter submits ToolSpec.handler",
@@ -354,16 +342,9 @@ def inspect_runtime(
             "request.override(" in visibility_source
             and "def wrap_model_call(" not in visibility_source
             and "def awrap_model_call(" in visibility_source
-            and "isinstance(tool, ProjectStructuredTool)" in visibility_source
+            and '"required_permissions"' in visibility_source
             and not (PROJECT_ROOT / "app" / "tools" / "providers" / "local.py").exists(),
             "LangChain async model middleware filters local tools",
-        ),
-        _check(
-            "mcp_governance_is_independent",
-            "class McpToolCallInterceptor" in mcp_source
-            and "def build_governed_mcp_tool(" in mcp_source
-            and "from app.tools.runtime" not in mcp_source,
-            "MCP keeps its adapter interceptor instead of local ToolRuntime",
         ),
         _check(
             "no_parent_event_projection_cursor",
@@ -396,21 +377,15 @@ def inspect_runtime(
             for name, passed in module_boundaries.items()
         ),
         _check(
-            "mcp_disabled_by_default",
-            resolved_settings.mcp_tools_enabled is False,
-            "MCP tools remain opt-in",
-        ),
-        _check(
             "tool_runtime_governance_preserved",
-            all(item["risk_level"] == "read_only" for item in registered),
-            "registered default tools retain read-only governance metadata",
+            all("risk_level" not in item and "requires_approval" not in item for item in registered),
+            "local tools omit hypothetical write governance",
         ),
     ]
     return {
         "versions": {
             "langchain": _version("langchain"),
             "langgraph": _version("langgraph"),
-            "langchain_mcp_adapters": _version("langchain-mcp-adapters"),
         },
         "agent_runtime": {
             "implementation": "langchain.create_agent",
@@ -447,19 +422,13 @@ def inspect_runtime(
         "local_tool_execution": {
             "catalog": "get_local_tools",
             "visibility": "ProjectToolVisibilityMiddleware",
-            "adapter": "ProjectStructuredTool",
-            "input_validation": "LangChain StructuredTool/Pydantic",
-            "retry": "LangChain ToolRetryMiddleware",
-            "timeout": "shared bounded executor helper",
+            "adapter": "StructuredTool",
+            "input_validation": "Pydantic model_validate",
+            "retry": "LangChain Runnable.with_retry",
+            "timeout": "asyncio.timeout",
             "terminal": "ToolSpec.handler",
         },
         "module_boundaries": module_boundaries,
-        "mcp_client": {
-            "enabled_by_default": False,
-            "config_version": 1,
-            "transport": "streamable_http",
-            "dependency": _version("langchain-mcp-adapters"),
-        },
         "checks": checks,
     }
 

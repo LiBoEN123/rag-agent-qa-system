@@ -13,7 +13,7 @@ from app.ingestion import (
     build_knowledge_document,
 )
 from app.ingestion.identity import canonicalize_source_uri
-from app.rag.parsing import parse_html_document
+from app.ingestion.parsing import parse_html_document
 
 
 class FirecrawlPagePayload(BaseModel):

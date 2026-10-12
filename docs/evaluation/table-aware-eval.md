@@ -1,10 +1,11 @@
 # TABLE-AWARE-EVAL RESULT
 
-> 当前入口说明（AGENTIC-RAG-6）：以下是历史验收记录，数值和旧命令保留原样。
-> 当前 `table_diagnostics.diagnose_questions` 仅执行 retrieve → rerank → 诊断分数门，
-> 输出 `diagnostic_selected_chunk_ids` 和 `relation_chunk_survives_diagnostic_selection`。
-> relation 表示完整关系 chunk 是否通过最终诊断选择，不代表 Agent context。
-> 当前完整 RAG 评估使用 ChatService 与 Prediction v3；历史 v2 分数不可严格直接比较。
+> 专项 diagnostics：`rag_eval_table_v1.json`、`table_diagnostics.py` 及其测试独立保留，
+> 不属于主 Baseline，统一 Runner 没有依赖或自动运行表格模块。
+> 以下数值是历史受控验收记录，不代表当前生产库或正式 65 题结果；失效 CLI 示例已移除。
+> 当前 helper 只执行 retrieve → rerank → 诊断分数门，复用 Gold Recall scorer，
+> relation 表示完整关系 chunk 是否通过诊断选择，不代表 Agent 上下文。
+> 当前正式输入固定为 Prediction v3，运行方式见 [Baseline 合同](baseline-v2.md)。
 
 本节保留修复前的评估记录；后续引用完整性修复及复验见文末
 [RAG-CITATION-INTEGRITY-1 RESULT](#rag-citation-integrity-1-result)。
@@ -313,18 +314,12 @@ export SQLITE_DB_PATH="$PWD/outputs/evaluation_baseline_v2/table-aware-84f53a1-d
 PYTHONPATH=. .venv/bin/python -u outputs/evaluation_baseline_v2/table-aware-84f53a1-diagnostics/prepare_fixtures.py
 PYTHONPATH=. .venv/bin/python -u outputs/evaluation_baseline_v2/table-aware-84f53a1-diagnostics/run_diagnostics.py
 
-.venv/bin/python -u scripts/run_evaluation_baseline.py \
-  --rag-only \
-  --rag-eval-file data/eval/rag_eval_table_v1.json \
-  --output-dir outputs/evaluation_baseline_v2/table-aware-84f53a1 \
-  --top-k 5 --decompose-top-k 5 --allow-dirty
-
 PYTHONPATH=. .venv/bin/python -u outputs/evaluation_baseline_v2/table-aware-84f53a1-diagnostics/inspect_failures.py
 ```
 
 `--allow-dirty` 用于未提交的 focused evaluation；不是正式 65 题基线的新版本。
 完整入口 exit=0；正式结果见 [baseline_report.md](../../outputs/evaluation_baseline_v2/table-aware-84f53a1/baseline_report.md)。
-NOT_RUN_BY_DESIGN：全量 pytest、65 题 baseline、Core Agent、Combined、MCP、Online、Mixed、SQL、SSE、A/B、LLM Judge。
+NOT_RUN_BY_DESIGN：全量 pytest、65 题 baseline、Core Agent、Combined、Online、SQL、SSE、A/B、LLM Judge。
 
 ## FINDINGS
 
@@ -421,7 +416,7 @@ parser、chunking、检索、reranker、pipeline version 或依赖。
 公开 snippet 不含 `Identity card`，实际 graph/verifier 仍返回 `supported=True` 和 `OK`。
 这证明验证已与 display truncation 解耦，而不只是修复了英文空格。
 
-未跑全量 pytest、完整 14 题重测、65 题 baseline、Core Agent、MCP、Online、Mixed、SQL、SSE 或 LLM Judge。
+未跑全量 pytest、完整 14 题重测、65 题 baseline、Core Agent、Online、SQL、SSE 或 LLM Judge。
 pytest 仅出现既有 jieba/pkg_resources 弃用警告。
 
 ## TABLE EVAL REGRESSION

@@ -4,9 +4,6 @@ target-version = "py312"
 # Existing script path bootstraps and lambda fixtures.
 "app/api/diagnostics.py" = ["E731"]
 "app/api/responses.py" = ["F401"]
-"scripts/cache_models.py" = ["E402"]
 "scripts/compare_evaluation_runs.py" = ["E402"]
 "scripts/run_evaluation_baseline.py" = ["E402"]
-"scripts/smoke_test_online_tools.py" = ["E402"]
 "tests/test_api.py" = ["E731"]
-"tests/test_rag_eval_retrieval.py" = ["E402"]

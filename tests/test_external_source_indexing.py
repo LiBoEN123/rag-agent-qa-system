@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -14,7 +15,6 @@ from pydantic import SecretStr
 from sqlalchemy import delete, update
 
 from app.config import get_settings
-from app.api.lifecycle import StartupDependencies, initialize_rag
 from app.api.application import create_app
 from app.api.ingestion import IngestionOperationsDependencies
 from app.ingestion import (
@@ -25,21 +25,24 @@ from app.ingestion import (
     KnowledgeSourceType,
     build_knowledge_document,
 )
-from app.rag import indexing, pipeline, store as rag_store
+from app.indexing import langchain as indexing
+from app.rag import runtime as pipeline
+from app.indexing import service as indexing_service, manifest as rag_store
+from app.indexing.service import IndexingService, IndexingError
+from app.api.application import refresh_query_runtime
 from app.rag.chroma import load_index_from_chroma
 from app.rag.retrieval import tokenize
-from app.rag.store import load_index_cache
+from app.rag.runtime import _load_index_bundle as load_index_cache
 from app.sources import (
     ExternalKnowledgeSourceService,
-    FIRECRAWL_RECORD_NAMESPACE,
     FirecrawlPagePayload,
     FirecrawlPageSourceAdapter,
-    GITHUB_RECORD_NAMESPACE,
     GitHubFilePayload,
     GitHubFileSourceAdapter,
-    SourceIngestionError,
 )
-from app.storage.database import _IngestionCandidateRecord, get_engine
+from app.storage.ingestion import _IngestionCandidateRecord
+from app.indexing.langchain import FIRECRAWL_RECORD_NAMESPACE, GITHUB_RECORD_NAMESPACE
+from app.storage.database import get_engine
 from app.storage.ingestion import (
     IndexRunOperation,
     IndexRunStatus,
@@ -72,6 +75,17 @@ class CountingEmbeddings(Embeddings):
 
     def reset(self) -> None:
         self.document_texts.clear()
+
+
+def _sync_and_load(data_dir, *, force_rebuild=False):
+    settings = get_settings().model_copy(update={"rag_file_path": Path(data_dir)})
+    try:
+        IndexingService(settings=settings, embeddings=pipeline.model).sync_local_corpus(
+            force_rebuild=force_rebuild,
+        )
+    except Exception as exc:
+        return False, str(exc)
+    return pipeline.load_index_cache(allow_empty=True)
 
 
 def _requester():
@@ -144,12 +158,10 @@ def test_real_external_incremental_indexing_skips_updates_and_isolates_sources(t
         )
         return bool(result["ok"]), str(result["message"])
 
-    source_service = ExternalKnowledgeSourceService(
-        requester=_requester(),
-        ingestion_service=domain,
+    source_service = IndexingService(
+        candidates=domain.repository,
         embeddings=embeddings,
         settings=settings,
-        runtime_reload=reload_runtime,
     )
 
     github_v1 = _approve(domain, _github_document("github content v1"))
@@ -213,6 +225,8 @@ def test_real_external_incremental_indexing_skips_updates_and_isolates_sources(t
         "github": "github content v2",
         "firecrawl": "firecrawl content v2",
     }
+    assert runtime_sources == []
+    assert reload_runtime()[0]
     assert runtime_sources[-1] == {"local_file", "github", "firecrawl"}
     assert indexing.create_record_manager(
         settings,
@@ -239,11 +253,9 @@ def test_real_external_incremental_indexing_skips_updates_and_isolates_sources(t
 def test_pending_external_candidate_cannot_index(monkeypatch):
     domain = IngestionService()
     pending = domain.propose(document=_github_document("pending"), requester=_requester())
-    service = ExternalKnowledgeSourceService(
-        requester=_requester(),
-        ingestion_service=domain,
+    service = IndexingService(
+        candidates=domain.repository,
         embeddings=CountingEmbeddings(),
-        runtime_reload=lambda: (True, "unused"),
     )
     calls = 0
 
@@ -252,10 +264,26 @@ def test_pending_external_candidate_cannot_index(monkeypatch):
         calls += 1
         return {}
 
-    monkeypatch.setattr("app.sources.service.sync_documents", forbidden_sync)
+    monkeypatch.setattr("app.indexing.service.sync_documents", forbidden_sync)
     with pytest.raises(ValueError, match="approved"):
         service.index_approved(pending.candidate_id)
     assert calls == 0
+
+
+def test_writer_embedding_failure_returns_safe_error_without_creating_index(monkeypatch):
+    domain = IngestionService()
+    candidate = _approve(domain, _github_document("approved content"))
+    service = IndexingService(candidates=domain.repository)
+
+    def failed_model(_settings):
+        raise RuntimeError("private model path")
+
+    monkeypatch.setattr(indexing_service, "load_embedding_model", failed_model)
+    with pytest.raises(IndexingError) as error:
+        service.index_approved(candidate.candidate_id)
+    assert error.value.code == "SOURCE_EMBEDDINGS_UNAVAILABLE"
+    assert "private" not in str(error.value)
+    assert not get_settings().chroma_persist_dir.exists()
 
 
 @pytest.fixture
@@ -263,27 +291,27 @@ def persisted_runtime(tmp_path, monkeypatch):
     settings = get_settings()
     embeddings = CountingEmbeddings()
     for name in (
-        "chunks", "texts", "docs_registry", "doc_embeddings", "bm25", "model",
+        "chunks", "docs_registry", "doc_embeddings", "bm25", "model",
         "rerank_model", "RAG_READY", "RAG_INIT_MESSAGE", "INDEX_SOURCE",
     ):
         monkeypatch.setattr(pipeline, name, getattr(pipeline, name))
     monkeypatch.setattr(pipeline, "model", embeddings)
     monkeypatch.setattr(pipeline, "rerank_model", object())
-    monkeypatch.setattr(pipeline, "_load_embedding_model", lambda: embeddings)
-    monkeypatch.setattr(rag_store, "_load_rerank_model", lambda: object())
+    monkeypatch.setattr(indexing_service, "load_embedding_model", lambda _settings: embeddings)
+    monkeypatch.setattr(pipeline, "_load_rerank_model", lambda: object())
     local_dir = tmp_path / "local-corpus"
     local_dir.mkdir()
     (local_dir / "local.txt").write_text("local durable content", encoding="utf-8")
-    ok, message = pipeline.rebuild_and_persist_index(str(local_dir))
+    ok, message = _sync_and_load(str(local_dir))
     assert ok, message
     domain = IngestionService(SQLiteCandidateRepository(settings.sqlite_db_path))
     source_service = ExternalKnowledgeSourceService(
-        requester=_requester(), ingestion_service=domain,
-        embeddings=embeddings, settings=settings,
+        requester=_requester(), ingestion_service=domain, settings=settings,
     )
     return SimpleNamespace(
         settings=settings, embeddings=embeddings, local_dir=local_dir,
         domain=domain, source_service=source_service,
+        indexer=IndexingService(settings=settings, candidates=domain.repository, embeddings=embeddings),
         runs=SQLiteIndexRunRepository(settings.sqlite_db_path),
     )
 
@@ -291,13 +319,14 @@ def persisted_runtime(tmp_path, monkeypatch):
 def _index_with_run(runtime, candidate):
     run = runtime.runs.create_running(candidate.candidate_id, source_id=candidate.document.source_id)
     try:
-        result = runtime.source_service.index_approved(candidate.candidate_id)
-    except SourceIngestionError as exc:
+        result = runtime.indexer.index_approved(candidate.candidate_id)
+    except IndexingError as exc:
         runtime.runs.fail(run.id, error_code=exc.code)
         raise
     runtime.runs.succeed(
         run.id, **{name.removeprefix("num_"): count for name, count in result.items()},
     )
+    refresh_query_runtime()
     return result
 
 
@@ -308,6 +337,7 @@ def _remove_client(runtime):
     })
     deps = IngestionOperationsDependencies(
         ingestion_service=runtime.domain, source_service=runtime.source_service,
+        indexing_service=runtime.indexer, on_index_changed=refresh_query_runtime,
         index_runs=runtime.runs, requester=_requester(),
         admin_api_key=settings.ingestion_admin_api_key,
     )
@@ -345,16 +375,16 @@ def test_remove_clears_source_runtime_and_history_survives_rebuild_and_reindex(p
     assert runtime.embeddings.document_texts == []
     assert manager.list_keys(group_ids=[candidate.document.source_id]) == []
     assert indexing.create_vector_store(None).get(where={"source_id": candidate.document.source_id})["ids"] == []
-    assert set(pipeline.texts) == {"local durable content", "other external retained"}
+    assert {chunk["text"] for chunk in pipeline.chunks} == {"local durable content", "other external retained"}
     assert pipeline.bm25.corpus_size == len(pipeline.chunks) == 2
     assert len(pipeline.doc_embeddings) == len(pipeline.docs_registry) == 2
     assert all("REMOVE_UNIQUE_KEYWORD_9271" not in hit["text"] for hit in pipeline.search_relevant_chunks("REMOVE_UNIQUE_KEYWORD_9271", top_k=10))
     assert runtime.domain.repository.get(candidate.candidate_id) == candidate
     assert client.post(f"{path}/remove").json()["deleted"] == 0
     for _ in range(2):
-        ok, message = pipeline.rebuild_and_persist_index(str(runtime.local_dir), force_rebuild=True)
+        ok, message = _sync_and_load(str(runtime.local_dir), force_rebuild=True)
         assert ok, message
-        assert set(pipeline.texts) == {"local durable content", "other external retained"}
+        assert {chunk["text"] for chunk in pipeline.chunks} == {"local durable content", "other external retained"}
         assert manager.list_keys(group_ids=[candidate.document.source_id]) == []
     # 已清除 RecordManager keys，同一 approved candidate 再入库必须 added，而非 skipped。
     indexed = client.post(f"{path}/index")
@@ -362,9 +392,9 @@ def test_remove_clears_source_runtime_and_history_survives_rebuild_and_reindex(p
     assert indexed.json()["operation"] == "index"
     assert indexed.json()["added"] == 1
     assert indexed.json()["skipped"] == 0
-    ok, message = pipeline.rebuild_and_persist_index(str(runtime.local_dir), force_rebuild=True)
+    ok, message = _sync_and_load(str(runtime.local_dir), force_rebuild=True)
     assert ok, message
-    assert "REMOVE_UNIQUE_KEYWORD_9271" in pipeline.texts
+    assert "REMOVE_UNIQUE_KEYWORD_9271" in [chunk["text"] for chunk in pipeline.chunks]
 
 
 @pytest.mark.parametrize("factory", [_github_document, _firecrawl_document])
@@ -378,9 +408,9 @@ def test_remove_from_old_candidate_removes_current_source_version(persisted_runt
     assert result.status_code == 200, result.text
     assert result.json()["deleted"] > 1
     assert runtime.domain.repository.load_latest_successfully_indexed() == []
-    ok, message = pipeline.rebuild_and_persist_index(str(runtime.local_dir), force_rebuild=True)
+    ok, message = _sync_and_load(str(runtime.local_dir), force_rebuild=True)
     assert ok, message
-    assert pipeline.texts == ["local durable content"]
+    assert [chunk["text"] for chunk in pipeline.chunks] == ["local durable content"]
 
 
 def test_force_rebuild_after_deleting_all_removed_candidate_versions(persisted_runtime):
@@ -394,9 +424,9 @@ def test_force_rebuild_after_deleting_all_removed_candidate_versions(persisted_r
     for candidate in versions:
         assert client.delete(f"/admin/ingestion/candidates/{candidate.candidate_id}").status_code == 204
     for _ in range(2):
-        ok, message = pipeline.rebuild_and_persist_index(str(runtime.local_dir), force_rebuild=True)
+        ok, message = _sync_and_load(str(runtime.local_dir), force_rebuild=True)
         assert ok, message
-        assert pipeline.texts == ["local durable content"]
+        assert [chunk["text"] for chunk in pipeline.chunks] == ["local durable content"]
         assert indexing.create_vector_store(None).get(where={"source_id": versions[0].document.source_id})["ids"] == []
     assert runtime.runs.list() == history
 
@@ -417,10 +447,10 @@ def test_remove_repairs_partial_persistent_state(persisted_runtime, missing):
     assert response.json()["deleted"] == (0 if missing == "chroma" else 1)
     assert manager.list_keys() == []
     assert vector_store.get(where={"source_id": candidate.document.source_id})["ids"] == []
-    assert pipeline.texts == ["local durable content"]
+    assert [chunk["text"] for chunk in pipeline.chunks] == ["local durable content"]
 
 
-@pytest.mark.parametrize("failure", ["chroma", "record_manager", "reload"])
+@pytest.mark.parametrize("failure", ["chroma", "record_manager"])
 def test_failed_remove_retains_authoritative_index_for_rebuild(persisted_runtime, monkeypatch, failure):
     runtime = persisted_runtime
     candidate = _approve(runtime.domain, _github_document("restore after failed remove"))
@@ -432,18 +462,38 @@ def test_failed_remove_retains_authoritative_index_for_rebuild(persisted_runtime
             patch.setattr("langchain_chroma.Chroma.delete", fail)
         elif failure == "record_manager":
             patch.setattr("langchain_classic.indexes.SQLRecordManager.delete_keys", fail)
-        else:
-            patch.setattr(runtime.source_service, "_runtime_reload", lambda: (False, "sensitive reload failure"))
         response = _remove_client(runtime).post(f"/admin/ingestion/candidates/{candidate.candidate_id}/remove")
-    assert response.status_code == (502 if failure == "reload" else 500)
+    assert response.status_code == 500
     assert "sensitive" not in response.text
     run = runtime.runs.latest(candidate.candidate_id)
     assert (run.operation, run.status) == (IndexRunOperation.REMOVE, IndexRunStatus.FAILED)
     assert "sensitive" not in run.model_dump_json()
     assert runtime.domain.repository.load_latest_successfully_indexed() == [candidate]
-    ok, message = pipeline.rebuild_and_persist_index(str(runtime.local_dir), force_rebuild=True)
+    ok, message = _sync_and_load(str(runtime.local_dir), force_rebuild=True)
     assert ok, message
-    assert set(pipeline.texts) == {"local durable content", "restore after failed remove"}
+    assert {chunk["text"] for chunk in pipeline.chunks} == {"local durable content", "restore after failed remove"}
+
+
+@pytest.mark.parametrize("raise_error", [False, True])
+def test_refresh_failure_keeps_successful_remove_authoritative(persisted_runtime, monkeypatch, raise_error):
+    runtime = persisted_runtime
+    candidate = _approve(runtime.domain, _github_document("removed permanently"))
+    _index_with_run(runtime, candidate)
+
+    def failed_refresh(**kwargs):
+        if raise_error:
+            raise RuntimeError("private refresh failure")
+        return False, "private refresh failure"
+
+    with monkeypatch.context() as patch:
+        patch.setattr("app.api.application.load_index_cache", failed_refresh)
+        response = _remove_client(runtime).post(f"/admin/ingestion/candidates/{candidate.candidate_id}/remove")
+    assert response.status_code == 200
+    assert runtime.runs.latest(candidate.candidate_id).status is IndexRunStatus.SUCCESS
+    assert runtime.domain.repository.load_latest_successfully_indexed() == []
+    ok, message = _sync_and_load(str(runtime.local_dir), force_rebuild=True)
+    assert ok, message
+    assert [chunk["text"] for chunk in pipeline.chunks] == ["local durable content"]
 
 
 def test_remove_last_source_publishes_empty_runtime(persisted_runtime):
@@ -451,15 +501,15 @@ def test_remove_last_source_publishes_empty_runtime(persisted_runtime):
     candidate = _approve(runtime.domain, _github_document("last external"))
     _index_with_run(runtime, candidate)
     (runtime.local_dir / "local.txt").unlink()
-    assert pipeline.rebuild_and_persist_index(str(runtime.local_dir))[0]
+    assert _sync_and_load(str(runtime.local_dir))[0]
     response = _remove_client(runtime).post(f"/admin/ingestion/candidates/{candidate.candidate_id}/remove")
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "success"
     assert pipeline.RAG_READY is False
-    assert pipeline.chunks == pipeline.texts == pipeline.docs_registry == []
+    assert pipeline.chunks == pipeline.docs_registry == []
     assert pipeline.doc_embeddings is pipeline.bm25 is None
     assert pipeline.search_relevant_chunks("last external") == []
-    assert pipeline.rebuild_and_persist_index(str(runtime.local_dir), force_rebuild=True)[0]
+    assert _sync_and_load(str(runtime.local_dir), force_rebuild=True)[0]
     assert pipeline.chunks == []
 
 
@@ -478,7 +528,7 @@ def test_force_rebuild_preserves_external_records_runtime_and_success_history(pe
     vector_store.delete(vector_store.get(where={"source_type": "github"})["ids"])
     runtime.embeddings.reset()
 
-    ok, message = pipeline.rebuild_and_persist_index(
+    ok, message = _sync_and_load(
         str(runtime.local_dir), force_rebuild=True,
     )
 
@@ -488,12 +538,12 @@ def test_force_rebuild_preserves_external_records_runtime_and_success_history(pe
         "local durable content", f"github {keyword}", "firecrawl preserved",
     }
     assert set(runtime.embeddings.document_texts) == set(persisted["documents"])
-    assert set(pipeline.texts) == set(persisted["documents"])
+    assert {chunk["text"] for chunk in pipeline.chunks} == set(persisted["documents"])
     assert pipeline.RAG_READY is True
     assert len(pipeline.docs_registry) == 3
     assert pipeline.doc_embeddings.shape == (3, 2)
     assert pipeline.bm25.corpus_size == 3
-    github_position = pipeline.texts.index(f"github {keyword}")
+    github_position = [chunk["text"] for chunk in pipeline.chunks].index(f"github {keyword}")
     assert all(
         pipeline.bm25.doc_freqs[github_position].get(token, 0) > 0
         for token in tokenize(keyword)
@@ -513,7 +563,7 @@ def test_force_rebuild_preserves_external_records_runtime_and_success_history(pe
         assert keys
     runtime.embeddings.reset()
     for candidate in (github, firecrawl):
-        assert runtime.source_service.index_approved(candidate.candidate_id)["num_skipped"] == 1
+        assert runtime.indexer.index_approved(candidate.candidate_id)["num_skipped"] == 1
     assert runtime.embeddings.document_texts == []
 
 
@@ -530,15 +580,15 @@ def test_force_rebuild_restores_latest_successful_source_version(
     if newer_status == "success":
         _index_with_run(runtime, v2)
     elif newer_status == "failed":
-        # 索引写入已发生、runtime reload 失败，SUCCESS 历史仍应决定恢复版本。
-        monkeypatch.setattr(runtime.source_service, "_runtime_reload", lambda: (False, "failed"))
-        with pytest.raises(SourceIngestionError, match="reload"):
-            _index_with_run(runtime, v2)
+        # 部分写入失败也不能替代上一次 SUCCESS 的 authoritative version。
+        runtime.indexer.index_approved(v2.candidate_id)
+        run = runtime.runs.create_running(v2.candidate_id, source_id=v2.document.source_id)
+        runtime.runs.fail(run.id, error_code="INDEX_OPERATION_FAILED")
     else:
         runtime.runs.create_running(v2.candidate_id, source_id=v2.document.source_id)
     history = runtime.runs.list()
 
-    ok, message = pipeline.rebuild_and_persist_index(
+    ok, message = _sync_and_load(
         str(runtime.local_dir), force_rebuild=True,
     )
 
@@ -546,7 +596,7 @@ def test_force_rebuild_restores_latest_successful_source_version(
     expected = "new version" if newer_status == "success" else "successful old version"
     persisted, _ = load_index_from_chroma()
     assert {chunk["text"] for chunk in persisted} == {"local durable content", expected}
-    assert set(pipeline.texts) == {"local durable content", expected}
+    assert {chunk["text"] for chunk in pipeline.chunks} == {"local durable content", expected}
     assert runtime.runs.list() == history
 
 
@@ -566,7 +616,7 @@ def test_local_sync_retains_external_and_builds_complete_runtime(persisted_runti
         path.unlink()
     runtime.embeddings.reset()
 
-    ok, message = pipeline.rebuild_and_persist_index(
+    ok, message = _sync_and_load(
         str(runtime.local_dir), force_rebuild=local_change == "empty_force",
     )
 
@@ -575,7 +625,7 @@ def test_local_sync_retains_external_and_builds_complete_runtime(persisted_runti
     sources = {chunk["metadata"]["source_type"] for chunk in pipeline.chunks}
     assert {"github", "firecrawl"} <= sources
     assert pipeline.bm25.corpus_size == len(pipeline.chunks)
-    assert pipeline.texts.count("external durable content") == 2
+    assert [chunk["text"] for chunk in pipeline.chunks].count("external durable content") == 2
     if local_change == "modified":
         assert runtime.embeddings.document_texts == ["local changed content"]
     else:
@@ -613,7 +663,7 @@ def test_global_rebuild_validates_successful_candidates_before_reset(
     old_manifest = (runtime.settings.index_store_dir / "index_manifest.json").read_bytes()
     old_ids = indexing.create_vector_store(None).get(include=[])["ids"]
 
-    ok, _message = pipeline.rebuild_and_persist_index(
+    ok, _message = _sync_and_load(
         str(runtime.local_dir), force_rebuild=True,
     )
 
@@ -629,13 +679,14 @@ def test_upload_approve_index_retrieve_and_force_rebuild(persisted_runtime, monk
     keyword = "UPLOAD_V1_UNIQUE_987654"
     # 只替代模型推理；保留真实 SQLite、LangChain index、Chroma、reload 和检索。
     reranker = SimpleNamespace(predict=lambda pairs: [float(keyword in text) for _, text in pairs])
-    monkeypatch.setattr(rag_store, "_load_rerank_model", lambda: reranker)
+    monkeypatch.setattr(pipeline, "_load_rerank_model", lambda: reranker)
     settings = runtime.settings.model_copy(update={
         "ingestion_admin_api_enabled": True,
         "ingestion_admin_api_key": SecretStr("upload-test-admin"),
     })
     deps = IngestionOperationsDependencies(
         ingestion_service=runtime.domain, source_service=runtime.source_service,
+        indexing_service=runtime.indexer, on_index_changed=refresh_query_runtime,
         index_runs=runtime.runs, requester=_requester(),
         admin_api_key=settings.ingestion_admin_api_key,
     )
@@ -650,7 +701,7 @@ def test_upload_approve_index_retrieve_and_force_rebuild(persisted_runtime, monk
     path = f"/admin/ingestion/candidates/{candidate_id}"
     assert response.json()["status"] == "pending"
     assert client.post(f"{path}/index", headers=headers).status_code == 409
-    assert pipeline.texts == ["local durable content"]
+    assert [chunk["text"] for chunk in pipeline.chunks] == ["local durable content"]
     assert keyword not in indexing.create_vector_store(None).get()["documents"]
     assert client.post(f"{path}/approve", headers=headers, json={}).status_code == 200
     assert runtime.runs.list() == []
@@ -676,13 +727,13 @@ def test_upload_approve_index_retrieve_and_force_rebuild(persisted_runtime, monk
             # 从持久 candidate 全文恢复，不依赖临时文件或现有向量记录。
             history = runtime.runs.list()
             indexing.create_vector_store(None).delete_collection()
-            ok, message = pipeline.rebuild_and_persist_index(
+            ok, message = _sync_and_load(
                 str(runtime.local_dir), force_rebuild=True,
             )
             assert ok, message
             assert runtime.runs.list() == history
         assert pipeline.bm25.corpus_size == len(pipeline.chunks) == 2
-        upload_position = pipeline.texts.index(keyword)
+        upload_position = [chunk["text"] for chunk in pipeline.chunks].index(keyword)
         assert all(pipeline.bm25.doc_freqs[upload_position].get(token, 0) for token in tokenize(keyword))
         # 禁止 Chroma 查询失败被本地向量 fallback 掩盖。
         def no_fallback(*args, **kwargs):
@@ -733,7 +784,7 @@ def test_version_migration_rechunks_sqlite_structure_and_preserves_legacy(persis
     old_upload_ids = indexing.create_vector_store(None).get(where={"source_id": document.source_id})["ids"]
     restored_inputs = []
     parsed_local_paths = []
-    convert = pipeline.candidate_to_langchain_documents
+    convert = indexing_service.candidate_to_langchain_documents
     parse_local = indexing.parse_document
 
     def capture(candidate, **kwargs):
@@ -744,7 +795,7 @@ def test_version_migration_rechunks_sqlite_structure_and_preserves_legacy(persis
         parsed_local_paths.append(path)
         return parse_local(path)
 
-    monkeypatch.setattr(pipeline, "candidate_to_langchain_documents", capture)
+    monkeypatch.setattr(indexing_service, "candidate_to_langchain_documents", capture)
     monkeypatch.setattr(indexing, "parse_document", capture_local)
     # 没有原文件、原 parser 或 source fetch，force rebuild 只能消费 candidate_json。
     def no_parse(*args, **kwargs):
@@ -753,12 +804,9 @@ def test_version_migration_rechunks_sqlite_structure_and_preserves_legacy(persis
     monkeypatch.setattr("app.sources.upload.parse_document", no_parse)
     history = runtime.runs.list()
     # 使用真实启动判断和现有 global force rebuild，无 migration script 或新索引。
-    initialize_rag(StartupDependencies(
-        settings=runtime.settings.model_copy(update={"rag_file_path": runtime.local_dir, "auto_rebuild_on_startup": False}),
-        needs_rebuild=rag_store.needs_rebuild,
-        rebuild_and_persist_index=pipeline.rebuild_and_persist_index,
-    ))
-    assert rag_store.load_manifest()["pipeline_version"] == 5
+    ok, message = _sync_and_load(str(runtime.local_dir))
+    assert ok, message
+    assert rag_store.load_manifest()["pipeline_version"] == 6
     assert parsed_local_paths == [local_table]
     assert rag_store.needs_rebuild(str(runtime.local_dir))[0] is False
     restored = next(item for item in restored_inputs if item.candidate_id == candidate.candidate_id)
@@ -784,12 +832,12 @@ def test_version_migration_rechunks_sqlite_structure_and_preserves_legacy(persis
     assert set(records["ids"]) == set(indexing.create_record_manager(namespace=indexing.UPLOAD_RECORD_NAMESPACE).list_keys())
     assert pipeline.bm25.corpus_size == len(persisted)
     runtime.embeddings.reset()
-    assert runtime.source_service.index_approved(candidate.candidate_id)["num_skipped"] == len(upload_chunks)
+    assert runtime.indexer.index_approved(candidate.candidate_id)["num_skipped"] == len(upload_chunks)
     assert runtime.embeddings.document_texts == []
 
 
 @pytest.mark.parametrize("structure_factory, old_version", [
-    (admission_structure, 3), (imut_admission_structure, 4),
+    (admission_structure, 3), (imut_admission_structure, 4), (imut_admission_structure, 5),
 ])
 @pytest.mark.parametrize("source_type, source_uri, file_type", [
     ("upload", "upload://local/admission", "docx"),
@@ -810,10 +858,14 @@ def test_section_pipeline_migration_rechunks_persisted_candidates_without_acquis
         "source_id": document.source_id, "document_uid": document.document_uid,
         "source_type": source_type, "source_uri": source_uri, "position": 1,
     })
-    result = indexing.sync_documents([old_chunk], runtime.embeddings, namespace=namespace)
+    expected = indexing.candidate_to_langchain_documents(candidate)
+    old_chunks = [Document(
+        page_content=chunk.page_content.removeprefix(f"[标题路径] {document.title}\n\n"),
+        metadata={key: value for key, value in chunk.metadata.items() if key != "title_path"},
+    ) for chunk in expected] if old_version == 5 else [old_chunk]
+    result = indexing.sync_documents(old_chunks, runtime.embeddings, namespace=namespace)
     runtime.runs.succeed(runtime.runs.create_running(candidate.candidate_id, source_id=candidate.document.source_id).id, added=result["num_added"])
     old_ids = indexing.create_vector_store(None).get(where={"source_id": document.source_id})["ids"]
-    expected = indexing.candidate_to_langchain_documents(candidate)
     manifest = rag_store.build_current_manifest(str(runtime.local_dir))
     rag_store.save_manifest({**manifest, "pipeline_version": old_version})
     history = runtime.runs.list()
@@ -825,15 +877,12 @@ def test_section_pipeline_migration_rechunks_persisted_candidates_without_acquis
     monkeypatch.setattr("app.sources.service.invoke_mcp_tool", forbidden)
     monkeypatch.setattr("app.sources.upload.parse_document", forbidden)
     monkeypatch.setattr("app.sources.firecrawl.parse_html_document", forbidden)
-    monkeypatch.setattr("app.rag.parsing._document_converter", forbidden)
+    monkeypatch.setattr("app.ingestion.parsing._document_converter", forbidden)
     assert rag_store.needs_rebuild(str(runtime.local_dir)) == (True, "pipeline_version 变化，需要 force rebuild")
-    initialize_rag(StartupDependencies(
-        settings=runtime.settings.model_copy(update={"rag_file_path": runtime.local_dir, "auto_rebuild_on_startup": False}),
-        needs_rebuild=rag_store.needs_rebuild,
-        rebuild_and_persist_index=pipeline.rebuild_and_persist_index,
-    ))
+    ok, message = _sync_and_load(str(runtime.local_dir))
+    assert ok, message
     assert rag_store.load_manifest() == manifest
-    assert manifest["pipeline_version"] == 5
+    assert manifest["pipeline_version"] == 6
     assert rag_store.needs_rebuild(str(runtime.local_dir))[0] is False
     restored = SQLiteCandidateRepository(runtime.settings.sqlite_db_path).get(candidate.candidate_id)
     assert restored == candidate
@@ -841,6 +890,7 @@ def test_section_pipeline_migration_rechunks_persisted_candidates_without_acquis
     actual = [chunk for chunk in pipeline.chunks if chunk["metadata"]["source_id"] == document.source_id]
     assert [chunk["text"] for chunk in actual] == [chunk.page_content for chunk in expected]
     assert {chunk["metadata"]["section_index"] for chunk in actual} == {1, 2}
+    assert all(chunk["metadata"]["title_path"] == document.title for chunk in actual)
     assert all("上下文：内蒙古工业大学2026年分省录取分数统计" in chunk["text"] for chunk in actual)
     records = indexing.create_vector_store(None).get(where={"source_id": document.source_id})
     ordered = sorted(zip(records["documents"], records["metadatas"]), key=lambda item: item[1]["position"])
@@ -859,26 +909,32 @@ def test_firecrawl_html_sqlite_index_retrieval_and_rebuild_keep_legacy(persisted
     from tests.support.structured_document import REGISTRATION_HTML
 
     runtime = persisted_runtime
+    html = REGISTRATION_HTML.replace(
+        "<body>", "<body><h1>办理事项</h1><h2>申请材料</h2><h3>证件清单</h3>",
+    )
+    title_path = "办理事项 > 申请材料 > 证件清单"
 
     async def fetch(name, args, context):
         assert name == "firecrawl_firecrawl_scrape"
         assert args["formats"] == ["markdown", "html"]
         return {"content_blocks": [{"type": "text", "text": json.dumps({
-            "markdown": "fallback", "html": REGISTRATION_HTML, "success": True,
-            "metadata": {"contentType": "text/html", "url": args["url"], "statusCode": 200},
+            "markdown": "fallback", "html": html, "success": True,
+            "metadata": {"title": "办理事项", "contentType": "text/html", "url": args["url"], "statusCode": 200},
         })}]}
 
     monkeypatch.setattr(runtime.source_service, "_fetch", fetch)
     pending = asyncio.run(runtime.source_service.propose_firecrawl_page(
         url="https://example.com/registration", context=ToolInvocationContext(source="test"),
     ))
-    candidate = runtime.source_service.approve(pending.candidate_id)
+    candidate = runtime.domain.approve(pending.candidate_id, decided_by=_requester())
     assert runtime.runs.list() == []
-    assert all("企业注册" not in text for text in pipeline.texts)
+    assert all("企业注册" not in chunk["text"] for chunk in pipeline.chunks)
     chunks = indexing.candidate_to_langchain_documents(candidate)
     [table] = [chunk for chunk in chunks if chunk.metadata.get("element_type") == "table"]
     expected = "事项：企业注册；条件：年满18岁；材料：身份证、申请表。"
     assert expected in table.page_content
+    assert table.metadata["title_path"] == title_path
+    assert table.page_content.startswith(f"[标题路径] {title_path}\n\n[表格]")
     assert _index_with_run(runtime, candidate)["num_added"] == 3
     legacy = _approve(runtime.domain, _firecrawl_document("legacy markdown"))
     assert legacy.document.structured_content is None
@@ -899,13 +955,13 @@ def test_firecrawl_html_sqlite_index_retrieval_and_rebuild_keep_legacy(persisted
     monkeypatch.setattr(runtime.source_service, "_fetch", forbidden)
     monkeypatch.setattr("app.sources.service.invoke_mcp_tool", forbidden)
     monkeypatch.setattr("app.sources.firecrawl.parse_html_document", forbidden)
-    monkeypatch.setattr("app.rag.parsing.parse_html_document", forbidden)
-    monkeypatch.setattr("app.rag.parsing._document_converter", forbidden)
+    monkeypatch.setattr("app.ingestion.parsing.parse_html_document", forbidden)
+    monkeypatch.setattr("app.ingestion.parsing._document_converter", forbidden)
     monkeypatch.setattr("app.rag.retrieval._retrieve_with_local_embeddings", forbidden)
     history = runtime.runs.list()
-    ok, message = pipeline.rebuild_and_persist_index(str(runtime.local_dir), force_rebuild=True)
+    ok, message = _sync_and_load(str(runtime.local_dir), force_rebuild=True)
     assert ok, message
-    assert rag_store.load_manifest()["pipeline_version"] == 5
+    assert rag_store.load_manifest()["pipeline_version"] == 6
     assert runtime.runs.list() == history
     assert repository.get(candidate.candidate_id) == restored
     [legacy_chunk] = [chunk for chunk in pipeline.chunks if chunk["metadata"]["source_id"] == legacy.document.source_id]
@@ -914,8 +970,11 @@ def test_firecrawl_html_sqlite_index_retrieval_and_rebuild_keep_legacy(persisted
     table_position = next(i for i, chunk in enumerate(pipeline.chunks)
                           if chunk["metadata"].get("element_type") == "table")
     assert all(pipeline.bm25.doc_freqs[table_position].get(token, 0) for token in tokenize("身份证"))
+    assert all(pipeline.bm25.doc_freqs[table_position].get(token, 0) for token in tokenize("申请材料"))
     hits = pipeline.search_relevant_chunks("企业注册需要哪些材料", top_k=5)
     assert any(expected in hit["text"] and hit["metadata"].get("element_type") == "table" for hit in hits)
     records = indexing.create_vector_store(None).get(where={"source_type": "firecrawl"})
     assert len(records["ids"]) == 4
+    assert all(metadata.get("title_path") == title_path for metadata in records["metadatas"]
+               if metadata["source_id"] == candidate.document.source_id)
     assert set(records["ids"]) == set(indexing.create_record_manager(namespace=FIRECRAWL_RECORD_NAMESPACE).list_keys())

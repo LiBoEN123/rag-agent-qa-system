@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.agent.guardrails import AgentStopReason
-from app.agent.final_response import FinalAgentResponse
+from app.agent.final_response import FinalAgentResponse, validate_final_response
 from app.tools.knowledge_base import chunk_to_evidence_document
 from app.tools.result import tool_success
 from app.api.schemas import ChatReferences
@@ -17,10 +17,10 @@ from app.tools.evidence import build_evidence_document
 
 from app.agent.results import (
     AgentRunResult,
+    build_agent_runtime_error_result,
     build_framework_agent_result,
     build_short_circuit_result,
     create_agent_result,
-    build_internal_error_result,
 )
 from app.contracts.chat import AgentResultStatus
 
@@ -100,10 +100,10 @@ def test_agent_run_result_requires_every_runtime_field():
         AgentRunResult.model_validate(payload)
 
 
-def test_internal_error_result_has_the_complete_contract_and_is_sanitized():
-    result = build_internal_error_result(
-        RuntimeError("api_key=secret"),
-        trace_step="graph_error",
+def test_runtime_error_result_has_the_complete_contract_and_is_sanitized():
+    result = build_agent_runtime_error_result(
+        write_bad_cases=None, bad_case=None, trace_id="error", original_question="测试",
+        exc=RuntimeError("api_key=secret"),
     )
 
     assert set(result) == set(AgentRunResult.model_fields)
@@ -146,7 +146,7 @@ def _knowledge_output():
         ],
         "stop_reason": "completed",
         "messages": [
-            ToolMessage(content=json.dumps(knowledge), name="search_knowledge_base", tool_call_id="kb"),
+            ToolMessage(content=json.dumps(knowledge), artifact=deepcopy(knowledge), name="search_knowledge_base", tool_call_id="kb"),
             AIMessage(content="普通模型文本不是最终回答"),
         ],
         "structured_response": FinalAgentResponse(
@@ -348,7 +348,7 @@ def test_framework_structured_answer_and_governance_trace_are_preserved(
             AIMessage(
                 content="工具请求",
                 tool_calls=[
-                    {"name": "list_documents", "args": {}, "id": "call-1"},
+                    {"name": "find_documents", "args": {}, "id": "call-1"},
                 ],
             ),
             ToolMessage(content="工具输出", tool_call_id="call-1"),
@@ -363,7 +363,7 @@ def test_framework_structured_answer_and_governance_trace_are_preserved(
                 "ok": True,
                 "counted_call": True,
                 "handler_executed": True,
-                "result": {"ok": True, "summary": "工具摘要"},
+                "result": tool_success("custom_tool", {}, {}),
             },
         ],
     }
@@ -377,11 +377,11 @@ def test_framework_structured_answer_and_governance_trace_are_preserved(
     assert result["answer"] == "第一段\n第二段"
     assert result["reason"] == "Agent model produced structured answer"
     assert result["references"] == []
-    assert result["tool_result_summary"] == "工具摘要"
+    assert result["tool_result_summary"] == "custom_tool 工具执行完成"
     tool_calls = [step for step in result["tool_trace"] if step["step"] == "tool_call"]
     assert len(tool_calls) == 1
     assert tool_calls[0]["tool_name"] == "custom_tool"
-    assert tool_calls[0]["summary"] == "工具摘要"
+    assert tool_calls[0]["summary"] == "custom_tool 工具执行完成"
     assert tool_calls[0]["step_id"] == 1
     assert result["tool_trace"][-2] == {
         "step": "compose_final_answer",
@@ -423,8 +423,7 @@ def test_framework_missing_or_empty_final_answer_fails_closed(messages):
     "stop_reason",
     [
         "fatal_tool_error",
-        "approval_required",
-        "missing_idempotency_key",
+
         "runtime_unavailable",
     ],
 )
@@ -472,16 +471,17 @@ def test_model_stop_reasons_keep_stable_fail_closed_answers(stop_reason):
     _validate_usage(result)
 
 
-@pytest.mark.parametrize("summaries", [["普通工具摘要"], ["一", "二", "三", "四", "五"]])
-def test_tool_result_summary_uses_last_three_public_tool_summaries(summaries):
+@pytest.mark.parametrize("counts", [[1], [1, 2, 3, 4, 5]])
+def test_tool_result_summary_uses_last_three_public_tool_summaries(counts):
+    summaries = [f"文档发现完成，找到 {count} 份候选文档" for count in counts]
     events = []
-    for summary in summaries:
+    for count in counts:
         events.extend([
             {"kind": "model", "ok": True},
             {
-                "kind": "tool", "name": "custom_tool", "counted_call": True,
+                "kind": "tool", "name": "find_documents", "counted_call": True,
                 "handler_executed": True,
-                "result": {"ok": True, "summary": summary},
+                "result": tool_success("find_documents", {}, {"count": count}),
             },
             {
                 "kind": "tool", "name": "custom_tool", "counted_call": False,
@@ -509,36 +509,36 @@ def test_knowledge_summary_uses_public_final_chunk_count():
     assert result["tool_result_summary"] == "知识库检索完成，召回 2 个 chunk"
 
 
-@pytest.mark.parametrize("error_code", ["approval_required", "permission_denied", "agent_batch_aborted"])
+@pytest.mark.parametrize("error_code", ["permission_denied", "agent_batch_aborted"])
 def test_guardrail_only_summary_falls_back_to_result_reason(error_code):
     result = build_framework_agent_result(
         _invocation(), {
-            "stop_reason": "approval_required",
+            "stop_reason": "fatal_tool_error",
             "governance_events": [
                 {"kind": "model", "ok": True},
                 {
                     "kind": "tool", "name": "custom_tool", "counted_call": False,
                     "handler_executed": False, "error_code": error_code,
-                    "stop_reason": "approval_required",
+                    "stop_reason": "fatal_tool_error",
                     "result": {"ok": False, "error": "blocked", "summary": "不得使用"},
                 },
             ],
         },
     )
-    assert result["tool_result_summary"] == result["reason"] == "approval_required"
+    assert result["tool_result_summary"] == result["reason"] == "fatal_tool_error"
     trace = next(step for step in result["tool_trace"] if step["step"] == "tool_call")
     assert "step_id" not in trace
     assert trace["handler_executed"] is False
     assert trace["will_return_to_agent_model"] is False
 
 
-@pytest.mark.parametrize("error_code", ["invalid_arguments", "approval_required", "permission_denied"])
+@pytest.mark.parametrize("error_code", ["invalid_arguments", "permission_denied"])
 def test_counted_pre_handler_failure_keeps_failure_summary(error_code):
     result = build_framework_agent_result(
         _invocation(), {
             "stop_reason": "fatal_tool_error",
             "governance_events": [{
-                "kind": "tool", "name": "list_documents", "counted_call": True,
+                "kind": "tool", "name": "find_documents", "counted_call": True,
                 "handler_executed": False,
                 "result": {"ok": False, "error_code": error_code},
             }],
@@ -551,20 +551,21 @@ def test_counted_pre_handler_failure_keeps_failure_summary(error_code):
     assert result["tool_result_summary"] == trace["summary"] == "工具执行失败"
 
 
-def test_tool_result_summary_reuses_redacted_public_summary():
+@pytest.mark.parametrize("legacy_field", ["summary", "result_summary"])
+def test_tool_result_summary_ignores_legacy_private_summary(legacy_field):
     result = build_framework_agent_result(
         _invocation(), {
             "messages": [AIMessage(content="完成")],
             "governance_events": [{
                 "kind": "tool", "name": "custom_tool", "counted_call": True,
                 "handler_executed": True,
-                "result": {"ok": True, "summary": "完成 token=raw-token password=raw-password"},
+                "result": {"ok": True, legacy_field: "完成 token=raw-token password=raw-password"},
             }],
         },
     )
     trace = next(step for step in result["tool_trace"] if step["step"] == "tool_call")
     assert result["tool_result_summary"] == trace["summary"] == (
-        "完成 token=***REDACTED*** password=***REDACTED***"
+        "custom_tool 工具执行完成"
     )
     assert "raw-token" not in json.dumps(result)
     assert "raw-password" not in json.dumps(result)
@@ -600,7 +601,7 @@ def test_evidence_answer_requires_real_cited_ids(evidence_ids):
 
 def test_grounding_mismatch_diagnostics_only_expose_ids():
     output = _knowledge_output()
-    payload = json.loads(output["messages"][0].content)
+    payload = output["messages"][0].artifact
     ids = ["knowledge_base:real-a", "knowledge_base:real-b"]
     for document, evidence_id in zip(payload["output"]["evidence"], ids):
         document["id"] = evidence_id
@@ -677,12 +678,12 @@ def test_agent_clarification_preserves_real_tool_summary():
     assert result["tool_result_summary"] == "知识库检索完成，召回 2 个 chunk"
 
 
-@pytest.mark.parametrize("name", ["web_search", "list_documents", "mcp_read"])
+@pytest.mark.parametrize("name", ["web_search", "find_documents"])
 def test_non_evidence_tool_outputs_cannot_be_promoted_to_references(name):
     output = _knowledge_output()
-    payload = json.loads(output["messages"][0].content)
+    payload = output["messages"][0].artifact
     payload["tool_name"] = name
-    output["messages"] = [ToolMessage(content=json.dumps(payload), name=name, tool_call_id="x")]
+    output["messages"] = [ToolMessage(content=json.dumps(payload), artifact=payload, name=name, tool_call_id="x")]
     result = build_framework_agent_result(_invocation(), output)
     assert result["status"] == "MODEL_ERROR"
     assert result["references"] == []
@@ -690,11 +691,11 @@ def test_non_evidence_tool_outputs_cannot_be_promoted_to_references(name):
     assert build_framework_agent_result(_invocation(), output)["status"] == "OK"
 
 
-@pytest.mark.parametrize("damage", ["failed_message", "failed_result", "invalid_json", "invalid_document", "wrong_tool"])
+@pytest.mark.parametrize("damage", ["failed_message", "failed_result", "missing_artifact", "invalid_artifact", "invalid_document", "wrong_tool"])
 def test_failed_or_invalid_evidence_cannot_ground_answer(damage):
     output = _knowledge_output()
     message = output["messages"][0]
-    payload = json.loads(message.content)
+    payload = message.artifact
     if damage == "failed_message":
         message.status = "error"
     elif damage == "failed_result":
@@ -703,10 +704,21 @@ def test_failed_or_invalid_evidence_cannot_ground_answer(damage):
         payload["output"]["evidence"][1]["metadata"].pop("content_is_untrusted")
     elif damage == "wrong_tool":
         payload["tool_name"] = "web_search"
-    message.content = "not json" if damage == "invalid_json" else json.dumps(payload)
+    elif damage == "missing_artifact":
+        message.artifact = None
+    elif damage == "invalid_artifact":
+        message.artifact = "invalid"
     result = build_framework_agent_result(_invocation(), output)
     assert result["status"] == "MODEL_ERROR"
     assert result["references"] == []
+
+
+def test_evidence_gate_reads_artifact_without_parsing_message_content():
+    output = _knowledge_output()
+    output["messages"][0].content = "非 JSON 的模型内容投影"
+    final, evidence = validate_final_response(output)
+    assert [document.id for document in evidence] == final.evidence_ids
+    assert evidence[0].page_content == "候选二"
 
 
 def test_web_pdf_references_keep_declared_order_and_existing_api_contract():
@@ -718,7 +730,8 @@ def test_web_pdf_references_keep_declared_order_and_existing_api_contract():
         ("web_pdf", "https://example.com/file.pdf", {"start_page": 3}),
     ]]
     messages = [ToolMessage(
-        content=json.dumps(tool_success(name, {}, {"evidence": [doc.model_dump()]})),
+        content="正文工具结果",
+        artifact=tool_success(name, {}, {"evidence": [doc.model_dump()]}),
         name=name, tool_call_id=name,
     ) for name, doc in zip(["web_fetch", "web_pdf_fetch"], documents)]
     output = {
@@ -741,15 +754,16 @@ def test_web_pdf_references_keep_declared_order_and_existing_api_contract():
 
 
 @pytest.mark.parametrize("chunk_id", [0, None])
-def test_get_chunk_text_reference_preserves_locator_and_safe_scores(chunk_id):
+def test_get_chunk_context_reference_preserves_locator_and_safe_scores(chunk_id):
     document = chunk_to_evidence_document({
         "chunk_id": chunk_id, "text": "原文", "source_id": "source-1", "position": 3,
         "hybrid_score": "invalid", "rerank_score": "nan",
     })
     result = build_framework_agent_result(_invocation(), {
         "messages": [ToolMessage(
-            name="get_chunk_text", tool_call_id="chunk",
-            content=json.dumps(tool_success("get_chunk_text", {}, {"evidence": [document.model_dump()]})),
+            name="get_chunk_context", tool_call_id="chunk",
+            content="正文工具结果",
+            artifact=tool_success("get_chunk_context", {}, {"evidence": [document.model_dump()]}),
         )],
         "structured_response": FinalAgentResponse(
             outcome="answer", answer="原文回答", evidence_ids=[document.id],
@@ -762,3 +776,22 @@ def test_get_chunk_text_reference_preserves_locator_and_safe_scores(chunk_id):
     assert reference.source_path == document.metadata["source_uri"]
     assert reference.position == 3
     assert reference.score == reference.rerank_score == 0.0
+
+
+def test_evidence_decision_requires_composition_and_preserves_streamed_whitespace():
+    output = _knowledge_output()
+    output["structured_response"] = FinalAgentResponse(
+        outcome="answer", evidence_ids=output["structured_response"].evidence_ids,
+    )
+    assert build_framework_agent_result(_invocation(), output)["status"] == "MODEL_ERROR"
+    result = build_framework_agent_result(_invocation(), output, composed_answer=" 答案\n")
+    assert result["status"] == "OK" and result["answer"] == " 答案\n"
+    output["structured_response"].evidence_ids = ["invented"]
+    result = build_framework_agent_result(_invocation(), output, composed_answer="PRIVATE ANSWER")
+    assert result["status"] == "MODEL_ERROR" and "PRIVATE ANSWER" not in repr(result)
+
+
+@pytest.mark.parametrize("answer", ["", " \n"])
+def test_empty_composition_never_falls_back_to_structured_draft(answer):
+    result = build_framework_agent_result(_invocation(), _knowledge_output(), composed_answer=answer)
+    assert result["status"] == "MODEL_ERROR"

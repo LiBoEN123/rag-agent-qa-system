@@ -5,8 +5,6 @@ from pathlib import Path
 
 from charset_normalizer import from_bytes
 
-from app.ingestion.document_blocks import canonical_document_text
-from app.rag.parsing import parse_document
 
 
 SUPPORTED_SUFFIXES = {".txt", ".md", ".pdf", ".docx"}
@@ -19,36 +17,6 @@ def read_txt_auto(file_path: str) -> str:
     if result is None:
         raise ValueError(f"无法识别编码: {file_path}")
     return str(result)
-
-
-def read_pdf_text(file_path: str) -> str:
-    """从共享结构解析结果取得兼容的正文视图。"""
-    content = canonical_document_text(parse_document(file_path))
-    if not content:
-        raise ValueError(f"PDF 未提取到可索引文本，可能是扫描件或图片型 PDF: {file_path}")
-    return content
-
-
-def read_docx_text(file_path: str) -> str:
-    """按原始 reading order 返回 DOCX 的兼容正文视图。"""
-    content = canonical_document_text(parse_document(file_path))
-    if not content:
-        raise ValueError(f"DOCX 未提取到可索引文本: {file_path}")
-    return content
-
-
-def read_file_text(file_path: str) -> str:
-    """按文件扩展名选择对应的文档解析器。"""
-    suffix = Path(file_path).suffix.lower()
-
-    if suffix in {".txt", ".md"}:
-        return read_txt_auto(file_path)
-    if suffix == ".pdf":
-        return read_pdf_text(file_path)
-    if suffix == ".docx":
-        return read_docx_text(file_path)
-
-    raise ValueError(f"不支持的文件类型: {suffix}")
 
 
 def collect_supported_files(data_dir: str):

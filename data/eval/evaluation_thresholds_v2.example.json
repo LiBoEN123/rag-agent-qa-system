@@ -1,6 +1,5 @@
 {
   "core_agent_pass_rate_drop": 0.02,
-  "first_tool_accuracy_drop": 0.02,
   "source_pass_rate_drop": 0.03,
   "p95_latency_increase_ratio": 0.2
 }

@@ -1,9 +1,14 @@
+"""Session schema、消息读写、查询顺序与输入边界。"""
+
+import sqlite3
+
 import pytest
 
 from app.storage.memory import (
     append_message_sqlite,
     clear_session_sqlite,
     get_history_sqlite,
+    init_session_storage,
 )
 
 
@@ -13,6 +18,18 @@ def use_temporary_sqlite_database(settings_env, tmp_path):
     settings_env(
         sqlite_db_path=tmp_path / "session_store.sqlite",
     )
+
+
+def test_init_session_storage_creates_tables(tmp_path):
+    db_path = tmp_path / "schema.sqlite"
+    init_session_storage(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+
+    assert {"sessions", "messages"} <= {row[0] for row in rows}
 
 
 def test_session_store_ignores_empty_session_id():
@@ -44,7 +61,7 @@ def test_session_store_appends_and_reads_history():
 
 
 def test_session_store_keeps_recent_messages():
-    """验证每个 session 最多保留最近 6 条消息。"""
+    """默认查询最近 6 条，自定义 limit 仍保持旧到新顺序。"""
     clear_session_sqlite("s_recent")
 
     for i in range(10):
@@ -53,6 +70,9 @@ def test_session_store_keeps_recent_messages():
     history = get_history_sqlite("s_recent")
     assert history == [
         {"role": "user", "content": f"q{i}"} for i in range(4, 10)
+    ]
+    assert get_history_sqlite("s_recent", limit=3) == [
+        {"role": "user", "content": f"q{i}"} for i in range(7, 10)
     ]
 
     clear_session_sqlite("s_recent")

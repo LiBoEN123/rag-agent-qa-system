@@ -1,5 +1,6 @@
 """LangChain 原生工具生命周期与项目特有 Agent 治理。"""
 
+import asyncio
 import json
 import threading
 import time
@@ -17,21 +18,11 @@ from app.agent.guardrails import (
     build_tool_governance_event,
     build_unknown_tool_call_fingerprint,
     count_consecutive_events,
-    sum_governance_event_costs,
 )
 from app.config import AppSettings, get_settings
-from app.sources.service import promote_tool_result
-from app.tools.context import ToolInvocationContext
 from app.tools.errors import ToolErrorCode
-from app.tools.execution import (
-    enter_framework_execution,
-    exit_framework_execution,
-    framework_execution_started,
-    invalid_arguments_result,
-)
-from app.tools.mcp.serialization import normalize_mcp_tool_message
 from app.tools.policy import build_tool_args_fingerprint
-from app.tools.result import tool_error
+from app.tools.result import tool_content, tool_error
 
 
 def _now_ms() -> int:
@@ -90,17 +81,8 @@ def parse_tool_result(
     args: dict,
 ) -> dict[str, Any]:
     """读取标准 ToolMessage；框架校验错误映射为项目稳定错误码。"""
-    mcp_result = normalize_mcp_tool_message(message, tool_name=name, args=args)
-    if mcp_result is not None:
-        return mcp_result
-    try:
-        value = (
-            json.loads(message.content) if isinstance(message.content, str) else None
-        )
-    except (TypeError, ValueError):
-        value = None
-    if isinstance(value, dict) and "ok" in value:
-        return value
+    if isinstance(message.artifact, dict) and "ok" in message.artifact:
+        return message.artifact
     code = ToolErrorCode.INVALID_ARGUMENTS if known else ToolErrorCode.UNKNOWN_TOOL
     return tool_error(name, args, str(message.content), error_code=code.value)
 
@@ -169,134 +151,25 @@ def _governance_block(
 
 
 def _resolve_tool_message(output: object, call_id: str) -> ToolMessage:
-    """从原生 ToolMessage 或 Command 中取得本次配对消息。"""
+    """项目工具只返回配对 ToolMessage；Command 由治理层生成。"""
     if isinstance(output, ToolMessage) and output.tool_call_id == call_id:
         return output
-    if isinstance(output, Command) and isinstance(output.update, dict):
-        messages = output.update.get("messages", [])
-        matches = [
-            item
-            for item in messages
-            if isinstance(item, ToolMessage) and item.tool_call_id == call_id
-        ]
-        if len(matches) == 1:
-            return matches[0]
     raise TypeError("governed tool must return its paired ToolMessage")
 
 
-def _replace_command_message(
-    output: Command[Any], message: ToolMessage
-) -> dict[str, Any]:
-    """保留工具原有 Command 更新，并替换治理后的配对消息。"""
-    if not isinstance(output.update, dict):
-        raise TypeError("governed tool Command must use a dict state update")
-    updates = dict(output.update)
-    raw_messages = updates.get("messages", [])
-    if not isinstance(raw_messages, (list, tuple)):
-        raise TypeError("governed tool Command messages must be a sequence")
-    replaced = False
-    messages: list[object] = []
-    for item in raw_messages:
-        if isinstance(item, ToolMessage) and item.tool_call_id == message.tool_call_id:
-            messages.append(message)
-            replaced = True
-        else:
-            messages.append(item)
-    if not replaced:
-        raise TypeError("governed tool Command lost its paired ToolMessage")
-    updates["messages"] = messages
-    return updates
-
-
 def _tool_state_command(
-    output: ToolMessage | Command[Any],
     message: ToolMessage,
     event: dict[str, Any],
 ) -> Command[Any]:
     """把工具消息与项目治理结果直接写入 FrameworkAgentState。"""
-    if isinstance(output, Command):
-        updates = _replace_command_message(output, message)
-        graph = output.graph
-        resume = output.resume
-        goto = output.goto
-    else:
-        updates = {"messages": [message]}
-        graph = None
-        resume = None
-        goto = ()
-
-    existing_events = updates.get("governance_events", [])
-    if not isinstance(existing_events, list):
-        raise TypeError("governance_events update must be a list")
-    updates["governance_events"] = [*existing_events, event]
+    updates: dict[str, Any] = {"messages": [message], "governance_events": [event]}
     if event.get("stop_reason"):
         updates["stop_reason"] = str(event["stop_reason"])
-    return Command(graph=graph, update=updates, resume=resume, goto=goto)
-
-
-class ProjectToolExecutionMiddleware(AgentMiddleware):
-    """仅为本地 ProjectStructuredTool 建立 retry scope 和校验错误契约。"""
-
-    # 从工具调用请求中取出项目工具，其他类型返回空值。
-    @staticmethod
-    def _project_tool(request: ToolCallRequest):
-        from app.agent.framework_tools import ProjectStructuredTool
-
-        return (
-            request.tool
-            if isinstance(request.tool, ProjectStructuredTool)
-            else None
-        )
-
-    # 将尚未进入项目执行流程的工具消息转为统一的参数校验失败结果。
-    @staticmethod
-    def _validated_output(request, tool, output):
-        if framework_execution_started() or not isinstance(output, ToolMessage):
-            return output
-        context = request.runtime.context
-        if not isinstance(context, ToolInvocationContext):
-            raise RuntimeError("ToolRuntime did not inject ToolInvocationContext")
-        raw_args = request.tool_call.get("args") or {}
-        result = invalid_arguments_result(
-            spec=tool.project_spec,
-            tool_args=raw_args if isinstance(raw_args, dict) else {},
-            context=context,
-            tool_call_id=str(request.tool_call.get("id") or ""),
-            settings=tool.project_settings,
-            audit_sink=tool.project_audit_sink,
-        )
-        return output.model_copy(
-            update={
-                "content": json.dumps(
-                    result,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-                "status": "error",
-            }
-        )
-
-    async def awrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[
-            [ToolCallRequest], Awaitable[ToolMessage | Command[Any]]
-        ],
-    ) -> ToolMessage | Command[Any]:
-        """异步 Agent 复用相同本地执行边界，MCP BaseTool 直接跳过。"""
-        tool = self._project_tool(request)
-        if tool is None:
-            return await handler(request)
-        token = enter_framework_execution()
-        try:
-            output = await handler(request)
-            return self._validated_output(request, tool, output)
-        finally:
-            exit_framework_execution(token)
+    return Command(update=updates)
 
 
 class ProjectToolGovernanceMiddleware(AgentMiddleware):
-    """保留错误分类、循环检测、耗时预算和批次 fail-closed。"""
+    """保留错误分类、循环检测、批次 fail-closed。"""
 
     def __init__(self, settings: AppSettings | None = None) -> None:
         """初始化并发安全的同批事件协调器。"""
@@ -336,13 +209,10 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
     async def abefore_model(self, state, runtime):
         """依据 State 中的治理停止原因决定是否结束。"""
         del runtime
-        events = list(state.get("governance_events", []))
         reason = str(state.get("stop_reason") or "")
         if not reason and _has_tool_call_limit_message(state.get("messages", [])):
             reason = AgentStopReason.MAX_TOOL_CALLS.value
-        updates: dict[str, Any] = {
-            "agent_elapsed_ms": sum_governance_event_costs(events)
-        }
+        updates: dict[str, Any] = {}
         if reason:
             updates.update({"stop_reason": reason, "jump_to": "end"})
         return updates
@@ -387,9 +257,6 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
             + 1
         )
         reason = str(terminal or "")
-        elapsed_ms = sum_governance_event_costs(prior)
-        if not reason and elapsed_ms >= self._settings.agent_max_total_cost_ms:
-            reason = AgentStopReason.MAX_TOTAL_COST.value
         if (
             not reason
             and repeated > self._settings.agent_max_consecutive_same_tool_calls
@@ -409,7 +276,7 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
     def _complete_tool_call(
         self,
         request: ToolCallRequest,
-        output: ToolMessage | Command[Any],
+        message: ToolMessage,
         *,
         args: dict[str, Any],
         key: tuple[str, tuple[str, ...]],
@@ -418,13 +285,14 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
         started: int,
     ) -> Command[Any]:
         """把工具输出转换为直接 State Update 的治理 Command。"""
-        message = _resolve_tool_message(output, request.tool_call["id"])
         result = parse_tool_result(
             message,
             known=request.tool is not None,
             name=request.tool_call["name"],
             args=args,
         )
+        if message.artifact is not result:
+            message = message.model_copy(update={"content": tool_content(result), "artifact": result})
         event = build_tool_governance_event(
             tool_call=request.tool_call,
             result=result,
@@ -434,35 +302,7 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
             known_tool=request.tool is not None,
             settings=self._settings,
         )
-        # ToolRuntime 私有通道只保留本次已净化 source payload，不进入模型消息或 State。
-        source_output = getattr(request.runtime, "mcp_ingestion_output", None)
-        if hasattr(request.runtime, "mcp_ingestion_output"):
-            delattr(request.runtime, "mcp_ingestion_output")
-        metadata = request.tool.metadata if request.tool is not None else None
-        if (
-            metadata
-            and metadata.get("knowledge_promotion")
-            and event.get("ok") is True
-            and event.get("handler_executed") is True
-        ):
-            try:
-                candidate = promote_tool_result(
-                    result=result,
-                    metadata=metadata,
-                    args=args,
-                    source_output=source_output,
-                    context=request.runtime.context,
-                    settings=self._settings,
-                )
-                if candidate is not None:
-                    event["knowledge_candidate_id"] = candidate.candidate_id
-                    event["knowledge_promotion_status"] = candidate.status.value
-                else:
-                    event["knowledge_promotion_status"] = "skipped"
-            except Exception:
-                # 来源校验或持久化失败不改变已成功的只读工具调用，也不泄漏正文/异常。
-                event["knowledge_promotion_status"] = "failed"
-        return self._finish_tool_call(request, output, message, result, event, key)
+        return self._finish_tool_call(message, event, key)
 
     async def awrap_tool_call(
         self,
@@ -476,20 +316,22 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
         if blocked is not None:
             message, event = blocked
             return self._finish_tool_call(
-                request,
                 message,
-                message,
-                event["result"],
                 event,
                 key,
                 remember=False,
             )
 
         started = _now_ms()
-        output = await handler(request)
+        try:
+            output = await handler(request)
+        except asyncio.CancelledError:
+            with self._lock:
+                self._batch_events.pop(key, None)
+            raise
         return self._complete_tool_call(
             request,
-            output,
+            _resolve_tool_message(output, request.tool_call["id"]),
             args=args,
             key=key,
             prior=prior,
@@ -499,46 +341,25 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
 
     def _finish_tool_call(
         self,
-        request: ToolCallRequest,
-        output: ToolMessage | Command[Any],
         message: ToolMessage,
-        result: dict[str, Any],
         event: dict[str, Any],
         key: tuple[str, tuple[str, ...]],
         *,
         remember: bool = True,
     ) -> Command[Any]:
-        """补充兼容字段，并生成原生 Command State Update。"""
-        result.update(
-            {
-                "call_fingerprint": event.get("call_fingerprint", ""),
-                "failure_kind": event.get("failure_kind", ""),
-                "error_source": event.get(
-                    "error_source", result.get("error_source", "")
-                ),
-                "handler_executed": event.get(
-                    "handler_executed", result.get("handler_executed", False)
-                ),
-                "stop_reason": event.get("stop_reason", ""),
-                "model_tool_call_id": request.tool_call["id"],
-            }
-        )
+        """内部治理只写 State，模型消息不重复解析或序列化。"""
         if remember:
             self._remember(key, event, len(key[1]))
         governed_message = message.model_copy(
             update={
-                "content": json.dumps(
-                    result, ensure_ascii=False, sort_keys=True, default=str
-                ),
                 "status": "success" if event.get("ok") is True else "error",
             }
         )
-        return _tool_state_command(output, governed_message, event)
+        return _tool_state_command(governed_message, event)
 
     async def aafter_agent(self, state, runtime):
-        """归一化框架结束原因并保存最终累计耗时。"""
+        """归一化框架结束原因。"""
         del runtime
-        events = list(state.get("governance_events", []))
         reason = str(state.get("stop_reason") or "")
         last_ai = _find_last_ai_message(state.get("messages", []))
         if (
@@ -548,6 +369,5 @@ class ProjectToolGovernanceMiddleware(AgentMiddleware):
         ):
             reason = AgentStopReason.MAX_ITERATIONS.value
         return {
-            "agent_elapsed_ms": sum_governance_event_costs(events),
             "stop_reason": reason,
         }

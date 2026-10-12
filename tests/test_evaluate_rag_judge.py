@@ -1,364 +1,142 @@
+"""GEval、空值和只读缓存合同；使用原生 metric 与 fake 项目模型，禁止网络。"""
+
+import asyncio
+import csv
 import json
+import socket
+from types import SimpleNamespace
+from unittest.mock import Mock
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+import pytest
+from langchain_core.messages import AIMessage, HumanMessage
 
-from scripts.evaluation import rag_evaluator
-from scripts.evaluation.rag import judge as evaluator
+from scripts.evaluation import deepeval_adapter as adapter, rag_evaluator
 from scripts.evaluation.rag.common import ChunkIndex
 from scripts.evaluation.rag.evaluation import evaluate
+from scripts.evaluation.report import write_csv
 
 
-def judge_config() -> evaluator.LLMJudgeConfig:
-    return evaluator.LLMJudgeConfig(
-        enabled=True,
-        model="fake-judge",
-        api_url="http://example.test/v1/chat/completions",
-        api_key="",
-        timeout=1,
-        max_retries=0,
-        max_tokens=1024,
+@pytest.fixture(autouse=True)
+def offline(monkeypatch):
+    def deny(*args, **kwargs):
+        pytest.fail("unexpected network, cloud or real model")
+    monkeypatch.setattr(socket.socket, "connect", deny)
+    monkeypatch.setattr(socket.socket, "connect_ex", deny)
+    monkeypatch.setattr("deepeval.metrics.api.metric_data_manager.post_metric_if_enabled", deny)
+    monkeypatch.setattr("app.llm.factory._create_model", deny)
+
+
+def question(qid="q1", behavior="answer"):
+    return {"qid": qid, "question": "政策是什么？", "category": "test", "difficulty": "easy",
+            "expected_behavior": behavior, "gold_answer": "已知政策，未知细节。",
+            "gold_key_points": [{"point": "已知政策", "aliases": ["同义政策"]}],
+            "forbidden_points": ["虚构细节"], "gold_chunk_ids": [1]}
+
+
+def prediction(answer="已知政策"):
+    return {"prediction_schema_version": 3, "answer": answer,
+            "retrieved_chunk_ids": [1], "reference_chunk_ids": [1]}
+
+
+@pytest.mark.parametrize("behavior", ["answer", "partial_answer", "abstain"])
+def test_native_geval_uses_project_gateway_and_fixed_gold_spec(monkeypatch, settings_env, behavior):
+    settings_env(judge_model="configured-judge", judge_timeout=7, judge_max_retries=3, judge_max_tokens=456)
+    calls, options = [], {}
+    def create(**kwargs):
+        options.update(kwargs)
+        def invoke(messages):
+            calls.append(messages)
+            return AIMessage(content='{"score": 8, "reason": "事实正确，有少量遗漏"}')
+        return SimpleNamespace(model_name=kwargs["model_name"], invoke=invoke)
+    monkeypatch.setattr("app.llm.factory._create_model", create)
+    judge = adapter.ProjectJudge(model_name="cli-judge", api_url="https://judge.test/v1", api_key="fake-key")
+    score, reason = adapter.answer_correctness(question(behavior=behavior), "回答", model=judge)
+    assert score == 0.8 and reason == "事实正确，有少量遗漏"
+    assert len(calls) == 1  # 固定 steps，无步骤生成或项目 JSON retry。
+    assert isinstance(calls[0][0], HumanMessage)
+    prompt = calls[0][0].content
+    assert all(text in prompt for text in ("政策是什么？", "回答", behavior, "已知政策，未知细节。", "已知政策", "虚构细节"))
+    assert options == dict(role="judge", model_name="cli-judge", api_url="https://judge.test/v1",
+                           api_key="fake-key", temperature=0.0, timeout=7, max_retries=3, max_tokens=456)
+    assert judge.get_model_name() == "cli-judge"
+    assert json.loads(asyncio.run(judge.a_generate("async prompt")))["score"] == 8
+
+
+@pytest.mark.parametrize("judge_enabled", [False, True])
+@pytest.mark.parametrize("with_gold", [False, True])
+def test_missing_prediction_is_unscored_and_never_judged(judge_enabled, with_gold):
+    q = question()
+    q["gold_chunk_ids"] = [1] if with_gold else []
+    judge = Mock(return_value=(0.8, "correct"))
+    rows, summary = evaluate([q], {}, ChunkIndex({}, {}, "none"), 5, judge if judge_enabled else None)
+    assert not rows[0]["has_prediction"] and not rows[0]["judge_used"]
+    assert rows[0]["answer_correctness"] is None and rows[0]["answer_correctness_reason"] == ""
+    assert rows[0]["retrieval_gold_chunk_recall_at_k"] == rows[0]["reference_gold_chunk_recall"] == 0
+    assert summary["overall"]["avg_answer_correctness"] is None
+    assert summary["overall"]["llm_judge_coverage"] == 0
+    judge.assert_not_called()
+
+
+def test_summary_averages_only_successful_judgments_including_zero():
+    judge = Mock(side_effect=[(0.0, "incorrect"), ValueError("judge failed"), (0.8, "correct")])
+    rows, summary = evaluate([question(str(i)) for i in range(4)],
+                             {str(i): prediction() for i in range(3)}, ChunkIndex({}, {}, "none"), 5, judge)
+    assert [r["answer_correctness"] for r in rows] == [0.0, None, 0.8, None]
+    assert [r["judge_used"] for r in rows] == [True, False, True, False]
+    assert rows[1]["judge_error"] == "judge failed" and rows[1]["answer_correctness_reason"] == ""
+    for group in summary.values():
+        assert group["avg_answer_correctness"] == 0.4 and group["llm_judge_coverage"] == 0.5
+        assert group["prediction_coverage"] == 0.75
+
+
+@pytest.mark.parametrize("cache_qid,cache_answer,score,error", [
+    ("q1", "已知政策", "0", ""),
+    ("q1", "已知政策", "0.8", ""),
+    ("q1", "旧回答", "0.8", "answer changed"),
+    ("q1", "已知政策 ", "0.8", "answer changed"),
+    ("q2", "已知政策", "0.8", "qid missing"),
+    ("q1", "已知政策", "", "no answer correctness"),
+    ("q1", "已知政策", "nan", "[0, 1]"),
+])
+def test_cache_reuses_only_matching_answer_without_model(tmp_path, cache_qid, cache_answer, score, error):
+    eval_file, pred_file, cache = [tmp_path / name for name in ("eval.json", "pred.json", "cache.csv")]
+    eval_file.write_text(json.dumps([question()]))
+    pred_file.write_text(json.dumps([{"qid": "q1", **prediction()}]))
+    write_csv(cache, [{"qid": cache_qid, "answer": cache_answer, "answer_correctness": score,
+                       "answer_correctness_reason": "cached reason"}])
+    before = cache.read_bytes()
+    result = rag_evaluator.run_rag_evaluation(
+        eval_file=eval_file, pred_file=pred_file, out_dir=tmp_path / "out", index_source="none",
+        judge_cache_report=cache, use_llm_judge=True, judge_model="never-created",
     )
-
-
-def patch_judge(monkeypatch, key_point_result=None, forbidden_result=None):
-    def fake_call_judge_json(system_prompt, user_prompt, config, trace_id=""):
-        if system_prompt == evaluator.KEY_POINT_JUDGE_SYSTEM_PROMPT:
-            result = key_point_result or {"key_point_judgments": []}
-            return result, json.dumps(result, ensure_ascii=False)
-        if system_prompt == evaluator.FORBIDDEN_JUDGE_SYSTEM_PROMPT:
-            result = forbidden_result or {"forbidden_hit": False, "forbidden_judgments": []}
-            return result, json.dumps(result, ensure_ascii=False)
-        raise AssertionError("unexpected judge prompt")
-
-    monkeypatch.setattr(evaluator, "call_judge_json", fake_call_judge_json)
-
-
-def test_judge_json_retry_uses_canonical_call_boundary(monkeypatch):
-    prompts = []
-
-    def fake_call(system_prompt, user_prompt, config, trace_id=""):
-        prompts.append(user_prompt)
-        return "invalid" if len(prompts) == 1 else '{"score": 1}'
-
-    monkeypatch.setattr(evaluator, "call_judge_llm", fake_call)
-    parsed, raw = evaluator.call_judge_json("system", "user", judge_config())
-    assert parsed == {"score": 1} and raw == '{"score": 1}'
-    assert len(prompts) == 2 and "严格 JSON" in prompts[1]
-
-
-def test_call_judge_llm_uses_factory_gateway_and_cli_config(monkeypatch):
-    """离线 Judge 通过统一工厂和 Gateway 调用并保留 CLI 配置。"""
-    captured = {}
-
-    class FakeJudgeModel:
-        def __init__(self):
-            self.calls = []
-
-        def invoke(self, messages):
-            self.calls.append(messages)
-            return AIMessage(content='{"score": 1}')
-
-    model = FakeJudgeModel()
-
-    def fake_get_judge_model(**kwargs):
-        captured.update(kwargs)
-        return model
-
-    monkeypatch.setattr(evaluator, "get_judge_model", fake_get_judge_model)
-    config = evaluator.LLMJudgeConfig(
-        enabled=True,
-        model="cli-judge",
-        api_url="https://judge.example.test/v1/chat/completions",
-        api_key="cli-key",
-        timeout=7,
-        max_retries=3,
-        max_tokens=456,
-        temperature=0.2,
-    )
-
-    result = evaluator.call_judge_llm(
-        "judge system",
-        "judge user",
-        config,
-        trace_id="judge-trace",
-    )
-
-    assert result == '{"score": 1}'
-    assert captured == {
-        "api_key": "cli-key",
-        "api_url": "https://judge.example.test/v1/chat/completions",
-        "model_name": "cli-judge",
-        "temperature": 0.2,
-        "max_tokens": 456,
-        "timeout": 7,
-        "max_retries": 3,
+    row = result["rows"][0]
+    assert row["judge_used"] is (not error)
+    assert row["answer_correctness"] == (None if error else float(score))
+    assert row["answer_correctness_reason"] == ("" if error else "cached reason")
+    assert error in row["judge_error"] and cache.read_bytes() == before
+    assert set(p.name for p in (tmp_path / "out").iterdir()) == {
+        "per_question_report.csv",
     }
-    assert isinstance(model.calls[0][0], SystemMessage)
-    assert isinstance(model.calls[0][1], HumanMessage)
-    assert model.calls[0][0].content == "judge system"
-    assert model.calls[0][1].content == "judge user"
 
 
-def test_synonym_expression_can_be_covered_by_llm_judge(monkeypatch):
-    gold_points = [{"point": "其他时间不予办理。", "aliases": ["其他时间不予办理。"]}]
-    answer = "学生证补办仅在每学期第 14 周办理，不是随时都能补办。"
-
-    patch_judge(
-        monkeypatch,
-        key_point_result={
-            "key_point_judgments": [
-                {
-                    "key_point": "其他时间不予办理。",
-                    "status": "covered",
-                    "evidence_from_answer": "不是随时都能补办",
-                    "reason": "同义表达了其他时间无法办理",
-                }
-            ]
-        },
+@pytest.mark.parametrize("enabled,model_name", [(False, "configured"), (True, ""), (True, "configured")])
+def test_runner_judge_configuration_and_nullable_reports(tmp_path, monkeypatch, enabled, model_name):
+    eval_file, pred_file = tmp_path / "eval.json", tmp_path / "pred.json"
+    eval_file.write_text(json.dumps([question()]))
+    pred_file.write_text(json.dumps([{"qid": "q1", **prediction()}]))
+    monkeypatch.setattr("app.llm.factory._create_model", lambda **kwargs: SimpleNamespace(
+        model_name=kwargs["model_name"], invoke=lambda messages: AIMessage(content='{"score": 9, "reason": "correct"}'),
+    ))
+    result = rag_evaluator.run_rag_evaluation(
+        eval_file=eval_file, pred_file=pred_file, out_dir=tmp_path / "out", index_source="none",
+        use_llm_judge=enabled, judge_model=model_name,
     )
-
-    result = evaluator.evaluate_key_points_with_llm(
-        question="学生证丢失后是不是任何时候都可以补办？",
-        gold_answer="其他时间不予办理。",
-        gold_key_points=gold_points,
-        model_answer=answer,
-        judge_config=judge_config(),
-    )
-
-    assert result["key_point_recall"] == 1.0
-    assert result["covered_count"] == 1
-    assert result["missing_key_points"] == []
-
-
-def test_negative_forbidden_mention_is_not_hit(monkeypatch):
-    patch_judge(
-        monkeypatch,
-        forbidden_result={
-            "forbidden_hit": False,
-            "forbidden_judgments": [
-                {
-                    "forbidden_point": "具体面试题目",
-                    "hit": False,
-                    "answer_span": "文档没有提供具体面试题目",
-                    "reason": "否定性提及，不是把面试题目当事实回答",
-                }
-            ],
-        },
-    )
-
-    result = evaluator.evaluate_forbidden_with_llm(
-        question="2025 年转专业专业复试的具体面试题目是什么？",
-        model_answer="文档没有提供具体面试题目。",
-        forbidden_points=["具体面试题目"],
-        judge_config=judge_config(),
-    )
-
-    assert result["forbidden_hit"] is False
-    assert result["forbidden_judgments"][0]["hit"] is False
-
-
-def test_fabricated_forbidden_detail_is_hit(monkeypatch):
-    patch_judge(
-        monkeypatch,
-        forbidden_result={
-            "forbidden_hit": True,
-            "forbidden_judgments": [
-                {
-                    "forbidden_point": "具体面试题目",
-                    "hit": True,
-                    "answer_span": "复试面试题目包括自我介绍、专业知识问答和英语口语",
-                    "reason": "把未提供的具体面试题目当成事实列出",
-                }
-            ],
-        },
-    )
-
-    result = evaluator.evaluate_forbidden_with_llm(
-        question="2025 年转专业专业复试的具体面试题目是什么？",
-        model_answer="复试面试题目包括自我介绍、专业知识问答和英语口语。",
-        forbidden_points=["具体面试题目"],
-        judge_config=judge_config(),
-    )
-
-    assert result["forbidden_hit"] is True
-    assert result["forbidden_judgments"][0]["hit"] is True
-
-
-def test_policy_conflict_can_be_contradicted(monkeypatch):
-    gold_point = "2023 年及以后入学的普通本科四年制专业学生最长学习年限为 6 年，不能简单套用旧口径 8 年。"
-    patch_judge(
-        monkeypatch,
-        key_point_result={
-            "key_point_judgments": [
-                {
-                    "key_point": gold_point,
-                    "status": "contradicted",
-                    "evidence_from_answer": "最长学习年限为 8 年",
-                    "reason": "回答直接套用旧口径 8 年，与 2023 年以后 6 年要求冲突",
-                }
-            ]
-        },
-    )
-
-    result = evaluator.evaluate_key_points_with_llm(
-        question="普通本科四年制专业学生现在最长学习年限是不是 8 年？",
-        gold_answer=gold_point,
-        gold_key_points=[gold_point],
-        model_answer="普通本科四年制学生最长学习年限为 8 年。",
-        judge_config=judge_config(),
-        category="trap",
-        expected_behavior="answer",
-    )
-
-    assert result["key_point_recall"] == 0.0
-    assert result["contradicted_count"] == 1
-    assert result["contradicted_key_points"] == [gold_point]
-
-
-def test_partial_answer_should_not_get_full_credit_for_over_refusal(monkeypatch):
-    gold_points = [
-        "文档说明了延期毕业的申请流程。",
-        "文档没有说明每次最多延期几个月。",
-    ]
-    patch_judge(
-        monkeypatch,
-        key_point_result={
-            "key_point_judgments": [
-                {
-                    "key_point": gold_points[0],
-                    "status": "missing",
-                    "evidence_from_answer": "",
-                    "reason": "整体说没有相关信息，遗漏了可确认的申请流程",
-                },
-                {
-                    "key_point": gold_points[1],
-                    "status": "covered",
-                    "evidence_from_answer": "文档没有相关信息",
-                    "reason": "表达了无法确认每次最多延期几个月",
-                },
-            ]
-        },
-    )
-
-    result = evaluator.evaluate_key_points_with_llm(
-        question="研究生延期毕业每次最多可以延期几个月？",
-        gold_answer="文档说明了延期流程，但没有说明每次最多延期几个月。",
-        gold_key_points=gold_points,
-        model_answer="文档没有相关信息。",
-        judge_config=judge_config(),
-        category="partial_answer",
-        expected_behavior="partial_answer",
-    )
-
-    assert result["key_point_recall"] == 0.5
-    assert result["missing_key_points"] == [gold_points[0]]
-
-
-def test_evaluate_uses_llm_judge_fields(monkeypatch):
-    patch_judge(
-        monkeypatch,
-        key_point_result={
-            "key_point_judgments": [
-                {
-                    "key_point": "其他时间不予办理。",
-                    "status": "covered",
-                    "evidence_from_answer": "不是随时都能补办",
-                    "reason": "同义覆盖",
-                }
-            ]
-        },
-        forbidden_result={
-            "forbidden_hit": False,
-            "forbidden_judgments": [
-                {
-                    "forbidden_point": "具体面试题目",
-                    "hit": False,
-                    "answer_span": "文档没有提供具体面试题目",
-                    "reason": "否定提及",
-                }
-            ],
-        },
-    )
-    question = {
-        "qid": "q-test",
-        "question": "学生证丢失后是不是任何时候都可以补办？",
-        "category": "trap",
-        "expected_behavior": "answer",
-        "gold_answer": "其他时间不予办理。",
-        "gold_key_points": [{"point": "其他时间不予办理。", "aliases": ["其他时间不予办理。"]}],
-        "forbidden_points": ["具体面试题目"],
-    }
-    preds = {"q-test": {"answer": "学生证补办仅在每学期第 14 周办理，不是随时都能补办。"}}
-
-    rows, summary, details = evaluate(
-        [question],
-        preds,
-        ChunkIndex({}, {}, "none"),
-        k=5,
-        judge_config=judge_config(),
-    )
-
-    row = rows[0]
-    assert "old_key_point_recall" not in row
-    assert "old_forbidden_hit" not in row
-    assert "llm_key_point_recall" not in row
-    assert "skill_type" not in row
-    assert "retrieval_chunk_recall_at_k" not in row
-    assert "retrieval_evidence_recall_at_k" not in row
-    assert "matched_gold_chunk_ids" not in row
-    assert row["key_point_recall"] == 1.0
-    assert row["forbidden_hit"] is False
-    assert row["key_point_judge_used"] is True
-    assert row["judge_error"] == ""
-    assert "avg_llm_key_point_recall" not in summary["overall"]
-    assert "evidence_recall_at_k" not in summary["overall"]
-    assert summary["overall"]["avg_key_point_recall"] == 1.0
-    assert details[0]["key_point_recall"] == 1.0
-    assert details[0]["key_point_judgments"][0]["status"] == "covered"
-
-
-def test_cached_judge_evaluators_reuse_report_without_llm_calls(tmp_path):
-    cache_report = tmp_path / "per_question_report.csv"
-    cache_report.write_text(
-        "\ufeffqid,key_point_judgments_json,forbidden_judgments_json\n"
-        "\"q-cache\",\"[{\"\"key_point\"\":\"\"A\"\",\"\"status\"\":\"\"covered\"\",\"\"evidence_from_answer\"\":\"\"A\"\",\"\"reason\"\":\"\"cached\"\"}]\",\"[]\"\n",
-        encoding="utf-8",
-    )
-
-    cache = rag_evaluator.load_judge_cache_report(cache_report)
-    key_point_evaluator, forbidden_evaluator = rag_evaluator.make_cached_judge_evaluators(cache)
-
-    key_result = key_point_evaluator(
-        question="",
-        gold_answer="",
-        gold_key_points=["A"],
-        model_answer="A",
-        qid="q-cache",
-    )
-    forbidden_result = forbidden_evaluator(
-        question="",
-        model_answer="A",
-        forbidden_points=[],
-        qid="q-cache",
-    )
-
-    assert key_result["key_point_recall"] == 1.0
-    assert key_result["key_point_judgments"][0]["reason"] == "cached"
-    assert forbidden_result["forbidden_hit"] is False
-
-
-def test_cached_judge_evaluator_missing_qid_fails_fast():
-    key_point_evaluator, _ = rag_evaluator.make_cached_judge_evaluators({})
-
-    try:
-        key_point_evaluator(
-            question="",
-            gold_answer="",
-            gold_key_points=["A"],
-            model_answer="A",
-            qid="missing",
-        )
-    except evaluator.LLMJudgeError as exc:
-        assert "missing from judge cache" in str(exc)
-    else:
-        raise AssertionError("missing qid should fail instead of calling LLM")
+    expected = 0.9 if enabled and model_name else None
+    assert result["rows"][0]["answer_correctness"] == expected
+    summary = result["summary"]["overall"]
+    assert summary["avg_answer_correctness"] == expected
+    assert summary["llm_judge_coverage"] == int(expected is not None)
+    with (tmp_path / "out/per_question_report.csv").open(encoding="utf-8-sig", newline="") as file:
+        row = next(csv.DictReader(file))
+    assert row["answer_correctness"] == ("" if expected is None else str(expected))
+    assert row["answer_correctness_reason"] == ("" if expected is None else "correct")

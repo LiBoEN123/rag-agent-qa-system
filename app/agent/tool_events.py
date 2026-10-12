@@ -10,19 +10,15 @@ from app.tools.audit import (
 )
 from app.common.redaction import redact_sensitive_data
 from app.config import get_settings
-from app.rag.scoring import safe_float
+from app.common.numeric import safe_float
 from app.tools.catalog import get_local_tool_specs
 
 
 def summarize_tool_result(tool_name: str, tool_result: dict[str, Any]) -> str:
     """为标准工具结果生成简短摘要。"""
-    success = bool(tool_result.get("ok", tool_result.get("status") == "success"))
+    success = bool(tool_result.get("ok"))
     if not success:
         return "工具执行失败"
-
-    summary = tool_result.get("summary") or tool_result.get("result_summary")
-    if summary:
-        return str(summary)
 
     output = tool_result.get("output")
     count = output.get("count", 0) if isinstance(output, dict) else 0
@@ -30,14 +26,11 @@ def summarize_tool_result(tool_name: str, tool_result: dict[str, Any]) -> str:
         return f"文档发现完成，找到 {count} 份候选文档"
     if tool_name == "search_document":
         return f"文档内检索完成，召回 {count} 个 chunk"
-    summaries = {
-        "compare_documents": "双文档证据检索完成",
-        "list_documents": "文档列表工具执行完成",
-        "get_chunk_text": "chunk 原文工具执行完成",
-    }
+    if tool_name == "get_chunk_context":
+        return f"上下文扩展完成，返回 {count} 个同文档 chunk"
     if tool_name == "search_knowledge_base":
         return f"检索到 {count} 个候选 chunk"
-    return summaries.get(tool_name, f"{tool_name} 工具执行完成")
+    return f"{tool_name} 工具执行完成"
 
 
 def build_tool_trace(
@@ -53,7 +46,7 @@ def build_tool_trace(
         raise ValueError("tool trace step_id must be at least 1")
     if cost_ms < 0:
         raise ValueError("tool trace cost_ms must be non-negative")
-    success = bool(result.get("ok", result.get("status") == "success"))
+    success = bool(result.get("ok"))
     output = result.get("output") or {}
     if not isinstance(output, dict):
         output = {}
@@ -61,8 +54,7 @@ def build_tool_trace(
     raw_error = str(result.get("error") or "")
     safe_policy_codes = {
         "permission_denied",
-        "approval_required",
-        "missing_idempotency_key",
+
         "invalid_invocation_context",
         "policy_denied",
         "audit_write_failed",
@@ -105,7 +97,6 @@ def build_tool_trace(
         "tool_call_id": result.get("tool_call_id", ""),
         "policy_decision": governance.get("decision", ""),
         "risk_level": governance.get("risk_level", ""),
-        "approval_required": governance.get("approval_required", False),
         "args_fingerprint": governance.get("args_fingerprint", ""),
         "attempt_count": runtime.get("attempt_count", 0),
         "max_attempts": runtime.get("max_attempts", 0),

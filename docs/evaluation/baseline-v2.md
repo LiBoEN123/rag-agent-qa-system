@@ -1,139 +1,157 @@
 # Evaluation Baseline v2
 
-Evaluation Baseline v2 是产品质量测量入口，不改变 Agent、RAG、工具或 API 的生产
-行为。它把现有 Agent evaluator、RAG predictions 和语义 evaluator 组合成一次可
-版本化、可重复、可比较、可诊断的运行。
+统一入口是 `scripts/run_evaluation_baseline.py`；比较入口是
+`scripts/compare_evaluation_runs.py`。实现位于 `scripts/evaluation/`，不改变生产
+Agent、RAG、工具或 API 行为。Baseline/Agent 数据集版本仍为 v2；RAG Prediction
+输入合同固定为 **Schema v3**。
 
-正式入口只有 `scripts/run_evaluation_baseline.py` 和
-`scripts/compare_evaluation_runs.py`；所有可导入实现位于
-`scripts/evaluation/`。Agent 执行与判分、RAG predictions、语义 evaluator、
-Judge、manifest 和报告不再同时承担独立 CLI 职责，也没有旧入口 wrapper。
+## 当前评测层与数据
 
-## 评测层
+| 层 | 数据集 | 默认行为 |
+| --- | --- | --- |
+| Core Agent | `data/eval/agent_eval_cases_v2.json` 中 25 个 Core case | 执行 |
+| RAG | `data/eval/rag_eval_questions_v2_semantic_fixed.json`，65 题 | 执行 |
+| Online Web | Agent 数据集中的 3 个 `web_search`、`web_fetch`、`web_pdf_fetch` case | 仅 `--include-online` 执行 |
+| 可选 LLM Judge | GEval Answer Correctness：答案与 Gold 规范 | 仅 `--use-llm-judge` 启用 |
 
-| 层 | 默认 | 外部依赖 | 统计口径 |
-| --- | --- | --- | --- |
-| Core Agent + 本地 RAG | 启用 | 已配置模型和本地索引 | 稳定基线 |
-| Online tools | 关闭；`--include-online` 开启 | 搜索、网页、PDF 和网络 | 与 Core 分开 |
-| MCP tools | 关闭；`--include-mcp` 开启 | GitHub/Firecrawl MCP | 与 Core 分开，不进入稳定 CI |
-| Mixed routing | 关闭；`--include-mixed` 开启 | 本地 RAG、Web 和 case 声明的 MCP Server | Cross-Tool 独立统计 |
-| LLM Judge | 关闭；`--use-llm-judge` 开启 | Judge 模型 | 仅辅助答案语义质量 |
+Agent case 必须有唯一 ID、`version: 2`，suite 只接受 `core` 或 `online`。
+单轮 `question` 和至少两轮的 `turns` 只能选择一种。状态来自 `AgentResultStatus`，
+工具名必须属于当前本地 ToolSpec catalog。
 
-Judge 不替代 Router、status、工具序列、来源、gold chunk 或确定性关键词检查。
-Online 搜索结果和网页内容会变化，因此不应成为稳定 CI 门禁。
+`rag_eval_table_v1.json` 与 `table_diagnostics.py` 是独立的专项 diagnostics，
+不参与主 Baseline，Runner 没有导入或自动运行它们。历史受控结果见
+[表格诊断记录](table-aware-eval.md)，不能作为当前 65 题基线。
 
-## 数据集
+## 离线校验
 
-- Agent v2：`data/eval/agent_eval_cases_v2.json`
-- Extended Agent v2：`data/eval/agent_eval_cases_extended_v2.json`
-- RAG：`data/eval/rag_eval_questions_v2_semantic_fixed.json`
-- 示例阈值：`data/eval/evaluation_thresholds_v2.example.json`
-
-工具瘦身后，Agent v1/v2 数据集均删除了计算工具专属用例 `T004`；
-Agent v2 现有 28 条用例，历史结果应按各自记录的数据集 hash 解释。
-
-v1 文件保留。Agent v2 的每条 case 必须包含 `version: 2`，并且只能选择
-`question` 单轮结构或至少两轮的 `turns` 结构。`suite` 只能是 `core`、
-`online`、`mcp` 或 `mixed`。合法 status 来自 `AgentResultStatus`。本地/Web 工具名
-来自当前本地 ToolSpec catalog；MCP 工具名在 validate-only 阶段只做安全语法校验，正式
-live run discovery 后再与安全 catalog 核对。
-
-只校验数据合同：
+从仓库根目录执行：
 
 ```bash
-python scripts/run_evaluation_baseline.py --validate-only
+.venv/bin/python scripts/run_evaluation_baseline.py --validate-only
 ```
 
-此命令不创建输出目录，不初始化模型或 RAG，不创建 ToolRuntime，不访问网络，也
-不写数据库。
+校验 Agent schema、ID、注册工具与覆盖率，以及 RAG 题目格式和唯一 qid，并报告
+`rag_questions: 65`。不会初始化模型、RAG、工具运行时或访问网络，也不创建输出目录。
 
-Extended 数据集的离线校验同样不连接 MCP：
+## 真实运行
 
-```bash
-python scripts/run_evaluation_baseline.py \
-  --agent-cases data/eval/agent_eval_cases_extended_v2.json \
-  --validate-only
-```
-
-## 运行
-
-默认运行 Core Agent 和本地 RAG，不运行 Online 或 Judge：
+以下命令会调用已配置模型，要求已有可用索引。默认执行 Core Agent 与 RAG，
+Online 与 Judge 默认关闭：
 
 ```bash
-python scripts/run_evaluation_baseline.py \
-  --agent-cases data/eval/agent_eval_cases_v2.json \
-  --rag-eval-file data/eval/rag_eval_questions_v2_semantic_fixed.json \
-  --output-dir outputs/evaluation_baseline_v2/initial-core \
+.venv/bin/python scripts/run_evaluation_baseline.py \
+  --output-dir outputs/evaluation_baseline_v2/core-run \
   --retrieval-k 5
 ```
 
-只运行一个层：
+使用 `--agent-only` 或 `--rag-only` 只运行相应题集。Agent-only 的知识库问题仍会
+通过 Agent 调用检索。限定 Agent case 时，使用可重复的 `--case-id`，保持多轮 case 完整：
 
 ```bash
-python scripts/run_evaluation_baseline.py --agent-only \
-  --output-dir outputs/evaluation_baseline_v2/agent-only
-
-python scripts/run_evaluation_baseline.py --rag-only \
-  --output-dir outputs/evaluation_baseline_v2/rag-only
+.venv/bin/python scripts/run_evaluation_baseline.py \
+  --agent-only --case-id D008 \
+  --output-dir outputs/evaluation_baseline_v2/d008-diagnostic
 ```
 
-显式启用不稳定或有额外成本的能力：
+这类运行的 manifest 标记为 `targeted_agent_check`，不是完整基线。
+
+显式启用 Online Web 或 RAG Judge：
 
 ```bash
-python scripts/run_evaluation_baseline.py \
-  --include-online \
-  --use-llm-judge \
-  --judge-model deepseek-chat \
-  --output-dir outputs/evaluation_baseline_v2/online-with-judge
+.venv/bin/python scripts/run_evaluation_baseline.py \
+  --agent-only --include-online \
+  --output-dir outputs/evaluation_baseline_v2/online-run
+
+.venv/bin/python scripts/run_evaluation_baseline.py \
+  --rag-only --use-llm-judge --judge-model deepseek-chat \
+  --output-dir outputs/evaluation_baseline_v2/rag-judge-run
 ```
 
-MCP 和 Mixed 使用彼此独立的显式入口；`--include-online` 不会隐式开启 MCP：
+正式运行要求工作区干净且输出目录为空。`--allow-dirty` 只生成带 dirty 标记的实验结果。
+`--force-rebuild` 会重建本地索引；通常使用既有索引即可。
 
-```bash
-python scripts/run_evaluation_baseline.py --agent-only \
-  --agent-cases data/eval/agent_eval_cases_extended_v2.json \
-  --include-mcp \
-  --output-dir outputs/evaluation_baseline_v2/extended-mcp
+## 执行与隔离
 
-python scripts/run_evaluation_baseline.py --agent-only \
-  --agent-cases data/eval/agent_eval_cases_extended_v2.json \
-  --include-mixed \
-  --output-dir outputs/evaluation_baseline_v2/extended-mixed
-```
+Agent 复用真实 `ChatService.stream()`，注入独立内存 session 与无写入的 metrics/
+bad-case writer。评测 Settings 关闭 tool audit，备用路径指向本轮输出目录；Agent 不依赖来源 MCP。
+Core 权限只有 `knowledge_base:read`；Online case 额外获得 `web:search`、`web:fetch`。
+生产 MCP Source/ingestion 能力不受此评测边界影响。
 
-工作区不干净时，Runner 默认拒绝生成正式基线。`--allow-dirty` 只用于实验运行，
-且 `manifest.json` 会记录 `git_dirty: true`，报告顶部也会标记。
-`--force-rebuild` 会重建本地 RAG 索引，除非明确需要，否则不要使用。
+工具输出捕获只保留字段名、调用状态和安全证据身份；不把捕获的完整正文写入报告。
+Agent 检查最终 action/status、必要工具能力、答案关键词、引用来源和真实 evidence grounding。
+声明 `sources` 的 turn 自动要求非空最终引用：每个 reference_id 必须来自本轮成功 KB
+正文工具输出，引用和对应真实证据的来源都须满足 `source_match`（any/all/none）。
+未声明来源时 grounding 不适用。发现文档目录不能替代正文证据；比较题要求双方来源，
+证据获取顺序不受约束。
 
-## 隔离边界
+工具包含关系和完整序列由固定的 `deepeval==3.9.6` `ToolCorrectnessMetric`
+确定性评分，不调用 Judge。只有 multi-tool/recovery case 约束完整工具顺序。
+恢复 case 用等长的 `tool_sequence` / `tool_status_sequence` 明确预期失败与成功。
+`tool_output_keys` 检查成功工具观察的字段名；关键词只检查最终 answer，不从 trace 命中。
+多轮 case 检查每轮最终结果，不要求内部改写标志或特定工具路径。
 
-多轮 Agent case 消费真实 `ChatService.stream()` 的 final/done，但注入内存 session adapter 和
-no-op metrics/bad-case writer。每个 case 使用独立 session，结束后清空。
-评测 Settings 快照关闭 Agent trace store 和 tool audit 写入，并把所有备用路径限定在
-本次 output 目录下。因此评测不会写生产 SQLite、
-metrics、bad case、trace 或工具审计文件。
+Agent headline 共 8 项：`pass_rate`、`status_accuracy`、`source_pass_rate`、
+`evidence_grounding_pass_rate`、`tool_call_success_rate`，以及运行成本
+`average_tool_call_count`、`average_llm_call_count`、`p95_latency_ms`。
+通过率与成本按 case 汇总；status 按声明状态的 turns 计算，source/grounding 按声明
+sources 的 turns 计算（含多轮 case 的每一轮）。空分母沿用 0；逐轮不适用检查记 pass。
+只预计算 suite/category groups，逐题保留 expected、tags、失败原因、诊断 trace 与安全证据身份。
+覆盖矩阵中的 expected_tools 仅统计显式必要工具/序列；KB evidence 与 multi-turn 单独记录
+能力覆盖，不把某条合法路径或某种内部实现当成必需能力。
 
-生产 tool trace 只保留按 ToolSpec 脱敏后的输出摘要。为校验 `tool_output_keys`，
-Runner 仅在当前评测调用的内存中捕获真实工具输出的字段名；字段值不会进入评测
-记录、报告或 manifest，调用结束后立即丢弃。
+## Prediction v3 与指标
 
-需要验证工具失败后恢复的 case，必须同时声明 `tool_sequence` 和等长的
-`tool_status_sequence`（元素只能是 `success` 或 `error`）。只有显式写入的失败
-状态才属于预期行为；普通 case 中任何工具失败仍记为 `tool_call_failed`。
+RAG Prediction 复用 `ChatService.stream → stream_agent → create_agent`，每题空 session，
+使用 `RAG_ONLY` 与 `knowledge_base:read`。每轮 query/top_k 由 Agent 自主决定。
 
-Core case 的工具权限只有本地知识库读取；只有 Online case 才开放 `web:search`
-和 `web:fetch`。这使 Core 运行不会意外访问真实 Web Search、Web Fetch 或 Web
-PDF Fetch。
+| 字段 | 语义 |
+| --- | --- |
+| `retrieved_chunk_ids` | 成功 KB evidence 工具输出，按实际观察顺序稳定去重 |
+| `reference_chunk_ids` | 最终通过 grounding 的引用 chunk IDs |
+| `status` | 合法答案、无证据或澄清状态 |
+| `retrieval_call_count` / `tool_call_count` / `llm_call_count` | 实际调用次数 |
 
-MCP case 只增加 case `mcp_servers` 映射出的 `mcp:<server>` 权限；Mixed case 同时
-开放 Web 权限和这些精确 Server 权限。只有实际选择 MCP/Mixed case 时 Runner 才在
-评测 Settings scope 内初始化 MCP runtime，并在成功、异常或中断路径关闭和清空
-Provider cache。MCP 正文不会写入逐 case trace，只保存输出字段、来源、信任标记和
-有限治理元数据。
+生成器保存上述 ID 的数量及安全元数据。CSV ID 为逗号分隔整数，JSON/JSONL 也可用整数列表。
+评分器只接受显式 v3，拒绝无版本、v1/v2 及缺失 evidence 字段的输入。
 
-## 输出
+正式 headline metrics：
 
-一次完整运行的目录为：
+| 指标 | 定义 |
+| --- | --- |
+| `prediction_coverage` | 成功生成预测的题数 / 全部题数 |
+| `retrieval_gold_chunk_recall_at_k` | 前 K 个去重观察覆盖的 Gold chunk 比例 |
+| `reference_gold_chunk_recall` | 全部最终引用覆盖的同一组 Gold chunk 比例 |
+| `avg_answer_correctness` | DeepEval GEval 答案正确性，只对成功判分记录求均值；无结果为 `None` |
+
+Gold 优先通过证据文本在当前索引对齐，找不到匹配时沿用题集 ID。
+`--retrieval-k` 仅为离线评分 cutoff，不控制工具 top_k。逐题保留 Gold、观察和引用 IDs，
+以便定位检索遗漏与观察到 Gold 后未引用的问题。
+
+`llm_judge_coverage` 为成功判分题数 / 全部题数，是运行完整性指标，不是质量分。
+Judge 未启用、失败或缺少 prediction 时，`answer_correctness=None`、reason 为空、
+`judge_used=False`；失败原因保留在 `judge_error`。没有任何结果时均值为 `None`、coverage 为 0。
+
+GEval 使用固定 `evaluation_steps`，evaluation params 为 `INPUT`、`ACTUAL_OUTPUT`、
+`EXPECTED_OUTPUT`。Expected output 包含 expected behavior、gold answer、gold key points
+和 forbidden points。评价语义事实覆盖、遗漏、矛盾与错误断言；partial answer 要回答已知部分并
+说明限制，正确 abstain 不因拒答扣分，同义措辞不扣分。数据集内容与 schema 保持不变。
+项目只读取 GEval 的 score/reason，不维护逐关键点判分或综合权重。
+
+薄 `DeepEvalBaseLLM` 经 `get_judge_model()` 与 `ModelGateway.invoke_text()` 返回文本，
+由 DeepEval 3.9.6 负责解析。沿用 `JUDGE_*` 配置与项目模型默认值，Runner 支持
+`--use-llm-judge`、`--judge-model`。直接调用 metric.measure 并禁用云端记录；
+telemetry/tracing 关闭，框架文件系统只读，Core Tool Correctness 仍不调用模型。
+
+`run_rag_evaluation(judge_cache_report=...)` 可只读复用 `per_question_report.csv` 中的
+qid、answer、answer_correctness、reason。仅当前 qid 和完全一致的 answer 可复用；
+缺行、无分数或答案变化记录 judge_error，保持空分数，绝不回退调用 LLM。当前统一 CLI
+没有 cache 参数。复用前需由调用者确认 Gold 和 Judge 配置一致。
+
+批量生成遇到 `MODEL_ERROR`、`MODEL_BAD_OUTPUT`、`TOOL_ERROR` 或 `INTERNAL_ERROR`，
+将安全失败记录写到 `prediction_failures.jsonl`，继续后续题目；缺失预测计入 coverage 分母，
+召回为零，语义分为 `None`，不调用 Judge。重复调用 ID、无法对齐的 KB ID 等结构错误仍中止生成。
+
+## 产物与可复现性
 
 ```text
 outputs/evaluation_baseline_v2/<run_id>/
@@ -143,192 +161,60 @@ outputs/evaluation_baseline_v2/<run_id>/
 ├── coverage_report.json
 ├── failure_cases.jsonl
 ├── agent/
-│   ├── per_case.jsonl
-│   ├── per_case.csv
-│   └── summary.json
+│   └── per_case.jsonl
 └── rag/
     ├── predictions.csv
-    ├── per_question_report.csv
-    ├── summary_report.csv
-    ├── summary_report.json
-    └── llm_judge_details.jsonl
+    ├── prediction_failures.jsonl
+    └── per_question_report.csv
 ```
 
-未启用的层可以没有对应子目录；`baseline_summary.json` 和 Markdown 报告会记录
-`skipped` 及原因。`outputs/` 整体被 Git 忽略。
+未运行的层可以没有子目录，summary 记录 skipped。
+`baseline_summary.json` 是唯一机器可读 run summary，保留 Agent/RAG 指标、失败数、
+skipped 和运行元数据。`baseline_report.md` 供人工复核；`coverage_report.json` 记录
+数据集/能力覆盖；`failure_cases.jsonl` 是快速失败索引。
+Agent 逐 case 完整结构只写 JSONL；RAG 逐题 CSV 继续作为 Judge cache source。
+Prediction CSV 与 generation failure sidecar 保留为输入和运行失败审计证据。
+不再生成 `agent/summary.json`、`agent/per_case.csv` 或 `rag/summary_report.{csv,json}`。
+Manifest 保留 Git/运行环境、数据/索引/Prompt/工具合同 hash、模型配置、Agent 预算、
+v3 版本、评分 K、评测权限和 Judge 配置。只写显式白名单；敏感字段和 SecretStr 被拒绝。
 
-## Architecture Freeze Baseline（2026-08-21）
+Agent 按 suite/category 分组；Core 与 Online pass rate 分开解释。
+RAG 确定性失败分类包括 `runtime_error`、`rag_chunk_miss`、`rag_reference_gold_miss`。
+答案语义问题通过逐题 correctness/reason 观察，不再用启发式规则生成拒答或关键点标签。
 
-Phase 7 以文档标签记录 `architecture_state: frozen`，没有为此修改 manifest schema。
-正式 clean-worktree 运行是 `architecture-freeze-bc96cb2`，commit 为
-`bc96cb2ef4c18d69b12cd2e43b04c9f720328e2f`；Core 26 条、Online 3 条跳过、RAG 65 条，
-Judge 关闭。产物位于
-`outputs/evaluation_baseline_v2/architecture-freeze-bc96cb2/`。
-
-| 指标 | Freeze baseline |
-| --- | ---: |
-| Core Agent pass rate | 76.92%（20/26） |
-| First tool accuracy / status accuracy | 75.00% / 88.46% |
-| Tool call success / source pass | 96.30% / 100.00% |
-| P50 / P95 latency | 12978.35 / 69698.78 ms |
-| RAG prediction coverage / final score | 100.00% / 48.74% |
-| RAG gold chunk hit@5 / recall@5 | 100.00% / 92.44% |
-| RAG context / reference gold recall | 92.44% / 87.31% |
-| RAG behavior / forbidden rate | 90.85% / 0.00% |
-
-最近的重构前结果是 `initial-core-f498a49`。比较报告已生成，但结论必须标记为
-`NOT_STRICTLY_COMPARABLE`：两轮的 RAG 数据、索引、Embedding、Reranker、回答模型、
-temperature、top-k 相同；Agent dataset hash、Agent budgets、Tool contract hash、Prompt
-组合 hash 不同，外部模型与运行时延迟也不具备固定快照。方向性结果为 Agent pass rate
-84.62% → 76.92%、RAG final score 49.06% → 48.74%；这些差值不能归因于架构重构。
-
-本轮 8 个失败中，`D002/D003/D004` 均成功完成
-`list_documents → search_knowledge_base`，答案、状态、来源和工具执行全部正确，只违反
-首工具效率期望，归为 `MODEL_VARIANCE`；`N001/N002/F002` 与旧基线相同，归为
-`KNOWN_PRODUCT_LIMITATION`；`q053` 在 gold chunk 已进入 Context 时引用了错误 chunk，
-归为 `MODEL_VARIANCE`；`q061` 延续旧基线的跨适用范围未拒答，归为
-`KNOWN_PRODUCT_LIMITATION`。当前没有 `SYSTEM_REGRESSION` 或 `DATASET_ISSUE` 证据；旧
-`agent-tool-recovery-001` 假失败已由 `tool_status_sequence` 修正，本轮正常通过。
-
-## Manifest
-
-`manifest.json` 记录：
-
-- commit、branch、dirty 状态、run ID、时间、Python 和平台；
-- Agent/RAG 数据路径及 SHA-256、case/suite/category 数量；
-- 索引 manifest 路径及 SHA-256、索引来源、文档/chunk 数量、embedding、
-  rerank、chunk size 和 overlap；
-- `agent`：回答、Query Rewrite 模型名和开关、温度、token、Agent 预算；
-- `rag`：Prediction Schema v3、`retrieval_metric_k`、`rag_only` 和 `knowledge_base:read`；
-- 当前七个工具名、完整 Tool contract hash；
-- `prompts.agent`：Agent Prompt、Query Rewrite、工具描述源文件的 SHA-256；
-- Judge 是否启用、模型和缓存来源。
-
-Manifest 使用显式白名单，禁止完整 `settings.model_dump()`。递归安全检查拒绝
-API key、Authorization、Cookie、password、secret 字段和 `SecretStr` 值。报告也
-不保存完整敏感工具输入、网页/PDF 正文或私密会话。
-
-## 指标与失败原因
-
-Agent 指标按执行 case 计算；跳过的 Online case 不进入分子或分母。延迟 P50/P95
-使用排序后线性插值。工具成功率按真实 `tool_call` trace 中成功调用数除以全部调用
-数。LLM call 数使用 ChatService 汇总指标，包含实际发生的 Query Rewrite 调用。
-
-Agent 结果按 suite、category、expected status、expected first tool 和 tags 分组。
-Core 与 Online 在 `groups.suite` 中独立。
-
-RAG Prediction Schema v3 复用生产 `ChatService.stream → stream_agent → create_agent`，
-每题使用空 session、`RAG_ONLY` 与 `knowledge_base:read`。多子问题通过同一个 Agent 阅读
-ToolMessage 后多次检索，query/top_k 可以逐轮变化。
-
-| 证据 | 字段 | 含义 |
-| --- | --- | --- |
-| 实际观察 | `retrieved_chunk_ids` | 成功 KB evidence 工具返回的 chunk，按观察顺序稳定去重 |
-| 最终引用 | `reference_chunk_ids` | 最终通过 grounding 的 references 对应 chunk |
-
-`--retrieval-k` 是评分 cutoff，只评价观察序列前 K 项，不控制 Agent 检索数量。
-Prediction 记录两类 ID/数量、status 与 retrieval/tool/LLM 调用次数，不保存正文。
-retrieval_call_count 包含成功返回空 evidence 的检索。无效或不属于当前索引的 KB ID 使生成失败。
-MODEL_ERROR、TOOL_ERROR、INTERNAL_ERROR 同样终止生成；无证据与澄清是合法预测。
-
-Context 指标对 v3 为 `null`/unavailable，不计为零，不伪造 context IDs。
-历史 v1/v2 文件继续纯数据兼容。Reference 指标、Judge/cache 与 Final Score 权重保持；
-Final Score 仍使用 gold chunk recall。
-
-Prediction Schema v3 is a new baseline generation contract.
-Raw scores are not strictly comparable to historical v2 workflow scores.
-本文件上方已有历史运行数值保留原始口径。
-
-Judge 关闭时，拒答行为只用高精度规则识别整段独立拒答；长答案中出现“未说明”
-或“未提供”等局部证据限制，不会被直接当作整段拒答。语义关键点覆盖和 forbidden
-判断仍明确标记为未评判，不能把对应的 `0` 当作模型语义质量结论。
-
-每个失败 case 可以有多个 `failure_reasons`，例如：
-
-```text
-runtime_error
-timeout
-invalid_result_contract
-decision_mismatch
-action_mismatch
-status_mismatch
-first_tool_mismatch
-tool_sequence_mismatch
-tool_status_sequence_mismatch
-tool_call_failed
-keyword_missing
-forbidden_keyword_hit
-source_missing
-tool_output_schema_missing
-rag_document_miss
-rag_chunk_miss
-rag_context_gold_miss
-rag_reference_gold_miss
-rag_answer_keypoint_miss
-rag_unexpected_refusal
-rag_missing_refusal
-query_rewrite_mismatch
-unexpected_clarification
-unexpected_no_evidence
-```
-
-## 比较两轮运行
+## 比较运行
 
 ```bash
-python scripts/compare_evaluation_runs.py \
+.venv/bin/python scripts/compare_evaluation_runs.py \
   --baseline outputs/evaluation_baseline_v2/run-a \
   --candidate outputs/evaluation_baseline_v2/run-b
 ```
 
-默认在 candidate 目录写 `comparison.json` 和 `comparison.md`，只报告 case
-增删、新增失败、已修复失败、发生变化的 case、总体和 category 指标、RAG 指标、
-Context/Reference Recall 与丢失诊断、P50/P95、平均模型及工具调用，不因下降返回
-失败退出码。旧运行没有新指标时显示 unavailable，不伪造为零。
+比较当前合同下的 Agent case 变化、覆盖率、检索/引用 Recall、Answer Correctness、延迟和调用次数。
+比较先读取两份 manifest，在计算 delta 和检查阈值之前验证控制条件。不兼容或缺少 manifest
+时默认打印具体 mismatch、返回非零，不写 comparison 产物；不为旧目录推断配置。
 
-只有同时显式提供版本化阈值和开关时，回退才返回非零：
+硬性控制条件包括 evaluation type、实际 Agent/RAG skipped 形态、selected suites 和
+selected case IDs（按集合比较）；只检查实际运行层的数据集 hash。RAG 层额外检查
+Prediction Schema 与 retrieval K。Agent-only 同样可能检索，仍检查索引和运行配置：
+优先比较两边非空的 index manifest hash；任一缺失时比较 document/chunk count、
+embedding/rerank model、chunk size/overlap，不比较 index path。运行配置包括 answer model、
+temperature、max tokens、Agent budget、query rewrite enabled/model。适用的控制字段缺失
+同样拒绝默认比较。两边 Answer Correctness 都存在时，检查 Judge enabled/model。
 
-```bash
-python scripts/compare_evaluation_runs.py \
-  --baseline outputs/evaluation_baseline_v2/run-a \
-  --candidate outputs/evaluation_baseline_v2/run-b \
-  --thresholds data/eval/evaluation_thresholds_v2.example.json \
-  --fail-on-regression
-```
+Git commit/branch/dirty、代码 hash、Prompt hash、tool contract hash 和 registered tool names
+属于被测系统，差异允许比较。若有意比较不同模型、索引、数据或 K，可显式追加
+`--allow-incompatible`；此时 `comparison.json` 中的 `compatibility` 标记
+`compatible=false`、`overridden=true` 并列出 mismatches，Markdown 醒目标明
+“Comparison was forced across incompatible run controls.”。兼容时为 true/false/空列表。
+该开关也适用于缺失 manifest 的历史目录，不生成额外兼容报告文件。
 
-示例阈值不是当前 CI 门禁。至少完成一次真实基线和人工审查后，才应决定是否建立
-正式阈值。
+未运行的层可显示 unavailable；correctness 任一侧为空或 Judge coverage 不一致/缺失时，
+delta 为 `None`，不据此认定质量回退。coverage 相同也需人工核对判分题目集合。
+不支持历史 Prediction 的兼容评分；历史 workflow 分数不能直接归因于当前修改。
 
-## 新增 case
+通过兼容性检查（或显式 override）后，默认只报告差异。只有同时指定
+`--thresholds data/eval/evaluation_thresholds_v2.example.json`
+与 `--fail-on-regression` 才按显式阈值返回非零；示例阈值不是正式 CI 门禁。
 
-1. 从当前知识库文档、已有 RAG gold 或确定性 Router/Tool contract 核验 ground
-   truth。
-2. 选择 `core` 或 `online`，填写唯一 ID、category、问题和确定性 expected。
-3. 工具期望写真实 `tool_call` 名，不使用 Router 的旧 `tool_name`。
-   恢复 case 还要用 `tool_status_sequence` 明确每次调用预期成功或失败。
-4. 来源和关键词只写已核验内容；不能可靠确定时留空或把 case 标为 disabled 并写
-   明原因。
-5. 多轮 case 使用独立 `session_id`；Query Rewrite 期望放在对应 turn 的
-   `rewrite_keywords`、`rewritten` 或 `rewrite_llm_used`。
-6. 运行 `--validate-only`，检查 coverage matrix 和 gap。
-
-CI 只运行数据校验，不运行真实模型、索引或网络。真实 baseline 属于受控、本地的
-产品质量流程。
-
-## 已知限制
-
-- Core 不评测真实联网能力；Online 必须显式启用并与 Core 分开解释。
-- Judge 关闭时不具备完整的语义答案质量判断，确定性证据指标不能替代 Judge。
-- Online 结果受外部服务和内容变化影响，不适合作为稳定 CI 门禁。
-
-## 与其他维护入口的边界
-
-- `run_evaluation_baseline.py`：离线产品质量评测；
-- `compare_evaluation_runs.py`：两次正式结果对比；
-- `benchmark_chat_api.py`：正在运行的 `/chat/stream` SSE 性能测试，以收到 done 为完成边界；
-- `smoke_test_online_tools.py`：真实搜索、网页和 PDF 连通性；
-- `smoke_test_agent_tool_calling.py`：模型供应商 Tool Calling 协议；
-- `inspect_agent_runtime.py`：CI 架构合同；
-- `summarize_logs.py`：现有 metrics/bad-cases 运行日志汇总。
-
-这些入口有不同副作用和统计口径，不统称为质量评测，也不会在自动测试中访问真实
-模型、Web、Online Tool 或正在运行的 FastAPI 服务。
+性能测试、在线连通性 smoke 与模型 Tool Calling smoke 是其他入口，不参与主 Baseline。

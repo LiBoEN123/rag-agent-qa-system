@@ -327,7 +327,7 @@ async def test_consecutive_requests_keep_web_visibility_isolated_and_execute_gra
     current_model = {"value": hidden_model}
     monkeypatch.setattr(
         framework_agent,
-        "get_answer_model",
+        "get_agent_model",
         lambda: current_model["value"],
     )
 
@@ -361,7 +361,7 @@ async def test_consecutive_requests_keep_web_visibility_isolated_and_execute_gra
     tool_message = visible_model.received_messages[1][-1]
     assert isinstance(tool_message, ToolMessage)
     assert tool_message.tool_call_id == "web-call-graph"
-    payload = json.loads(tool_message.content)
+    payload = (tool_message.artifact or json.loads(tool_message.content))
     assert payload["output"]["content_is_untrusted"] is True
     assert payload["runtime"]["attempt_count"] == 1
     assert payload["governance"]["decision"] == "allow"
@@ -386,9 +386,7 @@ async def test_consecutive_requests_keep_web_visibility_isolated_and_execute_gra
     assert trace["tool_args"]["query"] == "***REDACTED***"
     assert {
         "search_knowledge_base",
-        "compare_documents",
-        "list_documents",
-        "get_chunk_text",
+
         "web_search",
     } <= set([item.name for item in get_local_tool_specs(get_settings())])
     assert "web_search" not in build_agent_harness().nodes
@@ -409,7 +407,7 @@ async def test_forged_hidden_web_search_is_denied_without_ddgs_or_runtime(
             FinalAgentResponse(outcome="answer", answer="隐藏工具调用已安全处理。"),
         ]
     )
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
 
     output = await _invoke(
         model,
@@ -424,7 +422,7 @@ async def test_forged_hidden_web_search_is_denied_without_ddgs_or_runtime(
     assert "web_search" not in model.bound_tool_names
     assert isinstance(message, ToolMessage)
     assert message.tool_call_id == "forged-web-call"
-    assert json.loads(message.content)["error_code"] == "permission_denied"
+    assert (message.artifact or json.loads(message.content))["error_code"] == "permission_denied"
     assert output["result"]["status"] == "TOOL_ERROR"
 
 
@@ -451,7 +449,7 @@ async def test_agent_searches_then_fetches_through_registry_runtime(monkeypatch)
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     monkeypatch.setattr(web_download_module, "Manager", FakeFetchManager)
     model = SearchFetchModel()
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     output = await _invoke(
         model,
         ToolInvocationContext(
@@ -477,7 +475,8 @@ async def test_agent_searches_then_fetches_through_registry_runtime(monkeypatch)
     search_payload = json.loads(search_message.content)
     fetch_payload = json.loads(fetch_message.content)
     assert model.selected_url == search_payload["output"]["results"][0]["url"]
-    assert fetch_payload["tool_input"]["url"] == model.selected_url
+    assert "tool_input" not in fetch_payload
+    assert fetch_message.artifact["tool_input"]["url"] == model.selected_url
     assert fetch_payload["output"]["final_url"] == model.selected_url
     assert fetch_payload["output"]["content_is_untrusted"] is True
     assert "LangGraph 1.2 release details" in output["result"]["answer"]
@@ -522,7 +521,7 @@ async def test_agent_searches_then_reads_pdf_through_project_tool(monkeypatch):
     monkeypatch.setattr(web_search_module, "DDGS", FakeDDGS)
     monkeypatch.setattr(web_download_module, "Manager", FakePdfManager)
     model = SearchPdfModel()
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     output = await _invoke(
         model,
         ToolInvocationContext(
@@ -580,7 +579,7 @@ async def test_agent_recovers_from_web_fetch_pdf_content_type_error(monkeypatch)
     FakePdfManager.sessions = []
     monkeypatch.setattr(web_download_module, "Manager", FakePdfManager)
     model = FetchThenPdfModel()
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     output = await _invoke(
         model,
         ToolInvocationContext(
@@ -643,7 +642,7 @@ async def test_forged_hidden_web_fetch_is_denied_without_http_manager(monkeypatc
             FinalAgentResponse(outcome="answer", answer="隐藏正文工具调用已安全处理。"),
         ]
     )
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     output = await _invoke(
         model,
         ToolInvocationContext(
@@ -657,7 +656,7 @@ async def test_forged_hidden_web_fetch_is_denied_without_http_manager(monkeypatc
     assert "web_fetch" not in model.bound_tool_names
     assert isinstance(message, ToolMessage)
     assert message.tool_call_id == "forged-fetch-call"
-    assert json.loads(message.content)["error_code"] == "permission_denied"
+    assert (message.artifact or json.loads(message.content))["error_code"] == "permission_denied"
     assert output["result"]["status"] == "TOOL_ERROR"
 
 
@@ -699,7 +698,7 @@ async def test_forged_hidden_web_pdf_fetch_is_denied_without_dependencies(
             FinalAgentResponse(outcome="answer", answer="隐藏 PDF 工具调用已安全处理。"),
         ]
     )
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
 
     output = await _invoke(
         model,
@@ -714,5 +713,5 @@ async def test_forged_hidden_web_pdf_fetch_is_denied_without_dependencies(
     assert "web_pdf_fetch" not in model.bound_tool_names
     assert isinstance(message, ToolMessage)
     assert message.tool_call_id == "forged-pdf-fetch-call"
-    assert json.loads(message.content)["error_code"] == "permission_denied"
+    assert (message.artifact or json.loads(message.content))["error_code"] == "permission_denied"
     assert output["result"]["status"] == "TOOL_ERROR"

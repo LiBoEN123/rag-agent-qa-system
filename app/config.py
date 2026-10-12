@@ -109,7 +109,6 @@ class AppSettings(BaseSettings):
     chunk_size: int = 600
     chunk_overlap: int = 120
     vector_threshold: float = 0.35
-    auto_rebuild_on_startup: bool = False
 
     # 嵌入与重排
     embedding_model_name: str = (
@@ -124,7 +123,7 @@ class AppSettings(BaseSettings):
     hf_home: Path | None = None
     sentence_transformers_home: Path | None = None
 
-    # 主回答模型
+    # 最终回答 / Composer 模型
     llm_api_key: SecretStr | None = Field(
         default=None,
         validation_alias=AliasChoices("LLM_API_KEY", "DEEPSEEK_API_KEY"),
@@ -135,6 +134,17 @@ class AppSettings(BaseSettings):
     llm_max_tokens: int = 1024
     llm_timeout: int = 60
     llm_max_retries: int = 2
+
+    # Agent 模型；未配置的字段分别回退到 Composer。
+    agent_llm_api_key: SecretStr | None = None
+    agent_model_name: str | None = None
+    agent_llm_api_url: str | None = None
+    agent_temperature: float | None = None
+    agent_llm_max_tokens: int | None = None
+    agent_llm_timeout: int | None = None
+    agent_llm_max_retries: int | None = None
+    # Agent 专用；未配置时不发送参数，使用服务商默认行为。
+    agent_enable_thinking: bool | None = None
 
     # 查询改写
     enable_query_rewrite: bool = True
@@ -176,7 +186,6 @@ class AppSettings(BaseSettings):
     )
 
     # 工具运行时与治理
-    tool_runtime_max_workers: int = Field(default=8, ge=1)
     tool_retry_base_delay_ms: int = Field(default=100, ge=0)
     tool_retry_max_delay_ms: int = Field(default=2000, ge=0)
     tool_retry_jitter_ratio: float = Field(
@@ -194,7 +203,7 @@ class AppSettings(BaseSettings):
     tool_audit_max_string_chars: int = Field(default=500, ge=1)
     tool_audit_max_serialized_chars: int = Field(default=5000, ge=1)
 
-    # 受治理的外部 MCP Client 工具源
+    # 知识入库专用 MCP source client
     mcp_tools_enabled: bool = False
     mcp_servers_config_path: Path = BASE_DIR / "config" / "mcp_servers.local.json"
     mcp_discovery_timeout_seconds: float = Field(
@@ -210,12 +219,6 @@ class AppSettings(BaseSettings):
         allow_inf_nan=False,
     )
     mcp_max_tools_per_server: int = Field(default=20, ge=1, le=100)
-    mcp_max_text_chars: int = Field(default=12_000, ge=128, le=1_000_000)
-    mcp_max_structured_chars: int = Field(
-        default=20_000,
-        ge=128,
-        le=2_000_000,
-    )
 
     # 永久知识运营 API（默认不注册）
     ingestion_admin_api_enabled: bool = False
@@ -316,6 +319,7 @@ class AppSettings(BaseSettings):
 
     @field_validator(
         "llm_api_key",
+        "agent_llm_api_key",
         "query_rewrite_api_key",
         "judge_api_key",
         "ingestion_admin_api_key",
@@ -332,6 +336,14 @@ class AppSettings(BaseSettings):
         return value
 
     @field_validator(
+        "agent_model_name", "agent_llm_api_url", "agent_enable_thinking", mode="before",
+    )
+    @classmethod
+    def _normalize_optional_agent_value(cls, value: object) -> object:
+        """Agent 可选配置中的空字符串视为未配置。"""
+        return None if value == "" else value
+
+    @field_validator(
         "top_k",
         "chunk_size",
         "chunk_overlap",
@@ -340,6 +352,10 @@ class AppSettings(BaseSettings):
         "llm_max_tokens",
         "llm_timeout",
         "llm_max_retries",
+        "agent_temperature",
+        "agent_llm_max_tokens",
+        "agent_llm_timeout",
+        "agent_llm_max_retries",
         "query_rewrite_timeout",
         "query_rewrite_max_tokens",
         "query_rewrite_temperature",
@@ -352,7 +368,6 @@ class AppSettings(BaseSettings):
         "agent_max_consecutive_same_tool_calls",
         "agent_max_consecutive_same_tool_errors",
         "agent_max_total_cost_ms",
-        "tool_runtime_max_workers",
         "tool_retry_base_delay_ms",
         "tool_retry_max_delay_ms",
         "tool_retry_jitter_ratio",
@@ -363,8 +378,6 @@ class AppSettings(BaseSettings):
         "mcp_discovery_timeout_seconds",
         "mcp_tool_timeout_seconds",
         "mcp_max_tools_per_server",
-        "mcp_max_text_chars",
-        "mcp_max_structured_chars",
         "web_search_timeout",
         "web_fetch_connect_timeout",
         "web_fetch_read_timeout",
@@ -485,6 +498,55 @@ class AppSettings(BaseSettings):
         return BASE_DIR / ".cache" / "huggingface" / "hub"
 
     @property
+    def agent_llm_api_key_resolved(self) -> SecretStr | None:
+        """返回 Agent 密钥，未配置时回退到 Composer。"""
+        if self.agent_llm_api_key is None:
+            return self.llm_api_key
+        return self.agent_llm_api_key
+
+    @property
+    def agent_model_name_resolved(self) -> str:
+        """返回 Agent 模型名，未配置时回退到 Composer。"""
+        if self.agent_model_name is None:
+            return self.model_name
+        return self.agent_model_name
+
+    @property
+    def agent_llm_api_url_resolved(self) -> str:
+        """返回 Agent 接口地址，未配置时回退到 Composer。"""
+        if self.agent_llm_api_url is None:
+            return self.llm_api_url
+        return self.agent_llm_api_url
+
+    @property
+    def agent_temperature_resolved(self) -> float:
+        """返回 Agent 温度，保留显式零值。"""
+        if self.agent_temperature is None:
+            return self.temperature
+        return self.agent_temperature
+
+    @property
+    def agent_llm_max_tokens_resolved(self) -> int:
+        """返回 Agent token 上限，未配置时回退到 Composer。"""
+        if self.agent_llm_max_tokens is None:
+            return self.llm_max_tokens
+        return self.agent_llm_max_tokens
+
+    @property
+    def agent_llm_timeout_resolved(self) -> int:
+        """返回 Agent 超时，未配置时回退到 Composer。"""
+        if self.agent_llm_timeout is None:
+            return self.llm_timeout
+        return self.agent_llm_timeout
+
+    @property
+    def agent_llm_max_retries_resolved(self) -> int:
+        """返回 Agent 重试次数，保留显式零值。"""
+        if self.agent_llm_max_retries is None:
+            return self.llm_max_retries
+        return self.agent_llm_max_retries
+
+    @property
     def query_rewrite_api_key_resolved(self) -> SecretStr | None:
         """返回查询改写专用密钥，未配置时回退到主模型密钥。"""
         return self.query_rewrite_api_key or self.llm_api_key
@@ -559,7 +621,7 @@ def ensure_model_cache_dir(settings: AppSettings) -> Path:
 
 
 def validate_rag_environment(settings: AppSettings) -> None:
-    """校验 RAG 启动所需的外部路径，但不创建任何资源。"""
+    """校验显式 Local 索引命令的 corpus 路径，但不创建任何资源。"""
     if not settings.rag_file_path.exists():
         raise ValueError(f"RAG_FILE_PATH 不存在: {settings.rag_file_path}")
 
@@ -576,7 +638,6 @@ def validate_startup_environment(settings: AppSettings) -> None:
             "INGESTION_ADMIN_API_ENABLED=true 时必须配置 "
             "INGESTION_ADMIN_API_KEY"
         )
-    validate_rag_environment(settings)
 
     file_paths = [("SQLITE_DB_PATH", settings.sqlite_db_path)]
     if settings.tool_audit_enabled:

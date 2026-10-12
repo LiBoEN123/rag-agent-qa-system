@@ -1,7 +1,7 @@
 """把聊天应用服务结果适配为稳定的 HTTP 响应 Schema。"""
 
 from app.api.schemas import ChatData, ChatResponse
-from app.rag.scoring import safe_float
+from app.common.numeric import safe_float
 from app.services.chat_models import ChatServiceOutcome
 
 

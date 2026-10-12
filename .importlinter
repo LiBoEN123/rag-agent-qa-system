@@ -11,7 +11,7 @@ layers =
     app.agent
     app.sources
     app.tools
-    app.rag
+    app.rag : app.indexing
     app.storage : app.observability
     app.ingestion
     app.llm
@@ -50,6 +50,7 @@ forbidden_modules =
     app.observability
     app.ingestion
     app.sources
+    app.indexing
 
 [importlinter:contract:ingestion-domain-is-independent]
 name = Knowledge ingestion domain does not depend on runtime adapters
@@ -66,6 +67,7 @@ forbidden_modules =
     app.storage
     app.observability
     app.sources
+    app.indexing
 
 [importlinter:contract:http-framework-only-in-api]
 name = FastAPI and Starlette are HTTP adapter dependencies
@@ -80,6 +82,7 @@ source_modules =
     app.observability
     app.ingestion
     app.sources
+    app.indexing
     app.contracts
     app.config
     app.common
@@ -101,8 +104,60 @@ source_modules =
     app.observability
     app.ingestion
     app.sources
+    app.indexing
     app.contracts
     app.common
 forbidden_modules =
     pydantic_settings
 allow_indirect_imports = True
+
+[importlinter:contract:rag-read-side-independence]
+name = rag-read-side-independence
+type = forbidden
+source_modules =
+    app.rag
+forbidden_modules =
+    app.ingestion
+    app.indexing
+    app.sources
+    app.storage.ingestion
+
+[importlinter:contract:indexing-write-side-independence]
+name = indexing-write-side-independence
+type = forbidden
+source_modules =
+    app.indexing
+forbidden_modules =
+    app.rag
+    app.agent
+    app.services
+    app.tools
+    app.sources
+
+[importlinter:contract:sources-do-not-index]
+name = sources-do-not-index
+type = forbidden
+source_modules =
+    app.sources
+forbidden_modules =
+    app.rag
+    app.indexing
+
+[importlinter:contract:agent-no-ingestion-side-effects]
+name = agent-no-ingestion-side-effects
+type = forbidden
+source_modules =
+    app.agent
+forbidden_modules =
+    app.ingestion
+    app.indexing
+    app.sources
+
+[importlinter:contract:chat-storage-is-independent]
+name = chat-storage-is-independent
+type = forbidden
+source_modules =
+    app.storage.memory
+forbidden_modules =
+    app.ingestion
+    app.storage.ingestion

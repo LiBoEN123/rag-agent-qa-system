@@ -16,7 +16,7 @@ from app.agent.results import (
 from app.api.diagnostics import create_diagnostics_router
 from app.api.schemas import ChatRequest, SearchRequest, SearchResponse
 from app.contracts.chat import AgentResultStatus
-from app.rag import pipeline
+from app.rag import runtime as pipeline
 from app.services.chat_models import ChatServiceOutcome
 from app.services.chat_stream_models import ChatStreamEvent
 
@@ -539,27 +539,20 @@ def test_metrics_summary_excludes_legacy_usage_from_historical_records():
     assert data["avg_latency_ms"] == 12
 
 
-def test_start_application_resources_wires_incremental_sync(monkeypatch):
+def test_start_application_resources_only_loads_existing_index(monkeypatch):
     settings = api_application.get_settings()
     calls = []
     monkeypatch.setattr(api_application, "validate_startup_environment", lambda _: None)
-    monkeypatch.setattr(api_application, "init_db", lambda _: None)
-    monkeypatch.setattr(api_application, "initialize_agent_runtime", lambda _: None)
-    monkeypatch.setattr(api_application, "needs_rebuild", lambda _: (False, "unchanged"))
-
-    def sync(**kwargs):
-        calls.append(kwargs)
-        return True, "ok"
-
-    monkeypatch.setattr(api_application, "rebuild_and_persist_index", sync)
+    monkeypatch.setattr(api_application, "init_session_storage", lambda _: calls.append("sessions"))
+    monkeypatch.setattr(api_application, "load_index_cache", lambda: (calls.append("read") or True, "ok"))
+    monkeypatch.setattr(api_application, "initialize_agent_runtime", lambda _: calls.append("agent"))
+    def forbidden(*args, **kwargs):
+        pytest.fail("QA startup touched ingestion/indexing")
+    monkeypatch.setattr("app.indexing.service.IndexingService.sync_local_corpus", forbidden)
+    monkeypatch.setattr("app.indexing.service.load_local_langchain_documents", forbidden)
+    monkeypatch.setattr("app.storage.ingestion.init_ingestion_storage", forbidden)
     api_application.start_application_resources(settings)
-
-    assert calls == [{
-        "data_dir": str(settings.rag_file_path),
-        "chunk_size": settings.chunk_size,
-        "chunk_overlap": settings.chunk_overlap,
-        "force_rebuild": settings.auto_rebuild_on_startup,
-    }]
+    assert calls == ["sessions", "read", "agent"]
 
 
 def test_create_app_does_not_run_lifespan_at_import_or_construction(monkeypatch):
@@ -578,9 +571,12 @@ def test_create_app_does_not_run_lifespan_at_import_or_construction(monkeypatch)
     assert calls == []
 
 
-def test_lifespan_awaits_mcp_startup_and_closes_it_before_other_runtimes(
-    monkeypatch,
+@pytest.mark.parametrize("ingestion_enabled", [False, True])
+def test_lifespan_initializes_mcp_only_for_ingestion(
+    monkeypatch, settings_factory, ingestion_enabled,
 ):
+    settings = settings_factory(ingestion_admin_api_enabled=ingestion_enabled)
+    monkeypatch.setattr(api_application, "get_settings", lambda: settings)
     calls = []
 
     async def initialize_mcp(settings):
@@ -603,11 +599,6 @@ def test_lifespan_awaits_mcp_startup_and_closes_it_before_other_runtimes(
     monkeypatch.setattr(api_application, "close_mcp_runtime", close_mcp)
     monkeypatch.setattr(
         api_application,
-        "close_tool_executor",
-        lambda: calls.append("tool_close"),
-    )
-    monkeypatch.setattr(
-        api_application,
         "aclose_agent_runtime",
         close_agent,
     )
@@ -620,10 +611,9 @@ def test_lifespan_awaits_mcp_startup_and_closes_it_before_other_runtimes(
 
     assert calls == [
         "application_start",
-        "mcp_start",
+        *(["mcp_start"] if ingestion_enabled else []),
         "serve",
         "mcp_close",
-        "tool_close",
         "agent_close",
     ]
 

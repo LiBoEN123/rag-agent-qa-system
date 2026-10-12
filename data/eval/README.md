@@ -1,30 +1,30 @@
 # Evaluation datasets
 
-本目录只存放可版本化的离线评测数据，不存放知识库正文、Chroma、SQLite 或真实
-运行输出。
+本目录保存版本化评测数据，不存放知识库正文、索引、数据库或运行输出。
 
-| 文件 | 版本与用途 |
+| 文件 | 当前用途 |
 | --- | --- |
-| `agent_eval_cases_nmgut_v1.json` | 历史 v1 cases，仅保留数据，不提供旧 CLI |
-| `agent_eval_cases_v2.json` | Evaluation Baseline v2 Agent cases |
-| `agent_eval_cases_extended_v2.json` | GitHub/Firecrawl MCP 与 Mixed 路由 live cases；不计入 Core |
-| `rag_eval_questions_nmgut_graduate_v1.json` | 旧 RAG 数据 |
-| `rag_eval_questions_v2_semantic_fixed.json` | 当前 RAG gold 数据 |
+| `agent_eval_cases_v2.json` | 25 个 Core Agent case + 3 个可选 Online Web case |
+| `rag_eval_questions_v2_semantic_fixed.json` | 主 RAG 数据集，65 题，生成 Prediction Schema v3 |
+| `rag_eval_table_v1.json` | 独立表格 diagnostics，14 个受控问题，不参与主 Baseline |
+| `performance_cases.json` | HTTP 性能测试输入，不参与质量 Baseline |
 | `evaluation_thresholds_v2.example.json` | 比较工具示例阈值，不是 CI 门禁 |
 
-校验：
+离线校验 Agent 与 RAG 数据：
 
 ```bash
-python scripts/run_evaluation_baseline.py --validate-only
-
-python scripts/run_evaluation_baseline.py \
-  --agent-cases data/eval/agent_eval_cases_extended_v2.json \
-  --validate-only
+.venv/bin/python scripts/run_evaluation_baseline.py --validate-only
 ```
 
-新增 Agent case 时必须使用唯一 ID、`version: 2`、合法 suite/status/工具名，并在
-单轮 `question` 和多轮 `turns` 中只选一种。Ground truth 必须来自当前文档、已有
-gold 数据或确定性生产合同；不能凭猜测增加来源、关键词或工具序列。
+Agent case 必须使用唯一 ID、`version: 2`、`core` 或 `online` suite、合法 status/工具名，
+单轮 `question` 和多轮 `turns` 只能选择一种。RAG 题目必须有非空且唯一的 qid 和问题。
+Ground truth 必须来自已核验文档或确定性生产合同。
 
-详细运行、输出、比较和敏感信息边界见
-[`docs/evaluation/baseline-v2.md`](../../docs/evaluation/baseline-v2.md)。
+Agent ExpectedOutcome 保留 action/status、必要工具与特殊调用序列、答案关键词/禁止词、
+sources/source_match 和工具输出字段合同。声明 sources 自动检查本轮成功 KB evidence
+与最终引用；多轮 case 通过最终结果评测，不要求内部改写标志或固定证据获取路径。
+
+主指标为 prediction coverage、retrieval Gold Recall@K、reference Gold Recall 与可选
+DeepEval GEval 的 Answer Correctness；Gold Answer、关键点、Forbidden Points 和
+Expected Behavior 均保留为语义评价输入。运行与产物说明见
+[Evaluation Baseline](../../docs/evaluation/baseline-v2.md)。

@@ -1,13 +1,10 @@
 import numpy as np
 import pytest
 
-from app.rag import store as rag_store
+from app.rag import runtime as rag_store
+from app.storage import vector
 
 
-def test_index_cache_exists_only_depends_on_chroma(monkeypatch):
-    monkeypatch.setattr(rag_store, "chroma_collection_has_chunks", lambda: True)
-
-    assert rag_store.index_cache_exists() is True
 
 
 def test_build_docs_registry_from_chunks_rebuilds_registry_from_metadata():
@@ -73,7 +70,7 @@ def test_load_index_cache_uses_chroma_metadata_for_docs_registry(monkeypatch):
     ]
     doc_embeddings = np.array([[1.0, 0.0]], dtype=np.float32)
 
-    monkeypatch.setattr(rag_store, "index_cache_exists", lambda: True)
+    monkeypatch.setattr(rag_store, "chroma_collection_has_chunks", lambda: True)
     monkeypatch.setattr(
         rag_store,
         "load_index_from_chroma",
@@ -86,7 +83,7 @@ def test_load_index_cache_uses_chroma_metadata_for_docs_registry(monkeypatch):
         lambda model=None, rerank_model=None: ("model", "rerank_model"),
     )
 
-    result = rag_store.load_index_cache()
+    result = rag_store._load_index_bundle()
 
     assert result["ok"] is True
     assert result["doc_embeddings"] is doc_embeddings
@@ -114,14 +111,14 @@ def test_load_index_cache_restores_embeddings_without_reencoding_documents(monke
 
     model = ModelThatMustNotEncode()
     rerank_model = object()
-    monkeypatch.setattr(rag_store, "index_cache_exists", lambda: True)
+    monkeypatch.setattr(rag_store, "chroma_collection_has_chunks", lambda: True)
     monkeypatch.setattr(
         rag_store,
         "load_index_from_chroma",
         lambda: (chunks, doc_embeddings),
     )
 
-    result = rag_store.load_index_cache(model=model, rerank_model=rerank_model)
+    result = rag_store._load_index_bundle(model=model, rerank_model=rerank_model)
 
     assert result["ok"] is True
     assert result["chunks"] == chunks
@@ -151,14 +148,14 @@ def test_load_index_cache_rejects_corrupt_embeddings(
         {"text": "first", "metadata": {"chunk_id": 1}},
         {"text": "second", "metadata": {"chunk_id": 2}},
     ]
-    monkeypatch.setattr(rag_store, "index_cache_exists", lambda: True)
+    monkeypatch.setattr(rag_store, "chroma_collection_has_chunks", lambda: True)
     monkeypatch.setattr(
         rag_store,
         "load_index_from_chroma",
         lambda: (chunks, doc_embeddings),
     )
 
-    result = rag_store.load_index_cache(model=object(), rerank_model=object())
+    result = rag_store._load_index_bundle(model=object(), rerank_model=object())
 
     assert result["ok"] is False
     assert error_message in result["message"]
@@ -195,7 +192,7 @@ def test_load_models_uses_configured_model_cache_dir(
             }
 
     monkeypatch.setattr(
-        rag_store,
+        vector,
         "HuggingFaceEmbeddings",
         FakeHuggingFaceEmbeddings,
     )

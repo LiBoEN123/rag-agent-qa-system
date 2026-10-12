@@ -105,11 +105,6 @@ class McpServerConfig(BaseModel):
     transport: Literal["http"]
     url: str
     allowed_tools: tuple[str, ...]
-    approval_required_tools: tuple[str, ...] = ()
-    knowledge_promotion: dict[str, Literal["github", "firecrawl"]] = Field(
-        default_factory=dict
-    )
-    enabled_for_default_principal: bool = False
     headers: dict[str, SecretStr] = Field(default_factory=dict)
     headers_env: dict[str, str] = Field(default_factory=dict)
 
@@ -139,31 +134,6 @@ class McpServerConfig(BaseModel):
             normalized.append(name)
         if not normalized:
             raise ValueError("allowed_tools 不能为空")
-        return tuple(normalized)
-
-    @field_validator("approval_required_tools", mode="before")
-    @classmethod
-    def _validate_approval_required_tools(
-        cls,
-        value: object,
-    ) -> tuple[str, ...]:
-        """规范化必须经人工审批的精确远端工具名。"""
-        if value is None:
-            return ()
-        if isinstance(value, str) or not isinstance(value, (list, tuple)):
-            raise ValueError("approval_required_tools 必须是字符串列表")
-        normalized: list[str] = []
-        seen: set[str] = set()
-        for item in value:
-            if not isinstance(item, str):
-                raise ValueError("approval_required_tools 每一项都必须是字符串")
-            name = item.strip()
-            if not _TOOL_NAME_PATTERN.fullmatch(name):
-                raise ValueError("approval_required_tools 只允许精确合法工具名")
-            if name in seen:
-                raise ValueError("approval_required_tools 不允许重复工具名")
-            seen.add(name)
-            normalized.append(name)
         return tuple(normalized)
 
     @field_validator("headers", mode="before")
@@ -216,25 +186,7 @@ class McpServerConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_server_policy(self) -> McpServerConfig:
-        """校验审批工具子集与 Header 注入边界。"""
-        unknown_approval_tools = set(self.approval_required_tools).difference(
-            self.allowed_tools
-        )
-        if unknown_approval_tools:
-            raise ValueError("approval_required_tools 必须是 allowed_tools 的子集")
-        for name, source in self.knowledge_promotion.items():
-            expected = {
-                "github": "get_file_contents",
-                "firecrawl": "firecrawl_scrape",
-            }[source]
-            if (
-                name != expected
-                or name not in self.allowed_tools
-                or name in self.approval_required_tools
-            ):
-                raise ValueError(
-                    "knowledge_promotion 仅允许白名单中的 GitHub file / Firecrawl scrape 只读工具"
-                )
+        """校验 Header 注入边界。"""
         direct_names = {header.casefold() for header in self.headers}
         env_names = {header.casefold() for header in self.headers_env}
         if direct_names & env_names:
@@ -262,13 +214,6 @@ class McpConfig(BaseModel):
         for alias in self.servers:
             if not _SERVER_ALIAS_PATTERN.fullmatch(alias):
                 raise ValueError("MCP Server alias 必须匹配 ^[a-z][a-z0-9_]*$")
-            if any(
-                source != alias
-                for source in self.servers[alias].knowledge_promotion.values()
-            ):
-                raise ValueError(
-                    "knowledge_promotion 必须使用对应的 github / firecrawl Server alias"
-                )
         return self
 
 

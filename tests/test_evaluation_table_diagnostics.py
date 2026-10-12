@@ -62,7 +62,7 @@ def test_abstain_is_not_counted_as_relation_success():
 
 
 def test_diagnostic_relation_measures_final_selection_without_context(monkeypatch):
-    from app.rag import pipeline
+    from app.rag import runtime as pipeline
     from scripts.evaluation.table_diagnostics import diagnose_questions
     question = next(q for q in load_eval(DATASET) if q['qid'] == 't007')
     evidence = {

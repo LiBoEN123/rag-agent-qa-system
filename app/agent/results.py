@@ -6,9 +6,9 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.agent.final_response import (
-    FinalAgentResponse,
-    collect_evidence_from_messages,
+    FinalResponseError,
     document_to_reference,
+    validate_final_response,
 )
 from app.agent.guardrails import AgentStopReason
 from app.agent.router import RouteDecision
@@ -146,8 +146,6 @@ def _stop_result(reason: str) -> tuple[AgentResultStatus, str]:
     """把框架停止原因映射为 API 兼容状态。"""
     tool_errors = {
         AgentStopReason.FATAL_TOOL_ERROR.value,
-        AgentStopReason.APPROVAL_REQUIRED.value,
-        AgentStopReason.MISSING_IDEMPOTENCY_KEY.value,
         AgentStopReason.RUNTIME_UNAVAILABLE.value,
     }
     if reason in tool_errors:
@@ -159,13 +157,6 @@ def _stop_result(reason: str) -> tuple[AgentResultStatus, str]:
     if reason == "agent_model_call_failed":
         final_answer = "Agent 模型暂时不可用，无法安全选择或继续调用工具。"
     return status, final_answer
-
-
-def _finalize_agent_result(
-    result: AgentRunResult,
-) -> dict[str, Any]:
-    """序列化并返回已校验的最终 Result。"""
-    return result.model_dump(mode="json")
 
 
 def build_short_circuit_result(
@@ -235,12 +226,14 @@ def build_short_circuit_result(
         answer_llm_used=False,
         llm_call_count=0,
     )
-    return _finalize_agent_result(result)
+    return result.model_dump(mode="json")
 
 
 def build_framework_agent_result(
     invocation: AgentResultInvocation,
     framework_output: Mapping[str, Any],
+    *,
+    composed_answer: str | None = None,
 ) -> dict[str, Any]:
     """把 ``create_agent`` 最终状态一次性归一化为 AgentRunResult。"""
     raw_events = framework_output.get("governance_events")
@@ -267,40 +260,30 @@ def build_framework_agent_result(
         reason = stop_reason
         mode = "error"
     else:
-        final = framework_output.get("structured_response")
         status = AgentResultStatus.MODEL_ERROR
         answer = "模型未生成可用的最终回答。"
         reason = "Agent structured response is missing or invalid"
         mode = "error"
         try:
-            # 只接受框架已解析的 Pydantic 对象；不解析模型文本或未验证的 dict。
-            if not isinstance(final, FinalAgentResponse):
-                raise ValueError(reason)
-            final = FinalAgentResponse.model_validate(final)
-            evidence = collect_evidence_from_messages(framework_output.get("messages"))
-            if any(evidence_id not in evidence for evidence_id in final.evidence_ids):
-                reason = "Agent structured response referenced unavailable evidence"
-                grounding_diagnostics = {
-                    "requested_evidence_ids": list(final.evidence_ids),
-                    "available_evidence_ids": list(evidence),
-                    "unavailable_evidence_ids": [
-                        evidence_id for evidence_id in final.evidence_ids
-                        if evidence_id not in evidence
-                    ],
-                }
-                raise ValueError(reason)
-            if final.outcome == "answer" and evidence and not final.evidence_ids:
-                reason = "Agent structured answer did not cite available evidence"
-                raise ValueError(reason)
+            final, evidence = validate_final_response(framework_output)
+            final_answer = composed_answer if composed_answer is not None else final.answer
+            if final.outcome == "answer" and not final_answer.strip():
+                raise FinalResponseError("Agent answer composition is missing or empty")
+        except FinalResponseError as exc:
+            reason = str(exc)
+            grounding_diagnostics = exc.diagnostics
         except (ValueError, TypeError):
             pass
         else:
             mode = "agent_loop"
             if final.outcome == "answer":
                 status = AgentResultStatus.OK
-                answer = final.answer
-                reason = "Agent model produced structured answer"
-                references = [document_to_reference(evidence[key]) for key in final.evidence_ids]
+                answer = final_answer
+                reason = (
+                    "Agent model streamed answer from verified evidence"
+                    if composed_answer is not None else "Agent model produced structured answer"
+                )
+                references = [document_to_reference(document) for document in evidence]
             elif final.outcome == "no_evidence":
                 status = AgentResultStatus.NO_RELEVANT_INFO
                 answer = final.answer or "我无法根据当前取得的证据确定答案。"
@@ -341,7 +324,7 @@ def build_framework_agent_result(
         answer_llm_used=answer_llm_used,
         llm_call_count=llm_call_count,
     )
-    return _finalize_agent_result(result)
+    return result.model_dump(mode="json")
 
 
 def create_agent_result(
@@ -381,16 +364,13 @@ def create_agent_result(
 
 
 def build_internal_error_result(
-    exc: Exception,
     *,
-    runtime_label: str = "Agent Runtime",
     trace_step: str = "agent_runtime_error",
     answer: str = INTERNAL_ERROR_MESSAGE,
     reason: str = INTERNAL_ERROR_MESSAGE,
     tool_trace: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """构造经过统一模型校验的脱敏内部错误结果。"""
-    del exc, runtime_label
     resolved_trace = tool_trace
     if resolved_trace is None:
         resolved_trace = [
@@ -428,18 +408,15 @@ def _write_internal_bad_case(
     trace_id: str,
     question: str,
     exc: Exception,
-    *,
-    runtime_route: str = "agent_runtime",
-    runtime_label: str = "Agent Runtime",
 ) -> None:
     """Runtime 顶层异常时写入 bad case，写入失败不继续抛错。"""
     if not callable(write_bad_cases):
         return
 
     record = dict(bad_case or _default_bad_case(trace_id, question))
-    record["answer"] = f"系统内部执行 {runtime_label} 时发生错误，无法生成可靠回答。"
+    record["answer"] = "系统内部执行 Agent Runtime 时发生错误，无法生成可靠回答。"
     record["references"] = []
-    record["route"] = runtime_route
+    record["route"] = "agent_runtime"
     record["error_type"] = "internal_error"
     record["note"] = str(exc)
 
@@ -454,9 +431,7 @@ def build_agent_runtime_error_result(
     write_bad_cases: Callable[[dict[str, Any]], None] | None,
     bad_case: dict[str, Any] | None,
     trace_id: str,
-    session_id: str | None,
     original_question: str,
-    effective_question: str,
     exc: Exception,
 ) -> dict[str, Any]:
     """把流式 Runtime 异常转换成脱敏内部错误结果。"""
@@ -466,14 +441,8 @@ def build_agent_runtime_error_result(
         trace_id=trace_id,
         question=original_question,
         exc=exc,
-        runtime_route="agent_runtime",
-        runtime_label="Agent Runtime",
     )
-    return build_internal_error_result(
-        exc,
-        runtime_label="Agent Runtime",
-        trace_step="agent_runtime_error",
-    )
+    return build_internal_error_result()
 
 
 def build_empty_question_result() -> dict[str, Any]:

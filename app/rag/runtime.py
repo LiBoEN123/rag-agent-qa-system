@@ -1,24 +1,20 @@
-"""RAG 索引与检索门面模块。
-
-维护内存索引状态，并组织索引生命周期、检索、重排和调试能力。
-"""
+"""只读 RAG runtime：加载持久索引、管理内存状态并执行查询。"""
 
 from typing import Any, Dict, List
 
-from app.config import get_settings
+import torch
+from rank_bm25 import BM25Okapi
+from sentence_transformers import CrossEncoder
+
+from app.common.logging import get_logger
+from app.config import ensure_model_cache_dir, get_settings
+from app.rag.chroma import chroma_collection_has_chunks, load_index_from_chroma
+from app.storage.vector import create_vector_store, load_embedding_model
+from app.rag.retrieval import tokenize
 from app.rag.debug import (
     get_chunk_full_text as get_chunk_full_text_impl,
     preview_chunks as preview_chunks_impl,
     preview_docs as preview_docs_impl,
-)
-from app.rag.indexing import (
-    EXTERNAL_RECORD_NAMESPACE_BY_SOURCE_TYPE,
-    LOCAL_RECORD_NAMESPACE,
-    candidate_to_langchain_documents,
-    create_record_manager,
-    create_vector_store,
-    load_local_langchain_documents,
-    sync_documents,
 )
 from app.rag.policy import should_refuse
 from app.rag.retrieval import (
@@ -26,18 +22,135 @@ from app.rag.retrieval import (
     rerank as rerank_impl,
     search_relevant_chunks as search_relevant_chunks_impl,
 )
-from app.rag.scoring import safe_float
-from app.rag.store import (
-    build_current_manifest,
-    _load_embedding_model,
-    load_index_cache as load_index_cache_impl,
-    save_manifest,
-)
-from app.storage.ingestion import SQLiteCandidateRepository
+from app.common.numeric import safe_float
+
+logger = get_logger("chat_service")
+
+
+def _load_rerank_model():
+    """从本地缓存加载交叉编码器重排模型。"""
+    settings = get_settings()
+    cache_folder = str(ensure_model_cache_dir(settings))
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    logger.info(
+        f"[models] loading rerank model={settings.rerank_model_name} "
+        f"device={device} cache_dir={cache_folder}"
+    )
+    return CrossEncoder(
+        settings.rerank_model_name,
+        device=device,
+        cache_folder=cache_folder,
+        local_files_only=True
+    )
+
+
+def _load_models(model=None, rerank_model=None):
+    """在索引缓存可用时加载 embedding 和 rerank 模型。"""
+    if model is None:
+        model = load_embedding_model()
+
+    if rerank_model is None:
+        rerank_model = _load_rerank_model()
+
+    return model, rerank_model
+
+
+def _build_bm25(texts: list[str]):
+    """基于 ChromaDB 中恢复出的 chunk 文本重建 BM25 索引。"""
+    tokenized_chunks = [tokenize(text) for text in texts]
+    return BM25Okapi(tokenized_chunks) if tokenized_chunks else None
+
+
+def build_docs_registry_from_chunks(chunks: list[dict]) -> list[dict]:
+    """根据 ChromaDB chunk 元数据重建文档注册表。"""
+    docs_by_source: dict[str, dict] = {}
+    docs_registry: list[dict] = []
+
+    for chunk in chunks:
+        metadata = chunk.get("metadata") or {}
+        source_path = str(metadata.get("source_path") or "")
+        if not source_path:
+            continue
+
+        if source_path not in docs_by_source:
+            doc = {
+                "doc_id": metadata.get("doc_id") or f"doc_{len(docs_registry) + 1}",
+                "file_name": metadata.get("file_name") or "",
+                "source_path": source_path,
+                "file_type": metadata.get("file_type") or "",
+                "chunk_count": 0,
+            }
+            docs_by_source[source_path] = doc
+            docs_registry.append(doc)
+
+        docs_by_source[source_path]["chunk_count"] += 1
+
+    return docs_registry
+
+
+def _load_index_bundle(model=None, rerank_model=None):
+    """从 ChromaDB 恢复索引数据、BM25 和模型实例。"""
+    if not chroma_collection_has_chunks():
+        return {
+            "ok": False,
+            "message": "未找到 ChromaDB 索引缓存",
+            "source": "none",
+            "chunks": [],
+            "docs_registry": [],
+            "doc_embeddings": None,
+            "bm25": None,
+            "model": model,
+            "rerank_model": rerank_model
+        }
+
+    try:
+        chunks, doc_embeddings = load_index_from_chroma()
+        if doc_embeddings is None:
+            raise ValueError("ChromaDB 索引缓存中缺少 embeddings")
+        if getattr(doc_embeddings, "ndim", None) != 2:
+            raise ValueError("ChromaDB 索引缓存中的 embeddings 必须是二维矩阵")
+        if len(doc_embeddings) != len(chunks):
+            raise ValueError(
+                "ChromaDB 索引缓存中的 embedding 数量与 chunk 数量不一致"
+            )
+
+        texts = [chunk["text"] for chunk in chunks]
+        docs_registry = build_docs_registry_from_chunks(chunks)
+        bm25 = _build_bm25(texts)
+        model, rerank_model = _load_models(model=model, rerank_model=rerank_model)
+        logger.info(
+            "[index] loaded cache from ChromaDB "
+            f"chunk_count={len(chunks)} embedding_count={len(doc_embeddings)} "
+            f"embedding_shape={doc_embeddings.shape}"
+        )
+
+        return {
+            "ok": True,
+            "message": "已从 ChromaDB 加载索引",
+            "source": "chroma",
+            "chunks": chunks,
+            "docs_registry": docs_registry,
+            "doc_embeddings": doc_embeddings,
+            "bm25": bm25,
+            "model": model,
+            "rerank_model": rerank_model
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "message": f"加载 ChromaDB 索引缓存失败：{e}",
+            "source": "none",
+            "chunks": [],
+            "docs_registry": [],
+            "doc_embeddings": None,
+            "bm25": None,
+            "model": model,
+            "rerank_model": rerank_model
+        }
+
 
 # 进程内索引状态。
 chunks: list[dict] = []
-texts: list[str] = []
 docs_registry: list[dict] = []
 
 bm25 = None
@@ -48,7 +161,7 @@ doc_embeddings = None
 RAG_READY = False
 RAG_INIT_MESSAGE = "RAG 尚未初始化"
 INDEX_SOURCE = "none"
-NO_DOCUMENTS_MESSAGE = "当前知识库为空，请先在 data 目录中放入文档后再提问"
+NO_DOCUMENTS_MESSAGE = "当前知识库为空，请先显式同步知识索引后再提问"
 
 
 # =========================
@@ -69,11 +182,10 @@ def get_rag_status():
 # 初始化 / 构建
 # =========================
 def _publish_runtime_bundle(bundle: dict) -> None:
-    """只在 index、runtime rebuild 与验证全部成功后替换进程状态。"""
-    global chunks, texts, docs_registry, bm25, model, rerank_model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE, INDEX_SOURCE
+    """只在索引读取和 runtime 验证成功后替换进程状态。"""
+    global chunks, docs_registry, bm25, model, rerank_model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE, INDEX_SOURCE
 
     chunks = bundle["chunks"]
-    texts = bundle["texts"]
     docs_registry = bundle["docs_registry"]
     doc_embeddings = bundle["doc_embeddings"]
     bm25 = bundle["bm25"]
@@ -84,126 +196,11 @@ def _publish_runtime_bundle(bundle: dict) -> None:
     INDEX_SOURCE = bundle.get("source", "none") if chunks else "none"
 
 
-def _sync_and_build_runtime(
-    data_dir: str,
-    chunk_size: int | None = None,
-    chunk_overlap: int | None = None,
-    *,
-    force_rebuild: bool = False,
-) -> tuple[dict, dict[str, int]]:
-    """普通同步只更新 Local；force 从完整 authoritative corpus 重建共享索引。"""
-    settings = get_settings()
-    chunk_size = settings.chunk_size if chunk_size is None else chunk_size
-    chunk_overlap = (
-        settings.chunk_overlap if chunk_overlap is None else chunk_overlap
-    )
-    documents = load_local_langchain_documents(
-        data_dir,
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-    )
-    documents_by_namespace = {LOCAL_RECORD_NAMESPACE: documents}
-    if force_rebuild:
-        documents_by_namespace.update(
-            (namespace, [])
-            for namespace in EXTERNAL_RECORD_NAMESPACE_BY_SOURCE_TYPE.values()
-        )
-        candidates = SQLiteCandidateRepository(
-            settings.sqlite_db_path
-        ).load_latest_successfully_indexed()
-        for candidate in candidates:
-            namespace = EXTERNAL_RECORD_NAMESPACE_BY_SOURCE_TYPE.get(
-                candidate.document.source_type
-            )
-            if namespace is None:
-                raise ValueError("成功 index candidate 的 external source type 不支持恢复")
-            documents_by_namespace[namespace].extend(
-                candidate_to_langchain_documents(
-                    candidate,
-                    chunk_size=chunk_size,
-                    chunk_overlap=chunk_overlap,
-                )
-            )
-
-    embedding_model = (
-        _load_embedding_model()
-        if force_rebuild or model is None
-        else model
-    )
-    if force_rebuild:
-        # GLOBAL_RESET：全部 candidate 已验证、切分后，才能清空共享 v2 collection。
-        create_vector_store(embedding_model, settings).delete_collection()
-        for namespace in documents_by_namespace:
-            manager = create_record_manager(settings, namespace=namespace)
-            keys = manager.list_keys()
-            if keys:
-                manager.delete_keys(keys)
-
-    sync_result: dict[str, int] = {}
-    for namespace, namespace_documents in documents_by_namespace.items():
-        result = sync_documents(
-            namespace_documents,
-            embedding_model,
-            settings=settings,
-            namespace=namespace,
-        )
-        for key, count in result.items():
-            sync_result[key] = sync_result.get(key, 0) + count
-
-    bundle = load_index_cache_impl(
-        model=embedding_model,
-        rerank_model=rerank_model,
-    )
-    if not bundle["ok"]:
-        # Cache loader 将空 collection 视为无缓存；严格读取区分真正空库与读取失败。
-        store = create_vector_store(
-            None, settings, create_collection_if_not_exists=False
-        )
-        if store.get(limit=1, include=[])["ids"]:
-            raise RuntimeError(bundle["message"])
-        bundle.update(ok=True, message=NO_DOCUMENTS_MESSAGE)
-    return bundle, sync_result
-
-
-def rebuild_and_persist_index(
-    data_dir: str,
-    chunk_size: int | None = None,
-    chunk_overlap: int | None = None,
-    *,
-    force_rebuild: bool = False,
-) -> tuple[bool, str]:
-    """增量同步 v2 索引，验证 runtime 后保存 manifest 并原子发布内存引用。"""
-    settings = get_settings()
-    chunk_size = settings.chunk_size if chunk_size is None else chunk_size
-    chunk_overlap = (
-        settings.chunk_overlap if chunk_overlap is None else chunk_overlap
-    )
-    try:
-        bundle, sync_result = _sync_and_build_runtime(
-            data_dir=data_dir,
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            force_rebuild=force_rebuild,
-        )
-        save_manifest(build_current_manifest(data_dir, chunk_size, chunk_overlap))
-    except Exception as exc:
-        return False, f"LangChain 增量索引失败：{exc}"
-
-    _publish_runtime_bundle(bundle)
-    summary = ", ".join(f"{key}={value}" for key, value in sync_result.items())
-    if not bundle["chunks"]:
-        return True, f"共享知识库已同步为空（{summary}）"
-    return True, f"LangChain 增量索引已同步并发布（{summary}）"
-
-
-# =========================
-# 持久化索引恢复
-# =========================
 def load_index_cache(*, allow_empty: bool = False) -> tuple[bool, str]:
     """恢复全局 RAG 状态；来源操作可在严格确认空库后发布空 runtime。"""
-    global chunks, texts, docs_registry, bm25, model, rerank_model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE, INDEX_SOURCE
+    global chunks, docs_registry, bm25, model, rerank_model, doc_embeddings, RAG_READY, RAG_INIT_MESSAGE, INDEX_SOURCE
 
-    result = load_index_cache_impl(model=model)
+    result = _load_index_bundle(model=model)
 
     if allow_empty and (not result["ok"] or not result["chunks"]):
         try:

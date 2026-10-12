@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from app.agent import framework_agent, framework_tools
 from app.config import get_settings
 from app.tools.context import ToolInvocationContext
-from app.tools.contracts import ToolRiskLevel, ToolSpec
+from app.tools.contracts import ToolSpec
 from app.tools.errors import ToolErrorCode
 from tests.support.local_tools import local_tools
 from app.tools.result import tool_error, tool_success
@@ -37,9 +37,7 @@ def _spec(
     name: str,
     handler,
     *,
-    risk_level: ToolRiskLevel = ToolRiskLevel.READ_ONLY,
     required_permissions: tuple[str, ...] = (),
-    requires_approval: bool = False,
 ) -> ToolSpec:
     return ToolSpec(
         name=name,
@@ -48,10 +46,8 @@ def _spec(
         output_model=RootModel[dict],
         handler=handler,
         args_model=ValueArgs,
-        risk_level=risk_level,
         required_permissions=required_permissions,
-        idempotent=True,
-        requires_approval=requires_approval,
+
     )
 
 
@@ -67,7 +63,7 @@ async def _invoke(
 ):
     """按指定错误预算组装并调用受控 Agent 图。"""
     provider = local_tools(registry)
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
         "get_local_tools",
@@ -89,7 +85,6 @@ async def _invoke(
         principal_id="guardrail-test",
         permissions=("test:write", "protected:read"),
         source="agent_error_recovery_test",
-        idempotency_key="idem-test",
     )
     return [state async for state in build_agent_harness(settings).astream(
         {
@@ -105,7 +100,7 @@ async def _invoke(
 
 def _payloads(output) -> dict[str, dict]:
     return {
-        message.tool_call_id: json.loads(message.content)
+        message.tool_call_id: (message.artifact or json.loads(message.content))
         for message in output["messages"]
         if isinstance(message, ToolMessage)
     }
@@ -182,7 +177,7 @@ async def test_third_identical_call_is_blocked_before_structured_tool(monkeypatc
     assert output["stop_reason"] == "repeated_tool_call"
     assert payload["error_source"] == "agent_guardrail"
     assert payload["handler_executed"] is False
-    assert payload["stop_reason"] == "repeated_tool_call"
+    assert output["governance_events"][-1]["stop_reason"] == "repeated_tool_call"
 
 
 @pytest.mark.asyncio
@@ -237,13 +232,12 @@ async def test_second_identical_error_is_saved_then_stops(monkeypatch):
     )
 
     output = await _invoke(monkeypatch, registry=registry, model=model)
-    payload = _payloads(output)["s2"]
 
     assert calls == [1, 1]
     assert len(model.received_messages) == 2
     assert output["stop_reason"] == "repeated_tool_error"
-    assert payload["failure_kind"] == "recoverable"
-    assert payload["stop_reason"] == "repeated_tool_error"
+    assert output["governance_events"][-1]["failure_kind"] == "recoverable"
+    assert output["governance_events"][-1]["stop_reason"] == "repeated_tool_error"
 
 
 @pytest.mark.asyncio
@@ -281,127 +275,6 @@ async def test_same_error_code_with_different_arguments_is_not_same_error_loop(
     assert len(tool_events) == 2
     assert tool_events[0]["error_fingerprint"] != tool_events[1]["error_fingerprint"]
     assert output["stop_reason"] == "completed"
-
-
-@pytest.mark.asyncio
-async def test_approval_required_stops_and_aborts_later_batch_call(monkeypatch):
-    approval_calls: list[int] = []
-    later_calls: list[int] = []
-
-    def approval_handler(args, context):
-        approval_calls.append(args["value"])
-        return tool_success("approval_tool", args, {"value": args["value"]})
-
-    def later_handler(args, context):
-        later_calls.append(args["value"])
-        return tool_success("later_tool", args, {"value": args["value"]})
-
-    registry = []
-    registry.append(
-        _spec(
-            "approval_tool",
-            approval_handler,
-            risk_level=ToolRiskLevel.INTERNAL_WRITE,
-            required_permissions=("test:write",),
-            requires_approval=True,
-        )
-    )
-    registry.append(_spec("later_tool", later_handler))
-    model = FakeToolCallingModel(
-        [
-            AIMessage(
-                content="",
-                tool_calls=[
-                    _call("approval_tool", 1, "approval"),
-                    _call("later_tool", 2, "later"),
-                ],
-            )
-        ]
-    )
-
-    output = await _invoke(monkeypatch, registry=registry, model=model)
-    payloads = _payloads(output)
-
-    assert approval_calls == []
-    assert later_calls == []
-    assert len(model.received_messages) == 1
-    assert output["stop_reason"] == "approval_required"
-    assert payloads["approval"]["error_code"] == "approval_required"
-    assert payloads["approval"]["handler_executed"] is False
-    assert payloads["later"]["error_code"] == "agent_batch_aborted"
-    assert payloads["later"]["handler_executed"] is False
-
-
-@pytest.mark.asyncio
-async def test_missing_idempotency_key_stops_without_handler_or_model_retry(
-    monkeypatch,
-):
-    calls: list[int] = []
-
-    def handler(args, context):
-        calls.append(args["value"])
-        return tool_success("write_tool", args, {"value": args["value"]})
-
-    registry = []
-    registry.append(
-        _spec(
-            "write_tool",
-            handler,
-            risk_level=ToolRiskLevel.INTERNAL_WRITE,
-            required_permissions=("test:write",),
-        )
-    )
-    model = FakeToolCallingModel(
-        [AIMessage(content="", tool_calls=[_call("write_tool", 1, "write")])]
-    )
-    context = ToolInvocationContext(
-        trace_id="trace-missing-idem",
-        principal_id="writer",
-        permissions=("test:write",),
-        source="agent_error_recovery_test",
-    )
-
-    output = await _invoke(
-        monkeypatch,
-        registry=registry,
-        model=model,
-        context=context,
-    )
-
-    assert calls == []
-    assert len(model.received_messages) == 1
-    assert output["stop_reason"] == "missing_idempotency_key"
-    assert _payloads(output)["write"]["handler_executed"] is False
-
-
-@pytest.mark.asyncio
-async def test_runtime_unavailable_is_terminal(monkeypatch):
-    from app.tools import execution
-    from app.tools.runtime import ProjectToolExecutorError
-
-    calls: list[int] = []
-
-    def handler(args, context):
-        calls.append(args["value"])
-        return tool_success("runtime_tool", args, {"value": args["value"]})
-
-    registry = []
-    registry.append(_spec("runtime_tool", handler))
-    model = FakeToolCallingModel(
-        [AIMessage(content="", tool_calls=[_call("runtime_tool", 1, "runtime")])]
-    )
-
-    def unavailable(*args, **kwargs):
-        del args, kwargs
-        raise ProjectToolExecutorError
-
-    monkeypatch.setattr(execution, "run_with_timeout", unavailable)
-    output = await _invoke(monkeypatch, registry=registry, model=model)
-
-    assert calls == []
-    assert len(model.received_messages) == 1
-    assert output["stop_reason"] == "runtime_unavailable"
-    assert _payloads(output)["runtime"]["failure_kind"] == "terminal_runtime"
 
 
 @pytest.mark.asyncio
@@ -485,8 +358,8 @@ async def test_structured_tool_validation_error_is_corrected_next_round(monkeypa
 
     assert calls == [7]
     assert first_payload["error_code"] == "invalid_arguments"
-    assert first_payload["error_source"] == "structured_tool_validation"
-    assert first_payload["handler_executed"] is False
+    assert next(event for event in output["governance_events"] if event.get("kind") == "tool")["error_source"] == "structured_tool_validation"
+    assert next(event for event in output["governance_events"] if event.get("kind") == "tool")["handler_executed"] is False
     assert first_payload["error"] == "工具参数校验失败"
     assert output["result"]["answer"] == "corrected"
 

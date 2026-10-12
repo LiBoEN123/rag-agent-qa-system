@@ -84,29 +84,29 @@ def _resolve_document(documents: list[DocumentSearchItem], locator: str) -> Docu
 
 
 def _ready_chunks() -> list[dict]:
-    from app.rag import pipeline
+    from app.rag import runtime
 
-    if not pipeline.get_rag_status()["ready"]:
+    if not runtime.get_rag_status()["ready"]:
         raise ToolExecutionError(
             "知识库尚未准备完成", code=ToolErrorCode.DEPENDENCY_UNAVAILABLE, retryable=False,
         )
-    return pipeline.chunks
+    return runtime.chunks
 
 
 def find_documents(args: dict, context: ToolInvocationContext | None = None) -> dict:
     """仅对运行时文档元数据排序，不读取正文、不调用模型或创建索引。"""
     try:
-        query = _normalize(args["query"])
+        query = _normalize(args.get("query"))
         tokens = {token for token in tokenize(query) if token.isalnum()}
         ranked = []
         for document in _documents_from_chunks(_ready_chunks()):
-            score = _match_score(document, query, tokens)
-            if score > 0:
+            score = _match_score(document, query, tokens) if query else 0.0
+            if not query or score > 0:
                 ranked.append(document.model_copy(update={"score": score}))
         ranked.sort(key=lambda item: (-item.score, _normalize(item.file_name), item.source_id))
         documents = ranked[:args["limit"]]
         return tool_success("find_documents", args, {
-            "query": args["query"], "count": len(documents),
+            "query": args.get("query"), "count": len(documents), "total": len(ranked),
             "documents": [item.model_dump(mode="json") for item in documents],
         })
     except ToolExecutionError:
@@ -118,17 +118,17 @@ def find_documents(args: dict, context: ToolInvocationContext | None = None) -> 
 def search_document(args: dict, context: ToolInvocationContext | None = None) -> dict:
     """先固定 runtime chunk 快照并按来源筛选，再复用现有重排与 evidence identity。"""
     try:
-        from app.rag.pipeline import rerank
+        from app.rag.runtime import rerank
 
         chunks = _ready_chunks()
         document = _resolve_document(_documents_from_chunks(chunks), args["document"])
-        # 与 compare_documents 相同，重排前复制候选，避免给共享 runtime 写入分数。
+        # 重排前复制候选，避免给共享 runtime 写入分数。
         candidates = [
             {**chunk, "metadata": dict(chunk["metadata"])}
             for chunk in chunks
             if (chunk.get("metadata") or {}).get("source_id") == document.source_id
         ]
-        final_chunks = rerank(candidates, args["query"])[:args["top_k"]]
+        final_chunks = rerank(candidates, args.get("query"))[:args["top_k"]]
         return tool_success("search_document", args, {
             "query": args["query"], "document": args["document"],
             "source_id": document.source_id, "count": len(final_chunks),

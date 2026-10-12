@@ -3,19 +3,17 @@
 import re
 from collections.abc import Callable, Sequence
 from enum import Enum
-from typing import Annotated, Any, Self
+from typing import Annotated, Any
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    StrictBool,
     StrictInt,
     StrictStr,
     StringConstraints,
     BeforeValidator,
     TypeAdapter,
     field_validator,
-    model_validator,
 )
 from app.tools.context import ToolInvocationContext
 
@@ -30,19 +28,10 @@ _SEMVER_PATTERN = re.compile(
 )
 
 
-# 定义工具只读、内部写入、外部写入和破坏性操作的风险级别。
-class ToolRiskLevel(str, Enum):
-    READ_ONLY = "read_only"
-    INTERNAL_WRITE = "internal_write"
-    EXTERNAL_WRITE = "external_write"
-    DESTRUCTIVE = "destructive"
-
-
-# 定义审计输出不记录、仅摘要和脱敏内容三种记录方式。
+# 本地只读工具仅记录有限摘要或不记录输出。
 class ToolAuditOutputMode(str, Enum):
     NONE = "none"
     SUMMARY = "summary"
-    SANITIZED = "sanitized"
 
 
 TrimmedString = Annotated[
@@ -50,14 +39,6 @@ TrimmedString = Annotated[
 ]
 Permission = Annotated[TrimmedString, StringConstraints(pattern=_PERMISSION_PATTERN)]
 _strict_string = BeforeValidator(TypeAdapter(StrictStr).validate_python)
-
-
-def _legacy_timeout(value: Any) -> float:
-    """保留 float() 支持的下划线字符串等输入；范围由 Pydantic 校验。"""
-    try:
-        return float(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("timeout 必须可转换为浮点数") from exc
 
 
 class ToolSpec(BaseModel):
@@ -70,44 +51,27 @@ class ToolSpec(BaseModel):
     handler: ToolHandler
     args_model: type[BaseModel]
     output_model: type[BaseModel]
-    risk_level: Annotated[ToolRiskLevel, _strict_string] = ToolRiskLevel.READ_ONLY
     required_permissions: Sequence[Permission] = ()
-    timeout: Annotated[float, BeforeValidator(_legacy_timeout)] = Field(
+    timeout: float = Field(
         default=10.0, gt=0, allow_inf_nan=False
     )
     max_retries: StrictInt = Field(default=0, ge=0)
-    idempotent: StrictBool = True
-    requires_approval: StrictBool = False
     sensitive_arg_fields: Sequence[TrimmedString] = ()
-    sensitive_output_fields: Sequence[TrimmedString] = ()
     audit_output_mode: Annotated[ToolAuditOutputMode, _strict_string] = (
         ToolAuditOutputMode.SUMMARY
     )
 
     # 将字符串序列去重并转为元组，保留首次出现的顺序。
     @field_validator(
-        "required_permissions", "sensitive_arg_fields", "sensitive_output_fields"
+        "required_permissions", "sensitive_arg_fields"
     )
     @classmethod
     def normalize_sequences(cls, value: Sequence[str]) -> tuple[str, ...]:
         return tuple(dict.fromkeys(value))
 
-    # 校验幂等重试限制及高风险工具的人工审批要求。
-    @model_validator(mode="after")
-    def validate_governance(self) -> Self:
-        if not self.idempotent and self.max_retries > 0:
-            raise ValueError("非幂等工具不能声明自动重试")
-        if (
-            self.risk_level in {ToolRiskLevel.EXTERNAL_WRITE, ToolRiskLevel.DESTRUCTIVE}
-            and not self.requires_approval
-        ):
-            raise ValueError("必须要求人工审批")
-        return self
-
 
 __all__ = [
     "ToolAuditOutputMode",
     "ToolHandler",
-    "ToolRiskLevel",
     "ToolSpec",
 ]

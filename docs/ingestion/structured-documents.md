@@ -2,7 +2,7 @@
 
 ```text
 Local PDF/DOCX ─┐
-               ├→ app.rag.parsing.parse_document()
+               ├→ app.ingestion.parsing.parse_document()
 Upload PDF/DOCX ┘       → Docling DocumentConverter
 Firecrawl cleaned HTML → 同一 converter.convert_string(..., InputFormat.HTML)
                        → app.ingestion.document_blocks.ParsedDocument
@@ -24,7 +24,7 @@ Docling `2.127.0` 的公开 `DocumentConverter`、`PdfPipelineOptions`、
 
 | 模型 | 字段 |
 | --- | --- |
-| `TextBlock` | `kind="text"`、`block_id`、`text`、`order`、`page_number` |
+| `TextBlock` | `kind="text"`、`block_id`、`text`、`order`、`page_number`、`text_role`、`heading_level` |
 | `TableCell` | `text`、`row_index`、`column_index`、`row_span`、`column_span`、`is_header` |
 | `TableBlock` | `kind="table"`、`block_id`、`caption`、`order`、`page_number`、`cells`、`row_count`、`column_count` |
 | `ParsedDocument` | `structure_version=1`、`blocks`、`page_count` |
@@ -34,6 +34,8 @@ Docling `2.127.0` 的公开 `DocumentConverter`、`PdfPipelineOptions`、
 排版页码；多页 provenance 的 block 记录 Docling 给出的起始页。Header 使用官方
 `column_header or row_header`，caption 有关联时保存；缺失时不自行猜测。
 Rich cell 正文不再重复输出为独立段落。更复杂的 nested table 层级暂未建模。
+`text_role` 为 `text`、`title` 或 `section_header`；只有 `section_header` 必须提供
+`heading_level >= 1`，其余为 `None`。角色不改变 `kind="text"` 或 reading order。
 当前 Docling DOCX backend 把 1×1 单元格表格当作正文容器，不返回 TableItem；项目
 遵循该框架输出，不另写识别算法恢复这种边界情况。
 
@@ -55,6 +57,10 @@ Span 和 header 以结构字段为准，文本视图不承担完整表达这些�
 - `build_content_hash()`、`source_id`、`document_uid` 的定义不变。
   `structure_hash` 是规范化结构（含 `structure_version`）的 canonical JSON
   SHA-256：固定 key 排序、紧凑分隔符、UTF-8；cell 顺序规范为行列顺序。
+  Hash canonicalization 仅从普通正文省略新增的默认 `text_role="text"` 和
+  `heading_level=None`，保留所有旧字段；旧 structured JSON reload 后 hash、
+  candidate ID 不变。Title/section header 的角色和级别完整参与 hash，不使用
+  会一并删除旧默认字段的 `exclude_defaults`。
   结构 candidate 使用 `ingestion-candidate:structured-v1` namespace，把
   `source_id + content_hash + structure_hash` 纳入 identity；相同结构幂等，span
   或 header 等结构变化会产生不同 candidate。
@@ -80,11 +86,11 @@ Upload 保留 filename 校验、分块字节上限、PDF header 校验、DOCX ZI
 ## TABLE-AWARE-1C：进入现有索引的 chunks
 
 `candidate_to_langchain_documents()` 优先判断 `structured_content is not None`，
-与文件扩展名和来源类型无关。有结构时交给 `app.rag.structured_chunking`：
+与文件扩展名和来源类型无关。有结构时交给 `app.indexing.chunking`：
 
 - 连续同页的 TextBlock 用双换行组成文本 segment，再交给现有 LangChain
   `RecursiveCharacterTextSplitter`，保留 `chunk_size`、`chunk_overlap` 和
-  `_TEXT_SEPARATORS`。遇到表格、页码变化（包括已知/未知切换）或文档结束时 flush。
+  `_TEXT_SEPARATORS`。遇到 heading、表格、页码变化（包括已知/未知切换）或文档结束时 flush。
 - TableBlock 只根据持久化 cells/span/header 建立临时 grid，不经过字符 splitter，
   不读源文件、不调用 Docling/LLM、不重复 domain 的结构校验。
 - 前导非空且全部标记为 header 的行构成列标题带；空行不提供标题。多级表头按
@@ -117,6 +123,9 @@ Metadata 保留原 provenance，并统一按 reading order 分配从 1 开始的
 | --- | --- |
 | Text | `element_type=text`、`block_start`、`block_end`、可选 `page_number` |
 | Table | `element_type=table`、`table_id`、`block_order`、`table_chunk_index`、`table_chunk_count`、`row_start`、`row_end`、可选 `page_number` |
+
+当前两类 chunk 都增加 scalar `title_path` 和 `[标题路径]` 文本前缀，详见下方
+WEB-HEADING-AWARE-INGESTION；本节无前缀示例展示的是 table projection 本身。
 
 `block_start/end` 是文本 segment 的原始 block order 范围，拆出的 chunks 共用它。
 `table_id` 是该 source 内的 `block_id`；`table_chunk_index` 从 1 开始。
@@ -152,7 +161,7 @@ Focused retrieval smoke 使用真实 Chroma/SQLRecordManager/BM25 和确定性 f
 正文、HTML、metadata 均取自同一个经过验证的 response payload。
 
 `FirecrawlPageSourceAdapter` 在非空 HTML 且 MIME 为 `text/html` 或
-`application/xhtml+xml` 时调用同一 `app.rag.parsing.parse_html_document()`，忽略
+`application/xhtml+xml` 时调用同一 `app.ingestion.parsing.parse_html_document()`，忽略
 MIME 的 charset 参数并规范大小写。MIME 缺失时，受验证的非空 cleaned HTML 也启用
 结构解析；HTML 缺失/空白或 MIME 明确为 PDF/octet-stream 等其他类型时保留旧正文路径。
 明确失败或部分成功的 HTML conversion 会拒绝提案，返回固定的
@@ -182,10 +191,7 @@ Firecrawl 或 HTML parser。历史 Firecrawl candidate 没有已保存结构，f
 **不会自动升级**；必须显式重新抓取 URL、生成新候选、审批并索引。
 `pipeline_version` **3 → 3**：本阶段只增加结构来源，未改变 chunk/index algorithm。
 
-Agent promotion 兼容 `formats=["markdown"]`（保持 plain）和
-`["markdown", "html"]`（两种顺序均可，按上述 MIME 规则解析）；其他格式组合不沉淀。
-部署 opt-in、MCP identity、read-only、governance allow、audit success、完整结果检查保持。
-解析失败只使 promotion 失败，不改变成功的只读 ToolResult。
+普通 Agent MCP 结果不创建候选；结构化永久知识只通过显式来源入库入口产生。
 
 双 format 共享既有大小预算，**没有提高上限**：显式 ingestion 的 JSON text blocks
 合计超过 1,000,000 字符会截断并拒绝；Agent text 默认上限 12,000。
@@ -193,6 +199,57 @@ Agent promotion 兼容 `formats=["markdown"]`（保持 plain）和
 首轮单字符串最多 4,000 字符；focused test 中 4,100 字符字段即触发拒绝。
 不会因为另有完整 JSON block 而绕过全局 truncated 标记。较大的网页可能安全失败，
 不会接收截断结构。测试使用本地 HTML、fake MCP 和确定性 embedding，无真实网页依赖。
+
+## WEB-HEADING-AWARE-INGESTION：保留网页标题与章节边界
+
+原 adapter 将 `TitleItem`、`SectionHeaderItem` 都降为普通 TextBlock，chunker
+因而把相邻章节合成一个 segment。现在 adapter 直接映射 Docling 的公开角色与
+`SectionHeaderItem.level`，不重新解析 HTML、不推断标题。当前安装的 Docling
+2.127.0 / docling-core 2.96.0 实测 `<h1>` 为 `TitleItem`，`<h2>` 至 `<h6>` 为
+level 1 至 5 的 `SectionHeaderItem`；这些是 Docling level，不是 HTML 标签编号。
+PDF/DOCX 共用 adapter 也保留已有角色，但不启用新的 heading hierarchy 推断或 OCR。
+
+Chunker 使用 `(level, text)` stack：title 在栈内使用 level 0，section 使用原 level；
+新 heading 先 flush 正文，再弹出同级及更深标题。遇表格或换页只 flush，不清空路径。
+连续祖先 heading 作为后续正文/表格的上下文，避免单独重复索引；没有正文或表格的
+同级、末尾空章节仍生成仅含标题路径的证据。
+
+完整路径由 `KnowledgeDocument.title + heading stack` 组成，去首尾空白后仅消除
+相邻相同标题。正文先用原 RecursiveCharacterTextSplitter 分割，再给每个子 chunk
+添加相同路径；表格仍用原 table chunker，之后补入同一路径。前缀不计入原字符
+分组预算，与 Markdown 路径一样可能使最终 `page_content` 超过 `chunk_size`。
+Table 的 `table_id`、`block_order`、`table_chunk_index/count`、`row_start/end`、
+`section_index/title` 等原 metadata 全部保留。完整结构仍只在 candidate 中持久化。
+
+例如 `document.title="研究生国家奖学金管理办法"`，cleaned HTML 为：
+
+```html
+<h1>研究生国家奖学金管理办法</h1>
+<h2>第二章 申请条件</h2>
+<h3>第五条</h3>
+<p>申请人应当符合以下条件。</p>
+```
+
+正文 chunk 的 `title_path` 为 `研究生国家奖学金管理办法 > 第二章 申请条件 > 第五条`，
+`block_start=block_end=3`，送入现有 Embedding/BM25/CrossEncoder/evidence 的正文为：
+
+```text
+[标题路径] 研究生国家奖学金管理办法 > 第二章 申请条件 > 第五条
+
+申请人应当符合以下条件。
+```
+
+**Pipeline version 5 → 6**：即使旧 ParsedDocument 没有 heading 字段，现在也会将
+已持久化的 `document.title` 加入正文和表格 chunk，旧 chunk 输出确实改变。因此
+沿用现有 manifest force rebuild 同步检索表示；Local 重新解析，external 读取
+SQLite 最新成功索引的 candidate，既有版本迁移测试覆盖 5 → 6 的标题前缀更新。
+不新增数据库迁移，不在本次代码修改中执行生产索引重建。
+
+旧 structured candidate 能正常 reload，structure hash 和 candidate ID 保持兼容；
+但 **历史 Firecrawl candidate 中已丢失的 heading 信息不能通过 rebuild 恢复**。
+获取章节边界必须重新抓取 URL、创建并审批新 candidate、索引。没有 HTML 的
+legacy Markdown/plain fallback 和原 MarkdownHeaderTextSplitter 路径保持不变。
+Firecrawl 的双 format、正文提取、安全校验、truncation 和 redaction 规则不变。
 
 ## 运行依赖与阶段限制
 

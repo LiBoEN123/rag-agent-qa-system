@@ -5,7 +5,8 @@ from langchain_core.embeddings import DeterministicFakeEmbedding
 from app.rag import retrieval
 from app.rag.policy import should_refuse
 from app.ingestion import IngestionRequester, IngestionService, build_knowledge_document
-from app.rag import indexing, store
+from app.indexing import langchain as indexing
+from app.rag import runtime as store
 from tests.support.structured_document import admission_structure, imut_admission_structure, registration_structure
 
 
@@ -23,7 +24,7 @@ def test_table_semantics_reach_real_chroma_bm25_retrieval(tmp_path, monkeypatch)
     documents = [table_chunk, *indexing.load_local_langchain_documents(str(tmp_path))]
     embeddings = DeterministicFakeEmbedding(size=32)
     indexing.sync_documents(documents, embeddings)
-    bundle = store.load_index_cache(model=embeddings, rerank_model=object())
+    bundle = store._load_index_bundle(model=embeddings, rerank_model=object())
     assert bundle["ok"], bundle["message"]
 
     def no_fallback(*args, **kwargs):
@@ -71,7 +72,7 @@ def test_admission_section_semantics_reach_real_chroma_bm25(
         (tmp_path / f"distractor-{number}.txt").write_text(f"校园图书馆开放时间：周一至周五。分馆编号{number}。")
     embeddings = DeterministicFakeEmbedding(size=32)
     indexing.sync_documents([*table_chunks, *indexing.load_local_langchain_documents(str(tmp_path))], embeddings)
-    bundle = store.load_index_cache(model=embeddings, rerank_model=object())
+    bundle = store._load_index_bundle(model=embeddings, rerank_model=object())
     assert bundle["ok"], bundle["message"]
 
     def forbidden(*args, **kwargs):
@@ -121,9 +122,9 @@ def test_retrieve_falls_back_to_local_embeddings_after_chroma_error(
         def __init__(self):
             self.encoded_texts = []
 
-        def encode(self, texts, **_kwargs):
-            self.encoded_texts.append(texts)
-            return np.array([[1.0, 0.0]], dtype=np.float32)
+        def embed_query(self, text):
+            self.encoded_texts.append(text)
+            return [1.0, 0.0]
 
     def fail_chroma_query(*_args, **_kwargs):
         raise query_error
@@ -142,7 +143,7 @@ def test_retrieve_falls_back_to_local_embeddings_after_chroma_error(
 
     assert results
     assert {result["chunk_id"] for result in results} == {1, 2}
-    assert model.encoded_texts == [["question"], ["question"]]
+    assert model.encoded_texts == ["question", "question"]
 
 
 def test_retrieval_does_not_reexport_policy_or_scoring_symbols():

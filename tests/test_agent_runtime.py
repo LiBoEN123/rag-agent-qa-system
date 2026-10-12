@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from app.agent import framework_tools, runtime
+from app.agent import runtime
 from app.contracts.chat import ToolMode
 from app.tools.context import ToolInvocationContext
 
@@ -52,8 +52,6 @@ def test_upsert_llm_usage_trace_is_pure_and_idempotent():
 
 def test_internal_error_result_keeps_compatible_schema():
     result = build_internal_error_result(
-        RuntimeError("graph exploded"),
-        runtime_label="LangGraph Agent",
         trace_step="agent_langgraph_error",
     )
 
@@ -90,29 +88,6 @@ def test_runtime_short_circuit_uses_one_trace_snapshot():
     assert result["action"] == "direct_answer"
 
 
-def test_rag_only_reuses_local_cache_without_mcp_discovery(monkeypatch, settings_factory):
-    discovery = Mock(return_value=[])
-    monkeypatch.setattr(runtime, "list_mcp_tools_for_context", discovery)
-    monkeypatch.setattr(framework_tools, "list_mcp_tools_for_context", discovery)
-    settings = settings_factory(mcp_tools_enabled=True)
-    cached = runtime.get_compiled_agent_runtime(settings)
-    context = ToolInvocationContext(tool_mode=ToolMode.RAG_ONLY, permissions=("knowledge_base:read", "mcp:github"))
-    invocation = prepare_agent_runtime_invocation(
-        original_question="查询本科生学习年限", effective_question="查询本科生学习年限",
-        trace_id="mode-test", session_id="session-mode",
-        tool_context=context, settings=settings,
-    )
-    assert invocation.agent is cached
-    assert invocation.tool_context.tool_mode is ToolMode.RAG_ONLY
-    assert invocation.tool_context.permissions == context.permissions
-    assert framework_tools.resolve_agent_tools(context, settings) == list(framework_tools.get_local_tools(settings))
-    discovery.assert_not_called()
-    full_context = ToolInvocationContext(permissions=context.permissions)
-    assert full_context.tool_mode is ToolMode.FULL
-    assert runtime.get_compiled_agent_runtime(settings, tool_context=full_context) is cached
-    discovery.assert_called_once_with(full_context, settings=settings)
-
-
 @pytest.mark.parametrize(("question", "action"), [("", "clarify"), ("这个怎么弄", "clarify"), ("你是谁？", "direct_answer")])
 def test_rag_only_preserves_router_short_circuits(monkeypatch, question, action):
     compile_agent = Mock(side_effect=AssertionError("short circuit must not build agent"))
@@ -125,3 +100,23 @@ def test_rag_only_preserves_router_short_circuits(monkeypatch, question, action)
     assert invocation.decision["action"] == action
     assert invocation.agent is None
     compile_agent.assert_not_called()
+
+
+@pytest.mark.parametrize("mode", list(ToolMode))
+def test_qa_uses_local_cache_with_source_mcp_enabled(monkeypatch, settings_factory, mode):
+    from app.tools.mcp import provider
+
+    forbidden = Mock(side_effect=AssertionError("QA must not access source MCP"))
+    monkeypatch.setattr(provider, "get_mcp_tool_provider", forbidden)
+    settings = settings_factory(mcp_tools_enabled=True)
+    cached = runtime.get_compiled_agent_runtime(settings)
+    context = ToolInvocationContext(tool_mode=mode, permissions=("knowledge_base:read",))
+    invocation = prepare_agent_runtime_invocation(
+        original_question="查询本科生学习年限", effective_question="查询本科生学习年限",
+        trace_id="mode-test", session_id="session-mode",
+        tool_context=context, settings=settings,
+    )
+    assert invocation.agent is cached
+    assert invocation.tool_context.tool_mode is mode
+    assert invocation.tool_context.permissions == context.permissions
+    forbidden.assert_not_called()

@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.config import get_settings
 from app.agent import framework_agent, framework_tools
-from tests.support.local_tools import invoke_local_tool, tool_runtime
+from tests.support.local_tools import invoke_local_tool
 from app.tools.context import ToolInvocationContext
 from app.tools.contracts import ToolSpec
 from tests.support.local_tools import local_tools
@@ -40,7 +40,7 @@ def _invoke_local(
     tool_args: dict,
     context: ToolInvocationContext,
 ):
-    """通过直接 BaseTool.invoke 覆盖非 Agent 诊断调用。"""
+    """通过 BaseTool.ainvoke 覆盖非 Agent 诊断调用。"""
     return invoke_local_tool(registry, tool_name, tool_args, context=context)
 
 
@@ -99,7 +99,7 @@ async def _invoke_dynamic_graph(
     """把独立 Provider 注入现有 Graph，不修改任何编排分支。"""
     provider = local_tools(registry)
     reset_agent_runtime()
-    monkeypatch.setattr(framework_agent, "get_answer_model", lambda: model)
+    monkeypatch.setattr(framework_agent, "get_agent_model", lambda: model)
     monkeypatch.setattr(
         framework_tools,
         "get_local_tools",
@@ -139,26 +139,22 @@ def test_tool_spec_builds_framework_structured_tool_from_provider():
 
     assert tool.name == "join_texts"
     assert tool.description == next((item for item in registry if item.name == "join_texts"), None).description
-    assert issubclass(tool.args_schema, JoinTextsArgs)
-    assert "runtime" not in tool.tool_call_schema.model_fields
-    exported = framework_tools.local_tool_contract(tool)
-    framework_schema = tool.tool_call_schema.model_json_schema()
+    assert tool.args_schema == JoinTextsArgs.model_json_schema()
+    assert "runtime" not in tool.tool_call_schema["properties"]
+    join_spec = next(item for item in registry if item.name == "join_texts")
+    exported = framework_tools.local_tool_contract(join_spec)
+    framework_schema = tool.tool_call_schema
     assert exported["args_schema"]["properties"] == framework_schema["properties"]
     assert exported["args_schema"]["required"] == framework_schema["required"]
     assert exported["args_schema"]["properties"]["separator"]["default"] == " "
-    assert framework_tools.local_tool_contract(tool) == exported
+    assert framework_tools.local_tool_contract(join_spec) == exported
     json.dumps(exported)
 
-    join_spec = next((item for item in registry if item.name == "join_texts"), None)
-    assert join_spec is not None
-    tool = framework_tools.build_local_tool(
-        join_spec,
-    )
-    with pytest.raises(ValueError):
-        tool.invoke({"parts": "不是列表", "runtime": tool_runtime(context)})
+    invalid = invoke_local_tool(registry, "join_texts", {"parts": "不是列表"}, context=context)
+    assert invalid["error_code"] == "invalid_arguments"
     assert contexts == []
 
-    valid = tool.invoke({"parts": ["a", "b"], "runtime": tool_runtime(context)})
+    valid = invoke_local_tool(registry, "join_texts", {"parts": ["a", "b"]}, context=context)
     assert valid["output"] == {"text": "a b"}
     assert contexts == [context]
 
@@ -203,7 +199,7 @@ async def test_agent_discovers_and_calls_echo_without_core_tool_mapping(monkeypa
     assert model.bound_tool_names == ["echo_text", "join_texts", model.structured_tool_name]
     message = model.received_messages[1][-1]
     assert isinstance(message, ToolMessage)
-    assert json.loads(message.content)["output"] == {"text": "hello"}
+    assert (message.artifact or json.loads(message.content))["output"] == {"text": "hello"}
     assert output["result"]["answer"] == "echo complete"
     assert len(contexts) == 1
     assert contexts[0].trace_id == "trace-echo"
@@ -293,8 +289,8 @@ async def test_agent_binds_different_dynamic_args_schema(monkeypatch):
     )
 
     tool = next(item for item in model.bound_tools if item.name == "join_texts")
-    assert issubclass(tool.args_schema, JoinTextsArgs)
-    assert "runtime" not in tool.tool_call_schema.model_fields
+    assert tool.args_schema == JoinTextsArgs.model_json_schema()
+    assert "runtime" not in tool.tool_call_schema["properties"]
     payload = json.loads(model.received_messages[1][-1].content)
     assert payload["output"] == {"text": "registry driven"}
 

@@ -108,18 +108,16 @@ from app import config
 from app.agent import runtime as agent_runtime
 from app.llm import factory
 import app.tools.catalog as catalog
-import app.tools.runtime as runtime
 
 assert config.get_settings.cache_info().currsize == 0
 assert catalog.get_local_tool_specs.cache_info().currsize == 0
 from app.agent.framework_tools import get_local_tools
 assert get_local_tools.cache_info().currsize == 0
 assert agent_runtime._get_cached_framework_agent.cache_info().currsize == 0
-assert runtime._executor is None
-assert not hasattr(runtime, "_runtime_entries")
 assert all(
     getter.cache_info().currsize == 0
     for getter in (
+        factory.get_agent_model,
         factory.get_answer_model,
         factory.get_query_rewrite_model,
         factory.get_judge_model,

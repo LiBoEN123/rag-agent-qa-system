@@ -2,6 +2,8 @@
 
 from dataclasses import replace
 import json
+import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -9,19 +11,20 @@ from scripts.evaluation import agent, rag_evaluator, rag_predictions, report
 from scripts.evaluation.contracts import AgentEvaluationCase
 
 
-@pytest.mark.parametrize("tool", ["", "list_documents"], ids=["direct", "local_tool"])
+@pytest.mark.parametrize("tool", ["", "find_documents"], ids=["direct", "local_tool"])
 def test_minimal_agent_smoke(tool, settings_factory, monkeypatch, tmp_path):
     from app.agent import framework_tools, streaming
     from app.agent.streaming import AgentRuntimeStreamEvent
     from app.agent.results import create_agent_result
     from app.contracts.chat import AgentResultStatus
     from app.services import chat_service
-    from app.tools.audit import NullToolAuditSink
+    from tests.support.local_tools import NoOpAuditSink
     from app.tools.catalog import get_local_tool_specs
     from app.tools.policy import ToolPolicyEngine
 
-    settings = settings_factory(mcp_tools_enabled=False)
-    monkeypatch.setattr("app.rag.pipeline.preview_docs", lambda: [])
+    settings = settings_factory()
+    monkeypatch.setattr("app.rag.runtime.chunks", [])
+    monkeypatch.setattr("app.rag.runtime.RAG_READY", True)
     base = chat_service.get_default_chat_service_dependencies()
     monkeypatch.setattr(chat_service, "get_default_chat_service_dependencies", lambda: replace(
         base, rewrite_query_with_history=lambda question, history, trace_id: {
@@ -33,11 +36,11 @@ def test_minimal_agent_smoke(tool, settings_factory, monkeypatch, tmp_path):
         calls = []
         if tool:
             spec = next(s for s in get_local_tool_specs(settings) if s.name == tool)
-            output = framework_tools.execute_project_tool(
+            output = await framework_tools.execute_project_tool(
                 spec=spec, tool_args={}, context=kwargs["tool_context"],
-                settings=settings, policy_engine=ToolPolicyEngine(), audit_sink=NullToolAuditSink(),
+                settings=settings, policy_engine=ToolPolicyEngine(), audit_sink=NoOpAuditSink(),
             )
-            assert output["ok"] and output["output"] == {"count": 0, "documents": []}
+            assert output["ok"] and output["output"] == {"query": None, "count": 0, "total": 0, "documents": []}
             calls.append({"step": "tool_call", "tool_name": tool, "tool_status": "success"})
         yield AgentRuntimeStreamEvent("result", {"result": create_agent_result(
             status=AgentResultStatus.OK, answer="文档列表为空" if tool else "你好", action="agent",
@@ -48,7 +51,7 @@ def test_minimal_agent_smoke(tool, settings_factory, monkeypatch, tmp_path):
     case = AgentEvaluationCase.model_validate({
         "id": tool or "direct", "version": 2, "suite": "core", "category": "smoke",
         "question": "请列出知识库文档" if tool else "你好", "expected": {
-            "status": "OK", "first_tool": tool, "tool_sequence": [tool] if tool else [],
+            "action": "agent", "status": "OK", "tools_contains": [tool] if tool else [],
             "tool_output_keys": ["count", "documents"] if tool else [],
         },
     })
@@ -56,37 +59,35 @@ def test_minimal_agent_smoke(tool, settings_factory, monkeypatch, tmp_path):
     assert row["passed"] and row["actual_tools"] == ([tool] if tool else [])
     assert row["tool_output_schema_pass"]
     report.write_jsonl(tmp_path / "per_case.jsonl", [row])
-    report.write_agent_csv(tmp_path / "per_case.csv", [row])
-    assert json.loads((tmp_path / "per_case.jsonl").read_text())["passed"]
+    assert json.loads((tmp_path / "per_case.jsonl").read_text()) == row
     assert not settings.sqlite_db_path.exists()
 
 
 def test_minimal_rag_smoke_judge_disabled(monkeypatch, tmp_path):
-    from scripts.evaluation.rag import judge
+    from scripts.evaluation import deepeval_adapter as judge
 
     def deny(*args, **kwargs):
         pytest.fail("judge must remain disabled")
 
     monkeypatch.setattr(judge, "get_judge_model", deny)
-    monkeypatch.setattr(judge, "call_judge_json", deny)
     monkeypatch.setattr(rag_predictions, "initialize_rag_for_predictions", lambda **kwargs: None)
     chunk = {"chunk_id": 1, "text": "评测规则", "metadata": {"source_file": "rules.md"}}
     from app.services.chat_models import ChatServiceOutcome
-    from app.rag import pipeline
+    from app.rag import runtime as pipeline
     monkeypatch.setattr(pipeline, "chunks", [chunk])
     def chat_turn(*args, **kwargs):
         from app.agent import framework_tools
         from types import SimpleNamespace
-        framework_tools.execute_project_tool(spec=SimpleNamespace(name="search_knowledge_base"), tool_args={})
+        asyncio.run(framework_tools.execute_project_tool(spec=SimpleNamespace(name="search_knowledge_base"), tool_args={}))
         return ChatServiceOutcome(http_status=200, code=200, message="ok", question="规则是什么", result={
             "answer": "评测规则", "status": "OK", "references": [{"chunk_id": 1}],
             "tool_trace": [{"step": "tool_call", "tool_call_id": "a"}], "llm_call_count": 2,
         })
-    monkeypatch.setattr("app.agent.framework_tools.execute_project_tool", lambda **kwargs: {
+    monkeypatch.setattr("app.agent.framework_tools.execute_project_tool", AsyncMock(return_value={
         "tool_call_id": "a", "ok": True, "output": {"evidence": [
             {"metadata": {"source_type": "knowledge_base", "chunk_id": 1}},
         ]},
-    })
+    }))
     monkeypatch.setattr(rag_predictions, "run_evaluation_chat_turn", chat_turn)
     eval_file, pred_file, chunks_file = [tmp_path / n for n in ("eval.json", "predictions.csv", "chunks.json")]
     eval_file.write_text(json.dumps([{
@@ -103,5 +104,5 @@ def test_minimal_rag_smoke_judge_disabled(monkeypatch, tmp_path):
     assert result["summary"]["overall"]["llm_judge_coverage"] == 0
     assert result["rows"][0]["retrieval_gold_chunk_recall_at_k"] == 1
     assert {p.name for p in (tmp_path / "rag").iterdir()} == {
-        "per_question_report.csv", "summary_report.csv", "summary_report.json", "llm_judge_details.jsonl",
+        "per_question_report.csv",
     }

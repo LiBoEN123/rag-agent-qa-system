@@ -12,10 +12,6 @@ from scripts.evaluation.contracts import (
     load_agent_evaluation_dataset,
     validate_tool_names,
 )
-from scripts.evaluation.external import (
-    McpPreflightError,
-    validate_mcp_runtime_catalog,
-)
 
 
 FIXTURE = (
@@ -25,9 +21,25 @@ FIXTURE = (
     / "minimal_agent_cases_v2.json"
 )
 KNOWN_TOOLS = {
-    "list_documents",
+    "find_documents",
     "search_knowledge_base",
 }
+
+
+def test_core_outcomes_and_strict_business_invariants():
+    dataset = load_agent_evaluation_dataset(
+        Path(__file__).parents[1] / "data/eval/agent_eval_cases_v2.json",
+    )
+    cases = {case.id: case for case in dataset.cases}
+    for case_id in [f"D{i:03d}" for i in range(1, 14)]:
+        expected = cases[case_id].expected
+        assert expected.sources and expected.keywords
+    for case_id, tool in [("T001", "find_documents"), ("T002", "find_documents"), ("T003", "get_chunk_context")]:
+        assert tool in cases[case_id].expected.tools_contains
+    assert cases["D008"].expected.sources == ["内蒙古工业大学学籍管理办法（2018年修订）.md"]
+    compare = cases["compare_documents_explicit_001"].expected
+    assert compare.source_match == "all" and len(compare.sources) == 2
+    assert cases["agent-tool-recovery-001"].expected.tool_status_sequence == ["error", "success"]
 
 
 def _single_case(**changes):
@@ -67,8 +79,8 @@ def test_valid_multi_turn_case():
                 "question": "第二轮",
                 "expected": {
                     "status": "OK",
-                    "rewrite_keywords": ["第一轮"],
-                    "min_rewrite_keyword_hits": 1,
+                    "keywords": ["第一轮"],
+                    "min_keyword_hits": 1,
                 },
             },
         ],
@@ -106,6 +118,12 @@ def test_valid_multi_turn_case():
         ),
         (
             lambda raw: raw["cases"][0]["expected"].update(
+                {"tools_contains": ["bad-name"]}
+            ),
+            "安全名称格式",
+        ),
+        (
+            lambda raw: raw["cases"][0]["expected"].update(
                 {"keywords": ["a"], "min_keyword_hits": 2}
             ),
             "不能超过",
@@ -134,7 +152,7 @@ def test_unknown_tool_is_rejected():
         _single_case(
             expected={
                 "status": "OK",
-                "first_tool": "unknown_tool",
+                "tools_contains": ["unknown_tool"],
             }
         )
     )
@@ -160,6 +178,8 @@ def test_coverage_separates_suites_and_case_shapes():
         "multi_turn": 0,
     }
     assert "web_search" in report["gaps"]
+    assert report["capabilities"]["multi_turn"] is False
+    assert report["checks"]["tool_output_keys"] == 0
 
 
 def test_dataset_is_json_serializable_without_nan():
@@ -171,83 +191,10 @@ def test_dataset_is_json_serializable_without_nan():
     )
 
 
-def test_first_tool_any_of_is_exclusive_with_first_tool():
-    valid = AgentEvaluationDataset.model_validate(
-        _single_case(
-            expected={
-                "status": "OK",
-                "first_tool_any_of": [
-                    "list_documents",
-                    "search_knowledge_base",
-                ],
-            }
-        )
-    )
-    validate_tool_names(valid, KNOWN_TOOLS)
-
-    raw = _single_case(
-        expected={
-            "status": "OK",
-            "first_tool": "list_documents",
-            "first_tool_any_of": ["search_knowledge_base"],
-        }
-    )
-    with pytest.raises(ValidationError, match="只能使用一个"):
-        AgentEvaluationDataset.model_validate(raw)
-
-
-@pytest.mark.parametrize(
-    ("suite", "servers", "match"),
-    [
-        ("core", ["github"], "必须为空"),
-        ("online", ["firecrawl"], "必须为空"),
-        ("mcp", [], "必须非空"),
-    ],
-)
-def test_suite_mcp_server_contract_is_fail_closed(suite, servers, match):
-    with pytest.raises(ValidationError, match=match):
-        AgentEvaluationDataset.model_validate(
-            _single_case(suite=suite, mcp_servers=servers)
-        )
-
-
-def test_mcp_tool_name_is_deferred_to_runtime_catalog_validation():
-    dataset = AgentEvaluationDataset.model_validate(
-        _single_case(
-            suite="mcp",
-            mcp_servers=["github"],
-            expected={
-                "status": "OK",
-                "first_tool": "github_get_file_contents",
-                "tool_origin": "mcp",
-                "mcp_server": "github",
-            },
-        )
-    )
-    validate_tool_names(dataset, KNOWN_TOOLS)
-
-    with pytest.raises(
-        McpPreflightError,
-        match="REQUIRED_MCP_TOOL_NOT_AVAILABLE",
-    ):
-        validate_mcp_runtime_catalog(
-            dataset,
-            [],
-            selected_suites={"mcp"},
-        )
-
-    validate_mcp_runtime_catalog(
-        dataset,
-        [
-            {
-                "server": "github",
-                "tool_name": "github_get_file_contents",
-                "remote_tool": "get_file_contents",
-                "risk_level": "read_only",
-                "approval_required": False,
-                "enabled": True,
-                "enabled_for_default_principal": False,
-            }
-        ],
-        selected_suites={"mcp"},
-    )
+@pytest.mark.parametrize("changes", [
+    {"suite": "mcp"}, {"suite": "mixed"}, {"mcp_servers": ["github"]},
+    {"expected": {"mcp_server": "github"}},
+])
+def test_removed_evaluation_contracts_are_rejected(changes):
+    with pytest.raises(ValidationError):
+        AgentEvaluationDataset.model_validate(_single_case(**changes))

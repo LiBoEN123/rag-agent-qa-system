@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from langchain_chroma import Chroma
 from langchain_classic.indexes import SQLRecordManager
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
@@ -16,6 +15,7 @@ from langchain_text_splitters import (
     RecursiveCharacterTextSplitter,
 )
 
+from app.storage.vector import create_vector_store
 from app.config import AppSettings, get_settings
 from app.ingestion import (
     IngestionCandidate,
@@ -27,14 +27,14 @@ from app.ingestion import (
     build_knowledge_document,
 )
 from app.ingestion.document_blocks import canonical_document_text
-from app.rag.ingest import (
+from app.ingestion.files import (
     clean_markdown_text,
     clean_text,
     collect_supported_files,
-    read_file_text,
+    read_txt_auto,
 )
-from app.rag.parsing import parse_document
-from app.rag.structured_chunking import chunk_structured_document
+from app.ingestion.parsing import parse_document
+from app.indexing.chunking import chunk_structured_document
 
 
 LOCAL_RECORD_NAMESPACE = "rag-agent/local/v1"
@@ -91,6 +91,7 @@ def candidate_to_langchain_documents(
     if document.structured_content is not None:
         chunks = chunk_structured_document(
             document.structured_content, splitter=splitter, chunk_size=chunk_size,
+            document_title=document.title,
         )
     elif file_type == "md":
         sections = MarkdownHeaderTextSplitter(
@@ -150,7 +151,7 @@ def load_local_langchain_documents(
             if not content.strip():
                 raise ValueError(f"文档未提取到可索引文本: {file_path}")
         else:
-            content = read_file_text(str(file_path))
+            content = read_txt_auto(str(file_path))
             content = clean_markdown_text(content) if file_type == "md" else clean_text(content)
         knowledge_document = build_knowledge_document(
             source_type=KnowledgeSourceType.LOCAL_FILE,
@@ -205,24 +206,6 @@ def create_record_manager(
     return manager
 
 
-def create_vector_store(
-    embeddings: Embeddings | None,
-    settings: AppSettings | None = None,
-    *,
-    create_collection_if_not_exists: bool = True,
-) -> Chroma:
-    """创建由 langchain-chroma 管理读写的 v2 VectorStore。"""
-    resolved = settings or get_settings()
-    resolved.chroma_persist_dir.mkdir(parents=True, exist_ok=True)
-    return Chroma(
-        collection_name=resolved.chroma_index_collection_name,
-        persist_directory=str(resolved.chroma_persist_dir),
-        embedding_function=embeddings,
-        collection_metadata={"hnsw:space": "cosine"},
-        create_collection_if_not_exists=create_collection_if_not_exists,
-    )
-
-
 def sync_documents(
     documents: list[Document],
     embeddings: Embeddings,
@@ -246,18 +229,3 @@ def sync_documents(
     )
     return {key: int(value) for key, value in result.items()}
 
-
-__all__ = [
-    "EXTERNAL_RECORD_NAMESPACE_BY_SOURCE_TYPE",
-    "FIRECRAWL_RECORD_NAMESPACE",
-    "GITHUB_RECORD_NAMESPACE",
-    "LOCAL_RECORD_NAMESPACE",
-    "RECORD_MANAGER_FILE_NAME",
-    "UPLOAD_RECORD_NAMESPACE",
-    "candidate_to_langchain_documents",
-    "create_record_manager",
-    "create_vector_store",
-    "load_local_langchain_documents",
-    "record_manager_path",
-    "sync_documents",
-]

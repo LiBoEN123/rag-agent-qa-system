@@ -50,6 +50,23 @@ jobs:
       - name: Validate evaluation datasets
         run: python scripts/run_evaluation_baseline.py --validate-only
 
+      - name: Cache PDF parser models
+        id: docling-models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub
+          key: ${{ runner.os }}-docling-pdf-v1-${{ hashFiles('requirements.lock', 'app/ingestion/parsing.py') }}
+
+      - name: Prepare PDF parser models
+        if: steps.docling-models.outputs.cache-hit != 'true'
+        run: |
+          python - <<'PY'
+          from docling.datamodel.base_models import InputFormat
+          from app.ingestion.parsing import _document_converter
+
+          _document_converter().initialize_pipeline(InputFormat.PDF)
+          PY
+
       - name: Run tests
         env:
           HF_HUB_OFFLINE: "1"

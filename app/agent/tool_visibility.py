@@ -2,35 +2,30 @@
 
 from langchain.agents.middleware import AgentMiddleware, ModelRequest
 
-from app.agent.framework_tools import ProjectStructuredTool
 from app.contracts.chat import RAG_TOOL_NAMES, ToolMode
 from app.tools.context import ToolInvocationContext, has_permission
 
 
 class ProjectToolVisibilityMiddleware(AgentMiddleware):
-    """先限制请求工具范围，再过滤本地权限；MCP 权限仍由独立路径处理。"""
+    """按请求工具模式和权限过滤本地工具。"""
 
     # 根据请求模式和调用者权限筛选模型可见工具。
     @staticmethod
     def visible_request(request: ModelRequest) -> ModelRequest:
         context = request.runtime.context
-        permissions = (
-            context.permissions if isinstance(context, ToolInvocationContext) else ()
-        )
-        rag_only = (
-            isinstance(context, ToolInvocationContext)
-            and context.tool_mode is ToolMode.RAG_ONLY
-        )
+        if not isinstance(context, ToolInvocationContext):
+            return request.override(tools=[])
+        permissions = context.permissions
+        rag_only = context.tool_mode is ToolMode.RAG_ONLY
         return request.override(
             tools=[
                 tool
                 for tool in request.tools
-                if (not rag_only or getattr(tool, "name", None) in RAG_TOOL_NAMES)
+                if (not rag_only or tool.name in RAG_TOOL_NAMES)
                 and (
-                    not isinstance(tool, ProjectStructuredTool)
-                    or all(
+                    all(
                         has_permission(permissions, permission)
-                        for permission in tool.project_spec.required_permissions
+                        for permission in (tool.metadata or {}).get("required_permissions", ())
                     )
                 )
             ]

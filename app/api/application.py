@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
+from app.common.logging import get_logger
+
 from fastapi import FastAPI
 
 from app.api.chat import create_chat_router
@@ -18,32 +20,29 @@ from app.api.ingestion import (
     create_ingestion_router, handle_ingestion_api_error,
 )
 from app.api.lifecycle import (
-    StartupDependencies,
     aclose_agent_runtime,
     close_mcp_runtime,
-    close_tool_executor,
     initialize_agent_runtime,
     initialize_mcp_runtime,
-    initialize_rag,
 )
 from app.api.middleware import trace_and_timing_middleware
 from app.config import AppSettings, get_settings, validate_startup_environment
 from app.ingestion import IngestionPrincipalType, IngestionRequester, IngestionService
 from app.observability.metrics import read_recent_metrics
-from app.rag.pipeline import (
+from app.rag.runtime import (
     get_rag_status,
     preview_chunks,
     preview_docs,
-    rebuild_and_persist_index,
+    load_index_cache,
     run_diagnostic_search,
 )
-from app.rag.store import needs_rebuild
+from app.indexing.service import IndexingService
 from app.services.chat_service import (
     ChatService,
     create_default_chat_service,
 )
 from app.sources import ExternalKnowledgeSourceService
-from app.storage.database import init_db
+from app.storage.memory import init_session_storage
 from app.storage.ingestion import SQLiteCandidateRepository, SQLiteIndexRunRepository
 
 
@@ -57,6 +56,16 @@ def get_default_diagnostics_dependencies() -> DiagnosticsDependencies:
         run_diagnostic_search=run_diagnostic_search,
         read_recent_metrics=read_recent_metrics,
     )
+
+
+def refresh_query_runtime() -> None:
+    """Combined app 的可选集成动作；刷新失败不改变已成功的持久操作历史。"""
+    try:
+        ok, _message = load_index_cache(allow_empty=True)
+    except Exception:
+        ok = False
+    if not ok:
+        get_logger("chat_service").warning("[index] persistent operation succeeded; query refresh failed")
 
 
 def get_default_ingestion_dependencies(
@@ -81,6 +90,8 @@ def get_default_ingestion_dependencies(
             ingestion_service=ingestion_service,
             settings=settings,
         ),
+        indexing_service=IndexingService(settings=settings, candidates=candidates),
+        on_index_changed=refresh_query_runtime,
         index_runs=SQLiteIndexRunRepository(settings.sqlite_db_path),
         requester=requester,
         admin_api_key=settings.ingestion_admin_api_key,
@@ -106,14 +117,9 @@ def start_application_resources(settings: AppSettings | None = None) -> None:
     """按现有顺序校验配置并初始化 RAG 与 Agent Runtime。"""
     resolved = settings or get_settings()
     validate_startup_environment(resolved)
-    init_db(resolved.sqlite_db_path)
-    initialize_rag(
-        StartupDependencies(
-            settings=resolved,
-            needs_rebuild=needs_rebuild,
-            rebuild_and_persist_index=rebuild_and_persist_index,
-        )
-    )
+    init_session_storage(resolved.sqlite_db_path)
+    ok, message = load_index_cache()
+    get_logger("chat_service").info("[startup] index_loaded=%s message=%s", ok, message)
     initialize_agent_runtime(resolved)
 
 
@@ -127,13 +133,13 @@ async def lifespan(_app: FastAPI):
             or get_settings()
         )
         start_application_resources(settings)
-        await initialize_mcp_runtime(settings)
+        if settings.ingestion_admin_api_enabled:
+            await initialize_mcp_runtime(settings)
         if isinstance(_app, FastAPI):
             _register_ingestion_operations(_app, settings)
         yield
     finally:
         await close_mcp_runtime()
-        close_tool_executor()
         await aclose_agent_runtime()
 
 

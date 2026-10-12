@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from app.config import AppSettings, get_settings
-from app.rag.scoring import safe_float
+from app.common.numeric import safe_float
 from app.tools.contracts import ToolAuditOutputMode, ToolSpec
 from app.common.redaction import (
     DEFAULT_SENSITIVE_KEYS,
@@ -24,7 +24,6 @@ class ToolAuditEventType(str, Enum):
 
     REQUESTED = "requested"
     DENIED = "denied"
-    APPROVAL_REQUIRED = "approval_required"
     STARTED = "started"
     RETRYING = "retrying"
     SUCCEEDED = "succeeded"
@@ -82,19 +81,11 @@ class ToolAuditSink(Protocol):
         ...
 
 
-class NullToolAuditSink:
-    """显式关闭审计时使用的无副作用写入器。"""
-
-    def write(self, event: ToolAuditEvent) -> None:
-        """接收事件但不持久化。"""
-        del event
-
-
 class DisabledToolAuditSink:
-    """配置关闭审计时保持只读 fail-open、写工具 fail-closed。"""
+    """配置关闭审计时报告不可用，保留只读调用的 fail-open 行为。"""
 
     def write(self, event: ToolAuditEvent) -> None:
-        """显式报告审计不可用，由 Runtime 按风险级别处理。"""
+        """显式报告审计不可用，由调用方记录写入失败。"""
         del event
         raise RuntimeError("tool audit is disabled")
 
@@ -194,16 +185,6 @@ def summarize_tool_output(
             "type": type(value).__name__,
         }
 
-    if spec.audit_output_mode is ToolAuditOutputMode.SANITIZED:
-        return redact_sensitive_data(
-            value,
-            sensitive_keys=(
-                *DEFAULT_SENSITIVE_KEYS,
-                *spec.sensitive_output_fields,
-            ),
-            **audit_redaction_limits(settings),
-        )
-
     if not isinstance(value, dict):
         if isinstance(value, (list, tuple)):
             return {"type": type(value).__name__, "count": len(value)}
@@ -218,38 +199,7 @@ def summarize_tool_output(
         }
         return redact_sensitive_data(
             summary,
-            sensitive_keys=spec.sensitive_output_fields,
-            **audit_redaction_limits(settings),
-        )
-    if spec.name == "compare_documents":
-        metadata = retrieval_evidence_metadata(value)
-        summary = {
-            "doc_a": value.get("doc_a", ""),
-            "doc_b": value.get("doc_b", ""),
-            "doc_a_count": value.get("doc_a_count", 0),
-            "doc_b_count": value.get("doc_b_count", 0),
-            "count": value.get("count", 0),
-            "top_chunk_ids": [item.get("chunk_id") for item in metadata],
-            "top_rerank_scores": [
-                round(safe_float(item.get("rerank_score")), 4) for item in metadata
-            ],
-        }
-        return redact_sensitive_data(
-            summary,
-            sensitive_keys=spec.sensitive_output_fields,
-            **audit_redaction_limits(settings),
-        )
-    if spec.name == "list_documents":
-        documents = value.get("documents")
-        summary = {
-            "count": value.get(
-                "count",
-                len(documents) if isinstance(documents, list) else 0,
-            )
-        }
-        return redact_sensitive_data(
-            summary,
-            sensitive_keys=spec.sensitive_output_fields,
+
             **audit_redaction_limits(settings),
         )
     if spec.name == "web_fetch":
@@ -264,7 +214,7 @@ def summarize_tool_output(
         }
         return redact_sensitive_data(
             summary,
-            sensitive_keys=spec.sensitive_output_fields,
+
             **audit_redaction_limits(settings),
         )
     if spec.name == "web_pdf_fetch":
@@ -282,7 +232,7 @@ def summarize_tool_output(
         }
         return redact_sensitive_data(
             summary,
-            sensitive_keys=spec.sensitive_output_fields,
+
             **audit_redaction_limits(settings),
         )
 
@@ -297,7 +247,7 @@ def summarize_tool_output(
             summary[key] = value[key]
     return redact_sensitive_data(
         summary,
-        sensitive_keys=spec.sensitive_output_fields,
+
         **audit_redaction_limits(settings),
     )
 
@@ -305,7 +255,6 @@ def summarize_tool_output(
 __all__ = [
     "JsonlToolAuditSink",
     "DisabledToolAuditSink",
-    "NullToolAuditSink",
     "ToolAuditEvent",
     "ToolAuditEventType",
     "ToolAuditSink",

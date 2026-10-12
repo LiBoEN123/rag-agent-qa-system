@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 from app.tools.catalog import get_local_tool_specs
 from app.agent import framework_agent
-from app.agent.framework_tools import get_local_tools
+from app.agent.framework_tools import local_tool_contract, get_local_tools
 from app.tools.context import build_default_tool_context
 from app.tools.contracts import ToolSpec
 from tests.support.local_tools import local_tools
@@ -30,16 +30,12 @@ def test_runtime_report_preserves_direct_create_agent_contract(
     monkeypatch,
     settings_factory,
 ):
-    """报告来自真实 create_agent，并拒绝 Parent Graph 节点。"""
+    """真实 create_agent 报告保留结果、治理和模块边界契约。"""
     settings = _knowledge_only(settings_factory)
     report = inspection.inspect_runtime(settings=settings)
     agent_nodes = set(report["agent_runtime"]["nodes"])
-    state_fields = set(report["state_schema"]["fields"])
 
     assert inspection.EXPECTED_AGENT_NODES <= agent_nodes
-    assert inspection.FORBIDDEN_PARENT_NODES.isdisjoint(agent_nodes)
-    assert "knowledge_base_result" not in state_fields
-    assert "framework_events_applied" not in state_fields
     assert {
         "create_agent_is_only_agent_loop",
         "no_parent_agent_graph",
@@ -50,7 +46,6 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "accepted_model_governance_boundary",
         "no_tool_governance_artifact_protocol",
         "framework_tools_does_not_simulate_middleware",
-        "mcp_tool_has_no_framework_rewrapper",
         "result_builder_owns_agent_result",
         "chat_service_consumes_agent_result",
         "streaming_uses_create_agent_directly",
@@ -59,7 +54,6 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "local_tool_execution_entry_is_unique",
         "local_handler_is_adapter_owned",
         "local_visibility_is_model_middleware",
-        "mcp_governance_is_independent",
         "no_parent_event_projection_cursor",
         "agent_result_contract",
         "status_policy_complete",
@@ -72,7 +66,6 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "http_framework_boundary",
         "settings_framework_boundary",
         "zero_import_ignores",
-        "mcp_disabled_by_default",
         "tool_runtime_governance_preserved",
     } <= {item["name"] for item in report["checks"]}
     assert report["module_boundaries"] == {
@@ -95,19 +88,13 @@ def test_runtime_report_preserves_direct_create_agent_contract(
         "model_wrap_hooks_overridden": False,
         "status": "accepted_model_governance_boundary",
     }
-    assert report["mcp_client"] == {
-        "enabled_by_default": False,
-        "config_version": 1,
-        "transport": "streamable_http",
-        "dependency": "0.3.2",
-    }
     assert report["local_tool_execution"] == {
         "catalog": "get_local_tools",
         "visibility": "ProjectToolVisibilityMiddleware",
-        "adapter": "ProjectStructuredTool",
-        "input_validation": "LangChain StructuredTool/Pydantic",
-        "retry": "LangChain ToolRetryMiddleware",
-        "timeout": "shared bounded executor helper",
+        "adapter": "StructuredTool",
+        "input_validation": "Pydantic model_validate",
+        "retry": "LangChain Runnable.with_retry",
+        "timeout": "asyncio.timeout",
         "terminal": "ToolSpec.handler",
     }
     assert {
@@ -142,21 +129,19 @@ def test_tool_contracts_use_model_facing_json_schema(
         "web_search",
         "web_fetch",
         "web_pdf_fetch",
-        "compare_documents",
-        "list_documents",
-        "get_chunk_text",
+
+        "get_chunk_context",
     }
     assert all(tool["args_schema"]["type"] == "object" for tool in tools)
     assert all("runtime" not in tool["args_schema"].get("properties", {}) for tool in tools)
     assert all(tool["description"] and tool["version"] for tool in tools)
-    assert all(tool["risk_level"] == "read_only" for tool in tools)
+    assert all("risk_level" not in tool for tool in tools)
     assert report["default_visible_tools"] == [
         "search_knowledge_base",
         "find_documents",
         "search_document",
-        "compare_documents",
-        "list_documents",
-        "get_chunk_text",
+
+        "get_chunk_context",
     ]
     web = next(tool for tool in tools if tool["name"] == "web_search")
     assert web["required_permissions"] == ["web:search"]
@@ -187,17 +172,17 @@ def test_tool_contracts_use_model_facing_json_schema(
 
 
 def test_all_local_framework_tool_schemas_match_registry_contract(settings_factory):
-    """全部九个 Local Tool 保持名称、描述、字段、required 与类型不变。"""
+    """全部七个 Local Tool 保持名称、描述、字段、required 与类型不变。"""
     settings = _knowledge_only(settings_factory, "web:search", "web:fetch")
     registry = get_local_tool_specs(settings)
     tools = get_local_tools(settings)
 
-    assert len(tools) == 9
+    assert len(tools) == 7
     for tool in tools:
         spec = next((item for item in registry if item.name == tool.name), None)
         assert spec is not None
         expected = spec.args_model.model_json_schema()
-        actual = tool.tool_call_schema.model_json_schema()
+        actual = tool.tool_call_schema
         assert tool.name == spec.name
         assert tool.description == spec.description
         assert actual.get("properties") == expected.get("properties")
@@ -227,17 +212,7 @@ def test_mermaid_cli_uses_xray_compiled_graph(capsys):
     assert "graph TD;" in output
     assert "model" in output
     assert "tools" in output
-    assert "rag_subgraph(rag_subgraph)" not in output
     assert "ModelCallLimitMiddleware" in output
-
-
-def test_check_cli_passes_without_extra_output(capsys):
-    """当前架构满足检查时返回稳定消息和零退出码。"""
-    assert inspection.main(["--check"]) == 0
-    captured = capsys.readouterr()
-
-    assert captured.out == "Agent runtime architecture checks passed.\n"
-    assert captured.err == ""
 
 
 def test_inspection_reports_web_search_when_default_permission_is_enabled(
@@ -301,7 +276,7 @@ def test_inspection_does_not_initialize_model_or_handler(
             args_model=ProbeArgs,
         )
     )
-    monkeypatch.setattr(framework_agent, "get_answer_model", forbidden)
+    monkeypatch.setattr(framework_agent, "get_agent_model", forbidden)
     monkeypatch.setattr(
         import_module("app.tools.web_download"),
         "Manager",
@@ -313,6 +288,7 @@ def test_inspection_does_not_initialize_model_or_handler(
         forbidden,
     )
 
+    monkeypatch.setattr(inspection, "get_local_tool_contracts", lambda settings: [local_tool_contract(spec) for spec in registry])
     report = inspection.inspect_runtime(
         local_tools(registry),
         settings=_knowledge_only(settings_factory),

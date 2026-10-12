@@ -37,11 +37,22 @@ def test_sha256_file_is_stable(tmp_path):
     )
 
 
+@pytest.mark.parametrize("independent_agent", [False, True])
 def test_build_manifest_records_commit_dirty_hashes_and_safe_whitelist(
     tmp_path,
     monkeypatch,
+    independent_agent,
 ):
     settings = _settings(tmp_path)
+    if independent_agent:
+        settings = settings.model_copy(update={
+            "agent_model_name": "independent-agent",
+            "agent_temperature": 0.3,
+            "agent_llm_max_tokens": 543,
+            "agent_enable_thinking": False,
+            "agent_llm_api_key": SecretStr("agent-do-not-leak"),
+            "agent_llm_api_url": "https://user:url-credential@agent.example/v1",
+        })
     cases = tmp_path / "cases.json"
     rag = tmp_path / "rag.json"
     cases.write_text("[]", encoding="utf-8")
@@ -59,8 +70,8 @@ def test_build_manifest_records_commit_dirty_hashes_and_safe_whitelist(
         evaluation_manifest,
         "build_tool_contract",
         lambda _settings: (
-            ["list_documents"],
-            [{"name": "list_documents"}],
+            ["find_documents"],
+            [{"name": "find_documents"}],
             "contract-hash",
         ),
     )
@@ -68,7 +79,6 @@ def test_build_manifest_records_commit_dirty_hashes_and_safe_whitelist(
     manifest = evaluation_manifest.build_manifest(
         run_id="run-1",
         settings=settings,
-        production_mcp_tools_enabled=True,
         agent_cases_path=cases,
         rag_eval_path=rag,
         coverage_report=_coverage(),
@@ -84,15 +94,27 @@ def test_build_manifest_records_commit_dirty_hashes_and_safe_whitelist(
     assert manifest["code"]["git_dirty"] is True
     assert manifest["data"]["agent_cases_sha256"]
     assert manifest["agent"]["tool_contract_sha256"] == "contract-hash"
+    assert manifest["agent"]["agent_model"] == (
+        "independent-agent" if independent_agent else settings.model_name
+    )
+    assert manifest["agent"]["agent_temperature"] == (
+        0.3 if independent_agent else settings.temperature
+    )
+    assert manifest["agent"]["agent_max_tokens"] == (
+        543 if independent_agent else settings.llm_max_tokens
+    )
+    assert manifest["agent"]["answer_model"] == settings.model_name
+    assert manifest["agent"]["agent_enable_thinking"] == (
+        False if independent_agent else "provider_default"
+    )
+    assert manifest["agent"]["answer_temperature"] == settings.temperature
+    assert manifest["agent"]["answer_max_tokens"] == settings.llm_max_tokens
+    assert not {"temperature", "max_tokens"} & manifest["agent"].keys()
     assert not {"top_k", "decompose_top_k", "decompose_enabled", "decompose_model"} & manifest["agent"].keys()
     assert set(manifest["prompts"]["agent"]["files"]) == set(evaluation_manifest.AGENT_PROMPT_INPUT_FILES)
     assert "legacy_rag" not in manifest["prompts"]
     assert not any(path.startswith("app/rag/") for path in manifest["prompts"]["agent"]["files"])
-    assert manifest["mcp"] == {
-        "production_enabled": True,
-        "evaluation_enabled": False,
-        "mode": "core_disabled",
-    }
+    assert "mcp" not in manifest
     assert manifest["rag"]["index_manifest_sha256"] == ""
     assert manifest["rag"]["prediction_schema_version"] == 3
     assert manifest["rag"]["retrieval_metric_k"] == 5
@@ -101,6 +123,9 @@ def test_build_manifest_records_commit_dirty_hashes_and_safe_whitelist(
     assert not any(key.startswith(("requested_", "effective_", "decompose_", "context_")) for key in manifest["rag"])
     assert "do-not-leak" not in serialized
     assert "rewrite-do-not-leak" not in serialized
+    assert "agent-do-not-leak" not in serialized
+    assert "url-credential" not in serialized
+    assert "agent.example" not in serialized
 
 
 def test_manifest_reads_index_manifest_without_loading_rag(
@@ -142,7 +167,6 @@ def test_manifest_reads_index_manifest_without_loading_rag(
     manifest = evaluation_manifest.build_manifest(
         run_id="run",
         settings=settings,
-        production_mcp_tools_enabled=False,
         agent_cases_path=None,
         rag_eval_path=None,
         coverage_report=_coverage(),
@@ -161,72 +185,6 @@ def test_manifest_reads_index_manifest_without_loading_rag(
     assert manifest["rag"]["document_count"] == 14
     assert manifest["rag"]["chunk_count"] == 99
     assert manifest["rag"]["chunk_size"] == 123
-
-
-def test_manifest_mcp_metadata_does_not_read_or_expose_server_secrets(
-    tmp_path,
-    monkeypatch,
-):
-    settings = _settings(tmp_path).model_copy(
-        update={
-            "mcp_servers_config_path": tmp_path / "mcp-with-secrets.json",
-            "mcp_tools_enabled": False,
-        }
-    )
-    settings.mcp_servers_config_path.write_text(
-        json.dumps(
-            {
-                "headers": {
-                    "Authorization": "Bearer manifest-must-not-read-this",
-                    "X-Api-Key": "manifest-must-not-read-api-key",
-                },
-                "headers_env": {
-                    "Authorization": "MCP_MANIFEST_SECRET_ENV"
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv(
-        "MCP_MANIFEST_SECRET_ENV",
-        "Bearer manifest-must-not-read-env-value",
-    )
-    monkeypatch.setattr(
-        evaluation_manifest,
-        "get_git_state",
-        lambda: {
-            "git_commit": "abc",
-            "git_branch": "branch",
-            "git_dirty": False,
-        },
-    )
-    monkeypatch.setattr(
-        evaluation_manifest,
-        "build_tool_contract",
-        lambda _settings: ([], [], "hash"),
-    )
-
-    manifest = evaluation_manifest.build_manifest(
-        run_id="mcp-safe",
-        settings=settings,
-        production_mcp_tools_enabled=True,
-        agent_cases_path=None,
-        rag_eval_path=None,
-        coverage_report=_coverage(),
-        retrieval_metric_k=5,
-        include_online=False,
-        use_llm_judge=False,
-        judge_model="",
-    )
-    serialized = json.dumps(manifest, ensure_ascii=False)
-
-    assert manifest["mcp"] == {
-        "production_enabled": True,
-        "evaluation_enabled": False,
-        "mode": "core_disabled",
-    }
-    assert "manifest-must-not-read" not in serialized
-    assert "MCP_MANIFEST_SECRET_ENV" not in serialized
 
 
 @pytest.mark.parametrize(
@@ -253,69 +211,3 @@ def test_static_tool_names_match_runtime_registry(tmp_path):
 
     assert static_names == runtime_names
     assert contract_hash
-
-
-def test_extended_manifest_records_only_safe_mcp_catalog_metadata(
-    tmp_path,
-    monkeypatch,
-):
-    settings = _settings(tmp_path).model_copy(
-        update={"mcp_tools_enabled": True}
-    )
-    monkeypatch.setattr(
-        evaluation_manifest,
-        "get_git_state",
-        lambda: {
-            "git_commit": "abc",
-            "git_branch": "extended",
-            "git_dirty": True,
-        },
-    )
-    monkeypatch.setattr(
-        evaluation_manifest,
-        "build_tool_contract",
-        lambda _settings: ([], [], "hash"),
-    )
-    catalog = [
-        {
-            "server": "github",
-            "tool_name": "github_get_file_contents",
-            "remote_tool": "get_file_contents",
-            "risk_level": "read_only",
-            "approval_required": False,
-            "enabled": True,
-            "enabled_for_default_principal": True,
-        }
-    ]
-
-    manifest = evaluation_manifest.build_manifest(
-        run_id="extended",
-        settings=settings,
-        production_mcp_tools_enabled=True,
-        agent_cases_path=None,
-        rag_eval_path=None,
-        coverage_report=_coverage(),
-        retrieval_metric_k=5,
-        include_online=False,
-        use_llm_judge=False,
-        judge_model="",
-        selected_suites=["mcp", "mixed"],
-        mcp_catalog=catalog,
-        selected_mcp_servers=["github"],
-    )
-
-    assert manifest["evaluation_type"] == "extended_tool_evaluation"
-    assert manifest["external_network_enabled"] is True
-    assert manifest["web"] == {"enabled": True}
-    assert manifest["mcp"] == {
-        "production_enabled": True,
-        "evaluation_enabled": True,
-        "mode": "extended_live",
-        "discovered_server_count": 1,
-        "discovered_tool_count": 1,
-        "selected_servers": ["github"],
-        "tools": catalog,
-    }
-    serialized = json.dumps(manifest, ensure_ascii=False)
-    assert "Authorization" not in serialized
-    assert "do-not-leak" not in serialized

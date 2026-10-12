@@ -26,7 +26,7 @@ watch(() => messages.value.at(-1)?.content, async () => {
 // Tool output bodies are intentionally not copied into this diagnostic view.
 const traceFields = [
   'summary', 'error', 'error_code', 'error_type', 'success', 'step_id', 'tool_call_id',
-  'sanitized_tool_args', 'policy_decision', 'risk_level', 'approval_required', 'args_fingerprint',
+  'sanitized_tool_args', 'policy_decision', 'risk_level', 'args_fingerprint',
   'attempt_count', 'max_attempts', 'timed_out', 'handler_executed', 'failure_kind',
   'will_return_to_agent_model', 'stop_reason', 'call_fingerprint',
   'final_chunk_count', 'top_chunk_ids', 'top_scores', 'hits',
@@ -48,7 +48,7 @@ function text(value: unknown): string {
     <p class="page-subtitle">结合知识库与受治理工具回答问题，查看引用和执行过程。</p>
     <el-form inline class="chat-options" :disabled="sending" label-position="left">
       <el-form-item label="扩展工具">
-        <el-tooltip content="关闭：仅使用本地知识库 RAG；开启：允许 Agent 按权限使用 Web、SQL、MCP 等扩展工具">
+        <el-tooltip content="关闭：仅使用本地知识库 RAG；开启：允许 Agent 按权限使用 Web 搜索与抓取工具">
           <el-switch v-model="extendedTools" inactive-text="仅 RAG" active-text="开启" aria-label="扩展工具" />
         </el-tooltip>
       </el-form-item>

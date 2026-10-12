@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from app.indexing.service import IndexingError
 from app.api.application import create_app, get_default_ingestion_dependencies
 import app.api.application as api_application
 from app.api.ingestion import (
@@ -36,7 +37,7 @@ from app.storage.ingestion import (
     SQLiteCandidateRepository,
     SQLiteIndexRunRepository,
 )
-from app.storage.database import _IngestionIndexRunRecord
+from app.storage.ingestion import _IngestionIndexRunRecord
 
 
 ADMIN_KEY = "phase12-test-admin-key"
@@ -52,17 +53,7 @@ class FakeSourceService:
     def __init__(self, ingestion: IngestionService) -> None:
         self.ingestion = ingestion
         self.proposal_contexts = []
-        self.index_calls = 0
-        self.fail_index = False
         self.proposal_error = None
-        self.remove_calls = 0
-        self.remove_error = None
-
-    def remove_indexed(self, candidate_id):
-        self.remove_calls += 1
-        if self.remove_error:
-            raise self.remove_error
-        return {"num_added": 0, "num_updated": 0, "num_deleted": 1, "num_skipped": 0}
 
     async def propose_github_file(
         self,
@@ -118,11 +109,26 @@ class FakeSourceService:
             requested_at=FIXED_TIME,
         )
 
+
+
+class FakeIndexingService:
+    def __init__(self):
+        self.index_calls = 0
+        self.fail_index = False
+        self.remove_calls = 0
+        self.remove_error = None
+
+    def remove_indexed(self, candidate_id):
+        self.remove_calls += 1
+        if self.remove_error:
+            raise self.remove_error
+        return {"num_added": 0, "num_updated": 0, "num_deleted": 1, "num_skipped": 0}
+
     def index_approved(self, candidate_id):
         self.index_calls += 1
         if self.fail_index:
-            raise SourceIngestionError(
-                "SOURCE_RUNTIME_RELOAD_FAILED",
+            raise IndexingError(
+                "SOURCE_EMBEDDINGS_UNAVAILABLE",
                 "must not reach the API or database",
             )
         if self.index_calls == 1:
@@ -154,6 +160,7 @@ def _client(settings_factory, *, enabled=True):
     dependencies = IngestionOperationsDependencies(
         ingestion_service=ingestion,
         source_service=source,
+        indexing_service=FakeIndexingService(),
         index_runs=runs,
         requester=REQUESTER,
         admin_api_key=SecretStr(ADMIN_KEY),
@@ -162,7 +169,7 @@ def _client(settings_factory, *, enabled=True):
         settings=settings,
         ingestion_dependencies=dependencies,
     )
-    return TestClient(application), source, runs
+    return TestClient(application), dependencies, runs
 
 
 def _headers(key=ADMIN_KEY):
@@ -255,9 +262,9 @@ def test_proposals_persist_safe_summaries_and_use_source_minimum_permission(
         assert body["approval_status"] == "pending"
         assert "content" not in body
         assert "metadata" not in body
-    assert source.proposal_contexts[0].permissions == ("mcp:github",)
-    assert source.proposal_contexts[1].permissions == ("mcp:firecrawl",)
-    assert all(item.principal_id == "ingestion-admin-api" for item in source.proposal_contexts)
+    assert source.source_service.proposal_contexts[0].permissions == ("mcp:github",)
+    assert source.source_service.proposal_contexts[1].permissions == ("mcp:firecrawl",)
+    assert all(item.principal_id == "ingestion-admin-api" for item in source.source_service.proposal_contexts)
 
     forbidden = client.post(
         "/admin/ingestion/sources/github",
@@ -280,7 +287,7 @@ def test_stable_not_found_and_source_unavailable_error_mapping(settings_factory)
         "/admin/ingestion/candidates/cand_missing",
         headers=_headers(),
     )
-    source.proposal_error = SourceIngestionError(
+    source.source_service.proposal_error = SourceIngestionError(
         "SOURCE_TOOL_UNAVAILABLE",
         "internal provider detail",
     )
@@ -375,7 +382,7 @@ def test_approve_and_reject_are_explicit_terminal_operations(settings_factory):
     assert second_approve.status_code == 409
     assert missing_reason.status_code == 422
     assert rejected.json()["status"] == "rejected"
-    assert source.index_calls == 0
+    assert source.indexing_service.index_calls == 0
 
 
 def test_index_blocks_non_approved_persists_success_and_reindex(settings_factory):
@@ -414,7 +421,7 @@ def test_index_blocks_non_approved_persists_success_and_reindex(settings_factory
     assert first.json()["added"] == 1
     assert second.json()["status"] == "success"
     assert second.json()["skipped"] == 1
-    assert source.index_calls == 2
+    assert source.indexing_service.index_calls == 2
     listed = client.get(
         f"/admin/ingestion/index-runs?candidate_id={pending['candidate_id']}&status=success",
         headers=_headers(),
@@ -430,7 +437,7 @@ def test_index_failure_is_safe_and_candidate_remains_approved(settings_factory):
         headers=_headers(),
         json={"reason": "approve"},
     )
-    source.fail_index = True
+    source.indexing_service.fail_index = True
 
     response = client.post(
         f"/admin/ingestion/candidates/{candidate['candidate_id']}/index",
@@ -442,13 +449,13 @@ def test_index_failure_is_safe_and_candidate_remains_approved(settings_factory):
     )
     stored = runs.latest(candidate["candidate_id"])
 
-    assert response.status_code == 502
-    assert response.json()["error"]["code"] == "SOURCE_RUNTIME_RELOAD_FAILED"
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "SOURCE_EMBEDDINGS_UNAVAILABLE"
     assert "must not reach" not in response.text
     assert detail.json()["summary"]["status"] == "approved"
     assert detail.json()["latest_index_result"]["status"] == "failed"
     assert stored.status is IndexRunStatus.FAILED
-    assert stored.error_message == "SOURCE_RUNTIME_RELOAD_FAILED"
+    assert stored.error_message == "SOURCE_EMBEDDINGS_UNAVAILABLE"
 
 
 def test_remove_requires_admin_and_retains_candidate_history(settings_factory):
@@ -458,15 +465,15 @@ def test_remove_requires_admin_and_retains_candidate_history(settings_factory):
     for headers in ({}, _headers("wrong")):
         assert client.post(f"{path}/remove", headers=headers).status_code == 401
     assert client.post("/admin/ingestion/candidates/missing/remove", headers=_headers()).status_code == 404
-    assert source.remove_calls == 0
+    assert source.indexing_service.remove_calls == 0
     assert runs.list() == []
-    before = source.ingestion.repository.get(candidate["candidate_id"])
+    before = source.ingestion_service.repository.get(candidate["candidate_id"])
     response = client.post(f"{path}/remove", headers=_headers())
     assert response.status_code == 200
     assert response.json()["operation"] == "remove"
     assert response.json()["status"] == "success"
     assert response.json()["deleted"] == 1
-    assert source.ingestion.repository.get(candidate["candidate_id"]) == before
+    assert source.ingestion_service.repository.get(candidate["candidate_id"]) == before
     detail = client.get(path, headers=_headers()).json()
     assert detail["latest_index_result"] == response.json()
     assert client.get("/admin/ingestion/index-runs?operation=remove", headers=_headers()).json() == [response.json()]
@@ -477,7 +484,7 @@ def test_remove_requires_admin_and_retains_candidate_history(settings_factory):
 
 
 def _candidate_status(source, candidate_id, status):
-    domain = source.ingestion
+    domain = source.ingestion_service
     if status == "approved":
         return domain.approve(candidate_id, decided_by=REQUESTER)
     if status == "rejected":
@@ -505,16 +512,16 @@ def test_delete_gate_uses_source_state_for_every_candidate_status(settings_facto
     if removed:
         assert response.status_code == 204
         assert response.content == b""
-        assert source.ingestion.repository.get(candidate.candidate_id) is None
+        assert source.ingestion_service.repository.get(candidate.candidate_id) is None
         assert client.get(path, headers=_headers()).status_code == 404
         assert client.get("/admin/ingestion/candidates", headers=_headers()).json() == []
     else:
         assert response.status_code == 409
         assert response.json()["error"]["code"] == "CANDIDATE_SOURCE_NOT_REMOVED"
-        assert source.ingestion.repository.get(candidate.candidate_id) == candidate
+        assert source.ingestion_service.repository.get(candidate.candidate_id) == candidate
     assert runs.list() == history
-    assert source.remove_calls == int(removed)
-    assert source.index_calls == 0
+    assert source.indexing_service.remove_calls == int(removed)
+    assert source.indexing_service.index_calls == 0
 
 
 def test_delete_requires_auth_and_missing_candidate_is_404(settings_factory):
@@ -526,7 +533,7 @@ def test_delete_requires_auth_and_missing_candidate_is_404(settings_factory):
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "CANDIDATE_NOT_FOUND"
     assert runs.list() == []
-    assert source.index_calls == source.remove_calls == 0
+    assert source.indexing_service.index_calls == source.indexing_service.remove_calls == 0
     disabled, _, _ = _client(settings_factory, enabled=False)
     assert disabled.delete(path, headers=_headers()).status_code == 404
 
@@ -545,7 +552,7 @@ def test_delete_requires_auth_and_missing_candidate_is_404(settings_factory):
 def test_delete_uses_latest_success_and_rechecks_after_detail(settings_factory, operations, allowed):
     client, source, runs = _client(settings_factory)
     summary = _github(client).json()
-    candidate = source.ingestion.repository.get(summary["candidate_id"])
+    candidate = source.ingestion_service.repository.get(summary["candidate_id"])
     path = f"/admin/ingestion/candidates/{candidate.candidate_id}"
     for operation, status in operations:
         # 每次 operation 前读取详情，最后一次 INDEX 成功后 DELETE 必须重新判断。
@@ -562,17 +569,17 @@ def test_delete_uses_latest_success_and_rechecks_after_detail(settings_factory, 
     response = client.delete(path, headers=_headers())
     assert response.status_code == (204 if allowed else 409)
     assert runs.list() == history
-    assert source.index_calls == source.remove_calls == 0
+    assert source.indexing_service.index_calls == source.indexing_service.remove_calls == 0
     if not allowed:
         assert response.json()["error"]["code"] == "CANDIDATE_SOURCE_NOT_REMOVED"
-        assert source.ingestion.repository.get(candidate.candidate_id) == candidate
+        assert source.ingestion_service.repository.get(candidate.candidate_id) == candidate
 
 
 def test_delete_all_versions_then_reproposal_and_reindex(settings_factory):
     client, source, runs = _client(settings_factory)
     versions = []
     for content in ("v1", "v2", "v3"):
-        candidate = source.ingestion.propose(
+        candidate = source.ingestion_service.propose(
             document=build_knowledge_document(
                 source_type="firecrawl", source_uri="https://example.com/versions",
                 title="versions", content=content,
@@ -594,14 +601,14 @@ def test_delete_all_versions_then_reproposal_and_reindex(settings_factory):
         assert client.get(path, headers=_headers()).json()["can_delete"] is True
         assert client.delete(path, headers=_headers()).status_code == 204
     assert runs.list() == history
-    assert source.ingestion.repository.load_latest_successfully_indexed() == []
+    assert source.ingestion_service.repository.load_latest_successfully_indexed() == []
     assert client.get("/admin/ingestion/index-runs", headers=_headers()).json() == [
         item.model_dump(mode="json") for item in history
     ]
-    recreated = source.ingestion.propose(document=versions[0].document, requester=REQUESTER)
+    recreated = source.ingestion_service.propose(document=versions[0].document, requester=REQUESTER)
     assert recreated.candidate_id == versions[0].candidate_id
     assert recreated.status is IngestionCandidateStatus.PENDING
-    assert source.ingestion.repository.load_latest_successfully_indexed() == []
+    assert source.ingestion_service.repository.load_latest_successfully_indexed() == []
     assert client.get(old_path, headers=_headers()).json()["can_delete"] is True
     assert client.post(f"{old_path}/approve", headers=_headers(), json={}).status_code == 200
     assert client.post(f"{old_path}/index", headers=_headers()).status_code == 200
@@ -614,12 +621,12 @@ def test_delete_all_versions_then_reproposal_and_reindex(settings_factory):
 
 @pytest.mark.parametrize("error,status,code", [
     (RuntimeError("sensitive detail"), 500, "REMOVE_OPERATION_FAILED"),
-    (SourceIngestionError("SOURCE_RUNTIME_RELOAD_FAILED", "sensitive detail"), 502, "SOURCE_RUNTIME_RELOAD_FAILED"),
+    (IndexingError("SOURCE_EMBEDDINGS_UNAVAILABLE", "sensitive detail"), 503, "SOURCE_EMBEDDINGS_UNAVAILABLE"),
 ])
 def test_remove_failure_persists_safe_operation(settings_factory, error, status, code):
     client, source, runs = _client(settings_factory)
     candidate = _github(client).json()
-    source.remove_error = error
+    source.indexing_service.remove_error = error
     response = client.post(f"/admin/ingestion/candidates/{candidate['candidate_id']}/remove", headers=_headers())
     assert response.status_code == status
     assert response.json()["error"]["code"] == code
@@ -628,7 +635,7 @@ def test_remove_failure_persists_safe_operation(settings_factory, error, status,
     assert run.operation is IndexRunOperation.REMOVE
     assert run.status is IndexRunStatus.FAILED
     assert run.error_code == run.error_message == code
-    assert source.remove_calls == 1
+    assert source.indexing_service.remove_calls == 1
 
 
 @pytest.mark.parametrize("source_type,uri", [("local_file", "/tmp/retained.txt"), ("web", "https://example.com/retained")])
@@ -640,8 +647,8 @@ def test_remove_unsupported_source_fails_closed(settings_factory, monkeypatch, s
     )
     def forbidden(*args, **kwargs):
         pytest.fail("unsupported source must not reach storage deletion")
-    monkeypatch.setattr("app.sources.service.create_record_manager", forbidden)
-    monkeypatch.setattr("app.sources.service.create_vector_store", forbidden)
+    monkeypatch.setattr("app.indexing.service.create_record_manager", forbidden)
+    monkeypatch.setattr("app.indexing.service.create_vector_store", forbidden)
     response = client.post(f"/admin/ingestion/candidates/{candidate.candidate_id}/remove", headers=_headers())
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "SOURCE_TYPE_UNSUPPORTED"
@@ -717,7 +724,7 @@ def test_upload_formats_persist_pending_and_dedupe(settings_factory, file_type):
     assert "/tmp/" not in document.model_dump_json()
     if file_type == "pdf":
         assert document.metadata["page_count"] == 2
-        assert "[第 2 页]\nSECOND_PAGE_TEXT" in document.content
+        assert "[第 2 页]\n\nSECOND_PAGE_TEXT" in document.content
     if file_type == "docx":
         assert "TABLE_CELL_TEXT" in document.content
     duplicate = client.post(

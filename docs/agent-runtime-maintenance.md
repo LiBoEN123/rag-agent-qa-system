@@ -16,11 +16,10 @@ Graph 暂时保留用于独立测试与诊断，已不在生产 Agent KB 路径�
 | 5 | `app/agent/streaming.py` | 直接 astream、消息缓冲和安全事件投影 |
 | 6 | `app/agent/framework_agent.py` | `create_agent`、最小内部 State 和 Middleware 顺序 |
 | 7 | `app/agent/framework_middleware.py` | LangChain 生命周期 Hook、同批 fail-closed 与工具成功返回模型 |
-| 8 | `app/agent/framework_tools.py` | ToolSpec 到动态 StructuredTool 的薄适配和 MCP 工具合并 |
-| 9 | `app/tools/runtime.py` | 单次本地工具调用的权限、审批、审计、超时、重试和输出校验 |
+| 8 | `app/agent/framework_tools.py` | ToolSpec 到本地原生 StructuredTool 的薄适配 |
+| 9 | `app/tools/execution.py` | 单次本地工具调用的只读权限、审计和输出校验，原生异步超时与重试 |
 | 10 | `app/tools/knowledge_base.py`、`app/rag/pipeline.py` | 知识库 Tool 如何复用混合检索与重排 |
 | 11 | `app/agent/guardrails.py`、`tool_events.py`、`results.py` | 治理计算、事件投影、最终 AIMessage 与 Result 合同 |
-| 12 | `app/tools/mcp/` | 可选 MCP discovery、权限、原生 coroutine 和安全输出 |
 
 ## 主调用链
 
@@ -35,7 +34,7 @@ FastAPI application
   ├─ direct_answer / clarify → 普通 Python 结果归一化
   └─ agent → create_agent.astream
              → ProjectToolGovernanceMiddleware.awrap_tool_call
-             → 请求级 StructuredTool / governed MCP BaseTool
+             → 本地 StructuredTool
              → ToolMessage + Command State Update → 下一轮 Model
              → 最终 AIMessage → tool_events 投影 → results 结果归一化
 → AgentRunResult
@@ -132,13 +131,10 @@ Middleware 不再写 `knowledge_base_result` 或因 KB 成功提前结束；现�
 仍有效。项目没有新增 evidence State、Parent Graph 或私有 Agent Loop。
 
 RAG Evaluation 共用生产 ChatService 与 create_agent。旧 Graph、独立拆分模型、
-旧生成和引用验证已删除；诊断检索分数门仍保留。AGENTIC-RAG-4 中
-`compare_documents` 已改为双文档证据检索：名称过滤、复制候选、现有 CrossEncoder 重排，
-返回原生 Document；唯一 Agent 比较并声明引用 ID，工具内部不再调用 LLM。
+旧生成和引用验证已删除；诊断检索分数门仍保留。比较两份文档由 Agent 分别调用 `search_document` 并自行比较；工具只返回原生 Document。
 
-`web_search`、`web_fetch`、`web_pdf_fetch` 与 MCP 是普通 ToolMessage
-路径，不进入本地 RAG，也不生成本地 references。MCP adapter `StructuredTool` 不
-反向转换为 ToolSpec，但继续受统一的请求权限、治理事件、调用预算与安全输出约束。
+`web_search`、`web_fetch`、`web_pdf_fetch` 通过本地 StructuredTool 返回 ToolMessage。
+MCP 仅供 GitHub / Firecrawl 来源入库，既不注册到 Agent，也不参与其治理事件和预算。
 
 ## 状态与结果
 
@@ -146,7 +142,7 @@ RAG Evaluation 共用生产 ChatService 与 create_agent。旧 Graph、独立拆
 
 - `messages`；
 - append-only `governance_events`；
-- `agent_elapsed_ms` 和 `stop_reason`。
+- `stop_reason`。
 
 `tool_events.py` 在调用结束后把治理事件一次性转换成公开 tool trace；
 `results.py` 直接使用同一份 trace 生成 `tool_result_summary`，不再保留 observation
@@ -180,8 +176,8 @@ LLM usage 只保留原成功 Agent Model 计数，KB 不再添加旧 RAG 调用�
 
 `AppSettings` 是唯一完整应用配置模型。模块导入不实例化配置，也不创建模型、
 Registry、Runtime、数据库或 RAG 索引。FastAPI lifespan 使用同一个配置快照初始化
-RAG、直接 Agent Runtime 与可选 MCP，关闭时清理 MCP、Tool Runtime、SQL Engine 和
-Agent Runtime 缓存。
+RAG 和 Agent Runtime；仅开启入库管理 API 时初始化可选的来源 MCP。
+关闭时清理 MCP 与 Agent Runtime 缓存。
 
 | 缓存 | 创建时机 | 清理入口 |
 | --- | --- | --- |
@@ -190,7 +186,7 @@ Agent Runtime 缓存。
 | Local ToolSpec catalog | 首次 `get_local_tool_specs(settings)` | `get_local_tool_specs.cache_clear()` |
 | Local StructuredTool catalog | 首次 `get_local_tools(settings)` | `get_local_tools.cache_clear()` |
 | Tool Runtime | 首次正式执行本地工具 | `reset_tool_runtime()` |
-| MCP Client / Tool cache | 显式启用时由 lifespan discovery | `close_mcp_runtime()` |
+| MCP 来源工具 cache | 入库管理 API 与 MCP 开关同时启用时由 lifespan discovery | `close_mcp_runtime()` |
 | `create_agent` Runtime | lifespan 预编译或首次普通请求 | `reset_agent_runtime()` |
 
 当前没有 Interrupt/Resume、Replay、Time Travel 或跨请求图恢复语义，因此没有 Agent
@@ -205,14 +201,14 @@ Agent trace 通过 `AgentRunResult.tool_trace` 返回，不再单独持久化到
 | `app/agent/streaming.py` | 直接 astream、安全 projector、取消传播和最终状态捕获 |
 | `app/agent/framework_agent.py` | `create_agent` 与最小 Framework State |
 | `app/agent/framework_middleware.py` | LangChain 模型/工具生命周期 Hook 与 terminal guardrails |
-| `app/agent/framework_tools.py` | ToolSpec 到缓存 StructuredTool 的薄适配及 MCP 合并 |
+| `app/agent/framework_tools.py` | ToolSpec 到缓存的本地 StructuredTool 的薄适配 |
 | `app/agent/tool_visibility.py` | 模型调用前按 Runtime Context 过滤本地可见工具 |
 | `app/agent/guardrails.py` | 工具治理规则、预算、错误分类、停止原因和指纹 |
 | `app/agent/tool_events.py` | Governance event 到唯一公开 tool trace 的投影 |
 | `app/agent/results.py` | Framework output 到唯一 AgentRunResult、校验和 trace 快照 |
 | `app/tools/context.py` | 请求主体、权限、trace 和 RAG 请求参数 |
 | `app/tools/catalog.py` | 不可变 ToolSpec catalog、重名检查、配置缓存与名称导出 |
-| `app/tools/runtime.py` | 执行期权限、策略、审计、超时、重试、脱敏和输出校验 |
+| `app/tools/execution.py` | 执行期权限、策略、审计、超时、重试、脱敏和输出校验 |
 | `app/tools/knowledge_base.py` | 混合召回、重排与候选 evidence 输出 |
 | `scripts/evaluation/rag_predictions.py` | 生产 ChatService 的 v3 预测适配，记录有序观察与 grounded 引用 |
 | `app/services/chat_service.py` | Query Rewrite、Runtime、状态策略、session 与 telemetry 编排 |
@@ -231,7 +227,7 @@ Agent trace 通过 `AgentRunResult.tool_trace` 返回，不再单独持久化到
 | 首轮 KB 后模型未继续 | 配对 ToolMessage、stop_reason、模型/工具预算；不存在 KB 成功终止规则 |
 | 流式泄漏参数或正文 | `project_agent_stream_part()` 白名单与 tainted buffer |
 | 流式最终结果不一致 | 最终 `values` 与 `build_framework_agent_result()` 输入 |
-| MCP 工具不存在 | 启动期 discovery、Server allowlist、默认主体/请求权限 |
+| MCP 来源工具不存在 | 入库服务初始化、Server allowlist、来源请求权限 |
 | 配置变更不生效 | `.env` 非热更新；清缓存或重启进程 |
 
 ## 新增普通工具
@@ -239,7 +235,7 @@ Agent trace 通过 `AgentRunResult.tool_trace` 返回，不再单独持久化到
 1. 定义严格 Pydantic `args_model`；输出可严格建模时定义 `output_model`，否则只声明
    显式 `output_schema` fallback，然后创建 ToolSpec。不要再手写 `args_schema`，也不要
    同时维护 `output_model` 与重复 `output_schema`。
-2. 在 `get_local_tool_specs()` 的普通列表中追加 ToolSpec，设置权限、风险、超时、重试、幂等、审批和审计模式。
+2. 在 `get_local_tool_specs()` 的普通列表中追加 ToolSpec，设置只读权限、超时、重试和审计模式。
 3. 让 handler 返回标准 `tool_success()` / `tool_error()`。
 4. 为 catalog、执行期 Policy、Middleware 可见性和框架调用补测试。
 5. 运行 Runtime inspection、Import Linter 和全量测试。
@@ -272,10 +268,10 @@ git diff --check
 Inspection 直接读取 `create_agent.get_graph()` / `get_graph(xray=True)` 和模型可见的
 Pydantic JSON Schema；不会初始化真实模型、执行 handler、访问网络或读取/重建 RAG
 索引。它同时检查 Parent Graph 文件/符号不存在、请求准备与执行分离、
-`stream_agent` 直接调用 `astream`、知识库检索与 Legacy RAG 解耦及返回 Agent、默认工具和 MCP 合同、
+`stream_agent` 直接调用 `astream`、知识库检索与 Legacy RAG 解耦及返回 Agent、本地工具合同、
 Result/Status Policy、应用组合根和当前架构文档。实际模块方向由官方 `lint-imports`
 全量判定。
 
 Inspection 还锁定 `ProjectToolGovernanceMiddleware` 的原生异步 Tool Hook、
-`framework_tools.py` 不手工构造 `ToolCallRequest`、项目私有 Tool artifact marker 不存在，
-以及 MCP 工具不经过 framework 二次包装。
+`framework_tools.py` 不手工构造 `ToolCallRequest`、项目私有 Tool artifact marker 不存在。
+Agent inspection 不读取来源 MCP 模块。

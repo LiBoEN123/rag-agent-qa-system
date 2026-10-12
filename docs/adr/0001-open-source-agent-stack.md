@@ -10,7 +10,7 @@
 > 2026-08-21 Current implementation note：开源、可替换模型和不重写 RAG/ToolRuntime
 > 的原则继续有效；“Agent 主图”、SQLite Checkpointer 和“全部第三方工具进入本地
 > ToolRuntime”的实现描述已分别由 ADR 0006、0011 及当前架构修订。当前只有
-> `create_agent` 内部循环与独立 RAG Graph，MCP 保持独立 Bridge/Interceptor 治理。
+> `create_agent` 内部循环与独立 RAG Graph，MCP 仅供知识入库的只读来源访问。
 
 ## 背景
 

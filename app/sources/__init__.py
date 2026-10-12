@@ -4,18 +4,14 @@ from app.sources.firecrawl import FirecrawlPagePayload, FirecrawlPageSourceAdapt
 from app.sources.github import GitHubFilePayload, GitHubFileSourceAdapter
 from app.sources.service import (
     ExternalKnowledgeSourceService,
-    FIRECRAWL_RECORD_NAMESPACE,
-    GITHUB_RECORD_NAMESPACE,
     SourceIngestionError,
 )
 
 
 __all__ = [
     "ExternalKnowledgeSourceService",
-    "FIRECRAWL_RECORD_NAMESPACE",
     "FirecrawlPagePayload",
     "FirecrawlPageSourceAdapter",
-    "GITHUB_RECORD_NAMESPACE",
     "GitHubFilePayload",
     "GitHubFileSourceAdapter",
     "SourceIngestionError",

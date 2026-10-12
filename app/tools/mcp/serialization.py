@@ -1,32 +1,22 @@
-"""MCP 原始结果的安全净化与官方 ToolMessage 的项目结果归一化。"""
+"""知识入库 MCP 结果的脱敏、完整性标记与体积限制。"""
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from langchain_core.messages import ToolMessage
 from mcp import types
 
-from app.config import AppSettings
 from app.tools.errors import ToolErrorCode
 from app.common.redaction import TRUNCATED, redact_sensitive_data, redact_sensitive_text
-from app.tools.result import tool_error, tool_success
-
-
-class McpSerializationProfile(str, Enum):
-    """区分 Agent 上下文输出与显式永久知识摄取输出。"""
-
-    AGENT = "agent"
-    INGESTION = "ingestion"
 
 
 _MAX_ERROR_TEXT_CHARS = 2_000
-_PROJECT_META_PREFIX = "__project_mcp_meta__:"
 MCP_INGESTION_MAX_TEXT_CHARS = 1_000_000
+# Transport 可同时包含 Markdown、HTML 和 metadata；最终正文仍由 ingestion policy 限制。
+MCP_INGESTION_MAX_STRUCTURED_CHARS = 2_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,41 +49,27 @@ def _truncate_text(value: str, limit: int) -> tuple[str, bool]:
     return value[: limit - len(TRUNCATED)] + TRUNCATED, True
 
 
-# 逐步收紧脱敏和裁剪限制，使结构化输出满足序列化长度上限。
+# 入库在总预算内保留完整结构；超过预算或不能安全净化时标记不完整。
 def _bounded_structured(value: Any, *, limit: int) -> tuple[Any, bool]:
     try:
         raw = json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
+            value, ensure_ascii=False, sort_keys=True,
+            separators=(",", ":"), allow_nan=False,
         )
-    except (TypeError, ValueError):
-        return {"truncated": True, "unsupported_value": True}, True
-    for max_depth, max_items, max_string_chars in (
-        (8, 100, 4000),
-        (6, 50, 2000),
-        (5, 20, 1000),
-        (4, 10, 500),
-        (3, 5, 200),
-    ):
+        if len(raw) > limit:
+            return {"truncated": True}, True
         sanitized = redact_sensitive_data(
-            value,
-            max_depth=max_depth,
-            max_items=max_items,
-            max_string_chars=min(max_string_chars, limit),
+            value, max_depth=limit, max_items=limit, max_string_chars=limit,
             max_serialized_chars=max(limit * 4, limit + 1024),
         )
         serialized = json.dumps(
-            sanitized,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
+            sanitized, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         )
-        if len(serialized) <= limit:
-            return sanitized, len(raw) > limit or TRUNCATED in serialized
-    return {"truncated": True}, True
+    except (TypeError, ValueError, RecursionError):
+        return {"truncated": True, "unsupported_value": True}, True
+    if len(serialized) > limit:
+        return {"truncated": True}, True
+    return sanitized, TRUNCATED in serialized
 
 
 # 重建资源地址以移除用户凭据、查询参数和片段，格式异常时返回占位符。
@@ -174,11 +150,8 @@ def _safe_block(block: object) -> _SafeBlock | None:  # noqa: PLR0911
 def sanitize_mcp_call_result(
     value: object,
     *,
-    settings: AppSettings,
     server_alias: str,
     remote_tool_name: str,
-    profile: McpSerializationProfile = McpSerializationProfile.AGENT,
-    preserve_source_content: bool = False,
 ) -> McpSanitizationOutcome:
     """把不可信 payload 净化为仍由官方 adapter 转换的 CallToolResult。"""
     if not isinstance(value, types.CallToolResult):
@@ -187,15 +160,6 @@ def sanitize_mcp_call_result(
             error="MCP tool returned an invalid result",
             error_code=ToolErrorCode.MCP_EXECUTION_ERROR.value,
         )
-    try:
-        resolved_profile = McpSerializationProfile(profile)
-    except (TypeError, ValueError):
-        return McpSanitizationOutcome(
-            ok=False,
-            error="MCP serialization profile is invalid",
-            error_code=ToolErrorCode.MCP_EXECUTION_ERROR.value,
-        )
-
     blocks: list[_SafeBlock] = []
     for block in value.content:
         sanitized = _safe_block(block)
@@ -210,11 +174,7 @@ def sanitize_mcp_call_result(
             )
         blocks.append(sanitized)
 
-    text_limit = (
-        settings.mcp_max_text_chars
-        if resolved_profile is McpSerializationProfile.AGENT
-        else MCP_INGESTION_MAX_TEXT_CHARS
-    )
+    text_limit = MCP_INGESTION_MAX_TEXT_CHARS
     if value.isError:
         text_limit = min(text_limit, _MAX_ERROR_TEXT_CHARS)
     text, text_truncated = _truncate_text(
@@ -231,7 +191,7 @@ def sanitize_mcp_call_result(
     if value.structuredContent is not None:
         structured, structured_truncated = _bounded_structured(
             value.structuredContent,
-            limit=settings.mcp_max_structured_chars,
+            limit=MCP_INGESTION_MAX_STRUCTURED_CHARS,
         )
     safe_result = value.model_copy(
         update={"content": safe_content, "structuredContent": structured}
@@ -252,7 +212,6 @@ def sanitize_mcp_call_result(
         "server": server_alias,
         "tool": remote_tool_name,
         "truncated": truncated,
-        "serialization_profile": resolved_profile.value,
         "content_blocks": ingestion_blocks,
     }
     if structured is not None:
@@ -262,98 +221,8 @@ def sanitize_mcp_call_result(
         result=safe_result,
         text=text,
         truncated=truncated,
-        ingestion_output=(
-            ingestion_output
-            if (
-                resolved_profile is McpSerializationProfile.INGESTION
-                or preserve_source_content
-            )
-            else None
-        ),
+        ingestion_output=ingestion_output,
     )
-
-
-def attach_mcp_execution_metadata(
-    result: types.CallToolResult,
-    metadata: dict[str, Any],
-) -> types.CallToolResult:
-    """以安全文本标记携带项目元数据，随后仍由官方 adapter 生成 ToolMessage。"""
-    marker = types.TextContent(
-        type="text",
-        text=_PROJECT_META_PREFIX
-        + json.dumps(
-            metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        ),
-    )
-    return result.model_copy(update={"content": [*result.content, marker]})
-
-
-def normalize_mcp_tool_message(
-    message: ToolMessage,
-    *,
-    tool_name: str,
-    args: dict[str, Any],
-) -> dict[str, Any] | None:
-    """从官方 ToolMessage 读取安全内容/artifact，并构造一次项目 ToolResult。"""
-    if not isinstance(message.content, list):
-        return None
-    metadata = None
-    text_parts: list[str] = []
-    for block in message.content:
-        if not isinstance(block, dict) or block.get("type") != "text":
-            return None
-        text = block.get("text")
-        if not isinstance(text, str):
-            return None
-        if text.startswith(_PROJECT_META_PREFIX):
-            if metadata is not None:
-                return None
-            try:
-                candidate = json.loads(text.removeprefix(_PROJECT_META_PREFIX))
-            except (TypeError, ValueError):
-                return None
-            if not isinstance(candidate, dict):
-                return None
-            metadata = candidate
-        else:
-            text_parts.append(text)
-    if not isinstance(metadata, dict):
-        return None
-
-    runtime = metadata.get("runtime")
-    governance = metadata.get("governance")
-    audit = metadata.get("audit")
-    if not all(isinstance(value, dict) for value in (runtime, governance, audit)):
-        return None
-    error_code = metadata.get("error_code")
-    if message.status == "error" or isinstance(error_code, str) and error_code:
-        result = tool_error(
-            tool_name,
-            args,
-            str(metadata.get("error") or "MCP tool execution failed"),
-            error_code=str(error_code or ToolErrorCode.MCP_EXECUTION_ERROR.value),
-            retryable=False,
-            runtime=runtime,
-            governance=governance,
-        )
-    else:
-        output = metadata.get("output")
-        if not isinstance(output, dict):
-            return None
-        output = {**output, "content": "\n".join(text_parts)}
-        artifact = message.artifact
-        if isinstance(artifact, dict) and "structured_content" in artifact:
-            output["structured_content"] = artifact["structured_content"]
-        result = tool_success(
-            tool_name,
-            args,
-            output,
-            runtime=runtime,
-            governance=governance,
-        )
-    result["tool_call_id"] = message.tool_call_id
-    result["audit"] = audit
-    return result
 
 
 # 生成 MCP 输出的类型、字段、文本长度和信任标记摘要，供审计使用。

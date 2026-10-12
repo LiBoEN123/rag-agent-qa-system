@@ -7,12 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.agent.results import build_internal_error_result, create_agent_result
+from app.agent.results import build_agent_runtime_error_result, create_agent_result
 from app.api.responses import build_chat_response_from_outcome
 from app.contracts.chat import AgentResultStatus
 from app.agent.streaming import AgentRuntimeStreamEvent, stream_agent
 from app.agent.final_response import FinalAgentResponse
 from tests.support.agent_runtime import FakeToolCallingModel
+from tests.support.answer_streaming import ControlledAnswerModel, install_evidence_agent
 from langchain_core.messages import AIMessage
 from app.services.chat_models import ChatServiceRequest
 from app.services.chat_service import ChatService, ChatServiceDependencies
@@ -168,6 +169,7 @@ def test_direct_answer_streams_ordered_deltas_final_and_done_once(monkeypatch):
 
     assert event_names[0] == "start"
     assert event_names[-2:] == ["final", "done"]
+    assert event_names.count("final") == event_names.count("done") == 1
     assert (
         "".join(event.data["text"] for event in events if event.event == "answer_delta")
         == "完整回答"
@@ -249,7 +251,7 @@ def test_rag_stream_has_safe_progress_tool_and_authoritative_final_without_delta
             },
             {
                 "step": "tool_call",
-                "tool_name": "get_chunk_text",
+                "tool_name": "get_chunk_context",
                 "tool_status": "success",
                 "cost_ms": 2,
             },
@@ -288,11 +290,12 @@ def test_rag_stream_has_safe_progress_tool_and_authoritative_final_without_delta
     assert calls["metrics"][0]["streamed_answer_matches_final"] is None
     assert final.data["outcome"].result["tool_trace"][1:] == result["tool_trace"]
     assert [line for line in logs if "tool_call_chain=" in line] == [
-        "[trace_id=trace-1] [agent] tool_call_chain=search_knowledge_base(success,15ms) -> get_chunk_text(success,2ms)"
+        "[trace_id=trace-1] [agent] tool_call_chain=search_knowledge_base(success,15ms) -> get_chunk_context(success,2ms)"
     ]
 
 
-def test_closing_service_stream_marks_disconnect_and_does_not_save_partial_answer():
+@pytest.mark.parametrize("stop_at", ["start", "answer_delta", "finalizing"])
+def test_closing_service_stream_marks_disconnect_and_does_not_save_partial_answer(stop_at):
     result = _result(answer="不会完成")
     service, calls = _build_service(
         [
@@ -301,21 +304,22 @@ def test_closing_service_stream_marks_disconnect_and_does_not_save_partial_answe
         ]
     )
 
-    async def consume_until_delta_then_close():
+    async def consume_then_close():
         stream = service.stream(_request())
         seen = []
         async for event in stream:
             seen.append(event)
-            if event.event == "answer_delta":
+            if event.event == stop_at or (
+                stop_at == "finalizing" and event.data.get("stage") == "finalizing"
+            ):
                 await stream.aclose()
                 break
         return seen
 
-    events = asyncio.run(consume_until_delta_then_close())
+    events = asyncio.run(consume_then_close())
 
-    assert events[-1].event == "answer_delta"
     assert all(event.event not in {"final", "done"} for event in events)
-    assert calls["runtime_closed"] is True
+    assert calls["runtime_closed"] is (stop_at != "start")
     assert calls["messages"] == []
     assert calls["bad_cases"] == []
     assert len(calls["metrics"]) == 1
@@ -347,12 +351,15 @@ def test_cancelled_runtime_stream_propagates_and_finalizes_as_disconnect():
 
 
 @pytest.mark.parametrize("rewrite_llm_used", [True, False])
+@pytest.mark.parametrize("failure", ["exception", "missing_result", "invalid_result"])
 def test_unconverted_runtime_stream_exception_uses_invocation_fallback(
-    rewrite_llm_used,
+    rewrite_llm_used, failure,
 ):
     service, calls = _build_service(
-        [],
-        stream_error=RuntimeError("stream infrastructure failed"),
+        [AgentRuntimeStreamEvent("result", {"result": None})]
+        if failure == "invalid_result" else [],
+        stream_error=RuntimeError("stream infrastructure failed")
+        if failure == "exception" else None,
         rewrite_llm_used=rewrite_llm_used,
     )
 
@@ -366,6 +373,7 @@ def test_unconverted_runtime_stream_exception_uses_invocation_fallback(
     assert len(calls["bad_cases"]) == 1
     assert calls["bad_cases"][0]["error_type"] == "internal_error"
     assert calls["metrics"][0]["client_disconnected"] is False
+    assert [event.event for event in events if event.event in {"final", "done", "error"}] == ["final", "done"]
     outcome = final.data["outcome"]
     response = build_chat_response_from_outcome(outcome, trace_id="trace-1")
     assert outcome.result["llm_call_count"] == int(rewrite_llm_used)
@@ -547,10 +555,9 @@ def test_storage_failures_preserve_successful_stream(boundary):
 
 
 def test_internal_runtime_error_remains_redacted_in_final_response():
-    result = build_internal_error_result(
-        RuntimeError("/home/test-user/checkpoints.sqlite api_key=sk-test-secret"),
-        runtime_label="Agent",
-        trace_step="agent_error",
+    result = build_agent_runtime_error_result(
+        write_bad_cases=None, bad_case=None, trace_id="error", original_question="测试",
+        exc=RuntimeError("/home/test-user/checkpoints.sqlite api_key=sk-test-secret"),
     )
     service, _ = _build_service([AgentRuntimeStreamEvent("result", {"result": result})])
     outcome = _collect(service)[-2].data["outcome"]
@@ -562,7 +569,7 @@ def test_internal_runtime_error_remains_redacted_in_final_response():
     )
     assert response.data.reason == "Agent 内部执行异常，请稍后重试"
     assert {
-        "step": "agent_error",
+        "step": "agent_runtime_error",
         "status": "error",
         "error": "internal_error",
     } in response.data.tool_trace
@@ -585,11 +592,12 @@ def test_real_structured_agent_stream_matches_public_final_and_metrics(
     monkeypatch, final, expected_status, expected_delta_count,
 ):
     model = FakeToolCallingModel([
-        AIMessage(content="", tool_calls=[{"name": "list_documents", "args": {}, "id": "list"}]),
+        AIMessage(content="", tool_calls=[{"name": "find_documents", "args": {}, "id": "list"}]),
         final,
     ])
-    monkeypatch.setattr("app.agent.framework_agent.get_answer_model", lambda: model)
-    monkeypatch.setattr("app.rag.pipeline.preview_docs", lambda: [])
+    monkeypatch.setattr("app.agent.framework_agent.get_agent_model", lambda: model)
+    monkeypatch.setattr("app.rag.runtime.chunks", [])
+    monkeypatch.setattr("app.rag.runtime.RAG_READY", True)
     service, calls = _build_service([], stream_agent=stream_agent)
     events = _collect(service)
     outcome = next(event.data["outcome"] for event in events if event.event == "final")
@@ -603,8 +611,85 @@ def test_real_structured_agent_stream_matches_public_final_and_metrics(
     assert calls["metrics"][0]["answer_delta_count"] == expected_delta_count
     assert calls["metrics"][0]["llm_call_count"] == 2
     assert [event.data["tool_name"] for event in events if event.event == "tool"] == [
-        "list_documents", "list_documents",
+        "find_documents", "find_documents",
     ]
     assert model.structured_tool_name not in repr(events)
     assert "UNSUPPORTED" not in repr(events)
     assert events[-2].event == "final" and events[-1].event == "done"
+
+
+@pytest.mark.asyncio
+async def test_native_answer_stream_reaches_service_before_model_finishes(monkeypatch):
+    composer = ControlledAnswerModel()
+    install_evidence_agent(monkeypatch, composer)
+    service, calls = _build_service([], stream_agent=stream_agent, rewrite_llm_used=True)
+    stream = service.stream(_request())
+    events = []
+    async with asyncio.timeout(2):
+        async for event in stream:
+            events.append(event)
+            if event.event == "answer_delta":
+                break
+        assert events[-1].data["text"] == " 已确认"
+        assert not composer.completed.is_set()
+        assert not any(event.event == "final" for event in events)
+        assert calls["messages"] == calls["metrics"] == []
+        composer.release.set()
+        events.extend([event async for event in stream])
+    outcome = events[-2].data["outcome"]
+    response = build_chat_response_from_outcome(outcome, trace_id="trace-1")
+    answer = "".join(event.data["text"] for event in events if event.event == "answer_delta")
+    assert answer == response.data.answer == " 已确认的回答。\n"
+    assert response.data.llm_call_count == 4
+    assert all(event.event != "llm_usage" for event in events)
+    assert calls["messages"] == [("session-1", "user", "测试问题"), ("session-1", "assistant", answer)]
+    assert len(calls["metrics"]) == 1
+    assert calls["metrics"][0]["llm_call_count"] == 4
+    assert calls["metrics"][0]["streamed_answer_matches_final"] is True
+    assert events[-1].event == "done"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_pending", [False, True])
+async def test_service_close_or_cancel_stops_native_composer_without_saving_partial(monkeypatch, cancel_pending):
+    composer = ControlledAnswerModel()
+    install_evidence_agent(monkeypatch, composer)
+    service, calls = _build_service([], stream_agent=stream_agent)
+    stream = service.stream(_request())
+    seen = []
+    async with asyncio.timeout(2):
+        async for event in stream:
+            seen.append(event)
+            if event.event == "answer_delta":
+                break
+        if cancel_pending:
+            pending = asyncio.create_task(anext(stream))
+            await composer.waiting.wait()
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+        else:
+            await stream.aclose()
+        await composer.closed.wait()
+    assert not composer.completed.is_set()
+    assert all(event.event not in {"final", "done"} for event in seen)
+    assert calls["messages"] == calls["bad_cases"] == []
+    assert len(calls["metrics"]) == 1
+    assert calls["metrics"][0]["status"] == "client_disconnected"
+    assert calls["metrics"][0]["llm_call_count"] == 3
+    assert calls["metrics"][0]["answer_llm_used"] is True
+
+
+@pytest.mark.asyncio
+async def test_composer_error_after_delta_persists_only_authoritative_error(monkeypatch):
+    composer = ControlledAnswerModel(fail=True)
+    composer.release.set()
+    install_evidence_agent(monkeypatch, composer)
+    service, calls = _build_service([], stream_agent=stream_agent)
+    events = [event async for event in service.stream(_request())]
+    outcome = events[-2].data["outcome"]
+    assert outcome.code == "MODEL_ERROR"
+    assert calls["metrics"][0]["llm_call_count"] == 3
+    assert calls["metrics"][0]["streamed_answer_matches_final"] is False
+    assert all("已确认" not in content for _, _, content in calls["messages"])
+    assert "PRIVATE PROVIDER FAILURE" not in repr(events)

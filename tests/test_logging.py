@@ -89,11 +89,6 @@ def test_fastapi_lifespan_explicitly_configures_uvicorn_access(monkeypatch):
     )
     monkeypatch.setattr(
         api_application,
-        "close_tool_executor",
-        lambda: calls.append("close_tools"),
-    )
-    monkeypatch.setattr(
-        api_application,
         "aclose_agent_runtime",
         close_agent,
     )
@@ -108,6 +103,5 @@ def test_fastapi_lifespan_explicitly_configures_uvicorn_access(monkeypatch):
     assert calls == [
         "configure_http_logging",
         "start",
-        "close_tools",
         "close_agent",
     ]
