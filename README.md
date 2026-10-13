@@ -351,6 +351,30 @@ python scripts/compare_evaluation_runs.py \
 
 正式运行默认拒绝 dirty 工作区；`--allow-dirty` 仅用于带标记的实验。比较先校验 manifest 的可比性，Online 结果需单独解释。完整合同见 [Evaluation Baseline](docs/evaluation/baseline-v2.md)和[评测启动说明](scripts/evaluation/README.md)。
 
+### 最近一次评测结果
+
+本地最新保存的完整 Core Agent + RAG 评测为 **2026-09-30**（北京时间），Run ID 为 `20260930T012201Z`。评测对应提交 `abf453808e8f9dbcb5b88d438505dde6390c63e2`，运行时工作区干净；以下为该提交的结果快照，后续代码变更尚未由这次评测验证。
+
+本次执行 25 个 Core Agent case 和 65 道 RAG 题，跳过 3 个 Online case，未启用 LLM Judge。Agent 使用 `qwen3.8-max`（关闭 thinking），Answer 使用 `qwen-plus`，Query Rewrite 使用 `deepseek-chat`；索引含 15 份文档、490 个 chunk，Embedding 为 `Qwen/Qwen3-Embedding-0.6B`，reranker 为 `BAAI/bge-reranker-v2-m3`。RAG 使用 Prediction Schema v3，离线检索评分 K 为 5。
+
+| 层 | 指标 | 结果 |
+| --- | --- | --- |
+| Core Agent | Case 通过率 | **64.00%（16/25）** |
+| Core Agent | 状态准确率 | 100.00% |
+| Core Agent | 来源通过率 | 93.75% |
+| Core Agent | 证据 grounding 通过率 | 93.75% |
+| Core Agent | 工具调用成功率 | 96.30% |
+| Core Agent | 平均 LLM / 工具调用次数（每 case） | 2.84 / 1.08 |
+| Core Agent | P95 延迟 | 16.83 秒 |
+| RAG | 预测覆盖率 | **100.00%（65/65）** |
+| RAG | 检索 Gold chunk Recall@5 | **91.80%** |
+| RAG | 最终引用 Gold chunk Recall | **86.28%** |
+| RAG | 答案语义正确性 / Judge 覆盖率 | 未评测（`None`）/ 0.00% |
+
+Core Agent 有 9 个未通过 case：8 个命中 `keyword_missing`，另 1 个同时命中 `source_missing` 和 `evidence_grounding_mismatch`。RAG 预测生成失败数为 0；失败索引记录 4 个 `rag_reference_gold_miss` 和 1 个 `rag_chunk_miss`。关键词检查失败与语义正确性是不同口径；本次未执行语义 Judge，检索和引用召回率也不代表答案正确率。
+
+数据来自本地 `outputs/evaluation_baseline_v2/20260930T012201Z/` 下的 `baseline_summary.json`、`manifest.json` 和 `baseline_report.md`，并与逐 case / 逐题产物核对。`outputs/` 被 Git 忽略，原始产物未随仓库提交。
+
 ## Docker
 
 [`docker-compose.yml`](docker-compose.yml) 当前包含 NVIDIA GPU 设备预留，运行需要相应驱动与 NVIDIA Container Toolkit；CPU 环境需先移除该设备预留。镜像使用 Python 3.12 和 `requirements.lock`。
