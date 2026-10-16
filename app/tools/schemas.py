@@ -53,7 +53,7 @@ class SearchKnowledgeBaseArgs(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     query: str = Field(..., min_length=1, description="用户问题或检索查询")
-    top_k: int = Field(default=5, ge=1, le=10, description="返回候选 chunk 数量")
+    top_k: int = Field(default=7, ge=1, le=10, description="返回候选 chunk 数量")
 
 
 class FindDocumentsArgs(BaseModel):
