@@ -97,6 +97,7 @@ def get_answer_model() -> Any | None:
         max_tokens=settings.llm_max_tokens,
         timeout=settings.llm_timeout,
         max_retries=settings.llm_max_retries,
+        enable_thinking=settings.answer_enable_thinking,
     )
 
 

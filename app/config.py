@@ -134,6 +134,7 @@ class AppSettings(BaseSettings):
     llm_max_tokens: int = 1024
     llm_timeout: int = 60
     llm_max_retries: int = 2
+    answer_enable_thinking: bool | None = None
 
     # Agent 模型；未配置的字段分别回退到 Composer。
     agent_llm_api_key: SecretStr | None = None
