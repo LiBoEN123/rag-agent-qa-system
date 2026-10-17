@@ -735,10 +735,12 @@ def test_upload_approve_index_retrieve_and_force_rebuild(persisted_runtime, monk
         assert pipeline.bm25.corpus_size == len(pipeline.chunks) == 2
         upload_position = [chunk["text"] for chunk in pipeline.chunks].index(keyword)
         assert all(pipeline.bm25.doc_freqs[upload_position].get(token, 0) for token in tokenize(keyword))
-        # 禁止 Chroma 查询失败被本地向量 fallback 掩盖。
-        def no_fallback(*args, **kwargs):
-            pytest.fail("Chroma retrieval unexpectedly fell back to local vectors")
-        monkeypatch.setattr("app.rag.retrieval._retrieve_with_local_embeddings", no_fallback)
+        def no_chroma_search(*args, **kwargs):
+            pytest.fail("retrieval must score the loaded matrix without Chroma Top-K")
+        monkeypatch.setattr(
+            "langchain_chroma.Chroma.similarity_search_by_vector_with_relevance_scores",
+            no_chroma_search,
+        )
         hits = pipeline.search_relevant_chunks(keyword, top_k=2)
         hit = next(item for item in hits if keyword in item["text"])
         assert hit["vector_score"] > 0.99
@@ -957,7 +959,7 @@ def test_firecrawl_html_sqlite_index_retrieval_and_rebuild_keep_legacy(persisted
     monkeypatch.setattr("app.sources.firecrawl.parse_html_document", forbidden)
     monkeypatch.setattr("app.ingestion.parsing.parse_html_document", forbidden)
     monkeypatch.setattr("app.ingestion.parsing._document_converter", forbidden)
-    monkeypatch.setattr("app.rag.retrieval._retrieve_with_local_embeddings", forbidden)
+    monkeypatch.setattr("langchain_chroma.Chroma.similarity_search_by_vector_with_relevance_scores", forbidden)
     history = runtime.runs.list()
     ok, message = _sync_and_load(str(runtime.local_dir), force_rebuild=True)
     assert ok, message

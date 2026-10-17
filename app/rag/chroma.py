@@ -1,4 +1,4 @@
-"""通过 langchain-chroma 读取和查询本地向量索引。"""
+"""通过 langchain-chroma 读取持久向量索引，恢复对齐的内存数据。"""
 
 from __future__ import annotations
 
@@ -8,10 +8,6 @@ import numpy as np
 
 from app.config import AppSettings
 from app.storage.vector import create_vector_store
-
-
-class ChromaUnavailableError(RuntimeError):
-    """ChromaDB 不可用时抛出的异常。"""
 
 
 def chroma_collection_has_chunks() -> bool:
@@ -97,22 +93,3 @@ def load_index_from_chroma(
         [record["embedding"] for record in records]
     ).astype(np.float32, copy=False)
     return chunks, aligned_embeddings
-
-
-def query_chroma(query_embedding: Any, n_results: int) -> list[dict[str, Any]]:
-    """用 langchain-chroma 和既有 cosine distance 语义执行向量检索。"""
-    store = create_vector_store(None, create_collection_if_not_exists=False)
-    matches = store.similarity_search_by_vector_with_relevance_scores(
-        [float(value) for value in query_embedding],
-        k=max(1, int(n_results)),
-    )
-    return [
-        {
-            "record_id": document.id,
-            "text": document.page_content,
-            "metadata": document.metadata,
-            "distance": float(distance),
-            "vector_score": 1.0 - float(distance),
-        }
-        for document, distance in matches
-    ]

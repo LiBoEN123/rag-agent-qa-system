@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from langchain_chroma import Chroma
 from langchain_core.embeddings import DeterministicFakeEmbedding
 
 from app.rag import retrieval
@@ -27,10 +28,7 @@ def test_table_semantics_reach_real_chroma_bm25_retrieval(tmp_path, monkeypatch)
     bundle = store._load_index_bundle(model=embeddings, rerank_model=object())
     assert bundle["ok"], bundle["message"]
 
-    def no_fallback(*args, **kwargs):
-        pytest.fail("table smoke must query real Chroma, not fall back to local vectors")
-
-    monkeypatch.setattr(retrieval, "_retrieve_with_local_embeddings", no_fallback)
+    _forbid_chroma_reads(monkeypatch)
     query = "企业注册需要哪些材料"
     hits = retrieval.retrieve(
         query, bundle["chunks"], bundle["bm25"], bundle["doc_embeddings"], embeddings, top_k=3,
@@ -76,9 +74,9 @@ def test_admission_section_semantics_reach_real_chroma_bm25(
     assert bundle["ok"], bundle["message"]
 
     def forbidden(*args, **kwargs):
-        pytest.fail("section smoke must use real Chroma and existing BM25, without fallback or reranking")
+        pytest.fail("base retrieval must not run reranking")
 
-    monkeypatch.setattr(retrieval, "_retrieve_with_local_embeddings", forbidden)
+    _forbid_chroma_reads(monkeypatch)
     monkeypatch.setattr(retrieval, "rerank", forbidden)
     hits = retrieval.retrieve(
         query, bundle["chunks"], bundle["bm25"], bundle["doc_embeddings"], embeddings, top_k=3,
@@ -96,54 +94,253 @@ def test_admission_section_semantics_reach_real_chroma_bm25(
     assert hit["metadata"]["source_id"] == document.source_id
 
 
-@pytest.mark.parametrize(
-    "query_error",
-    [
-        retrieval.ChromaUnavailableError("ChromaDB unavailable"),
-        RuntimeError("generic ChromaDB query failure"),
-    ],
-    ids=["chroma-unavailable", "generic-query-error"],
-)
-def test_retrieve_falls_back_to_local_embeddings_after_chroma_error(
-    monkeypatch,
-    query_error,
-):
-    chunks = [
-        {"text": "first", "metadata": {"chunk_id": 1}},
-        {"text": "second", "metadata": {"chunk_id": 2}},
+def _forbid_chroma_reads(monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("retrieval must not query Chroma or reload its embeddings")
+
+    monkeypatch.setattr(Chroma, "get", forbidden)
+    monkeypatch.setattr(Chroma, "similarity_search_by_vector_with_relevance_scores", forbidden)
+    monkeypatch.setattr(Chroma, "similarity_search_by_vector", forbidden)
+
+
+class FixedBm25:
+    def __init__(self, scores):
+        self.scores = np.asarray(scores)
+        self.calls = []
+
+    def get_scores(self, tokens):
+        self.calls.append(tokens)
+        return self.scores
+
+
+class FixedEmbedding:
+    def __init__(self, vector=(1.0, 0.0)):
+        self.vector = vector
+        self.queries = []
+
+    def embed_query(self, question):
+        self.queries.append(question)
+        return self.vector
+
+    def embed_documents(self, texts):
+        pytest.fail("retrieval must reuse document embeddings")
+
+
+def _chunks(count):
+    return [
+        {"text": f"body {index}\n detail", "metadata": {
+            "chunk_id": index, "source_id": "source", "position": index,
+            "source_path": "/kb/guide.txt", "file_name": "guide.txt",
+        }}
+        for index in range(count)
     ]
-    doc_embeddings = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
 
-    class FakeBm25:
-        def get_scores(self, _tokens):
-            return np.array([0.0, 2.0], dtype=np.float32)
 
-    class FakeModel:
-        def __init__(self):
-            self.encoded_texts = []
+def _documents_with_cosines(cosines):
+    cosines = np.asarray(cosines, dtype=np.float32)
+    return np.column_stack((cosines, np.sqrt(1 - cosines ** 2)))
 
-        def embed_query(self, text):
-            self.encoded_texts.append(text)
-            return [1.0, 0.0]
 
-    def fail_chroma_query(*_args, **_kwargs):
-        raise query_error
+@pytest.mark.parametrize("historical_vectors", [False, True])
+def test_full_corpus_scores_and_legacy_fields_without_chroma(monkeypatch, historical_vectors):
+    _forbid_chroma_reads(monkeypatch)
+    chunks = _chunks(8)
+    bm25_scores = np.array([0, 0, 6, 4, 2, 7, 8, 0], dtype=np.float64)
+    cosines = np.array([1, 0.6, 0, -0.6, -1, 0.8, -0.8, 0.5])
+    documents = _documents_with_cosines(cosines)
+    if historical_vectors:
+        documents *= np.arange(1, 9, dtype=np.float32)[:, None]
+    documents.setflags(write=False)
+    original = documents.copy()
+    bm25 = FixedBm25(bm25_scores)
+    model = FixedEmbedding((3.0, 0.0) if historical_vectors else (1.0, 0.0))
 
-    model = FakeModel()
-    monkeypatch.setattr(retrieval, "query_chroma", fail_chroma_query)
+    results = retrieval.retrieve("  question  ", chunks, bm25, documents, model, top_k=2)
 
+    expected_hybrid = 0.4 * bm25_scores / 8 + 0.6 * (cosines + 1) / 2
+    assert len(results) == len(chunks)
+    assert bm25.calls == [retrieval.tokenize("question")]
+    assert model.queries == ["question"]
+    assert [item["chunk_id"] for item in results] == [5, 0, 2, 1, 6, 7, 3, 4]
+    for rank, item in enumerate(results, 1):
+        index = item["chunk_id"]
+        assert set(item) == {
+            "reference_id", "file_name", "source_path", "chunk_id", "position", "text",
+            "snippet", "bm25_score", "vector_score", "hybrid_score", "metadata",
+        }
+        assert item["bm25_score"] == bm25_scores[index]
+        assert item["vector_score"] == pytest.approx(cosines[index], abs=1e-6)
+        assert item["hybrid_score"] == pytest.approx(expected_hybrid[index], abs=1e-6)
+        assert item["reference_id"] == f"Reference {rank}"
+        assert item["metadata"] == chunks[index]["metadata"]
+        assert item["position"] == index
+        assert item["text"] == chunks[index]["text"]
+        assert item["snippet"] == f"body {index} detail"
+        assert item["file_name"] == "guide.txt"
+        assert item["source_path"] == "/kb/guide.txt"
+    np.testing.assert_array_equal(documents, original)
+
+
+def test_bm25_candidate_outside_old_vector_top_k_has_real_cosine(monkeypatch):
+    _forbid_chroma_reads(monkeypatch)
+    # top_k=1 时旧 Chroma 只取 20 个向量候选；第 25 个 chunk 的关键词分数最高。
+    cosines = [0.9] * 24 + [0.2, 1.0, -1.0]
+    bm25 = FixedBm25([0] * 24 + [100, 0, 0])
     results = retrieval.retrieve(
-        question="question",
-        chunks=chunks,
-        bm25=FakeBm25(),
-        doc_embeddings=doc_embeddings,
-        model=model,
-        top_k=2,
+        "question", _chunks(27), bm25, _documents_with_cosines(cosines), FixedEmbedding(), top_k=1,
     )
 
-    assert results
-    assert {result["chunk_id"] for result in results} == {1, 2}
-    assert model.encoded_texts == ["question", "question"]
+    assert len(results) == 5
+    assert results[0]["chunk_id"] == 24
+    assert results[0]["bm25_score"] == 100
+    assert results[0]["vector_score"] == pytest.approx(0.2)
+    assert results[0]["hybrid_score"] == pytest.approx(0.76)
+    assert [item["chunk_id"] for item in results] == [24, 25, 0, 1, 2]
+
+
+def test_minmax_uses_full_corpus_extrema_before_candidate_cutoff():
+    # 最小值所在的第 6 项不进入 candidate_k=5，但必须参与两路归一化。
+    results = retrieval.retrieve(
+        "question", _chunks(6), FixedBm25([10, 8, 6, 4, 2, 0]),
+        _documents_with_cosines([1, 0.8, 0.6, 0.4, 0.2, -1]), FixedEmbedding(), top_k=1,
+    )
+
+    assert [item["chunk_id"] for item in results] == [0, 1, 2, 3, 4]
+    assert [item["hybrid_score"] for item in results] == pytest.approx([1, 0.86, 0.72, 0.58, 0.44])
+
+
+@pytest.mark.parametrize("count, top_k", [(1, 1), (3, 1), (7, 1), (12, 2), (3, 10)])
+def test_equal_scores_are_stable_and_candidates_are_bounded(count, top_k):
+    chunks = _chunks(count)
+    docs = np.tile([1.0, 0.0], (count, 1))
+    bm25 = FixedBm25([2.0] * count)
+    model = FixedEmbedding()
+    first = retrieval.retrieve("same", chunks, bm25, docs, model, top_k)
+    second = retrieval.retrieve("same", chunks, bm25, docs, model, top_k)
+
+    assert first == second
+    assert [item["chunk_id"] for item in first] == list(range(min(count, top_k * 5)))
+    assert all(item["hybrid_score"] == 0 for item in first)
+    assert all(item["vector_score"] == 1 for item in first)
+
+
+@pytest.mark.parametrize("question", [None, "", " \n\t "])
+def test_empty_query_does_not_score_or_encode(question):
+    assert retrieval.retrieve(question, _chunks(1), None, None, None) == []
+
+
+def test_empty_corpus_does_not_require_models_or_matrix():
+    assert retrieval.retrieve("question", [], None, None, None) == []
+
+
+@pytest.mark.parametrize("top_k", [0, -1])
+def test_nonpositive_top_k_returns_no_candidates(top_k):
+    assert retrieval.retrieve("question", _chunks(1), None, None, None, top_k) == []
+
+
+@pytest.mark.parametrize("documents, message", [
+    (None, "缺少必需的文档 embeddings"),
+    ([], "非空二维矩阵"),
+    ([1, 0], "非空二维矩阵"),
+    ([[], []], "非空二维矩阵"),
+    ([[1, 0]], "数量与 chunk 数量不一致"),
+    ([[1, 0], [0, 0]], "零向量"),
+    ([[1, 0], [np.nan, 1]], "非有限"),
+    ([[1, 0], [np.inf, 1]], "非有限"),
+    ([[1, 0], [-np.inf, 1]], "非有限"),
+    ([[1, 0], ["invalid", 1]], "could not convert"),
+    ([[1, 0], [1]], "inhomogeneous"),
+])
+def test_invalid_document_vectors_fail_explicitly(documents, message):
+    with pytest.raises(ValueError, match=message):
+        retrieval.retrieve("question", _chunks(2), FixedBm25([0, 1]), documents, FixedEmbedding())
+
+
+@pytest.mark.parametrize("query, message", [
+    (None, "一维向量"),
+    ([], "维度"),
+    ([1, 0, 0], "维度"),
+    ([[1, 0]], "一维向量"),
+    ([0, 0], "零向量"),
+    ([np.nan, 1], "非有限"),
+    ([np.inf, 1], "非有限"),
+    ([-np.inf, 1], "非有限"),
+])
+def test_invalid_query_vectors_fail_explicitly(query, message):
+    with pytest.raises(ValueError, match=message):
+        retrieval.retrieve("question", _chunks(2), FixedBm25([0, 1]), np.eye(2), FixedEmbedding(query))
+
+
+@pytest.mark.parametrize("scores, message", [
+    ([0], "数量与 chunk 数量一致"),
+    ([[0, 1]], "一维数组"),
+    ([0, np.nan], "有限数值"),
+    ([0, np.inf], "有限数值"),
+    ([0, -np.inf], "有限数值"),
+])
+def test_invalid_bm25_scores_fail_explicitly(scores, message):
+    model = FixedEmbedding()
+    with pytest.raises(ValueError, match=message):
+        retrieval.retrieve("question", _chunks(2), FixedBm25(scores), np.eye(2), model)
+    assert model.queries == []
+
+
+@pytest.mark.parametrize("missing", ["bm25", "model"])
+def test_missing_required_index_component_fails_explicitly(missing):
+    with pytest.raises(ValueError, match="缺少必需的 BM25 索引或 embedding 模型"):
+        retrieval.retrieve(
+            "question", _chunks(2), None if missing == "bm25" else FixedBm25([0, 1]),
+            np.eye(2), None if missing == "model" else FixedEmbedding(),
+        )
+
+
+@pytest.mark.parametrize("values, expected", [
+    ([], []), ([3, 3, 3], [0, 0, 0]), ([-2, 0, 2], [0, 0.5, 1]),
+    ([-3e38, 0, 3e38], [0, 0.5, 1]),
+])
+def test_minmax_handles_empty_equal_and_extreme_scores(values, expected):
+    np.testing.assert_allclose(retrieval.minmax_score(np.array(values)), expected)
+
+
+def test_real_retrieval_and_rerank_preserve_tool_top_k_and_evidence(monkeypatch, tool_registry):
+    from tests.support.local_tools import invoke_local_tool
+    from app.tools.knowledge_base import chunk_to_evidence_document
+
+    chunks = _chunks(7)
+    monkeypatch.setattr(store, "chunks", chunks)
+    monkeypatch.setattr(store, "bm25", FixedBm25([7, 6, 5, 4, 3, 2, 1]))
+    monkeypatch.setattr(store, "doc_embeddings", np.tile([1.0, 0.0], (7, 1)))
+    monkeypatch.setattr(store, "model", FixedEmbedding())
+    monkeypatch.setattr(store, "RAG_READY", True)
+    calls = []
+
+    class FixedCrossEncoder:
+        def predict(self, pairs):
+            calls.append(pairs)
+            # 让融合排名第 5 的候选胜出，证明先重排再截取 top_k=1。
+            return [0.1, 0.2, 0.3, 0.4, 0.9]
+
+    monkeypatch.setattr(store, "rerank_model", FixedCrossEncoder())
+    _forbid_chroma_reads(monkeypatch)
+    result = invoke_local_tool(
+        registry=tool_registry, tool_name="search_knowledge_base",
+        tool_args={"query": "question", "top_k": 1},
+    )
+
+    assert calls == [[("question", chunk["text"]) for chunk in chunks[:5]]]
+    assert result["ok"] is True and result["status"] == "success"
+    assert result["tool_input"] == {"query": "question", "top_k": 1}
+    output = result["output"]
+    assert set(output) == {"query", "count", "evidence"}
+    assert output["query"] == "question"
+    assert output["count"] == len(output["evidence"]) == 1
+    evidence = output["evidence"][0]
+    assert evidence["page_content"] == chunks[4]["text"]
+    assert evidence["metadata"]["chunk_id"] == 4
+    assert evidence["metadata"]["rerank_score"] == 0.9
+    assert evidence["metadata"]["vector_score"] == 1.0
+    expected = chunk_to_evidence_document(chunks[4]).model_dump(mode="json")
+    assert evidence["id"] == expected["id"]
 
 
 def test_retrieval_does_not_reexport_policy_or_scoring_symbols():

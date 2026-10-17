@@ -1,16 +1,12 @@
 """混合检索与重排模块。
 
-融合 BM25、向量召回和交叉编码器重排，并支持多子查询结果合并。
+对内存中的全库 BM25、Embedding 分数融合排序，再交由交叉编码器重排。
 """
 
 from typing import Any, Dict, List
 
 import jieba
 import numpy as np
-
-from app.rag.chroma import ChromaUnavailableError, query_chroma
-from app.common.logging import get_logger
-
 
 __all__ = [
     "clamp01",
@@ -23,19 +19,6 @@ __all__ = [
 ]
 
 
-logger = get_logger('chat_service')
-
-
-def _chunk_identity(metadata: dict, fallback: object = "") -> str:
-    """优先使用长期 provenance 匹配 Chroma hit 与 runtime chunk。"""
-    source_id = str(metadata.get("source_id") or "")
-    position = str(metadata.get("position") or "")
-    if source_id and position:
-        return f"{source_id}:{position}"
-    chunk_id = str(metadata.get("chunk_id") or "")
-    return chunk_id or str(fallback)
-
-
 # =========================
 # 通用文本与分数工具
 # =========================
@@ -46,10 +29,16 @@ def tokenize(text: str):
 
 def minmax_score(x: np.ndarray):
     """将一组分数归一化到 0 到 1 区间。"""
-    x = x.astype(np.float32)
-    if np.allclose(x.min(), x.max()):
+    x = np.asarray(x, dtype=np.float32)
+    if x.ndim != 1 or not np.isfinite(x).all():
+        raise ValueError("分数必须是一维有限数值数组")
+    if not x.size:
+        return x
+    minimum, maximum = float(x.min()), float(x.max())
+    if np.allclose(minimum, maximum):
         return np.zeros_like(x)
-    return (x - x.min()) / (x.max() - x.min())
+    # float64 中间值避免极端有限分数相减时溢出；只分配 O(N) 空间。
+    return ((x.astype(np.float64) - minimum) / (maximum - minimum)).astype(np.float32)
 
 
 def clamp01(value: float) -> float:
@@ -124,134 +113,27 @@ def _make_retrieve_result(
     }
 
 
-def _retrieve_with_local_embeddings(
-    question: str,
-    chunks: list[dict],
-    bm25,
-    doc_embeddings,
-    model,
-    top_k: int = 5
-):
-    """使用本地 numpy embedding 矩阵执行旧版混合召回。"""
-    if doc_embeddings is None:
-        return []
+def _cosine_scores(doc_embeddings: np.ndarray, question_embedding: np.ndarray):
+    """批量计算余弦；兼容历史非单位向量，不复制或归一化整张文档矩阵。"""
+    if question_embedding.ndim != 1 or question_embedding.size != doc_embeddings.shape[1]:
+        raise ValueError("查询 embedding 必须是一维向量，且维度与文档 embeddings 匹配")
 
-    tokenized_question = tokenize(question)
-    bm25_score = bm25.get_scores(tokenized_question)
+    # 使用 float64 累加平方，避免有效 float32 向量的范数溢出或下溢。
+    # einsum 不产生 N×D 的平方临时矩阵；范数也能检测 NaN/Inf 和零向量。
+    doc_norms = np.sqrt(np.einsum("ij,ij->i", doc_embeddings, doc_embeddings, dtype=np.float64))
+    query_norm = np.sqrt(np.einsum("i,i->", question_embedding, question_embedding, dtype=np.float64))
+    if not np.isfinite(doc_norms).all() or np.any(doc_norms == 0):
+        raise ValueError("文档 embeddings 包含非有限数值或零向量")
+    if not np.isfinite(query_norm) or query_norm == 0:
+        raise ValueError("查询 embedding 包含非有限数值或零向量")
 
-    question_embedding = np.asarray(model.embed_query(question), dtype=np.float32)
-
-    vector_score = doc_embeddings @ question_embedding
-
-    bm25_norm = minmax_score(bm25_score)
-    vector_norm = minmax_score(vector_score)
-    hybrid_score = 0.4 * bm25_norm + 0.6 * vector_norm
-
-    candidate_k = max(top_k * 5, top_k)
-    top_indices = np.argsort(hybrid_score)[::-1][:candidate_k]
-
-    raw_results = []
-    for rank, idx in enumerate(top_indices, start=1):
-        raw_results.append(
-            _make_retrieve_result(
-                chunk=chunks[idx],
-                rank=rank,
-                bm25_score=float(bm25_score[idx]),
-                vector_score=float(vector_score[idx]),
-                hybrid_score=float(hybrid_score[idx]),
-            )
-        )
-
-    return raw_results
-
-
-def _retrieve_with_chroma(
-    question: str,
-    chunks: list[dict],
-    bm25,
-    model,
-    top_k: int = 5
-):
-    """使用 ChromaDB 做向量召回，并与 BM25 候选合并。"""
-    candidate_k = max(top_k * 5, top_k)
-
-    question_embedding = np.asarray(model.embed_query(question), dtype=np.float32)
-
-    chroma_hits = query_chroma(question_embedding, n_results=candidate_k * 4)
-    if not chroma_hits:
-        return []
-
-    tokenized_question = tokenize(question)
-    bm25_scores = bm25.get_scores(tokenized_question)
-    bm25_top_indices = np.argsort(bm25_scores)[::-1][:candidate_k]
-
-    chunk_by_id = {}
-    for idx, chunk in enumerate(chunks):
-        metadata = chunk.get("metadata") or {}
-        identity = _chunk_identity(metadata)
-        if identity:
-            chunk_by_id[identity] = (idx, chunk)
-
-    candidates = {}
-
-    for hit in chroma_hits:
-        metadata = hit.get("metadata") or {}
-        identity = _chunk_identity(metadata, hit.get("record_id", ""))
-        idx, chunk = chunk_by_id.get(identity, (None, None))
-
-        if chunk is None:
-            chunk = {
-                "text": hit.get("text", "") or "",
-                "metadata": metadata,
-            }
-
-        candidates[identity] = {
-            "chunk": chunk,
-            "bm25_score": float(bm25_scores[idx]) if idx is not None else 0.0,
-            "vector_score": float(hit.get("vector_score", 0.0)),
-        }
-
-    for idx in bm25_top_indices:
-        idx = int(idx)
-        chunk = chunks[idx]
-        metadata = chunk.get("metadata") or {}
-        chunk_id = _chunk_identity(metadata, idx)
-
-        if chunk_id not in candidates:
-            candidates[chunk_id] = {
-                "chunk": chunk,
-                "bm25_score": float(bm25_scores[idx]),
-                "vector_score": 0.0,
-            }
-
-    if not candidates:
-        return []
-
-    candidate_items = list(candidates.values())
-    bm25_values = np.array([item["bm25_score"] for item in candidate_items], dtype=np.float32)
-    vector_values = np.array([item["vector_score"] for item in candidate_items], dtype=np.float32)
-
-    bm25_norm = minmax_score(bm25_values)
-    vector_norm = minmax_score(vector_values)
-
-    for item, bm25_part, vector_part in zip(candidate_items, bm25_norm, vector_norm):
-        item["hybrid_score"] = float(0.4 * bm25_part + 0.6 * vector_part)
-
-    candidate_items.sort(key=lambda item: item["hybrid_score"], reverse=True)
-
-    raw_results = []
-    for rank, item in enumerate(candidate_items[:candidate_k], start=1):
-        raw_results.append(
-            _make_retrieve_result(
-                chunk=item["chunk"],
-                rank=rank,
-                bm25_score=item["bm25_score"],
-                vector_score=item["vector_score"],
-                hybrid_score=item["hybrid_score"],
-            )
-        )
-
-    return raw_results
+    # 当前模型已做 L2 Normalize；除以范数同时兼容旧向量和注入的模型。
+    query_unit = np.asarray(question_embedding / query_norm, dtype=np.float32)
+    with np.errstate(over="ignore", invalid="ignore"):
+        scores = (doc_embeddings @ query_unit) / doc_norms
+    if not np.isfinite(scores).all():
+        raise ValueError("余弦相似度计算产生非有限分数")
+    return np.clip(scores, -1.0, 1.0)
 
 
 def retrieve(
@@ -262,37 +144,49 @@ def retrieve(
     model,
     top_k: int = 5
 ):
-    """综合 BM25 和向量相似度召回候选 chunk，优先使用 ChromaDB 向量库。"""
-    if bm25 is None or model is None:
-        return []
-
+    """按全库 BM25 和余弦分数统一 Min-Max 融合，返回供重排使用的候选。"""
     question = (question or "").strip()
-    if not question:
+    if not question or not chunks or top_k <= 0:
         return []
 
-    try:
-        chroma_results = _retrieve_with_chroma(
-            question=question,
-            chunks=chunks,
-            bm25=bm25,
-            model=model,
-            top_k=top_k,
-        )
-        if chroma_results:
-            return chroma_results
-    except ChromaUnavailableError as e:
-        logger.info(f"[retrieve] ChromaDB unavailable, fallback to local embeddings: {e}")
-    except Exception as e:
-        logger.warning(f"[retrieve] ChromaDB query failed, fallback to local embeddings: {e}")
+    if doc_embeddings is None:
+        raise ValueError("检索缺少必需的文档 embeddings 矩阵")
+    doc_embeddings = np.asarray(doc_embeddings, dtype=np.float32)
+    if doc_embeddings.ndim != 2 or doc_embeddings.shape[1] == 0:
+        raise ValueError("文档 embeddings 必须是非空二维矩阵")
+    if doc_embeddings.shape[0] != len(chunks):
+        raise ValueError("文档 embedding 数量与 chunk 数量不一致")
+    if bm25 is None or model is None:
+        raise ValueError("检索缺少必需的 BM25 索引或 embedding 模型")
 
-    return _retrieve_with_local_embeddings(
-        question=question,
-        chunks=chunks,
-        bm25=bm25,
-        doc_embeddings=doc_embeddings,
-        model=model,
-        top_k=top_k,
-    )
+    # runtime 按 chunks 顺序建立 BM25；加载器将 chunks 和文档向量成对排序。
+    bm25_scores = np.asarray(bm25.get_scores(tokenize(question)))
+    if bm25_scores.shape != (len(chunks),):
+        raise ValueError("BM25 分数必须是一维数组，且数量与 chunk 数量一致")
+    bm25_norm = minmax_score(bm25_scores)
+
+    question_embedding = np.asarray(model.embed_query(question), dtype=np.float32)
+    vector_scores = _cosine_scores(doc_embeddings, question_embedding)
+    vector_norm = minmax_score(vector_scores)
+    hybrid_scores = 0.4 * bm25_norm + 0.6 * vector_norm
+
+    candidate_k = min(max(top_k * 5, top_k), len(chunks))
+    # 对负分数稳定升序排序，使并列项保持原始 chunks 顺序。
+    top_indices = np.argsort(-hybrid_scores, kind="stable")[:candidate_k]
+
+    raw_results = []
+    for rank, idx in enumerate(top_indices, start=1):
+        raw_results.append(
+            _make_retrieve_result(
+                chunk=chunks[idx],
+                rank=rank,
+                bm25_score=float(bm25_scores[idx]),
+                vector_score=float(vector_scores[idx]),
+                hybrid_score=float(hybrid_scores[idx]),
+            )
+        )
+
+    return raw_results
 
 
 def search_relevant_chunks(
